@@ -360,7 +360,12 @@ test('service panel puts versions first and renders switchable provider-prefixed
     days: {
       [day]: {
         totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
-        projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 }, models: [{ id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 } }] }],
+        projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 14, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 }, models: [
+          { id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 } },
+          { id: 'openai/gpt-5', provider: 'openai', model: 'gpt-5', totals: { steps: 4, missingUsage: 0, inputTokens: 900, outputTokens: 180, cacheReadTokens: 2000, cacheWriteTokens: 80, cacheHitRate: 0.6 } },
+          { id: 'anthropic/claude', provider: 'anthropic', model: 'claude', totals: { steps: 3, missingUsage: 0, inputTokens: 800, outputTokens: 160, cacheReadTokens: 1000, cacheWriteTokens: 60, cacheHitRate: 0.5 } },
+          { id: 'google/gemini', provider: 'google', model: 'gemini', totals: { steps: 2, missingUsage: 0, inputTokens: 700, outputTokens: 140, cacheReadTokens: 500, cacheWriteTokens: 40, cacheHitRate: 0.4 } },
+        ] }],
 
       },
     },
@@ -396,10 +401,22 @@ test('service panel puts versions first and renders switchable provider-prefixed
   const usageChart = renderer.findByTestId('usage-chart')
   assert.equal(projectTabs.props.style.borderBottom.includes('solid'), true)
   assert.ok(usageChart.props.style.background)
+  assert.equal(renderer.findByTestId('usage-y-axis').props['aria-label'], 'Token 纵轴')
+  assert.equal(renderer.findAllByTestIdPrefix('usage-grid-').length, 5)
+  assert.match(text, /4\.3K.*3\.2K.*2\.2K.*1\.1K.*0/)
+  assert.match(usageChart.props.style.borderBottom, /solid/)
   assert.match(text, /输入 Token.*输出 Token.*缓存 Token/)
   assert.match(text, /1K|3K|4\.1K/)
   assert.match(text, /5 次/)
-  assert.match(text, /deepseek\/deepseek-chat/)
+  assert.match(text, /deepseek\/deepseek-chat.*openai\/gpt-5.*anthropic\/claude/)
+  assert.doesNotMatch(text, /google\/gemini/)
+  assert.match(text, /展开其余 1 个模型/)
+  await renderer.findButton('展开其余 1 个模型').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /google\/gemini.*收起模型列表/)
+  await renderer.findButton('收起模型列表').props.onClick()
+  await renderer.flush()
+  assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
   const segments = renderer.findAllByTestIdPrefix('usage-segment-')
   assert.ok(segments.length >= 3)
   const visibleSegment = segments.find((segment) => Number(segment.props['data-value']) > 0)

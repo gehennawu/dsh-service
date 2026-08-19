@@ -127,6 +127,9 @@ window.__ModuleLoader__.load({
       'usage.structure': 'Token 结构',
       'usage.structureHint': '按日期展示输入、输出和缓存 Token。',
       'usage.tooltip': '精确数据：{date} · {type} · {value}',
+      'usage.axis': 'Token 纵轴',
+      'usage.models.more': '展开其余 {count} 个模型',
+      'usage.models.less': '收起模型列表',
       'usage.refresh': '刷新统计',
       'usage.refreshing': '刷新中…',
       'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
@@ -269,6 +272,9 @@ window.__ModuleLoader__.load({
       'usage.structure': 'Token structure',
       'usage.structureHint': 'Input, output, and cache tokens by date.',
       'usage.tooltip': 'Exact data: {date} · {type} · {value}',
+      'usage.axis': 'Token vertical axis',
+      'usage.models.more': 'Show {count} more models',
+      'usage.models.less': 'Collapse model list',
       'usage.refresh': 'Refresh usage',
       'usage.refreshing': 'Refreshing…',
       'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
@@ -493,6 +499,7 @@ window.__ModuleLoader__.load({
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
+        const [modelsOpen, setModelsOpen] = useState(false)
         const [activeTab, setActiveTab] = useState('overview')
         // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
@@ -799,6 +806,7 @@ window.__ModuleLoader__.load({
         const chartTotals = usageDays.map((day) => usageTotalsFor(day.key))
         const chartValues = chartTotals.map((totals) => usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0))
         const chartMax = Math.max(1, ...chartValues)
+        const chartTicks = [chartMax, chartMax * 0.75, chartMax * 0.5, chartMax * 0.25, 0]
         const todayTotals = usageTotalsFor(usageDays[6].key)
         const sevenTotals = usageDays.reduce((total, day) => {
           const source = usageTotalsFor(day.key)
@@ -847,6 +855,9 @@ window.__ModuleLoader__.load({
           if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
+        const sortedModels = [...modelTotals.values()].sort((a, b) => b.steps - a.steps || a.id.localeCompare(b.id))
+        const visibleModels = modelsOpen ? sortedModels : sortedModels.slice(0, 3)
+        const hiddenModelCount = Math.max(0, sortedModels.length - 3)
         const selectedErrors = (list) => (list || [])
           .filter((error) => usageProject === 'all' || error.projectId === usageProject)
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
@@ -872,8 +883,12 @@ window.__ModuleLoader__.load({
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', null,
-                React.createElement('div', { 'data-testid': 'usage-chart', style: { display: 'flex', alignItems: 'end', gap: '8px', height: '150px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)' } },
-                  usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center' } },
+                React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '174px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
+                  React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '136px', fontSize: '10px', color: '#888' } },
+                    chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
+                  React.createElement('div', { style: { position: 'relative', display: 'flex', alignItems: 'end', gap: '8px', height: '136px', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
+                    chartTicks.map((_, index) => React.createElement('div', { key: index, 'data-testid': `usage-grid-${index}`, style: { position: 'absolute', left: 0, right: 0, top: `${index * 25}%`, borderTop: '1px solid var(--dsh-grid, #ebe8e2)', pointerEvents: 'none' } })),
+                  usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { position: 'relative', zIndex: 1, flex: 1, minWidth: 0, textAlign: 'center' } },
                     React.createElement('div', { style: { height: `${Math.max(2, chartValues[index] / chartMax * 112)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
                       usageSegments.map(([metricName, label, color]) => {
                         const value = usageValue(chartTotals[index], metricName)
@@ -890,7 +905,7 @@ window.__ModuleLoader__.load({
                           style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
                         })
                       })),
-                    React.createElement('div', { style: { fontSize: '10px', color: '#888', marginTop: '4px' } }, day.label)))),
+                    React.createElement('div', { style: { fontSize: '10px', color: '#888', marginTop: '4px' } }, day.label))))),
                 React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px', fontSize: '11px' } },
                   usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
@@ -902,9 +917,10 @@ window.__ModuleLoader__.load({
                 React.createElement('p', { style: hint }, `${translate('usage.hitRate')}：${formatUsageValue(sevenTotals.cacheHitRate, 'cacheHitRate')}`),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
-                  [...modelTotals.values()].sort((a, b) => b.steps - a.steps).map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
+                  visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
                     React.createElement('span', null, model.id),
-                    React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`)))),
+                    React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`))),
+                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid rgba(128,128,128,0.18)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })) : null),
                 React.createElement('div', { style: { display: 'grid', gap: '7px', marginTop: '12px' } },
                   React.createElement('div', null,
                     React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
