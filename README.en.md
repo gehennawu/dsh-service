@@ -2,7 +2,7 @@
 
 [中文](./README.md)
 
-A service-control and operations plugin for self-hosted DSH Web. The current release provides host version information, DSH update checks, and safe process restarts, with restart protection, runtime status, backups, and Linux file-permission maintenance planned for later releases.
+A service-control and operations plugin for self-hosted DSH Web. The current release provides safe restart and recovery, update notifications, health monitoring, container liveness, backup management, and Linux file-permission maintenance.
 
 > This project is still in early development and is currently verified mainly with **Linux + Docker**. Docker, systemd, pm2, or another external process manager must restart DSH Web after the plugin exits the process.
 
@@ -10,10 +10,10 @@ A service-control and operations plugin for self-hosted DSH Web. The current rel
 
 | Stage | Status | Scope |
 | --- | --- | --- |
-| Current `0.2.1` | ✅ Available | Package and RPC identities unified as `@gehennawu/dsh-service` / `/dsh-service`; DSH version display, DSH update check, two-step restart confirmation, loopback RPC, Chinese and English documentation |
-| v0.3 Safety and UX | 🚧 Awaiting integration tests | ✅ Restart guard; ✅ automatic post-restart recovery; ✅ update badge and details overlay; ✅ dynamic zh/en UI |
-| v0.4 Observability | 🚧 Awaiting integration tests | ✅ Health panel; ✅ status-code-only `/healthz` endpoint |
-| v0.5 Data and maintenance | 📋 Planned | Session/config/plugin-list backups; backup listing and deletion; Linux permission inspection and repair for DSH_HOME and workspaces |
+| Current `0.5.0` | ✅ Feature complete | The v0.3–v0.5 roadmap is implemented and covered by automated tests |
+| v0.3 Safety and UX | ✅ Implemented | Restart guard, automatic post-restart recovery, update badge/details overlay, dynamic zh/en UI |
+| v0.4 Observability | ✅ Implemented | Health panel and status-code-only `/healthz` endpoint |
+| v0.5 Data and maintenance | ✅ Implemented | Session/config/plugin-manifest backups, backup listing/deletion, and controlled Linux permission inspection/repair |
 
 Deferred ideas: one-click DSH upgrades, scheduled restarts, token aggregation, and historical system metrics.
 
@@ -92,6 +92,8 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
+> Automated coverage and the current Linux + Docker Host checks are complete. Browser Network timing, a real Terminal activity entry, the 60-second state without a restart policy, and ownership repair from a root-created file still require deployments that provide those exact conditions.
+
 ## Security design
 
 - The browser cannot supply URLs, package names, commands, or file paths.
@@ -103,8 +105,8 @@ Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both
 
 ## Project structure
 
-- `index.js`: Host half; reads the version, checks for updates, and registers restart RPC.
-- `client.js`: Browser half; registers the Service Control page in Settings.
+- `index.js`: Host half; version/update checks, activity guard, health metrics, liveness, backups, and permission-maintenance RPC.
+- `client.js`: Browser half; Settings page, update badge, and global status overlays.
 - `cordis.patch.yml`: inserts the Host and Client plugin into the DSH Web profile.
 - `README.md`: Chinese documentation.
 

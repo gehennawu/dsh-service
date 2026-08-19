@@ -1,7 +1,7 @@
 {
   "name": "@gehennawu/dsh-service",
-  "version": "0.2.1",
-  "description": "DSH Web 服务控制：显示版本、检查更新，并通过进程管理器安全重启。",
+  "version": "0.5.0",
+  "description": "DSH Web 自托管运维面板：安全重启、健康监控、备份和 Linux 权限维护。",
   "type": "module",
   "scripts": {
     "test": "node --test"
