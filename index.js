@@ -593,19 +593,11 @@ function isAtOrUnderPath(ancestor, path) {
   return child === '' || (child !== '..' && !child.startsWith(`..${sep}`))
 }
 
-function isCredentialsDocument(path, dshHome) {
-  return path === join(dshHome, '.credentials.yaml')
+function requiredFileMode(path) {
+  return basename(path) === '.credentials.yaml' ? 0o600 : 0o644
 }
 
-// 宿主 dsh-credentials-local 对凭据文档的真实契约是 group/other 权限位为零（owner-only，
-// 0400/0600 等 owner-only 形式均合规，并非「必须恰好 600」），且只约束 <DSH_HOME>/.credentials.yaml
-// 本身；普通文件仍按归一化目标 0644 判断。
-function fileModeCompliant(path, mode, dshHome) {
-  if (isCredentialsDocument(path, dshHome)) return (mode & 0o077) === 0
-  return mode === 0o644
-}
-
-async function deepCheckPermissions(dshHome, plans, planId) {
+async function deepCheckPermissions(plans, planId) {
   if (typeof planId !== 'string') return undefined
   const paths = plans.get(planId)
   if (paths === undefined) return undefined
@@ -627,7 +619,7 @@ async function deepCheckPermissions(dshHome, plans, planId) {
     if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
     const mode = info.mode & 0o777
     if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
-    else if (info.isFile() && !fileModeCompliant(path, mode, dshHome)) { result.fileModeIssues += 1; issues.push('file-mode') }
+    else if (info.isFile() && mode !== requiredFileMode(path)) { result.fileModeIssues += 1; issues.push('file-mode') }
     if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
     if (!info.isDirectory()) return
     let entries
@@ -914,7 +906,7 @@ function apply(ctx) {
 
     if (endpoint === 'permissions-deep') {
       try {
-        const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
+        const value = await deepCheckPermissions(permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
         return { ok: true, value }
       } catch (error) {
