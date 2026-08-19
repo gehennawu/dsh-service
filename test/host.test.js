@@ -120,6 +120,20 @@ test('restart is blocked by active work unless force is explicit', async () => {
   assert.equal(scheduled[0].delay, 500)
 })
 
+test('version and restart responses expose one stable process instance id', async () => {
+  const { handler } = createHost()
+
+  const first = await handler('version', {})
+  const second = await handler('version', {})
+  const restart = await handler('web', {})
+
+  assert.equal(first.ok, true)
+  assert.equal(typeof first.value.instanceId, 'string')
+  assert.notEqual(first.value.instanceId, '')
+  assert.equal(second.value.instanceId, first.value.instanceId)
+  assert.equal(restart.value.instanceId, first.value.instanceId)
+})
+
 test('host plugin keeps the dsh-service public identity', () => {
   assert.equal(name, 'dsh-service')
 })

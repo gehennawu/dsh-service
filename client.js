@@ -8,10 +8,111 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
 
-    const inject = ['slots', 'connection']
+    const inject = ['slots', 'connection', 'timer']
 
     function apply(ctx) {
       const { useState, useEffect } = React
+      const recoveryListeners = new Set()
+      let recoveryState = { status: 'idle', elapsedMs: 0 }
+      let recoveryGeneration = 0
+
+      const setRecoveryState = (next) => {
+        recoveryState = next
+        for (const listener of recoveryListeners) listener(next)
+      }
+
+      const useRecoveryState = () => {
+        const [snapshot, setSnapshot] = useState(recoveryState)
+        useEffect(() => {
+          recoveryListeners.add(setSnapshot)
+          setSnapshot(recoveryState)
+          return () => recoveryListeners.delete(setSnapshot)
+        }, [])
+        return snapshot
+      }
+
+      const startRecovery = async (previousInstanceId) => {
+        const generation = ++recoveryGeneration
+        let elapsedMs = 0
+        let delayMs = 1000
+        setRecoveryState({ status: 'waiting', elapsedMs })
+
+        while (elapsedMs < 60000 && generation === recoveryGeneration) {
+          const waitMs = Math.min(delayMs, 60000 - elapsedMs)
+          try {
+            await ctx.timer.timeout(waitMs)
+          } catch (_) {
+            return
+          }
+          if (generation !== recoveryGeneration) return
+
+          elapsedMs += waitMs
+          setRecoveryState({ status: 'waiting', elapsedMs })
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'version', {})
+            const nextInstanceId = res && res.ok ? res.value && res.value.instanceId : undefined
+            if (typeof nextInstanceId === 'string' && nextInstanceId.length > 0 && nextInstanceId !== previousInstanceId) {
+              window.location.reload()
+              return
+            }
+          } catch (_) {}
+
+          if (elapsedMs >= 60000) {
+            setRecoveryState({ status: 'timeout', elapsedMs })
+            return
+          }
+          delayMs = Math.min(delayMs * 2, 10000)
+        }
+      }
+
+      ctx.effect(() => () => {
+        recoveryGeneration += 1
+        recoveryListeners.clear()
+      }, 'dsh-service recovery')
+
+      function RestartOverlay() {
+        const recovery = useRecoveryState()
+        if (recovery.status === 'idle') return null
+
+        const timedOut = recovery.status === 'timeout'
+        return React.createElement('div', {
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 10000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            background: 'rgba(12, 14, 20, 0.72)',
+            backdropFilter: 'blur(4px)',
+            pointerEvents: 'auto',
+          },
+        },
+        React.createElement('div', {
+          style: {
+            width: 'min(420px, 100%)',
+            padding: '24px',
+            borderRadius: '12px',
+            background: 'var(--color-background, #fff)',
+            color: 'var(--color-foreground, #222)',
+            boxShadow: '0 18px 60px rgba(0,0,0,0.35)',
+            textAlign: 'center',
+          },
+        },
+        React.createElement('div', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '10px' } },
+          timedOut ? '服务尚未恢复' : '服务重启中…'),
+        React.createElement('p', { style: { margin: 0, fontSize: '13px', lineHeight: 1.7, color: '#888' } },
+          timedOut
+            ? '已等待 60 秒。请确认外部进程管理器已正确配置，或手动刷新页面重试。'
+            : '正在等待新的 DSH Web 进程启动，已等待 ' + Math.floor(recovery.elapsedMs / 1000) + ' 秒。'),
+        timedOut
+          ? React.createElement('button', {
+              style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: '#5B4CF0', color: '#fff', cursor: 'pointer' },
+              onClick: () => window.location.reload(),
+            }, '手动刷新')
+          : null))
+      }
 
       function ServicePanel() {
         const [version, setVersion] = useState(null)
@@ -77,6 +178,11 @@ window.__ModuleLoader__.load({
               throw new Error(res.error || '重启失败')
             }
             setStage(2)
+            const previousInstanceId = res && res.value ? res.value.instanceId : undefined
+            if (typeof previousInstanceId !== 'string' || previousInstanceId.length === 0) {
+              throw new Error('重启响应缺少进程实例标识')
+            }
+            startRecovery(previousInstanceId).catch((err) => console.error('dsh-service: recovery failed', err))
           } catch (err) {
             setError(err && err.message ? String(err.message) : String(err))
             setStage(0)
@@ -177,6 +283,10 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('settings.section', () => ctx.slots.register(
         { name: 'settings.section', id: 'dsh-service', order: 99, label: () => '服务控制' },
         () => React.createElement(ServicePanel, null),
+      ))
+      ctx.slots.inject('shell.overlay', () => ctx.slots.register(
+        { name: 'shell.overlay', id: 'dsh-service-restart', order: 100, label: () => '服务重启状态' },
+        () => React.createElement(RestartOverlay, null),
       ))
     }
 

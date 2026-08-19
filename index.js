@@ -9,6 +9,7 @@ const inject = ['connection']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
+const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
 let dshVersion = 'unknown'
@@ -142,7 +143,7 @@ function apply(ctx) {
   // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
   ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {
     if (endpoint === 'version') {
-      return { ok: true, value: { current: dshVersion } }
+      return { ok: true, value: { current: dshVersion, instanceId } }
     }
 
     if (endpoint === 'check-update') {
@@ -178,7 +179,13 @@ function apply(ctx) {
       const timer = ctx.get('timer')
       if (timer !== undefined) timer.timeout(doExit, 500)
       else doExit()
-      return { ok: true, value: '重启指令已发出，进程将在 0.5 秒后退出' }
+      return {
+        ok: true,
+        value: {
+          message: '重启指令已发出，进程将在 0.5 秒后退出',
+          instanceId,
+        },
+      }
     }
 
     return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
