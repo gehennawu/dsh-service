@@ -30,6 +30,8 @@ window.__ModuleLoader__.load({
       'health.overall.ok': '正常',
       'health.overall.warning': '警告',
       'health.overall.error': '错误',
+      'health.alert.title': '健康提醒',
+      'health.alert.diagnostics': '检查结果存在{status}，请查看下方异常项。',
       'health.status.ok': '正常',
       'health.status.warning': '警告',
       'health.status.error': '错误',
@@ -41,7 +43,7 @@ window.__ModuleLoader__.load({
       'health.check.tar': 'tar',
       'health.check.permissions': '文件权限',
       'permissions.title': '文件权限',
-      'permissions.description': '查看 DSH_HOME 和全部工作区目录的当前属主与权限。修复会递归改为进程用户，并设置目录 755、文件 644。',
+      'permissions.description': '检查 DSH_HOME 和全部工作区的属主与权限。修复会设置目录 755、普通文件 644，并强制凭据文件保持 600。',
       'permissions.target': '目标属主：{owner}',
       'permissions.repair': '修复权限',
       'permissions.repairing': '修复中…',
@@ -146,6 +148,8 @@ window.__ModuleLoader__.load({
       'health.overall.ok': 'Healthy',
       'health.overall.warning': 'Warning',
       'health.overall.error': 'Error',
+      'health.alert.title': 'Health alert',
+      'health.alert.diagnostics': 'The health check reported {status}. Review the affected items below.',
       'health.status.ok': 'Healthy',
       'health.status.warning': 'Warning',
       'health.status.error': 'Error',
@@ -157,7 +161,7 @@ window.__ModuleLoader__.load({
       'health.check.tar': 'tar',
       'health.check.permissions': 'File permissions',
       'permissions.title': 'File permissions',
-      'permissions.description': 'Shows the current owner and mode for DSH_HOME and every workspace directory. Repair recursively changes ownership to the process user, directories to 755, and files to 644.',
+      'permissions.description': 'Checks ownership and modes across DSH_HOME and every workspace. Repair sets directories to 755, regular files to 644, and always keeps the credentials file at 600.',
       'permissions.target': 'Target owner: {owner}',
       'permissions.repair': 'Repair permissions',
       'permissions.repairing': 'Repairing…',
@@ -830,8 +834,7 @@ window.__ModuleLoader__.load({
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
-        const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('health.title')),
+        const healthSummaryBlock = React.createElement('div', null,
           health
             ? React.createElement('div', { 'data-testid': 'health-display', style: Object.assign({}, displaySurface, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }) },
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
@@ -842,6 +845,11 @@ window.__ModuleLoader__.load({
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')),
           React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
+          diagnostics && diagnostics.status !== 'ok'
+            ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
+                React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
+                React.createElement('div', { style: hint }, translate('health.alert.diagnostics', { status: translate(`health.overall.${diagnostics.status}`) })))
+            : null,
           diagnostics
             ? React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
                 diagnostics.checks.map((check) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '12px', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,0.07)' } },
@@ -856,6 +864,9 @@ window.__ModuleLoader__.load({
           ? React.createElement('div', { key: 'permissions-section', style: Object.assign({}, displaySurface, { marginTop: '12px' }) },
               React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
               React.createElement('p', { style: hint }, translate('permissions.description')),
+              permissionAbnormal > 0 ? React.createElement('div', { style: { marginTop: '8px', padding: '9px 11px', borderRadius: '7px', background: 'rgba(198,128,0,0.12)', border: '1px solid rgba(198,128,0,0.3)' } },
+                React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
+                React.createElement('div', { style: hint }, translate('permissions.summary.warning', { count: permissionAbnormal }))) : null,
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600, color: permissionAbnormal > 0 ? '#c68000' : 'inherit' }) }, translate(permissionAbnormal > 0 ? 'permissions.summary.warning' : 'permissions.summary.ok', { count: permissionAbnormal > 0 ? permissionAbnormal : permissions.items.length })),
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
               React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
@@ -879,6 +890,11 @@ window.__ModuleLoader__.load({
                 : React.createElement('button', { style: Object.assign({}, danger, { marginTop: '10px' }), disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, permissionError) : null)
           : null
+
+        const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
+          React.createElement('div', { style: sectionTitle }, translate('health.title')),
+          healthSummaryBlock,
+          permissionBlock)
 
         const backupBlock = React.createElement('div', { key: 'backup-section', style: displaySurface },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
@@ -941,7 +957,6 @@ window.__ModuleLoader__.load({
         if (stage === 2) {
           return React.createElement('div', null,
             healthBlock,
-            permissionBlock,
             backupBlock,
             versionBlock,
             React.createElement('div', { key: 'restart-section' },
@@ -995,7 +1010,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock, permissionBlock)
+        const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         return React.createElement('div', null, versionBlock, healthBlock, usageBlock, maintenanceBlock, restartBlock)
       }
 

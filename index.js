@@ -582,6 +582,10 @@ async function permissionSnapshot(ctx, dshHome, plans) {
   }
 }
 
+function requiredFileMode(path) {
+  return basename(path) === '.credentials.yaml' ? 0o600 : 0o644
+}
+
 async function deepCheckPermissions(plans, planId) {
   if (typeof planId !== 'string') return undefined
   const paths = plans.get(planId)
@@ -604,7 +608,7 @@ async function deepCheckPermissions(plans, planId) {
     if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
     const mode = info.mode & 0o777
     if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
-    else if (info.isFile() && mode !== 0o644) { result.fileModeIssues += 1; issues.push('file-mode') }
+    else if (info.isFile() && mode !== requiredFileMode(path)) { result.fileModeIssues += 1; issues.push('file-mode') }
     if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
     if (!info.isDirectory()) return
     let entries
@@ -630,6 +634,13 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
     await runFixedCommand(ctx, ['chown', '-R', owner, '--', path])
     await runFixedCommand(ctx, ['find', path, '-type', 'd', '-exec', 'chmod', '755', '{}', '+'])
     await runFixedCommand(ctx, ['find', path, '-type', 'f', '-exec', 'chmod', '644', '{}', '+'])
+  }
+  try {
+    const credentials = join(dshHome, '.credentials.yaml')
+    const info = await lstat(credentials)
+    if (info.isFile()) await runFixedCommand(ctx, ['chmod', '600', '--', credentials])
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
   }
   return permissionSnapshot(ctx, dshHome, plans)
 }
