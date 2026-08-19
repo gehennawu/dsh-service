@@ -10,11 +10,12 @@ A service-control and operations plugin for self-hosted DSH Web. The current rel
 
 | Stage | Status | Scope |
 | --- | --- | --- |
-| Current `0.6.0` | ✅ Feature complete | The v0.3–v0.6 roadmap is implemented and covered by automated tests |
+| Current `0.7.0` | ✅ Feature complete | The v0.3–v0.7 roadmap is implemented and covered by automated tests |
 | v0.3 Safety and UX | ✅ Implemented | Restart guard, automatic post-restart recovery, update badge/details overlay, dynamic zh/en UI |
 | v0.4 Observability | ✅ Implemented | Health panel and status-code-only `/healthz` endpoint |
 | v0.5 Data and maintenance | ✅ Implemented | Session/config/plugin-manifest backups, backup listing/deletion, and controlled Linux permission inspection/repair |
 | v0.6 Panel and usage | ✅ Implemented | Version-first layout, deep health check, exact incremental model usage, provider/model and project filters, switchable charts, and collapsed maintenance details |
+| v0.7 Error statistics and UI | ✅ Implemented | Last-24-hour model/tool errors, path normalization, collapsed error details, card sections, and semantic button colors |
 
 Deferred ideas: one-click DSH upgrades, scheduled restarts, and historical host-system metrics.
 
@@ -30,7 +31,9 @@ Deferred ideas: one-click DSH upgrades, scheduled restarts, and historical host-
 - **Health panel and deep diagnostics**: shows uptime, memory RSS, live/persisted sessions, active agents, and background jobs, with lightweight metrics refreshed every 5 seconds. A manual health check additionally verifies session storage, workspace registry, DSH_HOME, backup storage, tar, and root-path permissions.
 - **Exact model-usage charts**: groups successful model steps, input tokens, output tokens, cache tokens, and cache hit rate by the Host's local calendar day. The UI can switch between all projects and individual workspaces and displays models as `provider/model`. The first build reads historical sessions sequentially; later refreshes fold only new events using each session revision and `lastSeq`. The index stores no messages, prompts, or tool content.
 - **Resume and fork semantics**: reopening an old conversation keeps the same session ID, so newly produced tokens are appended to their actual day without double counting. Forks skip the inherited prefix below `seedLength`; subagent usage is included in its actual project by default.
-- **Model error statistics**: extracts provider failures from `llm/retry` and final failed turns, groups them by `provider/model + code + HTTP status`, and shows both all-time and rolling last-24-hour counts in descending order. Cancellations, max-token endings, and tool errors are excluded.
+- **Model error statistics**: extracts provider failures from `llm/retry` and final failed turns, groups them by `provider/model + code + HTTP status`, and retains only the rolling last 24 hours in descending count order. Cancellations, max-token endings, and tool errors are excluded. Details are collapsed by default and follow the project filter.
+- **Tool error statistics**: counts failures from direct Tool calls and nested calls inside `run_code`, including command, read, write, edit, and search failures. Stable `error.code` values are preferred; otherwise failures are normalized into stable categories such as `FS_NOT_OBSERVED`, `OLD_STRING_NOT_FOUND`, `PATH_NOT_FOUND`, and command exit codes. Different file paths are grouped together, while the index and UI store/display only a redacted `<path>` representative. Only the last 24 hours are retained, sorted by descending count, collapsed by default, and filtered by project.
+- **Card-based panel**: version, health, model usage, maintenance, and restart each have a separate background card; metrics, charts, diagnostics, and error lists use an additional contrasting display surface. Check/refresh actions use blue informational styling, primary selections use the brand color, and repair/delete/restart remain dangerous actions.
 - **External liveness probe**: `GET` / `HEAD /healthz` returns an empty HTTP 200; other methods return 405, with no DSH version, counts, or other information exposed. It is intended for Uptime Kuma on another server, Docker, Kubernetes, or another monitor to verify that DSH Web and its HTTP server remain reachable. It does nothing unless an external consumer is configured and does not replace the panel's deep diagnostics. When DSH listens only on `127.0.0.1`, expose this path through the existing Nginx/Caddy/Traefik reverse proxy rather than opening port 3080 directly.
 - **Linux file permissions**: automatically performs a shallow check of DSH_HOME and all workspace roots when the panel opens and shows the summary immediately, with paths collapsed by default. A manual deep check recursively scans ownership, directory mode 755, and file mode 644 with bounded anomaly samples. Repair still requires two-step confirmation. The section is hidden outside Linux. If DSH runs as root in a container, the target is still root, so this cannot downgrade ownership to an unprivileged user.
 - **Backup management**: creates archives under `$DSH_HOME/backups/` containing sessions, configuration, and plugin profile manifests; keeps the record list collapsed by default; and requires two-step confirmation before deletion. Backups are unlimited and never auto-pruned, so disk usage is the user's responsibility. Credentials and `node_modules` are excluded.
@@ -104,7 +107,7 @@ Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both
 - Update checks only access `https://registry.npmjs.org/@deepseek-ai%2Fdsh`.
 - npm responses are limited to 256 KiB with a 10-second timeout.
 - The RPC channel is loopback-only and does not expose control operations to external network callers.
-- The model-usage index stores only session revisions/watermarks and numeric aggregates by day, project, and provider/model. It stores no messages, prompts, tool arguments, passwords, private keys, or other credentials; it is fixed at `$DSH_HOME/dsh-service-usage-index.json` with mode 0600.
+- The model-usage index stores session revisions/watermarks, numeric aggregates by day/project/provider/model, and stable codes, counts, timestamps, and `<path>` representatives for redacted errors from the last 24 hours. It stores no messages, prompts, tool arguments, original file paths, passwords, private keys, or other credentials; it is fixed at `$DSH_HOME/dsh-service-usage-index.json` with mode 0600.
 - Restarting interrupts active work; the plugin lists active work first and only proceeds after an explicit **Force restart** action.
 
 ## Project structure

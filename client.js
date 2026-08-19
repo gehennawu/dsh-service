@@ -116,9 +116,12 @@ window.__ModuleLoader__.load({
       'usage.sevenDays': '近 7 天',
       'usage.missing': '{count} 个步骤没有 Token 数据',
       'usage.errors.title': '模型报错',
+      'usage.errors.toggle': '模型报错（{count} 类）',
       'usage.errors.recent': '最近 24 小时',
-      'usage.errors.history': '历史累计',
-      'usage.errors.empty': '没有记录到模型报错。',
+      'usage.errors.empty': '最近 24 小时没有记录到模型报错。',
+      'usage.toolErrors.title': '工具报错',
+      'usage.toolErrors.toggle': '工具报错（{count} 类）',
+      'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
     }
     const en = {
@@ -229,9 +232,12 @@ window.__ModuleLoader__.load({
       'usage.sevenDays': 'Last 7 days',
       'usage.missing': '{count} step(s) have no token data',
       'usage.errors.title': 'Model errors',
+      'usage.errors.toggle': 'Model errors ({count} types)',
       'usage.errors.recent': 'Last 24 hours',
-      'usage.errors.history': 'All time',
-      'usage.errors.empty': 'No model errors were recorded.',
+      'usage.errors.empty': 'No model errors were recorded in the last 24 hours.',
+      'usage.toolErrors.title': 'Tool errors',
+      'usage.toolErrors.toggle': 'Tool errors ({count} types)',
+      'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
     }
 
@@ -433,6 +439,8 @@ window.__ModuleLoader__.load({
         const [usageError, setUsageError] = useState(null)
         const [usageMetric, setUsageMetric] = useState('inputTokens')
         const [usageProject, setUsageProject] = useState('all')
+        const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
+        const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
         const [activity, setActivity] = useState(null)
@@ -672,9 +680,13 @@ window.__ModuleLoader__.load({
         const danger = Object.assign({}, btn, { background: '#d33', color: '#fff', borderColor: '#d33' })
         const plain = Object.assign({}, btn, { background: 'transparent' })
         const primary = Object.assign({}, btn, { background: '#5B4CF0', color: '#fff', borderColor: '#5B4CF0' })
-        const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px' }
+        const info = Object.assign({}, btn, { background: 'rgba(43,108,176,0.12)', color: '#2b6cb0', borderColor: 'rgba(43,108,176,0.35)' })
+        const toggle = Object.assign({}, btn, { background: 'rgba(128,128,128,0.08)', borderColor: 'transparent', padding: '7px 10px', width: '100%', textAlign: 'left', fontWeight: 600 })
+        const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const sectionTitle = { fontSize: '13px', fontWeight: 600, margin: '16px 0 4px', color: 'inherit' }
+        const card = { background: 'rgba(128,128,128,0.055)', border: '1px solid rgba(128,128,128,0.14)', borderRadius: '10px', padding: '14px 16px', marginBottom: '12px' }
+        const displaySurface = { background: 'rgba(128,128,128,0.09)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
+        const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'inherit' }
 
         const formatSize = (bytes) => {
           const value = Number(bytes)
@@ -769,19 +781,19 @@ window.__ModuleLoader__.load({
         const selectedErrors = (list) => (list || [])
           .filter((error) => usageProject === 'all' || error.projectId === usageProject)
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
-        const recentErrors = selectedErrors(usage?.errors?.last24Hours)
-        const historyErrors = selectedErrors(usage?.errors?.history)
-        const errorList = (titleKey, errors) => React.createElement('div', { key: titleKey },
-          React.createElement('div', { style: { fontSize: '12px', fontWeight: 600, margin: '8px 0 5px' } }, translate(titleKey)),
+        const modelErrors = selectedErrors(usage?.errors?.models)
+        const toolErrors = selectedErrors(usage?.errors?.tools)
+        const errorList = (kind, errors) => React.createElement('div', { key: kind, style: { display: 'grid', gap: '6px', marginTop: '8px' } },
           errors.length === 0
-            ? React.createElement('p', { style: hint }, translate('usage.errors.empty'))
-            : React.createElement('div', { style: { display: 'grid', gap: '6px' } },
-                errors.map((failure) => React.createElement('div', { key: `${titleKey}:${failure.projectId}:${failure.key}`, style: { padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(211,51,51,0.25)', fontSize: '12px' } },
-                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontWeight: 600 } },
-                    React.createElement('span', null, `${failure.provider}/${failure.model} · ${failure.code}${failure.status === null ? '' : ` · ${failure.status}`}`),
-                    React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
-                  React.createElement('div', { style: { color: '#888', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message)))))
-        const usageBlock = React.createElement('div', { key: 'usage-section' },
+            ? React.createElement('p', { style: hint }, translate(kind === 'model' ? 'usage.errors.empty' : 'usage.toolErrors.empty'))
+            : errors.map((failure) => React.createElement('div', { key: `${kind}:${failure.projectId}:${failure.key}`, style: { padding: '8px 10px', borderRadius: '6px', background: 'rgba(211,51,51,0.065)', border: '1px solid rgba(211,51,51,0.2)', fontSize: '12px' } },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontWeight: 600 } },
+                  React.createElement('span', null, kind === 'model'
+                    ? `${failure.provider}/${failure.model} · ${failure.code}${failure.status === null ? '' : ` · ${failure.status}`}`
+                    : `${failure.tool} · ${failure.code}`),
+                  React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
+                React.createElement('div', { style: { color: '#888', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message))))
+        const usageBlock = React.createElement('div', { key: 'usage-section', 'data-testid': 'usage-card', style: card },
           React.createElement('div', { style: sectionTitle }, translate('usage.title')),
           React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '8px 0' } },
             usageMetrics.map(([id, label]) => React.createElement('button', { key: id, style: id === usageMetric ? primary : plain, onClick: () => setUsageMetric(id) }, translate(label)))),
@@ -804,16 +816,24 @@ window.__ModuleLoader__.load({
                   [...modelTotals.values()].sort((a, b) => b.steps - a.steps).map((model) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 8px', border: '1px solid rgba(128,128,128,0.18)', borderRadius: '6px' } },
                     React.createElement('span', null, model.id),
                     React.createElement('span', null, formatUsageValue(usageValue({ ...model, cacheHitRate: (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) === 0 ? 0 : model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) }), usageMetric))))),
-                React.createElement('div', { style: Object.assign({}, sectionTitle, { marginTop: '14px' }) }, translate('usage.errors.title')),
-                errorList('usage.errors.recent', recentErrors),
-                errorList('usage.errors.history', historyErrors))
+                React.createElement('div', { style: { display: 'grid', gap: '7px', marginTop: '12px' } },
+                  React.createElement('div', null,
+                    React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
+                    modelErrorsOpen ? React.createElement('div', { style: displaySurface },
+                      React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
+                      errorList('model', modelErrors)) : null),
+                  React.createElement('div', null,
+                    React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
+                    toolErrorsOpen ? React.createElement('div', { style: displaySurface },
+                      React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
+                      errorList('tool', toolErrors)) : null)))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
-          React.createElement('div', { style: row }, React.createElement('button', { style: primary, onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
+          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
-        const healthBlock = React.createElement('div', { key: 'health-section' },
+        const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
           React.createElement('div', { style: sectionTitle }, translate('health.title')),
           health
-            ? React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' } },
+            ? React.createElement('div', { 'data-testid': 'health-display', style: Object.assign({}, displaySurface, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }) },
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
                 metric('health.rss', formatBytes(health.rssBytes)),
                 metric('health.liveSessions', String(health.liveSessions)),
@@ -821,7 +841,7 @@ window.__ModuleLoader__.load({
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')),
-          React.createElement('div', { style: row }, React.createElement('button', { style: primary, onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
+          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
           diagnostics
             ? React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
                 diagnostics.checks.map((check) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '12px', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,0.07)' } },
@@ -833,14 +853,14 @@ window.__ModuleLoader__.load({
           ? permissions.items.filter((item) => item.owner !== permissions.targetOwner || item.mode !== '0755').length
           : 0
         const permissionBlock = permissions && permissions.supported === true
-          ? React.createElement('div', { key: 'permissions-section' },
+          ? React.createElement('div', { key: 'permissions-section', style: Object.assign({}, displaySurface, { marginTop: '12px' }) },
               React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
               React.createElement('p', { style: hint }, translate('permissions.description')),
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600, color: permissionAbnormal > 0 ? '#c68000' : 'inherit' }) }, translate(permissionAbnormal > 0 ? 'permissions.summary.warning' : 'permissions.summary.ok', { count: permissionAbnormal > 0 ? permissionAbnormal : permissions.items.length })),
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
               React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
                 React.createElement('button', { style: plain, onClick: () => setPermissionDetails((value) => !value) }, translate(permissionDetails ? 'permissions.hideDetails' : 'permissions.showDetails')),
-                React.createElement('button', { style: plain, onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
+                React.createElement('button', { style: info, 'data-variant': 'info', onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
               permissionDeep ? React.createElement('p', { style: hint }, translate('permissions.deepSummary', { scanned: permissionDeep.scanned, duration: permissionDeep.durationMs, owner: permissionDeep.ownerIssues, directories: permissionDeep.directoryModeIssues, files: permissionDeep.fileModeIssues, unreadable: permissionDeep.unreadable })) : null,
               permissionDetails ? React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
                 permissions.items.map((item) => React.createElement('div', {
@@ -860,11 +880,11 @@ window.__ModuleLoader__.load({
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, permissionError) : null)
           : null
 
-        const backupBlock = React.createElement('div', { key: 'backup-section' },
+        const backupBlock = React.createElement('div', { key: 'backup-section', style: displaySurface },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('p', { style: hint }, translate('backup.description')),
           React.createElement('div', { style: row },
-            React.createElement('button', { style: primary, onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('button', { style: info, 'data-variant': 'info', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
             React.createElement('span', { style: { fontSize: '12px', color: '#888' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, backupError) : null,
           backups.items.length === 0
@@ -888,8 +908,8 @@ window.__ModuleLoader__.load({
             : null)
 
         // 版本信息区块
-        const versionBlock = [
-          React.createElement('div', { key: 'ver-section', style: { marginTop: 4 } },
+        const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
+          React.createElement('div', { key: 'ver-section' },
             React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
             React.createElement('div', { key: 'body', style: { fontSize: '13px', lineHeight: 1.6 } },
               React.createElement('span', null, translate('version.current')),
@@ -902,7 +922,7 @@ window.__ModuleLoader__.load({
           // 检查更新
           React.createElement('div', { key: 'update-section' },
             React.createElement('div', { style: row },
-              React.createElement('button', { style: primary, onClick: checkUpdate, disabled: updateBusy }, translate(updateBusy ? 'update.checking' : 'update.check')),
+              React.createElement('button', { style: info, 'data-variant': 'info', onClick: checkUpdate, disabled: updateBusy }, translate(updateBusy ? 'update.checking' : 'update.check')),
               updateInfo
                 ? React.createElement('span', {
                     key: 'result',
@@ -915,8 +935,7 @@ window.__ModuleLoader__.load({
             updateError
               ? React.createElement('p', { key: 'update-err', style: Object.assign({}, hint, { color: '#d33' }) }, String(updateError))
               : null
-          )
-        ]
+          ))
 
         // 重启后提示
         if (stage === 2) {
@@ -953,13 +972,13 @@ window.__ModuleLoader__.load({
           : null
 
         // 重启按钮区块
-        const restartBlock = React.createElement('div', { key: 'restart-section' },
+        const restartBlock = React.createElement('div', { key: 'restart-section', 'data-testid': 'restart-card', style: Object.assign({}, card, { borderColor: 'rgba(211,51,51,0.3)', background: 'rgba(211,51,51,0.045)' }) },
           React.createElement('div', { style: sectionTitle }, translate('restart.title')),
           React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.description')),
           activityWarning,
           React.createElement('div', { style: row },
             stage === 0
-              ? React.createElement('button', { style: danger, onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
+              ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
               : stage === 1
                 ? [
                     React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.confirm')),
@@ -976,7 +995,8 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        return React.createElement('div', null, versionBlock, healthBlock, usageBlock, backupBlock, permissionBlock, restartBlock)
+        const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock, permissionBlock)
+        return React.createElement('div', null, versionBlock, healthBlock, usageBlock, maintenanceBlock, restartBlock)
       }
 
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(

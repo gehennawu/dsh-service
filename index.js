@@ -16,7 +16,7 @@ const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
-const USAGE_INDEX_VERSION = 2
+const USAGE_INDEX_VERSION = 3
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
@@ -302,22 +302,102 @@ function usageFailure(event) {
   return undefined
 }
 
+function recentErrorTime(time) {
+  return Number.isFinite(time) && time >= Date.now() - 24 * 60 * 60 * 1000
+}
+
 function addUsageError(session, event, model) {
   const failure = usageFailure(event)
   if (failure === undefined) return false
-  const day = usageDay(event.time)
-  const bucket = session.days[day] || (session.days[day] = { totals: emptyUsageTotals(), models: {} })
-  if (session.errors === undefined) session.errors = {}
+  if (!recentErrorTime(event.time)) return true
+  if (session.modelErrors === undefined) session.modelErrors = {}
   const provider = event.type === 'llm/retry' && typeof event.data?.provider === 'string' ? event.data.provider : model.provider
   const errorModel = provider === model.provider ? model.model : 'unknown'
   const code = typeof failure.code === 'string' && failure.code.length > 0 ? failure.code : 'UNKNOWN'
   const status = Number.isSafeInteger(failure.status) ? failure.status : null
   const key = `${provider}/${errorModel}|${code}|${status === null ? '-' : status}`
-  const current = session.errors[key] || { key, provider, model: errorModel, code, status, message: String(failure.message || code), count: 0, recentTimes: [] }
-  current.count += 1
+  const current = session.modelErrors[key] || { key, provider, model: errorModel, code, status, message: String(failure.message || code), recentTimes: [] }
   current.recentTimes.push(event.time)
-  session.errors[key] = current
+  session.modelErrors[key] = current
   return true
+}
+
+function toolResultBlock(event) {
+  if (event.type !== 'tool/result') return undefined
+  const content = event.data?.message?.content
+  return Array.isArray(content) ? content.find((block) => block?.type === 'tool-result') : undefined
+}
+
+function toolFailureCode(tool, code, message) {
+  const value = String(code || '').trim()
+  if (/ABORT|CANCEL/i.test(value) || /aborted|cancelled|canceled/i.test(message)) return undefined
+  if (value && value !== 'UNKNOWN' && value !== 'Error') return value
+  if (/requires reading\b/i.test(message)) return 'FS_NOT_OBSERVED'
+  if (/old_string was not found/i.test(message)) return 'OLD_STRING_NOT_FOUND'
+  if (/no such file or directory|path[^\n]*not found/i.test(message)) return 'PATH_NOT_FOUND'
+  if (/file access denied|permission denied|EACCES/i.test(message)) return 'PERMISSION_DENIED'
+  if (/timed out|timeout/i.test(message)) return 'TOOL_TIMEOUT'
+  const exit = message.match(/\[exit code:\s*(-?\d+)\]/i)
+  if (tool === 'bash' && exit) return `EXIT_${exit[1]}`
+  return 'TOOL_ERROR'
+}
+
+function toolFailureMessage(tool, code) {
+  if (code === 'FS_NOT_OBSERVED') return `${tool} requires reading <path> first — read the file, then retry`
+  if (code === 'OLD_STRING_NOT_FOUND') return `${tool}: old_string was not found in <path>`
+  if (code === 'PATH_NOT_FOUND') return `${tool} search failed: <path> not found`
+  if (code === 'PERMISSION_DENIED') return `${tool} failed: permission denied for <path>`
+  if (code === 'TOOL_TIMEOUT') return `${tool} timed out`
+  if (code.startsWith('EXIT_')) return `${tool} command exited with code ${code.slice(5)}`
+  return `${tool} failed (${code})`
+}
+
+function addToolError(session, event) {
+  let tool
+  let code
+  let message
+  if (event.type === 'tool/call') {
+    if (session.toolCalls === undefined) session.toolCalls = {}
+    session.toolCalls[String(event.data?.callId)] = String(event.data?.name || 'unknown')
+    return true
+  }
+  if (event.type === 'tool/result') {
+    if (event.surfaceOp !== 'append') return true
+    const block = toolResultBlock(event)
+    const callId = String(block?.toolCallId || '')
+    tool = session.toolCalls?.[callId] || 'unknown'
+    if (session.toolCalls !== undefined) delete session.toolCalls[callId]
+    const textBlock = Array.isArray(block?.content) ? block.content.find((item) => item?.type === 'text') : undefined
+    message = String(textBlock?.text || '')
+    const exitFailure = tool === 'bash' && /\[exit code:\s*-?\d+\]/i.test(message)
+    if (block?.isError !== true && !exitFailure) return true
+    code = toolFailureCode(tool, event.data?.error?.code, message)
+  } else if (event.type === 'tool/code-dispatch') {
+    tool = String(event.data?.name || 'unknown')
+    const textBlock = Array.isArray(event.data?.content) ? event.data.content.find((item) => item?.type === 'text') : undefined
+    message = String(textBlock?.text || '')
+    const exitFailure = tool === 'bash' && /\[exit code:\s*-?\d+\]/i.test(message)
+    if (event.data?.isError !== true && !exitFailure) return true
+    code = toolFailureCode(tool, undefined, message)
+  } else {
+    return false
+  }
+  if (code === undefined || !recentErrorTime(event.time)) return true
+  if (session.toolErrors === undefined) session.toolErrors = {}
+  const key = `${tool}|${code}`
+  const current = session.toolErrors[key] || { key, tool, code, message: toolFailureMessage(tool, code), recentTimes: [] }
+  current.recentTimes.push(event.time)
+  session.toolErrors[key] = current
+  return true
+}
+
+function pruneSessionErrors(session, cutoff) {
+  for (const field of ['modelErrors', 'toolErrors']) {
+    for (const [key, error] of Object.entries(session[field] || {})) {
+      error.recentTimes = (error.recentTimes || []).filter((time) => time >= cutoff)
+      if (error.recentTimes.length === 0) delete session[field][key]
+    }
+  }
 }
 
 function foldUsageEvents(ctx, record, previous, events) {
@@ -334,6 +414,7 @@ function foldUsageEvents(ctx, record, previous, events) {
       continue
     }
     const model = session.currentModel || { provider: 'unknown', model: 'unknown', id: 'unknown/unknown' }
+    if (addToolError(session, event)) continue
     if (addUsageError(session, event, model)) continue
     if (event.type !== 'assistant/message') continue
     const day = usageDay(event.time)
@@ -356,24 +437,27 @@ function foldUsageEvents(ctx, record, previous, events) {
 }
 
 function publicUsage(index) {
-  const result = { updatedAt: index.updatedAt, indexedSessions: Object.keys(index.sessions).length, totals: emptyUsageTotals(), days: {}, errors: { history: [], last24Hours: [] } }
+  const result = { updatedAt: index.updatedAt, indexedSessions: Object.keys(index.sessions).length, totals: emptyUsageTotals(), days: {}, errors: { models: [], tools: [] } }
   const projects = new Map()
-  const historyErrors = new Map()
-  const recentErrors = new Map()
+  const modelErrors = new Map()
+  const toolErrors = new Map()
   const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
   for (const session of Object.values(index.sessions)) {
     projects.set(session.project.id, session.project)
-    for (const error of Object.values(session.errors || {})) {
+    pruneSessionErrors(session, recentCutoff)
+    for (const error of Object.values(session.modelErrors || {})) {
+      const count = error.recentTimes.length
       const key = `${session.project.id}|${error.key}`
-      const history = historyErrors.get(key) || { key: error.key, provider: error.provider, model: error.model, code: error.code, status: error.status, message: error.message, count: 0, projectId: session.project.id, projectTitle: session.project.title }
-      history.count += error.count
-      historyErrors.set(key, history)
-      const recentCount = (error.recentTimes || []).filter((time) => time >= recentCutoff).length
-      if (recentCount > 0) {
-        const recent = recentErrors.get(key) || { ...history, count: 0 }
-        recent.count += recentCount
-        recentErrors.set(key, recent)
-      }
+      const aggregate = modelErrors.get(key) || { key: error.key, provider: error.provider, model: error.model, code: error.code, status: error.status, message: error.message, count: 0, projectId: session.project.id, projectTitle: session.project.title }
+      aggregate.count += count
+      modelErrors.set(key, aggregate)
+    }
+    for (const error of Object.values(session.toolErrors || {})) {
+      const count = error.recentTimes.length
+      const key = `${session.project.id}|${error.key}`
+      const aggregate = toolErrors.get(key) || { key: error.key, tool: error.tool, code: error.code, message: error.message, count: 0, projectId: session.project.id, projectTitle: session.project.title }
+      aggregate.count += count
+      toolErrors.set(key, aggregate)
     }
     for (const [day, source] of Object.entries(session.days)) {
       const dayBucket = result.days[day] || (result.days[day] = { totals: emptyUsageTotals(), projects: new Map() })
@@ -390,8 +474,8 @@ function publicUsage(index) {
     }
   }
   const errorSort = (a, b) => b.count - a.count || a.key.localeCompare(b.key) || a.projectId.localeCompare(b.projectId)
-  result.errors.history = [...historyErrors.values()].sort(errorSort)
-  result.errors.last24Hours = [...recentErrors.values()].sort(errorSort)
+  result.errors.models = [...modelErrors.values()].sort(errorSort)
+  result.errors.tools = [...toolErrors.values()].sort(errorSort)
   const finishTotals = (totals) => ({ ...totals, cacheHitRate: cacheHitRate(totals) })
   result.totals = finishTotals(result.totals)
   result.projects = [...projects.values()].sort((a, b) => a.title.localeCompare(b.title))
@@ -412,6 +496,8 @@ async function refreshUsageIndex(ctx, dshHome, index) {
   const snapshots = await persistence.listSnapshots()
   const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
   for (const id of Object.keys(index.sessions)) if (!liveIds.has(id)) delete index.sessions[id]
+  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
+  for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
   for (const record of snapshots) {
     const id = String(record.header.id)
     const revision = revisionKey(record.revision)

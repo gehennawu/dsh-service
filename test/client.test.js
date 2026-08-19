@@ -262,6 +262,14 @@ function createRenderer(rpcCall, options = {}) {
     reloadCount() {
       return reloads
     },
+    findByTestId(testId) {
+      let match
+      for (const tree of roots.values()) visit(tree, (node) => {
+        if (node.props?.['data-testid'] === testId) match = node
+      })
+      assert.ok(match, `test id ${JSON.stringify(testId)} was not rendered`)
+      return match
+    },
     text(slot) {
       if (slot !== undefined) return textOf(roots.get(slot))
       return [...roots.values()].map(textOf).join('')
@@ -333,13 +341,13 @@ test('service panel puts versions first and renders switchable provider-prefixed
     totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
     projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
     errors: {
-      history: [
-        { key: 'deepseek/deepseek-chat|RATE_LIMIT|429', provider: 'deepseek', model: 'deepseek-chat', code: 'RATE_LIMIT', status: 429, message: 'rate limit exceeded', count: 9, projectId: 'project-1', projectTitle: 'Project One' },
-        { key: 'deepseek/deepseek-chat|AUTH|401', provider: 'deepseek', model: 'deepseek-chat', code: 'AUTH', status: 401, message: 'invalid api key', count: 3, projectId: 'project-1', projectTitle: 'Project One' },
-      ],
-      last24Hours: [
+      models: [
         { key: 'deepseek/deepseek-chat|RATE_LIMIT|429', provider: 'deepseek', model: 'deepseek-chat', code: 'RATE_LIMIT', status: 429, message: 'rate limit exceeded', count: 4, projectId: 'project-1', projectTitle: 'Project One' },
         { key: 'deepseek/deepseek-chat|AUTH|401', provider: 'deepseek', model: 'deepseek-chat', code: 'AUTH', status: 401, message: 'invalid api key', count: 2, projectId: 'project-1', projectTitle: 'Project One' },
+      ],
+      tools: [
+        { key: 'edit|FS_NOT_OBSERVED', tool: 'edit', code: 'FS_NOT_OBSERVED', message: 'edit requires reading <path> first — read the file, then retry', count: 5, projectId: 'project-1', projectTitle: 'Project One' },
+        { key: 'grep|PATH_NOT_FOUND', tool: 'grep', code: 'PATH_NOT_FOUND', message: 'grep search failed: <path> not found', count: 2, projectId: 'project-1', projectTitle: 'Project One' },
       ],
     },
     days: {
@@ -369,8 +377,19 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.match(text, /deepseek\/deepseek-chat/)
   assert.match(text, /缓存命中率/)
   assert.match(text, /Project One/)
-  assert.match(text, /最近 24 小时.*RATE_LIMIT.*429.*4 次.*AUTH.*401.*2 次.*历史累计.*RATE_LIMIT.*429.*9 次.*AUTH.*401.*3 次/)
-  assert.ok(text.indexOf('RATE_LIMIT') < text.indexOf('AUTH'))
+  assert.match(text, /模型报错.*2 类.*工具报错.*2 类/)
+  assert.doesNotMatch(text, /RATE_LIMIT|AUTH|FS_NOT_OBSERVED|PATH_NOT_FOUND|历史累计/)
+  await renderer.findButton('▸ 模型报错（2 类）').props.onClick()
+  await renderer.flush()
+  const expandedText = renderer.text('settings.section')
+  assert.match(expandedText, /最近 24 小时.*RATE_LIMIT.*429.*4 次.*AUTH.*401.*2 次/)
+  assert.ok(expandedText.indexOf('RATE_LIMIT') < expandedText.indexOf('AUTH'))
+  assert.doesNotMatch(expandedText, /历史累计|FS_NOT_OBSERVED|PATH_NOT_FOUND/)
+  await renderer.findButton('▸ 工具报错（2 类）').props.onClick()
+  await renderer.flush()
+  const allErrorsText = renderer.text('settings.section')
+  assert.match(allErrorsText, /edit.*FS_NOT_OBSERVED.*5 次.*grep.*PATH_NOT_FOUND.*2 次/)
+  assert.doesNotMatch(allErrorsText, /\/workspace\/|README\.md|client\.js/)
   assert.equal(refreshes, 1)
   assert.ok(renderer.findButton('输入 Token'))
   await renderer.findButton('缓存命中率').props.onClick()
@@ -379,6 +398,30 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.findButton('刷新统计').props.onClick()
   await renderer.flush()
   assert.equal(refreshes, 2)
+})
+
+test('service panel uses distinct cards, display surfaces, and semantic action colors', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.7.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+
+  for (const id of ['version-card', 'health-card', 'usage-card', 'maintenance-card', 'restart-card']) {
+    const card = renderer.findByTestId(id)
+    assert.ok(card.props.style.background)
+    assert.ok(card.props.style.borderRadius)
+  }
+  assert.notEqual(renderer.findByTestId('health-display').props.style.background, renderer.findByTestId('health-card').props.style.background)
+  assert.equal(renderer.findButton('立即健康检查').props['data-variant'], 'info')
+  assert.equal(renderer.findButton('刷新统计').props['data-variant'], 'info')
+  assert.equal(renderer.findButton('重启 dsh web').props['data-variant'], 'danger')
 })
 
 test('settings mount checks updates, degrades silently, and exposes an update badge with details', async () => {
