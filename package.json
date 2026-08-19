@@ -1,0 +1,25 @@
+{
+  "name": "@dsh-nas/restart-dsh",
+  "version": "0.2.0",
+  "description": "设置页「服务控制」：一键重启 dsh web（容器 / systemd / pm2 由各自重启策略自动拉起）",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "platform": "web"
+    }
+  }
+}
