@@ -1,4 +1,4 @@
-# @dsh-nas/restart-dsh
+# restart-dsh
 
 DSH Web 插件：在设置页提供服务控制、版本信息和更新检查。
 
