@@ -4,6 +4,37 @@ DSH Web 插件：在设置页提供服务控制、版本信息和更新检查。
 
 > 本项目只负责向当前 DSH Web 进程发送退出信号；真正的自动重启由外层进程管理器负责。
 
+## 适用范围与平台支持
+
+### 结论
+
+插件本身**不是 Linux 专用**。版本显示、更新检查、设置页 UI 和 RPC 使用的是 DSH/Node.js 的跨平台能力，理论上可运行在 Linux、macOS 和 Windows 上。
+
+但本项目当前是在 **Linux + Docker** 环境中完成验证的；其他平台能否自动恢复服务，取决于对应的进程管理器配置，而不是插件单独决定的。
+
+| 平台 / 运行方式 | 插件加载、版本显示、检查更新 | 点击重启 | 退出后自动拉起 | 验证状态 |
+| --- | --- | --- | --- | --- |
+| Linux + Docker Compose | 支持 | 支持 | 配置 `restart: unless-stopped` / `always` 后支持 | 已验证 |
+| Linux + systemd | 支持 | 支持 | 配置 `Restart=on-failure` / `always` 后支持 | 机制明确，未在本项目环境中单独验证 |
+| Linux / macOS / Windows + pm2 | 支持 | 支持 | 由 pm2 自动重启 | 依赖 pm2 配置，未单独验证 |
+| Windows / macOS + 其他进程管理器 | 支持 | 支持 | 只要管理器会在退出码 `42` 后重新执行 DSH 启动命令即可 | 未单独验证 |
+| 直接执行 `dsh web`，没有进程管理器 | 支持 | 进程会退出 | 不会自动拉起 | 预期行为 |
+
+### 使用前提
+
+- Node.js 满足 `package.json` 中的版本要求（当前为 `>=22`）。
+- DSH Web 能加载 Host 和 Client 两半插件。
+- 检查更新功能需要访问 `registry.npmjs.org`；网络不可用时只会显示检查失败，不影响插件加载。
+- 重启按钮会以退出码 `42` 结束当前 DSH Web 进程；必须由 Docker、systemd、pm2、launchd 或其他外部管理器负责重新启动。
+
+### Windows 和 macOS 说明
+
+Windows/macOS 并不是代码层面禁止的平台，但目前没有在这两个平台上做完整回归测试。使用时建议先在测试实例上确认：
+
+1. 进程管理器能捕获退出码 `42`；
+2. 管理器会重新执行与原来相同的 `dsh web` 命令；
+3. DSH Web 的 Host/Client 插件加载均正常。
+
 ## 功能
 
 - **版本信息**：显示当前宿主 DSH 版本。
@@ -42,6 +73,8 @@ dsh plugin --profile web add link:/path/to/restart-dsh
 ```
 
 ## 自动重启配置
+
+下面的配置只负责“退出后重新拉起”；插件本身不会安装或修改系统服务。
 
 ### Docker Compose
 
