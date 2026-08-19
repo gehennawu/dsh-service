@@ -1,4 +1,4 @@
-# restart-dsh
+# dsh-service
 
 DSH Web 插件：在设置页提供服务控制、版本信息和更新检查。
 
@@ -57,7 +57,7 @@ Windows/macOS 并不是代码层面禁止的平台，但目前没有在这两个
 ### 从 GitHub 安装
 
 ```sh
-dsh plugin --profile web add github:gehennawu/restart-dsh
+dsh plugin --profile web add github:gehennawu/dsh-service
 ```
 
 安装或更新后重启 DSH Web，使 Host 和 Client 两半重新加载：
@@ -69,7 +69,7 @@ dsh web
 ### 本地开发
 
 ```sh
-dsh plugin --profile web add link:/path/to/restart-dsh
+dsh plugin --profile web add link:/path/to/dsh-service
 ```
 
 ## 自动重启配置
