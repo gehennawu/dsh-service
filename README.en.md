@@ -21,7 +21,7 @@ Deferred ideas: one-click DSH upgrades, scheduled restarts, token aggregation, a
 
 - **Host version**: displays the installed `@deepseek-ai/dsh` version.
 - **Update check**: reads the `latest` version of `@deepseek-ai/dsh` from a fixed npm registry URL.
-- **Safe restart**: checks for active agents, background jobs, and terminals, displays a warning list when work is active, requires an explicit force action, and then exits DSH Web with code `42`.
+- **Safe restart**: checks active agents, background jobs, and terminals, reading Terminal services from each Agent-scoped realm with a shared-service fallback; it lists active work, requires an explicit force action, and then exits DSH Web with code `42`.
 - **Loopback RPC**: uses the single-level `/dsh-service` channel with `version`, `check-update`, and `web` endpoints, available only to loopback callers.
 - **Automatic recovery**: shows a global `shell.overlay` after restart, probes for a new process instance with backoff, reloads automatically, and offers manual reload after 60 seconds.
 - **Bilingual UI**: the Settings page, active-work warning, and recovery overlay switch dynamically with DSH's Chinese/English locale preference.
@@ -92,7 +92,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-> Automated coverage and the current Linux + Docker Host checks are complete. Browser Network timing, a real Terminal activity entry, the 60-second state without a restart policy, and ownership repair from a root-created file still require deployments that provide those exact conditions.
+> Automated coverage plus Host and real Chromium checks on the current Linux + Docker deployment are complete. The standard preset does not mount a Terminal backend, and the container exposes no root, CAP_CHOWN, Docker socket, or user namespace; those unproducible branches are covered by scoped-service regression tests and real-subprocess temporary-directory tests.
 
 ## Security design
 

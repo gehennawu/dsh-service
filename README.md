@@ -21,7 +21,7 @@
 
 - **宿主版本**：显示当前安装的 `@deepseek-ai/dsh` 版本。
 - **检查更新**：从固定 npm registry 地址读取 `@deepseek-ai/dsh` 的 `latest` 版本。
-- **安全重启**：重启前检测活跃 agent、后台 job 和终端；发现运行中工作时展示清单并要求显式强制，随后以退出码 `42` 结束当前 DSH Web 进程。
+- **安全重启**：重启前检测活跃 agent、后台 job 和终端；Terminal 服务按 Agent scoped realm 读取并兼容共享 fallback。发现运行中工作时展示清单并要求显式强制，随后以退出码 `42` 结束当前 DSH Web 进程。
 - **回环 RPC**：使用单层 `/dsh-service` channel，提供 `version`、`check-update`、`web` endpoint，仅接受 loopback 调用。
 - **自动恢复**：重启后通过 `shell.overlay` 显示全局状态，退避探测新的进程实例并自动刷新；60 秒未恢复时提供手动刷新。
 - **双语界面**：设置页、活动警告和恢复浮层跟随 DSH 的中文/英文语言设置动态切换。
@@ -92,7 +92,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，且 DSH Web 能加载 Host 和 Client 两半插件。检查更新需要访问 `registry.npmjs.org`；网络失败不会影响其他功能。
 
-> 自动化测试和当前 Linux + Docker Host 验证已完成。真实浏览器 Network 节奏、Terminal 活动条目、无 restart policy 的 60 秒状态，以及 root 创建文件后的降权修复，仍需在具备对应环境的部署中验收。
+> 自动化测试以及当前 Linux + Docker 的 Host/真实 Chromium 验证已完成。当前 standard preset 未挂载 Terminal backend，容器也不提供 root、CAP_CHOWN、Docker socket 或 user namespace，因此这两种不可制造的环境分支通过隔离服务回归测试和真实 subprocess 临时目录测试覆盖。
 
 ## 安全设计
 
