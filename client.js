@@ -718,11 +718,14 @@ window.__ModuleLoader__.load({
         }
 
         // 样式
-        const btn = { padding: '6px 14px', borderRadius: '6px', border: '1px solid rgba(128,128,128,0.3)', cursor: 'pointer', fontSize: '13px' }
-        const danger = Object.assign({}, btn, { background: '#d33', color: '#fff', borderColor: '#d33' })
-        const plain = Object.assign({}, btn, { background: 'transparent' })
-        const primary = Object.assign({}, btn, { background: '#5B4CF0', color: '#fff', borderColor: '#5B4CF0' })
-        const info = Object.assign({}, btn, { background: 'rgba(43,108,176,0.12)', color: '#2b6cb0', borderColor: 'rgba(43,108,176,0.35)' })
+        const btn = { minHeight: '32px', padding: '6px 13px', borderRadius: '7px', border: '1px solid var(--dsh-control-border, #cfcac1)', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease' }
+        const neutral = Object.assign({}, btn, { background: 'var(--dsh-control, #ffffff)', color: 'inherit' })
+        const primaryOutline = Object.assign({}, btn, { background: 'var(--dsh-control, #ffffff)', color: '#5B4CF0', borderColor: '#8c82e8' })
+        const dangerOutline = Object.assign({}, btn, { background: 'var(--dsh-control, #ffffff)', color: '#b42318', borderColor: '#e2a29d' })
+        const danger = Object.assign({}, btn, { background: '#b42318', color: '#fff', borderColor: '#b42318' })
+        const plain = neutral
+        const primary = primaryOutline
+        const info = neutral
         const toggle = Object.assign({}, btn, { background: 'transparent', border: 0, borderTop: '1px solid rgba(128,128,128,0.22)', borderRadius: 0, padding: '10px 2px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
@@ -914,7 +917,7 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
                       errorList('tool', toolErrors)) : null)))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
-          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
+          React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
         const containerInfoBlock = React.createElement('div', { key: 'container-info', style: { marginTop: '18px' } },
           React.createElement('div', { style: sectionTitle }, translate('overview.container')),
@@ -928,7 +931,7 @@ window.__ModuleLoader__.load({
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
         const healthSummaryBlock = React.createElement('div', null,
-          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
+          React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
             ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
@@ -955,7 +958,7 @@ window.__ModuleLoader__.load({
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
               React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
                 React.createElement('button', { style: plain, onClick: () => setPermissionDetails((value) => !value) }, translate(permissionDetails ? 'permissions.hideDetails' : 'permissions.showDetails')),
-                React.createElement('button', { style: info, 'data-variant': 'info', onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
+                React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
               permissionDeep ? React.createElement('p', { style: hint }, translate('permissions.deepSummary', { scanned: permissionDeep.scanned, duration: permissionDeep.durationMs, owner: permissionDeep.ownerIssues, directories: permissionDeep.directoryModeIssues, files: permissionDeep.fileModeIssues, unreadable: permissionDeep.unreadable })) : null,
               permissionDetails ? React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
                 permissions.items.map((item) => React.createElement('div', {
@@ -971,7 +974,7 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                       React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
                       React.createElement('button', { style: plain, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
-                : React.createElement('button', { style: Object.assign({}, danger, { marginTop: '10px' }), disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
+                : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-outline', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, permissionError) : null)
           : null
 
@@ -984,7 +987,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('p', { style: hint }, translate('backup.description')),
           React.createElement('div', { style: row },
-            React.createElement('button', { style: info, 'data-variant': 'info', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('button', { style: primaryOutline, 'data-variant': 'primary-outline', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
             React.createElement('span', { style: { fontSize: '12px', color: '#888' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, backupError) : null,
           backups.items.length === 0
@@ -1004,7 +1007,7 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '7px' }), disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
+                  : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '7px' }), 'data-variant': 'danger-outline', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
             : null)
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsh-border, #dedbd4)' } },
@@ -1063,7 +1066,7 @@ window.__ModuleLoader__.load({
           activityWarning,
           React.createElement('div', { style: row },
             stage === 0
-              ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
+              ? React.createElement('button', { style: dangerOutline, 'data-variant': 'danger-outline', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
               : stage === 1
                 ? [
                     React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.confirm')),
