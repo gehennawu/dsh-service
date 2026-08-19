@@ -1,13 +1,45 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import { apply, name } from '../index.js'
+
+function localSubprocess() {
+  return {
+    resolveExecutable: async (command) => command,
+    spawn(spec) {
+      const child = spawn(spec.argv[0], spec.argv.slice(1), { cwd: spec.cwd, env: { ...process.env, ...spec.env } })
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (chunk) => { stdout += chunk })
+      child.stderr?.on('data', (chunk) => { stderr += chunk })
+      return {
+        collected: {
+          stdout: { readFrom: () => ({ text: stdout, nextOffset: Buffer.byteLength(stdout), lossy: false }) },
+          stderr: { readFrom: () => ({ text: stderr, nextOffset: Buffer.byteLength(stderr), lossy: false }) },
+        },
+        done: new Promise((resolve, reject) => {
+          child.on('error', reject)
+          child.on('close', (exitCode, signal) => resolve({ exitCode, signal }))
+        }),
+      }
+    },
+  }
+}
 
 function createHost(overrides = {}) {
   const handlers = []
   const scheduled = []
   const disposers = []
   const services = new Map(Object.entries(overrides.services || {}))
+  const previousEnv = {}
+  for (const [key, value] of Object.entries(overrides.env || {})) {
+    previousEnv[key] = process.env[key]
+    process.env[key] = value
+  }
   services.set('timer', {
     timeout(callback, delay) {
       scheduled.push({ callback, delay })
@@ -35,9 +67,67 @@ function createHost(overrides = {}) {
   }
 
   apply(ctx)
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   assert.equal(handlers.length, 1)
   return { handler: handlers[0].handler, scheduled, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
+
+test('backup RPC creates the fixed archive shape, lists totals, rejects forged ids, and deletes listed backups', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace', 'session-1'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web', 'node_modules', 'ignored'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session-1', 'events.jsonl'), '{"type":"test"}\n')
+  await writeFile(join(dshHome, 'settings.yaml'), 'theme: system\n')
+  await writeFile(join(dshHome, 'cordis.patch.yml'), '- id: local\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"web-profile"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'node_modules', 'ignored', 'secret.txt'), 'exclude me')
+  await writeFile(join(dshHome, '.credentials.yaml'), 'secret: do-not-back-up\n')
+
+  const { handler } = createHost({
+    services: { subprocess: localSubprocess() },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const created = await handler('backup-create', {})
+  assert.equal(created.ok, true)
+  assert.match(created.value.item.name, /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/)
+
+  const archivePath = join(dshHome, 'backups', created.value.item.name)
+  const archiveEntries = await new Promise((resolve, reject) => {
+    const child = spawn('tar', ['-tzf', archivePath])
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (code) => code === 0 ? resolve(stdout.trim().split('\n')) : reject(new Error(stderr)))
+  })
+  assert.ok(archiveEntries.includes('sessions/workspace/session-1/events.jsonl'))
+  assert.ok(archiveEntries.includes('config/settings.yaml'))
+  assert.ok(archiveEntries.includes('config/cordis.patch.yml'))
+  assert.ok(archiveEntries.includes('profiles/web/package.json'))
+  assert.equal(archiveEntries.some((entry) => entry.includes('node_modules')), false)
+  assert.equal(archiveEntries.some((entry) => entry.includes('credentials')), false)
+
+  const listed = await handler('backup-list', {})
+  assert.equal(listed.ok, true)
+  assert.equal(listed.value.items.length, 1)
+  assert.equal(listed.value.items[0].id, created.value.item.id)
+  assert.equal(listed.value.totalBytes, listed.value.items[0].sizeBytes)
+  assert.ok(listed.value.totalBytes > 0)
+
+  const forged = await handler('backup-delete', { id: 'forged-id' })
+  assert.deepEqual(forged, { ok: false, error: 'unknown-backup' })
+  assert.equal(await readFile(archivePath).then(() => true), true)
+
+  const deleted = await handler('backup-delete', { id: listed.value.items[0].id })
+  assert.equal(deleted.ok, true)
+  assert.deepEqual(deleted.value, { items: [], totalBytes: 0 })
+})
 
 test('healthz serves empty liveness responses and unregisters with the plugin fiber', async () => {
   let route

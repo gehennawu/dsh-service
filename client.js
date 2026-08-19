@@ -25,6 +25,17 @@ window.__ModuleLoader__.load({
       'health.activeJobs': '后台任务',
       'health.uptimeValue': '{hours} 小时 {minutes} 分钟',
       'health.error': '无法读取运行状况',
+      'backup.title': '备份管理',
+      'backup.description': '备份会话、配置和插件 profile 清单；不会包含 node_modules 或凭据。备份不会自动清理，请自行管理磁盘空间。',
+      'backup.create': '创建备份',
+      'backup.creating': '创建中…',
+      'backup.total': '总体积：{size}',
+      'backup.empty': '还没有备份。',
+      'backup.delete': '删除',
+      'backup.confirm': '确认删除',
+      'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
+      'backup.cancel': '取消',
+      'backup.error': '备份操作失败',
       'version.title': '版本信息',
       'version.current': '当前版本：',
       'version.loading': '加载中…',
@@ -69,6 +80,17 @@ window.__ModuleLoader__.load({
       'health.activeJobs': 'Background jobs',
       'health.uptimeValue': '{hours} h {minutes} min',
       'health.error': 'Could not read health metrics',
+      'backup.title': 'Backup management',
+      'backup.description': 'Backs up sessions, configuration, and plugin profile manifests. Credentials and node_modules are excluded. Backups are never auto-pruned; you are responsible for disk usage.',
+      'backup.create': 'Create backup',
+      'backup.creating': 'Creating…',
+      'backup.total': 'Total size: {size}',
+      'backup.empty': 'No backups yet.',
+      'backup.delete': 'Delete',
+      'backup.confirm': 'Confirm delete',
+      'backup.confirmHint': 'Delete this backup? This cannot be undone.',
+      'backup.cancel': 'Cancel',
+      'backup.error': 'Backup operation failed',
       'version.title': 'Version information',
       'version.current': 'Current version: ',
       'version.loading': 'Loading…',
@@ -215,6 +237,10 @@ window.__ModuleLoader__.load({
         const translate = useTranslation()
         const [health, setHealth] = useState(null)
         const [healthError, setHealthError] = useState(null)
+        const [backups, setBackups] = useState({ items: [], totalBytes: 0 })
+        const [backupBusy, setBackupBusy] = useState(false)
+        const [backupError, setBackupError] = useState(null)
+        const [backupDeleteId, setBackupDeleteId] = useState(null)
         const [version, setVersion] = useState(null)
         const [updateInfo, setUpdateInfo] = useState(null) // { latest, upToDate } | null
         const [updateBusy, setUpdateBusy] = useState(false)
@@ -230,6 +256,15 @@ window.__ModuleLoader__.load({
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
+        }, [])
+        useEffect(() => {
+          let active = true
+          ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then((res) => {
+            if (active && res && res.ok) setBackups(res.value)
+          }).catch(() => {
+            if (active) setBackupError(translate('backup.error'))
+          })
+          return () => { active = false }
         }, [])
         useEffect(() => {
           let active = true
@@ -254,6 +289,35 @@ window.__ModuleLoader__.load({
           poll()
           return () => { active = false }
         }, [])
+
+        const createBackup = async () => {
+          setBackupBusy(true)
+          setBackupError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-create', {})
+            if (!res || res.ok === false) throw new Error('backup failed')
+            setBackups({ items: res.value.items, totalBytes: res.value.totalBytes })
+          } catch (_) {
+            setBackupError(translate('backup.error'))
+          } finally {
+            setBackupBusy(false)
+          }
+        }
+
+        const deleteBackup = async (id) => {
+          setBackupBusy(true)
+          setBackupError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-delete', { id })
+            if (!res || res.ok === false) throw new Error('backup failed')
+            setBackups(res.value)
+            setBackupDeleteId(null)
+          } catch (_) {
+            setBackupError(translate('backup.error'))
+          } finally {
+            setBackupBusy(false)
+          }
+        }
 
         const checkUpdate = async () => {
           setUpdateBusy(true)
@@ -330,6 +394,13 @@ window.__ModuleLoader__.load({
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '13px', fontWeight: 600, margin: '16px 0 4px', color: 'inherit' }
 
+        const formatSize = (bytes) => {
+          const value = Number(bytes)
+          if (value < 1024) return value + ' B'
+          if (value < 1024 * 1024) return (Math.round(value / 102.4) / 10) + ' KB'
+          if (value < 1024 * 1024 * 1024) return (Math.round(value / (1024 * 1024) * 10) / 10) + ' MB'
+          return (Math.round(value / (1024 * 1024 * 1024) * 10) / 10) + ' GB'
+        }
         const formatUptime = (seconds) => {
           const totalMinutes = Math.floor(Number(seconds) / 60)
           return translate('health.uptimeValue', {
@@ -358,6 +429,30 @@ window.__ModuleLoader__.load({
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
+
+        const backupBlock = React.createElement('div', { key: 'backup-section' },
+          React.createElement('div', { style: sectionTitle }, translate('backup.title')),
+          React.createElement('p', { style: hint }, translate('backup.description')),
+          React.createElement('div', { style: row },
+            React.createElement('button', { style: primary, onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('span', { style: { fontSize: '12px', color: '#888' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
+          backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, backupError) : null,
+          backups.items.length === 0
+            ? React.createElement('p', { style: hint }, translate('backup.empty'))
+            : React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
+                backups.items.map((item) => React.createElement('div', {
+                  key: item.id,
+                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid rgba(128,128,128,0.2)' },
+                },
+                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
+                React.createElement('div', { style: { color: '#888', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`),
+                backupDeleteId === item.id
+                  ? React.createElement('div', { style: { marginTop: '8px' } },
+                      React.createElement('p', { style: Object.assign({}, hint, { color: '#d33', margin: '0 0 6px' }) }, translate('backup.confirmHint')),
+                      React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                        React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
+                        React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
+                  : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '7px' }), disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete'))))))
 
         // 版本信息区块
         const versionBlock = [
@@ -391,6 +486,7 @@ window.__ModuleLoader__.load({
         if (stage === 2) {
           return React.createElement('div', null,
             healthBlock,
+            backupBlock,
             versionBlock,
             React.createElement('div', { key: 'restart-section' },
               React.createElement('div', { style: sectionTitle }, translate('restart.title')),
@@ -443,7 +539,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        return React.createElement('div', null, healthBlock, versionBlock, restartBlock)
+        return React.createElement('div', null, healthBlock, backupBlock, versionBlock, restartBlock)
       }
 
       ctx.slots.inject('settings.section', () => ctx.slots.register(

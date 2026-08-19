@@ -1,5 +1,9 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
+import { createHmac, randomBytes, randomUUID } from 'node:crypto'
+import { cp, mkdir, readdir, rename, rm, stat, unlink } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import { createRequire } from 'node:module'
 import https from 'node:https'
 
@@ -10,6 +14,8 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+const backupIdSecret = randomBytes(32)
+const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
 let dshVersion = 'unknown'
@@ -87,6 +93,126 @@ function fetchLatestVersion() {
   })
 }
 
+function resolveDshHome() {
+  const configured = process.env.DSH_HOME?.trim()
+  return configured ? configured : join(homedir(), '.dsh')
+}
+
+function formatBackupTimestamp(date) {
+  const digits = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${digits(date.getMonth() + 1)}${digits(date.getDate())}-${digits(date.getHours())}${digits(date.getMinutes())}${digits(date.getSeconds())}`
+}
+
+function backupId(name) {
+  return createHmac('sha256', backupIdSecret).update(name).digest('base64url')
+}
+
+async function pathExists(path) {
+  try {
+    await stat(path)
+    return true
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+async function listBackups(dshHome) {
+  const backupDir = join(dshHome, 'backups')
+  await mkdir(backupDir, { recursive: true, mode: 0o700 })
+  const entries = await readdir(backupDir, { withFileTypes: true })
+  const items = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !BACKUP_NAME.test(entry.name)) continue
+    const info = await stat(join(backupDir, entry.name))
+    items.push({
+      id: backupId(entry.name),
+      name: entry.name,
+      sizeBytes: info.size,
+      createdAt: info.mtime.toISOString(),
+    })
+  }
+  items.sort((a, b) => b.name.localeCompare(a.name))
+  return { items, totalBytes: items.reduce((total, item) => total + item.sizeBytes, 0) }
+}
+
+async function runTar(ctx, cwd, argv) {
+  const subprocess = ctx.get('subprocess')
+  if (subprocess === undefined) throw new Error('subprocess-unavailable')
+  const executable = await subprocess.resolveExecutable('tar')
+  const handle = subprocess.spawn({
+    argv: [executable, ...argv],
+    cwd,
+    stdio: {
+      stdin: 'ignore',
+      stdout: { maxBytes: 16 * 1024 },
+      stderr: { maxBytes: 64 * 1024 },
+    },
+    graceMs: 5000,
+  })
+  const outcome = await handle.done
+  const stderr = handle.collected.stderr?.readFrom(0).text || ''
+  if (outcome.exitCode !== 0 || outcome.signal !== null) {
+    throw new Error(`tar-failed: ${stderr.trim() || outcome.signal || outcome.exitCode}`)
+  }
+}
+
+async function createBackup(ctx, dshHome) {
+  const backupDir = join(dshHome, 'backups')
+  await mkdir(backupDir, { recursive: true, mode: 0o700 })
+  const workspace = join(backupDir, `.staging-${randomUUID()}`)
+  await mkdir(workspace, { recursive: true, mode: 0o700 })
+  try {
+    const sessions = join(dshHome, 'sessions')
+    if (await pathExists(sessions)) await cp(sessions, join(workspace, 'sessions'), { recursive: true })
+    else await mkdir(join(workspace, 'sessions'), { recursive: true })
+
+    const configDir = join(workspace, 'config')
+    await mkdir(configDir, { recursive: true })
+    for (const file of ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']) {
+      const source = join(dshHome, file)
+      if (await pathExists(source)) await cp(source, join(configDir, file))
+    }
+
+    const profilesSource = join(dshHome, 'profiles')
+    const profilesTarget = join(workspace, 'profiles')
+    await mkdir(profilesTarget, { recursive: true })
+    if (await pathExists(profilesSource)) {
+      for (const entry of await readdir(profilesSource, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        const manifest = join(profilesSource, entry.name, 'package.json')
+        if (!(await pathExists(manifest))) continue
+        const target = join(profilesTarget, entry.name)
+        await mkdir(target, { recursive: true })
+        await cp(manifest, join(target, 'package.json'))
+      }
+    }
+
+    const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
+    if (await pathExists(join(backupDir, name))) throw new Error('backup-name-collision')
+    const temporary = join(backupDir, `.${name}.${randomUUID()}.tmp`)
+    try {
+      await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles'])
+      await rename(temporary, join(backupDir, name))
+    } finally {
+      await rm(temporary, { force: true })
+    }
+    const snapshot = await listBackups(dshHome)
+    return { item: snapshot.items.find((item) => item.name === name), ...snapshot }
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
+  }
+}
+
+async function deleteBackup(dshHome, id) {
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const snapshot = await listBackups(dshHome)
+  const item = snapshot.items.find((candidate) => candidate.id === id)
+  if (item === undefined) return undefined
+  await unlink(join(dshHome, 'backups', basename(item.name)))
+  return listBackups(dshHome)
+}
+
 async function collectHealth(ctx) {
   const sessionsService = ctx.get('sessions')
   const sessionQueryService = ctx.get('sessionQuery')
@@ -156,6 +282,7 @@ function collectActiveWork(ctx) {
 }
 
 function apply(ctx) {
+  const dshHome = resolveDshHome()
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
     ctx.effect(() => webServer.register({
@@ -199,6 +326,32 @@ function apply(ctx) {
     if (endpoint === 'health') {
       try {
         return { ok: true, value: await collectHealth(ctx) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-list') {
+      try {
+        return { ok: true, value: await listBackups(dshHome) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-create') {
+      try {
+        return { ok: true, value: await createBackup(ctx, dshHome) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-delete') {
+      try {
+        const value = await deleteBackup(dshHome, payload?.id)
+        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        return { ok: true, value }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

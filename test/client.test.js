@@ -316,6 +316,56 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.equal(healthCalls, 2)
 })
 
+test('backup panel creates, lists, and requires a second click before deleting a host-listed backup', async () => {
+  const calls = []
+  const first = {
+    id: 'signed-backup-1',
+    name: 'dsh-backup-20250819-120000.tar.gz',
+    sizeBytes: 1536,
+    createdAt: '2025-08-19T12:00:00.000Z',
+  }
+  const second = {
+    id: 'signed-backup-2',
+    name: 'dsh-backup-20250819-130000.tar.gz',
+    sizeBytes: 2048,
+    createdAt: '2025-08-19T13:00:00.000Z',
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [first], totalBytes: first.sizeBytes } }
+    if (endpoint === 'backup-create') return { ok: true, value: { item: second, items: [second, first], totalBytes: 3584 } }
+    if (endpoint === 'backup-delete') {
+      assert.deepEqual(payload, { id: first.id })
+      return { ok: true, value: { items: [second], totalBytes: second.sizeBytes } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /备份管理/)
+  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
+  assert.match(renderer.text('settings.section'), /总体积：1\.5 KB/)
+
+  await renderer.findButton('创建备份').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-130000\.tar\.gz/)
+  assert.match(renderer.text('settings.section'), /总体积：3\.5 KB/)
+
+  await renderer.findButton('删除').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'backup-delete').length, 0)
+  assert.match(renderer.text('settings.section'), /确认删除这个备份/)
+
+  await renderer.findButton('确认删除').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'backup-delete').length, 1)
+  assert.doesNotMatch(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
+  assert.match(renderer.text('settings.section'), /总体积：2 KB/)
+})
+
 test('service panel lists active work and requires an explicit force restart', async () => {
   const calls = []
   const activity = {
