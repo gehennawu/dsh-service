@@ -316,7 +316,7 @@ async function collectHealth(ctx) {
 function collectActiveWork(ctx) {
   const agentsService = ctx.get('agents')
   const jobsService = ctx.get('jobs')
-  const terminalsService = ctx.get('terminals')
+  const sharedTerminalsService = ctx.get('terminals')
   const agents = agentsService === undefined ? [] : agentsService.list()
   const items = []
 
@@ -345,20 +345,24 @@ function collectActiveWork(ctx) {
     }
   }
 
-  if (terminalsService !== undefined) {
-    for (const owner of agents) {
-      for (const terminal of terminalsService.list(owner)) {
-        if (terminal.status?.kind !== 'running') continue
-        const id = String(terminal.sessionId)
-        items.push({
-          type: 'terminal',
-          id,
-          label: String(terminal.name || `${terminal.type} terminal`),
-          status: 'running',
-          ownerSession: String(owner.id),
-        })
-      }
+  const terminalsById = new Map()
+  for (const owner of agents) {
+    const terminalsService = owner.ctx?.get('terminals') ?? sharedTerminalsService
+    if (terminalsService === undefined) continue
+    for (const terminal of terminalsService.list(owner)) {
+      if (terminal.status?.kind !== 'running') continue
+      const id = String(terminal.sessionId)
+      terminalsById.set(id, { terminal, owner })
     }
+  }
+  for (const { terminal, owner } of terminalsById.values()) {
+    items.push({
+      type: 'terminal',
+      id: String(terminal.sessionId),
+      label: String(terminal.name || `${terminal.type} terminal`),
+      status: 'running',
+      ownerSession: String(owner.id),
+    })
   }
 
   return { hasActive: items.length > 0, items }

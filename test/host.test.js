@@ -288,9 +288,21 @@ test('health RPC reports session query failures instead of inventing persisted m
   assert.deepEqual(result, { ok: false, error: 'storage unavailable' })
 })
 
-test('activity RPC reports running agents, jobs, and terminals without duplicates', async () => {
-  const runningAgent = { id: 'agent-running', status: 'running' }
-  const idleAgent = { id: 'agent-idle', status: 'idle' }
+test('activity RPC reports running agents, jobs, and agent-scoped terminals without duplicates', async () => {
+  let runningAgent
+  const terminalService = {
+    list(owner) {
+      if (owner !== runningAgent) return []
+      return [{
+        sessionId: 'terminal-1',
+        name: 'dev shell',
+        type: 'local',
+        status: { kind: 'running' },
+      }]
+    },
+  }
+  runningAgent = { id: 'agent-running', status: 'running', ctx: { get: (service) => service === 'terminals' ? terminalService : undefined } }
+  const idleAgent = { id: 'agent-idle', status: 'idle', ctx: { get: () => undefined } }
   const sharedJob = {
     id: 'bash-1',
     kind: 'bash',
@@ -309,17 +321,7 @@ test('activity RPC reports running agents, jobs, and terminals without duplicate
           return [sharedJob]
         },
       },
-      terminals: {
-        list(owner) {
-          if (owner !== runningAgent) return []
-          return [{
-            sessionId: 'terminal-1',
-            name: 'dev shell',
-            type: 'local',
-            status: { kind: 'running' },
-          }]
-        },
-      },
+
     },
   })
 
