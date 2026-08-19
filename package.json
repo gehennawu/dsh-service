@@ -3,6 +3,9 @@
   "version": "0.2.1",
   "description": "DSH Web 服务控制：显示版本、检查更新，并通过进程管理器安全重启。",
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "main": "./index.js",
   "exports": {
     ".": "./index.js",

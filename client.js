@@ -18,8 +18,9 @@ window.__ModuleLoader__.load({
         const [updateInfo, setUpdateInfo] = useState(null) // { latest, upToDate } | null
         const [updateBusy, setUpdateBusy] = useState(false)
         const [updateError, setUpdateError] = useState(null)
-        // 重启状态
+        // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
+        const [activity, setActivity] = useState(null)
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState(null)
 
@@ -45,12 +46,36 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const restart = async () => {
+        const checkRestart = async () => {
           setBusy(true)
           setError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'web', {})
-            if (res && res.ok === false) throw new Error(res.error || '重启失败')
+            const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
+            if (res && res.ok === false) throw new Error(res.error || '检查运行状态失败')
+            const nextActivity = res && res.value ? res.value : { hasActive: false, items: [] }
+            setActivity(nextActivity)
+            setStage(nextActivity.hasActive ? 3 : 1)
+          } catch (err) {
+            setError(err && err.message ? String(err.message) : String(err))
+            setStage(0)
+          } finally {
+            setBusy(false)
+          }
+        }
+
+        const restart = async (force) => {
+          setBusy(true)
+          setError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'web', { force: force === true })
+            if (res && res.ok === false) {
+              if (res.error === 'active-work' && res.value) {
+                setActivity(res.value)
+                setStage(3)
+                return
+              }
+              throw new Error(res.error || '重启失败')
+            }
             setStage(2)
           } catch (err) {
             setError(err && err.message ? String(err.message) : String(err))
@@ -109,20 +134,40 @@ window.__ModuleLoader__.load({
           )
         }
 
+        const activityLabels = { agent: 'Agent', job: '后台任务', terminal: '终端' }
+        const activityItems = activity && Array.isArray(activity.items) ? activity.items : []
+        const activityWarning = stage === 3
+          ? React.createElement('div', { style: { marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.1)', border: '1px solid rgba(211,51,51,0.35)' } },
+              React.createElement('p', { style: { margin: '0 0 8px', color: '#d33', fontSize: '13px', fontWeight: 600 } },
+                '检测到 ' + activityItems.length + ' 项运行中的工作，重启会立即中断它们。'),
+              React.createElement('ul', { style: { margin: 0, paddingLeft: '20px', fontSize: '12px', lineHeight: 1.7 } },
+                activityItems.map((item) => React.createElement('li', { key: item.type + ':' + item.id },
+                  (activityLabels[item.type] || item.type) + '：' + item.label + ' (' + item.status + ')')))
+            )
+          : null
+
         // 重启按钮区块
         const restartBlock = React.createElement('div', { key: 'restart-section' },
           React.createElement('div', { style: sectionTitle }, '服务重启'),
           React.createElement('p', { style: { margin: 0, fontSize: '13px' } },
             '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。'),
+          activityWarning,
           React.createElement('div', { style: row },
             stage === 0
-              ? React.createElement('button', { style: danger, onClick: () => setStage(1) }, '重启 dsh web')
-              : [
-                  React.createElement('button', { key: 'confirm', style: danger, onClick: restart, disabled: busy }, busy ? '发送中…' : '确认重启'),
-                  React.createElement('button', { key: 'cancel', style: plain, onClick: () => setStage(0), disabled: busy }, '取消'),
-                ]
+              ? React.createElement('button', { style: danger, onClick: checkRestart, disabled: busy }, busy ? '检查中…' : '重启 dsh web')
+              : stage === 1
+                ? [
+                    React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, busy ? '发送中…' : '确认重启'),
+                    React.createElement('button', { key: 'cancel', style: plain, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, '取消'),
+                  ]
+                : stage === 3
+                  ? [
+                      React.createElement('button', { key: 'force', style: danger, onClick: () => restart(true), disabled: busy }, busy ? '发送中…' : '仍要重启'),
+                      React.createElement('button', { key: 'cancel', style: plain, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, '取消'),
+                    ]
+                  : null
           ),
-          stage === 1 ? React.createElement('p', { style: hint }, '确认后将立即断开当前连接，等待服务自动重启。') : null,
+          stage === 1 ? React.createElement('p', { style: hint }, '当前没有检测到运行中的工作。确认后将断开连接，等待服务自动重启。') : null,
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 

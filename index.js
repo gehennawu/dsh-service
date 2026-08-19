@@ -86,10 +86,61 @@ function fetchLatestVersion() {
   })
 }
 
+function collectActiveWork(ctx) {
+  const agentsService = ctx.get('agents')
+  const jobsService = ctx.get('jobs')
+  const terminalsService = ctx.get('terminals')
+  const agents = agentsService === undefined ? [] : agentsService.list()
+  const items = []
+
+  for (const agent of agents) {
+    if (agent.status !== 'running') continue
+    const id = String(agent.id)
+    items.push({ type: 'agent', id, label: id, status: 'running' })
+  }
+
+  if (jobsService !== undefined) {
+    const jobsById = new Map()
+    for (const caller of [undefined, ...agents]) {
+      for (const job of jobsService.list(caller)) {
+        if (job.status !== 'running' && job.status !== 'stopping') continue
+        jobsById.set(String(job.id), job)
+      }
+    }
+    for (const job of jobsById.values()) {
+      items.push({
+        type: 'job',
+        id: String(job.id),
+        label: String(job.label || job.id),
+        status: job.status,
+        ...(job.ownerSession === undefined ? {} : { ownerSession: String(job.ownerSession) }),
+      })
+    }
+  }
+
+  if (terminalsService !== undefined) {
+    for (const owner of agents) {
+      for (const terminal of terminalsService.list(owner)) {
+        if (terminal.status?.kind !== 'running') continue
+        const id = String(terminal.sessionId)
+        items.push({
+          type: 'terminal',
+          id,
+          label: String(terminal.name || `${terminal.type} terminal`),
+          status: 'running',
+          ownerSession: String(owner.id),
+        })
+      }
+    }
+  }
+
+  return { hasActive: items.length > 0, items }
+}
+
 function apply(ctx) {
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
-  // 合法示例：channel=/dsh-service，endpoint=version/check-update/web。
-  ctx.connection.rpc.handle('/dsh-service', async (endpoint) => {
+  // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
+  ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {
     if (endpoint === 'version') {
       return { ok: true, value: { current: dshVersion } }
     }
@@ -106,7 +157,16 @@ function apply(ctx) {
       }
     }
 
+    if (endpoint === 'activity') {
+      return { ok: true, value: collectActiveWork(ctx) }
+    }
+
     if (endpoint === 'web') {
+      const activity = collectActiveWork(ctx)
+      if (activity.hasActive && payload?.force !== true) {
+        return { ok: false, error: 'active-work', value: activity }
+      }
+
       const doExit = () => {
         try {
           // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
