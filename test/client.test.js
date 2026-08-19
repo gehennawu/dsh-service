@@ -371,8 +371,14 @@ test('service panel puts versions first and renders switchable provider-prefixed
   })
 
   await renderer.load()
+  const overviewText = renderer.text('settings.section')
+  assert.match(overviewText, /概览.*模型统计.*备份维护.*重启/)
+  assert.doesNotMatch(overviewText, /⚠ 模型统计|服务控制提醒/)
+  assert.match(overviewText, /版本信息.*运行状况/)
+  assert.doesNotMatch(overviewText, /模型使用|备份管理|服务重启/)
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
   const text = renderer.text('settings.section')
-  assert.ok(text.indexOf('版本信息') < text.indexOf('运行状况'))
   assert.match(text, /模型使用/)
   assert.match(text, /deepseek\/deepseek-chat/)
   assert.match(text, /缓存命中率/)
@@ -413,15 +419,39 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   })
   await renderer.load()
 
-  for (const id of ['version-card', 'health-card', 'usage-card', 'maintenance-card', 'restart-card']) {
-    const card = renderer.findByTestId(id)
-    assert.ok(card.props.style.background)
-    assert.ok(card.props.style.borderRadius)
-  }
-  assert.notEqual(renderer.findByTestId('health-display').props.style.background, renderer.findByTestId('health-card').props.style.background)
+  const panel = renderer.findByTestId('tab-panel')
+  const healthDisplay = renderer.findByTestId('health-display')
+  assert.ok(panel.props.style.background)
+  assert.ok(panel.props.style.border)
+  assert.ok(panel.props.style.boxShadow)
+  assert.notEqual(healthDisplay.props.style.background, panel.props.style.background)
+  assert.notEqual(healthDisplay.props.style.border, panel.props.style.border)
   assert.equal(renderer.findButton('立即健康检查').props['data-variant'], 'info')
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
   assert.equal(renderer.findButton('刷新统计').props['data-variant'], 'info')
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
   assert.equal(renderer.findButton('重启 dsh web').props['data-variant'], 'danger')
+})
+
+test('tab and top alerts identify health and backup failures without treating an empty backup list as failure', async () => {
+  const permissions = { supported: true, planId: 'p1', targetOwner: '1000:1000', items: [{ label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0755' }] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: false, error: 'storage unavailable' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: permissions }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  const text = renderer.text('settings.section')
+  assert.match(text, /⚠ 概览.*⚠ 备份维护/)
+  assert.match(text, /服务控制提醒.*概览.*备份维护/)
+  assert.doesNotMatch(text, /⚠ 模型统计|⚠ 重启/)
 })
 
 test('settings mount checks updates, degrades silently, and exposes an update badge with details', async () => {
@@ -523,7 +553,7 @@ test('permission panel shows the host plan and requires explicit confirmation be
   const initialText = renderer.text('settings.section')
   assert.match(initialText, /运行状况.*文件权限/)
   assert.match(initialText, /健康提醒.*发现 1 个根目录异常/)
-  assert.ok(initialText.indexOf('文件权限') < initialText.indexOf('模型使用'))
+  assert.doesNotMatch(initialText, /模型使用/)
   assert.doesNotMatch(initialText, /\/home\/node\/\.dsh/)
   assert.match(initialText, /发现 1 个根目录异常/)
   assert.match(renderer.text('settings.section'), /目标属主：1000:1000/)
@@ -588,6 +618,8 @@ test('backup panel creates, lists, and requires a second click before deleting a
   })
 
   await renderer.load()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
   assert.match(renderer.text('settings.section'), /备份管理/)
   assert.match(renderer.text('settings.section'), /总体积：1\.5 KB/)
   assert.doesNotMatch(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
@@ -631,6 +663,8 @@ test('service panel lists active work and requires an explicit force restart', a
   })
 
   await renderer.load()
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
 
@@ -674,6 +708,8 @@ test('restart recovery overlay ignores the old instance and reloads for a new in
 
   await renderer.load()
   assert.equal(renderer.hasSlot('shell.overlay'), true)
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
   await renderer.findButton('确认重启').props.onClick()
@@ -711,13 +747,15 @@ test('runtime locale switch updates the settings panel, activity warning, and re
 
   await renderer.load()
   assert.match(renderer.text('settings.section'), /版本信息/)
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /检测到 1 项运行中的工作/)
 
   renderer.setLocale('en')
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /Version information/)
+  assert.match(renderer.text('settings.section'), /Service restart/)
   assert.match(renderer.text('settings.section'), /Detected 1 active item/)
   assert.doesNotMatch(renderer.text('settings.section'), /版本信息|检测到/)
 
@@ -737,6 +775,8 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   })
 
   await renderer.load()
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
   await renderer.findButton('确认重启').props.onClick()

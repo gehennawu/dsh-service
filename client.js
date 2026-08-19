@@ -42,6 +42,12 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': '备份存储',
       'health.check.tar': 'tar',
       'health.check.permissions': '文件权限',
+      'tabs.overview': '概览',
+      'tabs.usage': '模型统计',
+      'tabs.backup': '备份维护',
+      'tabs.restart': '重启',
+      'tabs.alert.title': '服务控制提醒',
+      'tabs.alert.body': '以下功能需要处理：{tabs}',
       'permissions.title': '文件权限',
       'permissions.description': '检查 DSH_HOME 和全部工作区的属主与权限。修复会设置目录 755、普通文件 644，并强制凭据文件保持 600。',
       'permissions.target': '目标属主：{owner}',
@@ -160,6 +166,12 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': 'Backup storage',
       'health.check.tar': 'tar',
       'health.check.permissions': 'File permissions',
+      'tabs.overview': 'Overview',
+      'tabs.usage': 'Model statistics',
+      'tabs.backup': 'Backup maintenance',
+      'tabs.restart': 'Restart',
+      'tabs.alert.title': 'Service control alert',
+      'tabs.alert.body': 'These areas need attention: {tabs}',
       'permissions.title': 'File permissions',
       'permissions.description': 'Checks ownership and modes across DSH_HOME and every workspace. Repair sets directories to 755, regular files to 644, and always keeps the credentials file at 600.',
       'permissions.target': 'Target owner: {owner}',
@@ -445,6 +457,7 @@ window.__ModuleLoader__.load({
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
+        const [activeTab, setActiveTab] = useState('overview')
         // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
         const [activity, setActivity] = useState(null)
@@ -472,7 +485,9 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then((res) => {
-            if (active && res && res.ok) setPermissions(res.value)
+            if (!active) return
+            if (!res || res.ok === false) setPermissionError(translate('permissions.error'))
+            else setPermissions(res.value)
           }).catch(() => {
             if (active) setPermissionError(translate('permissions.error'))
           })
@@ -481,7 +496,8 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'usage', {}).then(async (res) => {
-            if (!active || !res || !res.ok) return
+            if (!active) return
+            if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
             setUsage(res.value)
             if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
             try {
@@ -496,7 +512,9 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then((res) => {
-            if (active && res && res.ok) setBackups(res.value)
+            if (!active) return
+            if (!res || res.ok === false) setBackupError(translate('backup.error'))
+            else setBackups(res.value)
           }).catch(() => {
             if (active) setBackupError(translate('backup.error'))
           })
@@ -688,8 +706,9 @@ window.__ModuleLoader__.load({
         const toggle = Object.assign({}, btn, { background: 'rgba(128,128,128,0.08)', borderColor: 'transparent', padding: '7px 10px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const card = { background: 'rgba(128,128,128,0.055)', border: '1px solid rgba(128,128,128,0.14)', borderRadius: '10px', padding: '14px 16px', marginBottom: '12px' }
-        const displaySurface = { background: 'rgba(128,128,128,0.09)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
+        const card = { background: 'rgba(105,115,135,0.1)', border: '1px solid rgba(105,115,135,0.28)', borderRadius: '10px', padding: '14px 16px', marginBottom: '12px' }
+        const displaySurface = { background: 'rgba(67,76,96,0.18)', border: '1px solid rgba(105,115,135,0.4)', borderRadius: '8px', padding: '10px', marginTop: '8px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }
+        const tabPanel = { background: 'rgba(47,56,76,0.15)', border: '1px solid rgba(105,115,135,0.46)', borderRadius: '11px', padding: '16px', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'inherit' }
 
         const formatSize = (bytes) => {
@@ -1011,7 +1030,34 @@ window.__ModuleLoader__.load({
         )
 
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
-        return React.createElement('div', null, versionBlock, healthBlock, usageBlock, maintenanceBlock, restartBlock)
+        const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
+        const tabWarnings = {
+          overview: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
+          usage: Boolean(usageError),
+          backup: Boolean(backupError),
+          restart: Boolean(error),
+        }
+        const tabs = [
+          ['overview', 'tabs.overview'],
+          ['usage', 'tabs.usage'],
+          ['backup', 'tabs.backup'],
+          ['restart', 'tabs.restart'],
+        ]
+        const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
+        const tabContent = activeTab === 'overview'
+          ? React.createElement('div', null, versionBlock, healthBlock)
+          : activeTab === 'usage'
+            ? usageBlock
+            : activeTab === 'backup'
+              ? maintenanceBlock
+              : restartBlock
+        return React.createElement('div', null,
+          warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
+            React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
+            React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
+          React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' } },
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: activeTab === id ? primary : Object.assign({}, plain, tabWarnings[id] ? { color: '#c68000', borderColor: 'rgba(198,128,0,0.55)', background: 'rgba(198,128,0,0.1)' } : {}), onClick: () => setActiveTab(id) }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+          React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
