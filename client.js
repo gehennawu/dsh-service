@@ -16,6 +16,15 @@ window.__ModuleLoader__.load({
       'recovery.timeout.title': '服务尚未恢复',
       'recovery.timeout.body': '已等待 60 秒。请确认外部进程管理器已正确配置，或手动刷新页面重试。',
       'recovery.manual': '手动刷新',
+      'health.title': '运行状况',
+      'health.uptime': '运行时间',
+      'health.rss': '内存 RSS',
+      'health.liveSessions': '存活会话',
+      'health.persistedSessions': '持久化会话',
+      'health.activeAgents': '活跃 Agent',
+      'health.activeJobs': '后台任务',
+      'health.uptimeValue': '{hours} 小时 {minutes} 分钟',
+      'health.error': '无法读取运行状况',
       'version.title': '版本信息',
       'version.current': '当前版本：',
       'version.loading': '加载中…',
@@ -51,6 +60,15 @@ window.__ModuleLoader__.load({
       'recovery.timeout.title': 'Service has not recovered',
       'recovery.timeout.body': 'Waited 60 seconds. Check the external process manager, or refresh the page manually.',
       'recovery.manual': 'Manual reload',
+      'health.title': 'Health',
+      'health.uptime': 'Uptime',
+      'health.rss': 'Memory RSS',
+      'health.liveSessions': 'Live sessions',
+      'health.persistedSessions': 'Persisted sessions',
+      'health.activeAgents': 'Active agents',
+      'health.activeJobs': 'Background jobs',
+      'health.uptimeValue': '{hours} h {minutes} min',
+      'health.error': 'Could not read health metrics',
       'version.title': 'Version information',
       'version.current': 'Current version: ',
       'version.loading': 'Loading…',
@@ -195,6 +213,8 @@ window.__ModuleLoader__.load({
 
       function ServicePanel() {
         const translate = useTranslation()
+        const [health, setHealth] = useState(null)
+        const [healthError, setHealthError] = useState(null)
         const [version, setVersion] = useState(null)
         const [updateInfo, setUpdateInfo] = useState(null) // { latest, upToDate } | null
         const [updateBusy, setUpdateBusy] = useState(false)
@@ -205,11 +225,34 @@ window.__ModuleLoader__.load({
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState(null)
 
-        // 进入面板时拉取当前版本
+        // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
         useEffect(() => {
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
+        }, [])
+        useEffect(() => {
+          let active = true
+          const poll = async () => {
+            try {
+              const res = await ctx.connection.rpc.call('/dsh-service', 'health', {})
+              if (!active) return
+              if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
+              setHealth(res.value)
+              setHealthError(null)
+            } catch (_) {
+              if (!active) return
+              setHealthError(translate('health.error'))
+            }
+            try {
+              await ctx.timer.timeout(5000)
+            } catch (_) {
+              return
+            }
+            if (active) poll()
+          }
+          poll()
+          return () => { active = false }
         }, [])
 
         const checkUpdate = async () => {
@@ -287,6 +330,35 @@ window.__ModuleLoader__.load({
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '13px', fontWeight: 600, margin: '16px 0 4px', color: 'inherit' }
 
+        const formatUptime = (seconds) => {
+          const totalMinutes = Math.floor(Number(seconds) / 60)
+          return translate('health.uptimeValue', {
+            hours: Math.floor(totalMinutes / 60),
+            minutes: totalMinutes % 60,
+          })
+        }
+        const formatBytes = (bytes) => {
+          const mb = Number(bytes) / (1024 * 1024)
+          return (Math.round(mb * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' MB'
+        }
+        const metric = (labelKey, value) => React.createElement('div', {
+          key: labelKey,
+          style: { padding: '8px 10px', borderRadius: '6px', background: 'rgba(128,128,128,0.08)' },
+        },
+        React.createElement('div', { style: { color: '#888', fontSize: '11px', marginBottom: '2px' } }, translate(labelKey)),
+        React.createElement('div', { style: { fontSize: '14px', fontWeight: 600 } }, value))
+        const healthBlock = React.createElement('div', { key: 'health-section' },
+          React.createElement('div', { style: sectionTitle }, translate('health.title')),
+          health
+            ? React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' } },
+                metric('health.uptime', formatUptime(health.uptimeSeconds)),
+                metric('health.rss', formatBytes(health.rssBytes)),
+                metric('health.liveSessions', String(health.liveSessions)),
+                metric('health.persistedSessions', String(health.persistedSessions)),
+                metric('health.activeAgents', String(health.activeAgents)),
+                metric('health.activeJobs', String(health.activeJobs)))
+            : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
+
         // 版本信息区块
         const versionBlock = [
           React.createElement('div', { key: 'ver-section', style: { marginTop: 4 } },
@@ -318,6 +390,7 @@ window.__ModuleLoader__.load({
         // 重启后提示
         if (stage === 2) {
           return React.createElement('div', null,
+            healthBlock,
             versionBlock,
             React.createElement('div', { key: 'restart-section' },
               React.createElement('div', { style: sectionTitle }, translate('restart.title')),
@@ -370,7 +443,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        return React.createElement('div', null, versionBlock, restartBlock)
+        return React.createElement('div', null, healthBlock, versionBlock, restartBlock)
       }
 
       ctx.slots.inject('settings.section', () => ctx.slots.register(

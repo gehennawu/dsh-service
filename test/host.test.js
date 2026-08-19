@@ -33,6 +33,84 @@ function createHost(overrides = {}) {
   return { handler: handlers[0].handler, scheduled }
 }
 
+test('health RPC reports process and service metrics with persisted-only session count', async () => {
+  const runningAgent = { id: 'agent-running', status: 'running' }
+  const idleAgent = { id: 'agent-idle', status: 'idle' }
+  const sharedJob = { id: 'job-1', label: 'build', status: 'running' }
+  const beforeUptime = process.uptime()
+
+  const { handler } = createHost({
+    services: {
+      sessions: { list: () => [{ id: 'live-1' }, { id: 'live-2' }] },
+      sessionQuery: {
+        listSessions: async () => [
+          { header: { id: 'persisted-1' }, live: true, persisted: true },
+          { header: { id: 'persisted-2' }, live: false, persisted: true },
+          { header: { id: 'live-only' }, live: true, persisted: false },
+        ],
+      },
+      agents: { list: () => [runningAgent, idleAgent] },
+      jobs: {
+        list(caller) {
+          if (caller === idleAgent) return []
+          return [sharedJob]
+        },
+      },
+      terminals: { list: () => [] },
+    },
+  })
+
+  const result = await handler('health', {})
+
+  assert.equal(result.ok, true)
+  assert.deepEqual({
+    liveSessions: result.value.liveSessions,
+    persistedSessions: result.value.persistedSessions,
+    activeAgents: result.value.activeAgents,
+    activeJobs: result.value.activeJobs,
+  }, {
+    liveSessions: 2,
+    persistedSessions: 2,
+    activeAgents: 1,
+    activeJobs: 1,
+  })
+  assert.ok(result.value.uptimeSeconds >= beforeUptime)
+  assert.ok(result.value.uptimeSeconds <= process.uptime())
+  assert.ok(Number.isInteger(result.value.rssBytes))
+  assert.ok(result.value.rssBytes > 0)
+})
+
+test('health RPC uses zero for unavailable optional services', async () => {
+  const { handler } = createHost()
+
+  const result = await handler('health', {})
+
+  assert.equal(result.ok, true)
+  assert.deepEqual({
+    liveSessions: result.value.liveSessions,
+    persistedSessions: result.value.persistedSessions,
+    activeAgents: result.value.activeAgents,
+    activeJobs: result.value.activeJobs,
+  }, {
+    liveSessions: 0,
+    persistedSessions: 0,
+    activeAgents: 0,
+    activeJobs: 0,
+  })
+})
+
+test('health RPC reports session query failures instead of inventing persisted metrics', async () => {
+  const { handler } = createHost({
+    services: {
+      sessionQuery: { listSessions: async () => { throw new Error('storage unavailable') } },
+    },
+  })
+
+  const result = await handler('health', {})
+
+  assert.deepEqual(result, { ok: false, error: 'storage unavailable' })
+})
+
 test('activity RPC reports running agents, jobs, and terminals without duplicates', async () => {
   const runningAgent = { id: 'agent-running', status: 'running' }
   const idleAgent = { id: 'agent-idle', status: 'idle' }

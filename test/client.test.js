@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-function createRenderer(rpcCall) {
+function createRenderer(rpcCall, options = {}) {
   let moduleDefinition
   const slotComponents = new Map()
+  const mountedSlots = new Set()
+  const renderedComponents = new Map()
   const hookState = new Map()
   const effectState = new Map()
+  const effectCleanups = new Map()
   const timers = []
   const localeListeners = new Set()
   const localeDictionaries = new Map()
   let activeLocale = 'zh'
   let localeRevision = 0
   let currentComponent
+  let currentSlot
   let hookCursor = 0
   let roots = new Map()
   let reloads = 0
@@ -37,12 +41,19 @@ function createRenderer(rpcCall) {
     },
     useEffect(effect) {
       assert.ok(currentComponent, 'useEffect called outside a component')
-      const effects = effectState.get(currentComponent) || new Set()
-      effectState.set(currentComponent, effects)
+      const component = currentComponent
+      const effects = effectState.get(component) || new Set()
+      effectState.set(component, effects)
       const index = hookCursor++
       if (effects.has(index)) return
       effects.add(index)
-      queueMicrotask(effect)
+      queueMicrotask(() => {
+        const cleanup = effect()
+        if (typeof cleanup !== 'function') return
+        const cleanups = effectCleanups.get(component) || new Map()
+        effectCleanups.set(component, cleanups)
+        cleanups.set(index, cleanup)
+      })
     },
   }
 
@@ -65,7 +76,7 @@ function createRenderer(rpcCall) {
     if (typeof node.type === 'function') {
       const previousComponent = currentComponent
       const previousCursor = hookCursor
-      currentComponent = node.type
+      currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name
       hookCursor = 0
       const output = node.type(node.props)
       currentComponent = previousComponent
@@ -78,10 +89,31 @@ function createRenderer(rpcCall) {
   function renderAll() {
     const next = new Map()
     for (const [slot, component] of slotComponents) {
+      if (!mountedSlots.has(slot)) continue
+      currentSlot = slot
       next.set(slot, evaluate(React.createElement(component, null)))
+      currentSlot = undefined
+      renderedComponents.set(slot, component)
     }
     roots = next
     return roots
+  }
+
+  function unmountSlot(slot) {
+    const component = renderedComponents.get(slot)
+    if (component !== undefined) {
+      const prefix = slot + ':'
+      for (const [key, cleanups] of effectCleanups) {
+        if (typeof key !== 'string' || !key.startsWith(prefix)) continue
+        for (const cleanup of cleanups.values()) cleanup()
+        effectCleanups.delete(key)
+        effectState.delete(key)
+        hookState.delete(key)
+      }
+      renderedComponents.delete(slot)
+    }
+    mountedSlots.delete(slot)
+    renderAll()
   }
 
   function visit(node, callback) {
@@ -148,9 +180,13 @@ function createRenderer(rpcCall) {
             callback()
             return () => {}
           },
-          register(options, component) {
-            slotComponents.set(options.name, component)
-            return () => slotComponents.delete(options.name)
+          register(slotOptions, component) {
+            slotComponents.set(slotOptions.name, component)
+            if (!(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
+            return () => {
+              unmountSlot(slotOptions.name)
+              slotComponents.delete(slotOptions.name)
+            }
           },
         },
         effect(callback) {
@@ -166,9 +202,18 @@ function createRenderer(rpcCall) {
       await new Promise((resolve) => setImmediate(resolve))
       await Promise.resolve()
     },
-    async advanceTimer() {
-      const timer = timers.shift()
-      assert.ok(timer, 'no pending timer')
+    async advanceTimer(expectedDelay) {
+      const index = expectedDelay === undefined ? 0 : timers.findIndex((timer) => timer.delay === expectedDelay)
+      const [timer] = index < 0 ? [] : timers.splice(index, 1)
+      assert.ok(timer, expectedDelay === undefined ? 'no pending timer' : `no pending ${expectedDelay}ms timer`)
+      timer.resolve()
+      await this.flush()
+      return timer.delay
+    },
+    async advanceNonHealthTimer() {
+      const index = timers.findIndex((timer) => timer.delay !== 5000)
+      const [timer] = index < 0 ? [] : timers.splice(index, 1)
+      assert.ok(timer, 'no pending non-health timer')
       timer.resolve()
       await this.flush()
       return timer.delay
@@ -185,6 +230,14 @@ function createRenderer(rpcCall) {
       }
       assert.ok(match, `button ${JSON.stringify(label)} was not rendered; tree text: ${this.text()}`)
       return match
+    },
+    mount(slot) {
+      assert.ok(slotComponents.has(slot), `slot ${slot} is not registered`)
+      mountedSlots.add(slot)
+      renderAll()
+    },
+    unmount(slot) {
+      unmountSlot(slot)
     },
     dictionaries(namespace) {
       return localeDictionaries.get(namespace)
@@ -220,6 +273,47 @@ test('plugin registers balanced zh and en dictionaries', async () => {
   assert.ok(dictionaries)
   assert.deepEqual(Object.keys(dictionaries.en).sort(), Object.keys(dictionaries.zh).sort())
   assert.ok(Object.keys(dictionaries.zh).length >= 25)
+})
+
+test('health panel loads immediately, refreshes every five seconds, and stops after unmount', async () => {
+  let healthCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') {
+      healthCalls += 1
+      return {
+        ok: true,
+        value: {
+          uptimeSeconds: 3661,
+          rssBytes: 157286400,
+          liveSessions: 2,
+          persistedSessions: 7,
+          activeAgents: 1,
+          activeJobs: 3,
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { initiallyUnmounted: ['settings.section'] })
+
+  await renderer.load()
+  assert.equal(healthCalls, 0)
+
+  renderer.mount('settings.section')
+  await renderer.flush()
+  assert.equal(healthCalls, 1)
+  assert.match(renderer.text('settings.section'), /运行时间.*1 小时 1 分钟/)
+  assert.match(renderer.text('settings.section'), /内存 RSS.*150 MB/)
+  assert.deepEqual(renderer.pendingTimerDelays(), [5000])
+
+  assert.equal(await renderer.advanceTimer(), 5000)
+  assert.equal(healthCalls, 2)
+  assert.deepEqual(renderer.pendingTimerDelays(), [5000])
+
+  renderer.unmount('settings.section')
+  assert.equal(await renderer.advanceTimer(), 5000)
+  assert.equal(healthCalls, 2)
 })
 
 test('service panel lists active work and requires an explicit force restart', async () => {
@@ -290,17 +384,17 @@ test('restart recovery overlay ignores the old instance and reloads for a new in
   await renderer.flush()
 
   assert.match(renderer.text('shell.overlay'), /服务重启中/)
-  assert.deepEqual(renderer.pendingTimerDelays(), [1000])
+  assert.ok(renderer.pendingTimerDelays().includes(1000))
 
-  await renderer.advanceTimer()
+  await renderer.advanceTimer(1000)
   assert.equal(renderer.reloadCount(), 0)
-  assert.deepEqual(renderer.pendingTimerDelays(), [2000])
+  assert.ok(renderer.pendingTimerDelays().includes(2000))
 
-  await renderer.advanceTimer()
+  await renderer.advanceTimer(2000)
   assert.equal(renderer.reloadCount(), 0)
-  assert.deepEqual(renderer.pendingTimerDelays(), [4000])
+  assert.ok(renderer.pendingTimerDelays().includes(4000))
 
-  await renderer.advanceTimer()
+  await renderer.advanceTimer(4000)
   assert.equal(renderer.reloadCount(), 1)
 })
 
@@ -351,6 +445,8 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   await renderer.flush()
   await renderer.findButton('确认重启').props.onClick()
   await renderer.flush()
+  renderer.unmount('settings.section')
+  await renderer.advanceTimer(5000)
 
   let elapsed = 0
   while (!renderer.text('shell.overlay').includes('服务尚未恢复')) {

@@ -87,6 +87,23 @@ function fetchLatestVersion() {
   })
 }
 
+async function collectHealth(ctx) {
+  const sessionsService = ctx.get('sessions')
+  const sessionQueryService = ctx.get('sessionQuery')
+  const activity = collectActiveWork(ctx)
+  const sessionRecords = sessionQueryService === undefined ? [] : await sessionQueryService.listSessions()
+  const memory = process.memoryUsage()
+
+  return {
+    uptimeSeconds: process.uptime(),
+    rssBytes: memory.rss,
+    liveSessions: sessionsService === undefined ? 0 : sessionsService.list().length,
+    persistedSessions: sessionRecords.filter((record) => record.persisted === true).length,
+    activeAgents: activity.items.filter((item) => item.type === 'agent').length,
+    activeJobs: activity.items.filter((item) => item.type === 'job').length,
+  }
+}
+
 function collectActiveWork(ctx) {
   const agentsService = ctx.get('agents')
   const jobsService = ctx.get('jobs')
@@ -160,6 +177,14 @@ function apply(ctx) {
 
     if (endpoint === 'activity') {
       return { ok: true, value: collectActiveWork(ctx) }
+    }
+
+    if (endpoint === 'health') {
+      try {
+        return { ok: true, value: await collectHealth(ctx) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
     }
 
     if (endpoint === 'web') {
