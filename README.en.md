@@ -17,7 +17,7 @@ A service-control and operations plugin for self-hosted DSH Web. The current rel
 | v0.6 Panel and usage | ✅ Implemented | Version-first layout, deep health check, exact incremental model usage, provider/model and project filters, switchable charts, and collapsed maintenance details |
 | v0.7 Error statistics and UI | ✅ Implemented | Last-24-hour model/tool errors, path normalization, collapsed error details, card sections, and semantic button colors |
 
-Deferred ideas: one-click DSH upgrades, scheduled restarts, and historical host-system metrics.
+The plugin is currently developed and verified for **DSH `0.1.0-rc.7`** and is ready for use on that release. When newer DSH versions are published, this project will run corresponding compatibility tests and update the verified status.
 
 ## Current features
 
