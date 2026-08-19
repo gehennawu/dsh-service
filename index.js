@@ -836,18 +836,21 @@ function apply(ctx) {
       }
       try {
         if (updatePromise === undefined) {
-          updatePromise = Promise.all([
+          updatePromise = Promise.allSettled([
             fetchLatestVersion(DSH_PACKAGE),
             fetchLatestVersion(PLUGIN_PACKAGE),
           ]).finally(() => { updatePromise = undefined })
         }
-        const [latestDsh, latestPlugin] = await updatePromise
-        const value = {
-          checkedAt: now,
-          cached: false,
-          dsh: { current: dshVersion, latest: latestDsh, upToDate: dshVersion === latestDsh, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
-          plugin: { current: pluginVersion, latest: latestPlugin, upToDate: pluginVersion === latestPlugin, url: 'https://github.com/gehennawu/dsh-service/releases' },
-        }
+        const [dshResult, pluginResult] = await updatePromise
+        const dsh = dshResult.status === 'fulfilled'
+          ? { current: dshVersion, latest: dshResult.value, upToDate: dshVersion === dshResult.value, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
+          : { current: dshVersion, latest: null, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
+        const pluginError = pluginResult.status === 'rejected' ? String(pluginResult.reason?.message || pluginResult.reason) : ''
+        const plugin = pluginResult.status === 'fulfilled'
+          ? { current: pluginVersion, latest: pluginResult.value, upToDate: pluginVersion === pluginResult.value, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          : { current: pluginVersion, latest: null, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
+        if (dsh.status === 'unavailable' && plugin.status === 'unavailable') throw dshResult.reason
+        const value = { checkedAt: now, cached: false, dsh, plugin }
         updateCache = { ok: true, value, checkedAt: now, ttl: 10 * 60 * 1000 }
         return { ok: true, value }
       } catch (error) {

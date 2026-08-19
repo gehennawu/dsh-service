@@ -670,6 +670,34 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
   assert.equal(requests.length, 2)
 })
 
+test('update RPC preserves the DSH result when the unpublished plugin package returns 404', async (t) => {
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter()
+    response.statusCode = String(url).includes('%40deepseek-ai%2Fdsh') ? 200 : 404
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (response.statusCode === 200) {
+        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '0.1.0-rc.7' } }))
+        response.emit('end')
+      }
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost()
+  const result = await host.handler('check-update', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.dsh.upToDate, true)
+  assert.equal(result.value.plugin.status, 'unpublished')
+  assert.equal(result.value.plugin.current, '0.10.0')
+  assert.equal(result.value.plugin.latest, null)
+})
+
 test('version and restart responses expose one stable process instance id', async () => {
   const { handler } = createHost()
 

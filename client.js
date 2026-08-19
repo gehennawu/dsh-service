@@ -97,6 +97,7 @@ window.__ModuleLoader__.load({
       'update.current': '已是最新版本',
       'update.available': '有新版本：{version}',
       'update.unavailable': '暂时无法检查最新版本',
+      'update.unpublished': '尚未发布可检查版本',
       'update.openReleases': '查看发布记录',
       'health.recheck': '重新诊断',
       'update.badge': 'DSH 有更新',
@@ -242,6 +243,7 @@ window.__ModuleLoader__.load({
       'update.current': 'Up to date',
       'update.available': 'New version: {version}',
       'update.unavailable': 'Latest version is temporarily unavailable',
+      'update.unpublished': 'No published version is available to check',
       'update.openReleases': 'View releases',
       'health.recheck': 'Run again',
       'update.badge': 'DSH update',
@@ -855,11 +857,17 @@ window.__ModuleLoader__.load({
           if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
-        const summaryText = (totals) => [
-          ...usageSegments.map(([metricName, label]) => `${translate(label)} ${formatTokenValue(usageValue(totals, metricName))}`),
-          `${translate('usage.steps')} ${formatUsageValue(totals.steps, 'steps')}`,
-          `${translate('usage.hitRate')} ${formatUsageValue(totals.cacheHitRate, 'cacheHitRate')}`,
-        ].join(' · ')
+        const summaryItems = (totals) => [
+          ...usageSegments.map(([metricName, label]) => [label, formatTokenValue(usageValue(totals, metricName))]),
+          ['usage.steps', formatUsageValue(totals.steps, 'steps')],
+          ['usage.hitRate', formatUsageValue(totals.cacheHitRate, 'cacheHitRate')],
+        ]
+        const summaryBlock = (id, title, totals) => React.createElement('div', { style: { padding: '10px', borderRadius: '7px', background: 'var(--dsh-subtle, #f7f5f1)' } },
+          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '5px' } }, translate(title)),
+          summaryItems(totals).map(([label, value], index) => React.createElement('div', { key: label, 'data-testid': `usage-summary-${id}-${index}`, style: { display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '4px 0', fontSize: '12px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-border, #dedbd4)' } },
+            React.createElement('span', { style: { color: '#777' } }, translate(label)),
+            React.createElement('span', { style: { fontWeight: 650 } }, value)))
+        )
         const sortedModels = [...modelTotals.values()].sort((a, b) => b.steps - a.steps || a.id.localeCompare(b.id))
         const visibleModels = modelsOpen ? sortedModels : sortedModels.slice(0, 3)
         const hiddenModelCount = Math.max(0, sortedModels.length - 3)
@@ -917,8 +925,8 @@ window.__ModuleLoader__.load({
                     translate(label)))),
                 hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: '#282724', color: '#fff', border: '1px solid #45433e', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap' } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
-                  metric('usage.today', summaryText(todayTotals)),
-                  metric('usage.sevenDays', summaryText(sevenTotals))),
+                  summaryBlock('today', 'usage.today', todayTotals),
+                  summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
                   visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
@@ -950,7 +958,7 @@ window.__ModuleLoader__.load({
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
-        const healthSummaryBlock = React.createElement('div', null,
+        const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
             ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
@@ -1037,7 +1045,9 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? '#888' : state.upToDate ? '#49725a' : '#9a6700', fontWeight: 600 } }, !state
               ? (updateError || translate('update.checking'))
-              : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
+              : state.status === 'unpublished' ? translate('update.unpublished')
+                : state.status === 'unavailable' ? translate('update.unavailable')
+                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
             state?.url ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: '#5B4CF0', textDecoration: 'none' } }, translate('update.openReleases')) : null))
         // 版本信息区块
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
@@ -1080,8 +1090,9 @@ window.__ModuleLoader__.load({
           : null
 
         // 重启按钮区块
-        const restartBlock = React.createElement('div', { key: 'restart-section', 'data-testid': 'restart-card', style: Object.assign({}, card, { borderColor: 'rgba(211,51,51,0.3)', background: 'rgba(211,51,51,0.045)' }) },
+        const restartBlock = React.createElement('div', { key: 'restart-section', 'data-testid': 'restart-card', style: card },
           React.createElement('div', { style: sectionTitle }, translate('restart.title')),
+          React.createElement('div', { 'data-testid': 'restart-region', style: displaySurface },
           React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.description')),
           activityWarning,
           React.createElement('div', { style: row },
@@ -1100,7 +1111,7 @@ window.__ModuleLoader__.load({
                   : null
           ),
           stage === 1 ? React.createElement('p', { style: hint }, translate('restart.idleHint')) : null,
-          error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
+          error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null)
         )
 
         const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock)
