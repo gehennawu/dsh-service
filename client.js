@@ -855,6 +855,11 @@ window.__ModuleLoader__.load({
           if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
+        const summaryText = (totals) => [
+          ...usageSegments.map(([metricName, label]) => `${translate(label)} ${formatTokenValue(usageValue(totals, metricName))}`),
+          `${translate('usage.steps')} ${formatUsageValue(totals.steps, 'steps')}`,
+          `${translate('usage.hitRate')} ${formatUsageValue(totals.cacheHitRate, 'cacheHitRate')}`,
+        ].join(' · ')
         const sortedModels = [...modelTotals.values()].sort((a, b) => b.steps - a.steps || a.id.localeCompare(b.id))
         const visibleModels = modelsOpen ? sortedModels : sortedModels.slice(0, 3)
         const hiddenModelCount = Math.max(0, sortedModels.length - 3)
@@ -882,7 +887,7 @@ window.__ModuleLoader__.load({
                 usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? { fontWeight: 700, borderBottom: '2px solid currentColor', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
           usage && usage.indexedSessions > 0
-            ? React.createElement('div', null,
+            ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: { padding: '12px', border: '1px solid var(--dsh-border, #dedbd4)', borderRadius: '9px', background: 'var(--dsh-surface, #ffffff)' } },
                 React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '174px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
                   React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '136px', fontSize: '10px', color: '#888' } },
                     chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
@@ -911,16 +916,15 @@ window.__ModuleLoader__.load({
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
                     translate(label)))),
                 hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: '#282724', color: '#fff', border: '1px solid #45433e', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap' } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
-                React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '8px' } },
-                  metric('usage.today', usageSegments.map(([metricName, label]) => `${translate(label)} ${formatTokenValue(usageValue(todayTotals, metricName))}`).join(' · ')),
-                  metric('usage.sevenDays', `${formatUsageValue(sevenTotals.steps, 'steps')} · ${formatTokenValue(usageSegments.reduce((sum, [metricName]) => sum + usageValue(sevenTotals, metricName), 0))} Token`)),
-                React.createElement('p', { style: hint }, `${translate('usage.hitRate')}：${formatUsageValue(sevenTotals.cacheHitRate, 'cacheHitRate')}`),
+                React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
+                  metric('usage.today', summaryText(todayTotals)),
+                  metric('usage.sevenDays', summaryText(sevenTotals))),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
                   visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
                     React.createElement('span', null, model.id),
                     React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`))),
-                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid rgba(128,128,128,0.18)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })) : null),
+                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid rgba(128,128,128,0.18)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null),
                 React.createElement('div', { style: { display: 'grid', gap: '7px', marginTop: '12px' } },
                   React.createElement('div', null,
                     React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
