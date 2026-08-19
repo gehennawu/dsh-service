@@ -593,11 +593,18 @@ function isAtOrUnderPath(ancestor, path) {
   return child === '' || (child !== '..' && !child.startsWith(`..${sep}`))
 }
 
-function requiredFileMode(path) {
-  return basename(path) === '.credentials.yaml' ? 0o600 : 0o644
+// 只有宿主自己的凭据文档使用 owner-only 契约；工作区里的同名文件仍是普通 0644 文件。
+function isCredentialsDocument(path, dshHome) {
+  return path === join(dshHome, '.credentials.yaml')
 }
 
-async function deepCheckPermissions(plans, planId) {
+function fileModeCompliant(path, mode, dshHome) {
+  // dsh-credentials-local 接受所有 group/other 位为零的模式；修复动作再统一规范化为 0600。
+  if (isCredentialsDocument(path, dshHome)) return (mode & 0o077) === 0
+  return mode === 0o644
+}
+
+async function deepCheckPermissions(dshHome, plans, planId) {
   if (typeof planId !== 'string') return undefined
   const paths = plans.get(planId)
   if (paths === undefined) return undefined
@@ -619,7 +626,7 @@ async function deepCheckPermissions(plans, planId) {
     if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
     const mode = info.mode & 0o777
     if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
-    else if (info.isFile() && mode !== requiredFileMode(path)) { result.fileModeIssues += 1; issues.push('file-mode') }
+    else if (info.isFile() && !fileModeCompliant(path, mode, dshHome)) { result.fileModeIssues += 1; issues.push('file-mode') }
     if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
     if (!info.isDirectory()) return
     let entries
@@ -906,7 +913,7 @@ function apply(ctx) {
 
     if (endpoint === 'permissions-deep') {
       try {
-        const value = await deepCheckPermissions(permissionPlans, payload?.planId)
+        const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
         return { ok: true, value }
       } catch (error) {

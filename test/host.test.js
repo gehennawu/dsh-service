@@ -87,14 +87,17 @@ test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs 
   const nestedDir = join(workspace, 'nested')
   const nestedFile = join(nestedDir, 'file.txt')
   const credentials = join(dshHome, '.credentials.yaml')
+  const workspaceCredentials = join(workspace, '.credentials.yaml')
   await mkdir(nestedDir)
   await writeFile(nestedFile, 'test')
   await writeFile(credentials, 'credential fixture')
+  await writeFile(workspaceCredentials, 'workspace fixture')
   await chmod(dshHome, 0o700)
   await chmod(workspace, 0o700)
   await chmod(nestedDir, 0o700)
   await chmod(nestedFile, 0o600)
   await chmod(credentials, 0o600)
+  await chmod(workspaceCredentials, 0o600)
 
   const { handler } = createHost({
     services: {
@@ -128,6 +131,18 @@ test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs 
   assert.equal((await stat(nestedDir)).mode & 0o777, 0o755)
   assert.equal((await stat(nestedFile)).mode & 0o777, 0o644)
   assert.equal((await stat(credentials)).mode & 0o777, 0o600)
+  assert.equal((await stat(workspaceCredentials)).mode & 0o777, 0o644)
+
+  const postRepairPlan = await handler('permissions-plan', {})
+  const postRepairDeep = await handler('permissions-deep', { planId: postRepairPlan.value.planId })
+  assert.equal(postRepairDeep.ok, true)
+  assert.deepEqual({
+    ownerIssues: postRepairDeep.value.ownerIssues,
+    directoryModeIssues: postRepairDeep.value.directoryModeIssues,
+    fileModeIssues: postRepairDeep.value.fileModeIssues,
+    unreadable: postRepairDeep.value.unreadable,
+    samples: postRepairDeep.value.samples,
+  }, { ownerIssues: 0, directoryModeIssues: 0, fileModeIssues: 0, unreadable: 0, samples: [] })
 
   const replayed = await handler('permissions-repair', { planId: planned.value.planId })
   assert.deepEqual(replayed, { ok: false, error: 'unknown-permission-plan' })
@@ -139,8 +154,10 @@ test('permission deep check scans only host-planned roots and reports bounded an
   t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
   await mkdir(join(workspace, 'nested'))
   await writeFile(join(dshHome, '.credentials.yaml'), 'credential fixture')
+  await writeFile(join(workspace, '.credentials.yaml'), 'workspace fixture')
   await writeFile(join(workspace, 'nested', 'bad.txt'), 'test')
   await chmod(join(dshHome, '.credentials.yaml'), 0o644)
+  await chmod(join(workspace, '.credentials.yaml'), 0o644)
   await chmod(workspace, 0o755)
   await chmod(join(workspace, 'nested'), 0o700)
   await chmod(join(workspace, 'nested', 'bad.txt'), 0o600)
@@ -154,8 +171,17 @@ test('permission deep check scans only host-planned roots and reports bounded an
   assert.equal(deep.value.directoryModeIssues >= 1, true)
   assert.equal(deep.value.fileModeIssues, 2)
   assert.equal(deep.value.samples.some((sample) => sample.path === join(dshHome, '.credentials.yaml') && sample.detail === '0644'), true)
+  assert.equal(deep.value.samples.some((sample) => sample.path === join(workspace, '.credentials.yaml')), false)
   assert.equal(deep.value.samples.length >= 2, true)
   assert.equal((await stat(join(workspace, 'nested'))).mode & 0o777, 0o700)
+
+  await chmod(join(dshHome, '.credentials.yaml'), 0o400)
+  const ownerOnlyPlan = await handler('permissions-plan', {})
+  const ownerOnlyDeep = await handler('permissions-deep', { planId: ownerOnlyPlan.value.planId })
+  assert.equal(ownerOnlyDeep.ok, true)
+  assert.equal(ownerOnlyDeep.value.fileModeIssues, 1)
+  assert.equal(ownerOnlyDeep.value.samples.some((sample) => sample.path === join(dshHome, '.credentials.yaml')), false)
+
   const repaired = await handler('permissions-repair', { planId: plan.value.planId })
   assert.equal(repaired.ok, true)
   assert.equal((await stat(join(workspace, 'nested'))).mode & 0o777, 0o755)
