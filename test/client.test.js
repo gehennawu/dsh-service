@@ -7,6 +7,10 @@ function createRenderer(rpcCall) {
   const hookState = new Map()
   const effectState = new Map()
   const timers = []
+  const localeListeners = new Set()
+  const localeDictionaries = new Map()
+  let activeLocale = 'zh'
+  let localeRevision = 0
   let currentComponent
   let hookCursor = 0
   let roots = new Map()
@@ -107,6 +111,33 @@ function createRenderer(rpcCall) {
       })
       const ctx = {
         connection: { rpc: { call: rpcCall } },
+        locale: {
+          register(namespace, dictionaries) {
+            localeDictionaries.set(namespace, dictionaries)
+            localeRevision += 1
+            for (const listener of localeListeners) listener()
+            return () => localeDictionaries.delete(namespace)
+          },
+          bind(namespace) {
+            return (key, params = {}) => {
+              const dictionaries = localeDictionaries.get(namespace) || {}
+              const template = dictionaries[activeLocale]?.[key] ?? dictionaries.zh?.[key] ?? key
+              return template.replace(/\{(\w+)\}/g, (match, name) => name in params ? String(params[name]) : match)
+            }
+          },
+          getSnapshot() {
+            return { active: activeLocale, revision: localeRevision, locales: [{ id: 'zh', label: '中文' }, { id: 'en', label: 'English' }] }
+          },
+          subscribe(listener) {
+            localeListeners.add(listener)
+            return () => localeListeners.delete(listener)
+          },
+          setLocale(locale) {
+            activeLocale = locale
+            localeRevision += 1
+            for (const listener of localeListeners) listener()
+          },
+        },
         timer: {
           timeout(delay) {
             return new Promise((resolve) => timers.push({ delay, resolve }))
@@ -155,6 +186,15 @@ function createRenderer(rpcCall) {
       assert.ok(match, `button ${JSON.stringify(label)} was not rendered; tree text: ${this.text()}`)
       return match
     },
+    dictionaries(namespace) {
+      return localeDictionaries.get(namespace)
+    },
+    setLocale(locale) {
+      activeLocale = locale
+      localeRevision += 1
+      for (const listener of localeListeners) listener()
+      renderAll()
+    },
     hasSlot(name) {
       return slotComponents.has(name)
     },
@@ -167,6 +207,20 @@ function createRenderer(rpcCall) {
     },
   }
 }
+
+test('plugin registers balanced zh and en dictionaries', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  const dictionaries = renderer.dictionaries('dsh-service')
+  assert.ok(dictionaries)
+  assert.deepEqual(Object.keys(dictionaries.en).sort(), Object.keys(dictionaries.zh).sort())
+  assert.ok(Object.keys(dictionaries.zh).length >= 25)
+})
 
 test('service panel lists active work and requires an explicit force restart', async () => {
   const calls = []
@@ -248,6 +302,39 @@ test('restart recovery overlay ignores the old instance and reloads for a new in
 
   await renderer.advanceTimer()
   assert.equal(renderer.reloadCount(), 1)
+})
+
+test('runtime locale switch updates the settings panel, activity warning, and restart overlay', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'activity') return {
+      ok: true,
+      value: {
+        hasActive: true,
+        items: [{ type: 'job', id: 'bash-1', label: 'pnpm test', status: 'running' }],
+      },
+    }
+    if (endpoint === 'web') return { ok: true, value: { message: 'restart scheduled', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /版本信息/)
+  await renderer.findButton('重启 dsh web').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /检测到 1 项运行中的工作/)
+
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /Version information/)
+  assert.match(renderer.text('settings.section'), /Detected 1 active item/)
+  assert.doesNotMatch(renderer.text('settings.section'), /版本信息|检测到/)
+
+  await renderer.findButton('Force restart').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('shell.overlay'), /Restarting service/)
+  assert.doesNotMatch(renderer.text('shell.overlay'), /服务重启中/)
 })
 
 test('restart recovery offers manual reload after sixty seconds', async () => {

@@ -11,7 +11,7 @@ A service-control and operations plugin for self-hosted DSH Web. The current rel
 | Stage | Status | Scope |
 | --- | --- | --- |
 | Current `0.2.1` | ✅ Available | Package and RPC identities unified as `@gehennawu/dsh-service` / `/dsh-service`; DSH version display, DSH update check, two-step restart confirmation, loopback RPC, Chinese and English documentation |
-| v0.3 Safety and UX | 🚧 In progress | ✅ Detect active agents, background jobs, and terminals and require an explicit force action; ✅ identify a new process and reload after restart; remaining: update badge and zh+en UI |
+| v0.3 Safety and UX | 🚧 Awaiting integration tests | ✅ Detect active work and require an explicit force action; ✅ identify a new process and reload after restart; ✅ switch the UI dynamically between zh and en; the update badge is paused because DSH has no third-party Settings navigation API yet |
 | v0.4 Observability | 📋 Planned | Uptime, memory RSS, session and task counts; a status-code-only `/healthz` endpoint |
 | v0.5 Data and maintenance | 📋 Planned | Session/config/plugin-list backups; backup listing and deletion; Linux permission inspection and repair for DSH_HOME and workspaces |
 
@@ -24,6 +24,7 @@ Deferred ideas: one-click DSH upgrades, scheduled restarts, token aggregation, a
 - **Safe restart**: checks for active agents, background jobs, and terminals, displays a warning list when work is active, requires an explicit force action, and then exits DSH Web with code `42`.
 - **Loopback RPC**: uses the single-level `/dsh-service` channel with `version`, `check-update`, and `web` endpoints, available only to loopback callers.
 - **Automatic recovery**: shows a global `shell.overlay` after restart, probes for a new process instance with backoff, reloads automatically, and offers manual reload after 60 seconds.
+- **Bilingual UI**: the Settings page, active-work warning, and recovery overlay switch dynamically with DSH's Chinese/English locale preference.
 - **Lifecycle cleanup**: uses the DSH `timer` service for delayed exit and recovery probes so pending work can be disposed with the plugin Fiber.
 
 ## Installation
