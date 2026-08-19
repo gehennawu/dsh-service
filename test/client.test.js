@@ -171,8 +171,16 @@ function createRenderer(rpcCall, options = {}) {
           },
         },
         timer: {
-          timeout(delay) {
-            return new Promise((resolve) => timers.push({ delay, resolve }))
+          timeout(callbackOrDelay, maybeDelay) {
+            if (typeof callbackOrDelay === 'function') {
+              const timer = { delay: maybeDelay, resolve: callbackOrDelay }
+              timers.push(timer)
+              return () => {
+                const index = timers.indexOf(timer)
+                if (index >= 0) timers.splice(index, 1)
+              }
+            }
+            return new Promise((resolve) => timers.push({ delay: callbackOrDelay, resolve }))
           },
         },
         slots: {
@@ -312,7 +320,7 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.deepEqual(renderer.pendingTimerDelays(), [5000])
 
   renderer.unmount('settings.section')
-  assert.equal(await renderer.advanceTimer(), 5000)
+  assert.deepEqual(renderer.pendingTimerDelays(), [])
   assert.equal(healthCalls, 2)
 })
 
@@ -596,7 +604,6 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   await renderer.findButton('确认重启').props.onClick()
   await renderer.flush()
   renderer.unmount('settings.section')
-  await renderer.advanceTimer(5000)
 
   let elapsed = 0
   while (!renderer.text('shell.overlay').includes('服务尚未恢复')) {

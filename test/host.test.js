@@ -108,6 +108,9 @@ test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs 
   assert.deepEqual(planned.value.items.map((item) => item.mode), ['0700', '0700'])
   assert.equal(typeof planned.value.planId, 'string')
   assert.notEqual(planned.value.planId, '')
+  const concurrentPlan = await handler('permissions-plan', {})
+  assert.equal(concurrentPlan.ok, true)
+  assert.notEqual(concurrentPlan.value.planId, planned.value.planId)
 
   const forged = await handler('permissions-repair', { planId: 'forged-plan' })
   assert.deepEqual(forged, { ok: false, error: 'unknown-permission-plan' })
@@ -338,6 +341,32 @@ test('activity RPC reports running agents, jobs, and agent-scoped terminals with
       ],
     },
   })
+})
+
+test('activity tolerates an agent with an unavailable scoped terminal service', async () => {
+  const malformedAgent = {
+    id: 'agent-without-terminal-realm',
+    status: 'running',
+    ctx: { get: () => { throw new Error('terminal realm unavailable') } },
+  }
+  const { handler } = createHost({
+    services: {
+      agents: { list: () => [malformedAgent] },
+      jobs: { list: () => [] },
+    },
+  })
+
+  const activity = await handler('activity', {})
+  assert.deepEqual(activity, {
+    ok: true,
+    value: {
+      hasActive: true,
+      items: [{ type: 'agent', id: malformedAgent.id, label: malformedAgent.id, status: 'running' }],
+    },
+  })
+  const health = await handler('health', {})
+  assert.equal(health.ok, true)
+  assert.equal(health.value.activeAgents, 1)
 })
 
 test('idle restart schedules exit without requiring force', async () => {

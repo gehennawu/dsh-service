@@ -272,7 +272,6 @@ async function permissionSnapshot(ctx, dshHome, plans) {
     }
   }
   const planId = randomUUID()
-  plans.clear()
   plans.set(planId, items.filter((item) => item.error === undefined).map((item) => item.path))
   return {
     supported: true,
@@ -347,13 +346,18 @@ function collectActiveWork(ctx) {
 
   const terminalsById = new Map()
   for (const owner of agents) {
-    const terminalsService = owner.ctx?.get('terminals') ?? sharedTerminalsService
+    let terminalsService = sharedTerminalsService
+    try {
+      terminalsService = owner.ctx?.get('terminals') ?? sharedTerminalsService
+    } catch (_) {}
     if (terminalsService === undefined) continue
-    for (const terminal of terminalsService.list(owner)) {
-      if (terminal.status?.kind !== 'running') continue
-      const id = String(terminal.sessionId)
-      terminalsById.set(id, { terminal, owner })
-    }
+    try {
+      for (const terminal of terminalsService.list(owner)) {
+        if (terminal.status?.kind !== 'running') continue
+        const id = String(terminal.sessionId)
+        terminalsById.set(id, { terminal, owner })
+      }
+    } catch (_) {}
   }
   for (const { terminal, owner } of terminalsById.values()) {
     items.push({

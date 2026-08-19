@@ -374,6 +374,7 @@ window.__ModuleLoader__.load({
         }, [])
         useEffect(() => {
           let active = true
+          let cancelNext = () => {}
           const poll = async () => {
             try {
               const res = await ctx.connection.rpc.call('/dsh-service', 'health', {})
@@ -385,15 +386,13 @@ window.__ModuleLoader__.load({
               if (!active) return
               setHealthError(translate('health.error'))
             }
-            try {
-              await ctx.timer.timeout(5000)
-            } catch (_) {
-              return
-            }
-            if (active) poll()
+            if (active) cancelNext = ctx.timer.timeout(poll, 5000)
           }
           poll()
-          return () => { active = false }
+          return () => {
+            active = false
+            cancelNext()
+          }
         }, [])
 
         const repairPermissions = async () => {
