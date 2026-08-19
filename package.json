@@ -1,13 +1,40 @@
 {
   "name": "@dsh-nas/restart-dsh",
   "version": "0.2.1",
-  "description": "设置页「服务控制」：一键重启 dsh web（容器 / systemd / pm2 由各自重启策略自动拉起）",
+  "description": "DSH Web 服务控制：显示版本、检查更新，并通过进程管理器安全重启。",
   "type": "module",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "restart",
+    "web-ui"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gehennawu/restart-dsh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gehennawu/restart-dsh/issues"
+  },
+  "homepage": "https://github.com/gehennawu/restart-dsh#readme",
+  "engines": {
+    "node": ">=22"
   },
   "dsh": {
     "bundle": {

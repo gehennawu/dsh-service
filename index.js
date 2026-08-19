@@ -6,33 +6,83 @@ import https from 'node:https'
 const require = createRequire(import.meta.url)
 const name = 'restart-dsh'
 const inject = ['connection']
+const DSH_PACKAGE = '@deepseek-ai/dsh'
+const NPM_REGISTRY = 'https://registry.npmjs.org/'
+const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 
-// 读取当前 dsh 版本
+// 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
 let dshVersion = 'unknown'
 try {
-  dshVersion = require('@deepseek-ai/dsh/package.json').version
+  dshVersion = require(`${DSH_PACKAGE}/package.json`).version
 } catch (_) {
   try {
     dshVersion = require('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json').version
   } catch (__) {}
 }
 
-// 从 npm registry 获取最新版本
-function fetchLatestVersion(pkg) {
+// 只请求固定的 npm registry 包元数据：不接受来自浏览器的 URL 或包名，避免 SSRF。
+function fetchLatestVersion() {
   return new Promise((resolve, reject) => {
-    const url = 'https://registry.npmjs.org/' + encodeURIComponent(pkg)
-    const req = https.get(url, { timeout: 10000, headers: { 'Accept': 'application/json' } }, (res) => {
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const succeed = (value) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    const url = NPM_REGISTRY + encodeURIComponent(DSH_PACKAGE)
+    const request = https.get(url, {
+      timeout: 10000,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'dsh-restart-dsh',
+      },
+    }, (response) => {
+      const status = response.statusCode || 0
+      if (status < 200 || status >= 300) {
+        response.resume()
+        fail(new Error(`npm registry 返回 HTTP ${status}`))
+        return
+      }
+
       let body = ''
-      res.on('data', (chunk) => { body += chunk })
-      res.on('end', () => {
+      let bytes = 0
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > MAX_NPM_RESPONSE_BYTES) {
+          fail(new Error('npm registry 响应过大'))
+          request.destroy()
+          return
+        }
+        body += chunk
+      })
+      response.on('error', fail)
+      response.on('end', () => {
+        if (settled) return
         try {
           const data = JSON.parse(body)
-          resolve(data['dist-tags'] ? data['dist-tags']['latest'] : null)
-        } catch (e) { reject(new Error('解析 npm 响应失败')) }
+          const latest = data?.['dist-tags']?.latest
+          if (typeof latest !== 'string' || latest.length === 0) {
+            fail(new Error('npm 响应中没有 latest 版本'))
+            return
+          }
+          succeed(latest)
+        } catch (_) {
+          fail(new Error('解析 npm 响应失败'))
+        }
       })
     })
-    req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error('请求超时')) })
+    request.on('error', fail)
+    request.on('timeout', () => {
+      request.destroy()
+      fail(new Error('请求 npm registry 超时'))
+    })
   })
 }
 
@@ -46,21 +96,28 @@ function apply(ctx) {
 
     if (endpoint === 'check-update') {
       try {
-        const latest = await fetchLatestVersion('@deepseek-ai/dsh')
-        return { ok: true, value: { current: dshVersion, latest: latest, upToDate: dshVersion === latest } }
-      } catch (err) {
-        return { ok: false, error: err && err.message ? err.message : String(err) }
+        const latest = await fetchLatestVersion()
+        return {
+          ok: true,
+          value: { current: dshVersion, latest, upToDate: dshVersion === latest },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
       }
     }
 
     if (endpoint === 'web') {
       const doExit = () => {
-        try { process.exit(42) }
-        catch (err) { console.error('restart-dsh: exit failed', err && err.message ? err.message : err) }
+        try {
+          // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
+          process.exit(42)
+        } catch (error) {
+          console.error('restart-dsh: exit failed', error?.message || error)
+        }
       }
       const timer = ctx.get('timer')
       if (timer !== undefined) timer.timeout(doExit, 500)
-      else setTimeout(doExit, 500)
+      else doExit()
       return { ok: true, value: '重启指令已发出，进程将在 0.5 秒后退出' }
     }
 
