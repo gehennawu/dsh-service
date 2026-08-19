@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
         // 进入面板时拉取当前版本
         useEffect(() => {
-          ctx.connection.rpc.call('/restart-dsh/version', 'web', {}).then((res) => {
+          ctx.connection.rpc.call('/restart-dsh', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
         }, [])
@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
           setUpdateError(null)
           setUpdateInfo(null)
           try {
-            const res = await ctx.connection.rpc.call('/restart-dsh/check-update', 'web', {})
+            const res = await ctx.connection.rpc.call('/restart-dsh', 'check-update', {})
             if (res && res.ok === false) throw new Error(res.error || '检查失败')
             setUpdateInfo(res.value)
           } catch (err) {
@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
           setBusy(true)
           setError(null)
           try {
-            const res = await ctx.connection.rpc.call('/restart-dsh/web', 'web', {})
+            const res = await ctx.connection.rpc.call('/restart-dsh', 'web', {})
             if (res && res.ok === false) throw new Error(res.error || '重启失败')
             setStage(2)
           } catch (err) {

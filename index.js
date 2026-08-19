@@ -5,7 +5,7 @@ import https from 'node:https'
 
 const require = createRequire(import.meta.url)
 const name = 'restart-dsh'
-const inject = ['connection', 'shell']
+const inject = ['connection']
 
 // 读取当前 dsh 版本
 let dshVersion = 'unknown'
@@ -37,34 +37,34 @@ function fetchLatestVersion(pkg) {
 }
 
 function apply(ctx) {
-  // 版本信息
-  ctx.connection.rpc.handle('/restart-dsh/version', async (endpoint) => {
-    if (endpoint !== 'web') return { ok: false, error: 'unknown endpoint' }
-    return { ok: true, value: { current: dshVersion } }
-  }, { authority: 'loopback' })
-
-  // 检查更新
-  ctx.connection.rpc.handle('/restart-dsh/check-update', async (endpoint) => {
-    if (endpoint !== 'web') return { ok: false, error: 'unknown endpoint' }
-    try {
-      const latest = await fetchLatestVersion('@deepseek-ai/dsh')
-      return { ok: true, value: { current: dshVersion, latest: latest, upToDate: dshVersion === latest } }
-    } catch (err) {
-      return { ok: false, error: err && err.message ? err.message : String(err) }
+  // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
+  // 合法示例：channel=/restart-dsh，endpoint=version/check-update/web。
+  ctx.connection.rpc.handle('/restart-dsh', async (endpoint) => {
+    if (endpoint === 'version') {
+      return { ok: true, value: { current: dshVersion } }
     }
-  }, { authority: 'loopback' })
 
-  // 重启
-  ctx.connection.rpc.handle('/restart-dsh/web', async (endpoint) => {
-    if (endpoint !== 'web') return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
-    const doExit = () => {
-      try { process.exit(42) }
-      catch (err) { console.error('restart-dsh: exit failed', err && err.message ? err.message : err) }
+    if (endpoint === 'check-update') {
+      try {
+        const latest = await fetchLatestVersion('@deepseek-ai/dsh')
+        return { ok: true, value: { current: dshVersion, latest: latest, upToDate: dshVersion === latest } }
+      } catch (err) {
+        return { ok: false, error: err && err.message ? err.message : String(err) }
+      }
     }
-    const timer = ctx.get('timer')
-    if (timer !== undefined) timer.timeout(doExit, 500)
-    else setTimeout(doExit, 500)
-    return { ok: true, value: '重启指令已发出，进程将在 0.5 秒后退出' }
+
+    if (endpoint === 'web') {
+      const doExit = () => {
+        try { process.exit(42) }
+        catch (err) { console.error('restart-dsh: exit failed', err && err.message ? err.message : err) }
+      }
+      const timer = ctx.get('timer')
+      if (timer !== undefined) timer.timeout(doExit, 500)
+      else setTimeout(doExit, 500)
+      return { ok: true, value: '重启指令已发出，进程将在 0.5 秒后退出' }
+    }
+
+    return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
   }, { authority: 'loopback' })
 }
 

@@ -6,6 +6,7 @@
 
 - **版本信息**：进入设置页自动显示当前 DSH 版本号
 - **检查更新**：从 npm registry 获取最新版本，显示是否有新版本可用
+- **兼容新版 RPC**：使用单层 `/restart-dsh` channel，`version`、`check-update`、`web` 作为 endpoint，符合 DSH 0.1.0-rc.7 的 channel 规则
 - **一键重启**：两段式确认，`process.exit(42)` 退出，由进程管理器自动拉起
 
 ## 安装
