@@ -213,6 +213,89 @@ async function deleteBackup(dshHome, id) {
   return listBackups(dshHome)
 }
 
+function modeString(mode) {
+  return '0' + (mode & 0o777).toString(8).padStart(3, '0')
+}
+
+async function runFixedCommand(ctx, argv) {
+  const subprocess = ctx.get('subprocess')
+  if (subprocess === undefined) throw new Error('subprocess-unavailable')
+  const executable = await subprocess.resolveExecutable(argv[0])
+  const handle = subprocess.spawn({
+    argv: [executable, ...argv.slice(1)],
+    cwd: '/',
+    stdio: {
+      stdin: 'ignore',
+      stdout: { maxBytes: 16 * 1024 },
+      stderr: { maxBytes: 64 * 1024 },
+    },
+    graceMs: 5000,
+  })
+  const outcome = await handle.done
+  const stderr = handle.collected.stderr?.readFrom(0).text || ''
+  if (outcome.exitCode !== 0 || outcome.signal !== null) {
+    throw new Error(`${argv[0]}-failed: ${stderr.trim() || outcome.signal || outcome.exitCode}`)
+  }
+}
+
+async function permissionSnapshot(ctx, dshHome, plans) {
+  if (process.platform !== 'linux' || typeof process.getuid !== 'function' || typeof process.getgid !== 'function') {
+    return { supported: false }
+  }
+  const workspaceRegistry = ctx.get('workspaceRegistry')
+  const entries = [{ label: 'DSH_HOME', path: dshHome }]
+  if (workspaceRegistry !== undefined) {
+    for (const workspace of workspaceRegistry.list()) {
+      if (entries.some((entry) => entry.path === workspace.path)) continue
+      entries.push({ label: String(workspace.title || workspace.id), path: String(workspace.path) })
+    }
+  }
+  const items = []
+  for (const entry of entries) {
+    try {
+      const info = await stat(entry.path)
+      if (!info.isDirectory()) continue
+      items.push({
+        label: entry.label,
+        path: entry.path,
+        owner: `${info.uid}:${info.gid}`,
+        mode: modeString(info.mode),
+      })
+    } catch (error) {
+      items.push({
+        label: entry.label,
+        path: entry.path,
+        owner: 'unavailable',
+        mode: '----',
+        error: error?.code || error?.message || String(error),
+      })
+    }
+  }
+  const planId = randomUUID()
+  plans.clear()
+  plans.set(planId, items.filter((item) => item.error === undefined).map((item) => item.path))
+  return {
+    supported: true,
+    planId,
+    targetOwner: `${process.getuid()}:${process.getgid()}`,
+    items,
+  }
+}
+
+async function repairPermissions(ctx, dshHome, plans, planId) {
+  if (typeof planId !== 'string') return undefined
+  const paths = plans.get(planId)
+  if (paths === undefined) return undefined
+  plans.delete(planId)
+  const owner = `${process.getuid()}:${process.getgid()}`
+  for (const path of paths) {
+    await runFixedCommand(ctx, ['chown', '-R', owner, '--', path])
+    await runFixedCommand(ctx, ['find', path, '-type', 'd', '-exec', 'chmod', '755', '{}', '+'])
+    await runFixedCommand(ctx, ['find', path, '-type', 'f', '-exec', 'chmod', '644', '{}', '+'])
+  }
+  return permissionSnapshot(ctx, dshHome, plans)
+}
+
 async function collectHealth(ctx) {
   const sessionsService = ctx.get('sessions')
   const sessionQueryService = ctx.get('sessionQuery')
@@ -283,6 +366,8 @@ function collectActiveWork(ctx) {
 
 function apply(ctx) {
   const dshHome = resolveDshHome()
+  const permissionPlans = new Map()
+  ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
     ctx.effect(() => webServer.register({
@@ -326,6 +411,24 @@ function apply(ctx) {
     if (endpoint === 'health') {
       try {
         return { ok: true, value: await collectHealth(ctx) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'permissions-plan') {
+      try {
+        return { ok: true, value: await permissionSnapshot(ctx, dshHome, permissionPlans) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'permissions-repair') {
+      try {
+        const value = await repairPermissions(ctx, dshHome, permissionPlans, payload?.planId)
+        if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
+        return { ok: true, value }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

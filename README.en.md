@@ -27,6 +27,7 @@ Deferred ideas: one-click DSH upgrades, scheduled restarts, token aggregation, a
 - **Bilingual UI**: the Settings page, active-work warning, and recovery overlay switch dynamically with DSH's Chinese/English locale preference.
 - **Health panel**: shows uptime, memory RSS, live/persisted sessions, active agents, and background jobs; refreshes every 5 seconds while the Settings page is mounted and stops when it closes.
 - **Container liveness**: `GET` / `HEAD /healthz` returns an empty HTTP 200; other methods return 405, with no DSH version, counts, or other information exposed.
+- **Linux file permissions**: shows the owner and directory mode for DSH_HOME and every registered workspace; after two-step confirmation, recursively repairs ownership to the process uid:gid, directories to 755, and files to 644. The section is hidden outside Linux. If DSH runs as root in a container, the target is still root, so this cannot downgrade ownership to an unprivileged user.
 - **Backup management**: creates archives under `$DSH_HOME/backups/` containing sessions, configuration, and plugin profile manifests; lists file name, size, time, and total usage; and requires two-step confirmation before deletion. Backups are unlimited and never auto-pruned, so disk usage is the user's responsibility. Credentials and `node_modules` are excluded.
 - **Lifecycle cleanup**: uses the DSH `timer` service for delayed exit and recovery probes so pending work can be disposed with the plugin Fiber.
 

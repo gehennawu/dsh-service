@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -74,6 +74,55 @@ function createHost(overrides = {}) {
   assert.equal(handlers.length, 1)
   return { handler: handlers[0].handler, scheduled, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
+
+test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-permissions-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-permissions-workspace-'))
+  t.after(() => Promise.all([
+    rm(dshHome, { recursive: true, force: true }),
+    rm(workspace, { recursive: true, force: true }),
+  ]))
+  const nestedDir = join(workspace, 'nested')
+  const nestedFile = join(nestedDir, 'file.txt')
+  await mkdir(nestedDir)
+  await writeFile(nestedFile, 'test')
+  await chmod(dshHome, 0o700)
+  await chmod(workspace, 0o700)
+  await chmod(nestedDir, 0o700)
+  await chmod(nestedFile, 0o600)
+
+  const { handler } = createHost({
+    services: {
+      subprocess: localSubprocess(),
+      workspaceRegistry: { list: () => [{ id: 'workspace-1', title: 'Project', path: workspace }] },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const planned = await handler('permissions-plan', {})
+  assert.equal(planned.ok, true)
+  assert.equal(planned.value.supported, true)
+  assert.equal(planned.value.targetOwner, `${process.getuid()}:${process.getgid()}`)
+  assert.equal(planned.value.items.length, 2)
+  assert.deepEqual(planned.value.items.map((item) => item.path), [dshHome, workspace])
+  assert.deepEqual(planned.value.items.map((item) => item.mode), ['0700', '0700'])
+  assert.equal(typeof planned.value.planId, 'string')
+  assert.notEqual(planned.value.planId, '')
+
+  const forged = await handler('permissions-repair', { planId: 'forged-plan' })
+  assert.deepEqual(forged, { ok: false, error: 'unknown-permission-plan' })
+
+  const repaired = await handler('permissions-repair', { planId: planned.value.planId })
+  assert.equal(repaired.ok, true)
+  assert.equal(repaired.value.supported, true)
+  assert.equal(repaired.value.items.every((item) => item.owner === `${process.getuid()}:${process.getgid()}`), true)
+  assert.deepEqual(repaired.value.items.map((item) => item.mode), ['0755', '0755'])
+  assert.equal((await stat(nestedDir)).mode & 0o777, 0o755)
+  assert.equal((await stat(nestedFile)).mode & 0o777, 0o644)
+
+  const replayed = await handler('permissions-repair', { planId: planned.value.planId })
+  assert.deepEqual(replayed, { ok: false, error: 'unknown-permission-plan' })
+})
 
 test('backup RPC creates the fixed archive shape, lists totals, rejects forged ids, and deletes listed backups', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-'))

@@ -316,6 +316,69 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.equal(healthCalls, 2)
 })
 
+test('permission panel shows the host plan and requires explicit confirmation before repair', async () => {
+  const repairs = []
+  const before = {
+    supported: true,
+    planId: 'permission-plan-1',
+    targetOwner: '1000:1000',
+    items: [
+      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0700' },
+      { label: 'Project', path: '/workspace/project', owner: '1000:1000', mode: '0755' },
+    ],
+  }
+  const after = {
+    supported: true,
+    planId: 'permission-plan-2',
+    targetOwner: '1000:1000',
+    items: [
+      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '1000:1000', mode: '0755' },
+      { label: 'Project', path: '/workspace/project', owner: '1000:1000', mode: '0755' },
+    ],
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: before }
+    if (endpoint === 'permissions-repair') {
+      repairs.push(payload)
+      return { ok: true, value: after }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /文件权限/)
+  assert.match(renderer.text('settings.section'), /DSH_HOME.*0:0.*0700/)
+  assert.match(renderer.text('settings.section'), /目标属主：1000:1000/)
+
+  await renderer.findButton('修复权限').props.onClick()
+  await renderer.flush()
+  assert.equal(repairs.length, 0)
+  assert.match(renderer.text('settings.section'), /递归修改以上目录/)
+
+  await renderer.findButton('确认修复').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(repairs, [{ planId: before.planId }])
+  assert.match(renderer.text('settings.section'), /DSH_HOME.*1000:1000.*0755/)
+})
+
+test('permission panel stays hidden when the host reports a non-Linux platform', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.doesNotMatch(renderer.text('settings.section'), /文件权限|File permissions/)
+})
+
 test('backup panel creates, lists, and requires a second click before deleting a host-listed backup', async () => {
   const calls = []
   const first = {

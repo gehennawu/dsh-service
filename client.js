@@ -25,6 +25,15 @@ window.__ModuleLoader__.load({
       'health.activeJobs': '后台任务',
       'health.uptimeValue': '{hours} 小时 {minutes} 分钟',
       'health.error': '无法读取运行状况',
+      'permissions.title': '文件权限',
+      'permissions.description': '查看 DSH_HOME 和全部工作区目录的当前属主与权限。修复会递归改为进程用户，并设置目录 755、文件 644。',
+      'permissions.target': '目标属主：{owner}',
+      'permissions.repair': '修复权限',
+      'permissions.repairing': '修复中…',
+      'permissions.confirm': '确认修复',
+      'permissions.confirmHint': '将递归修改以上目录的属主和权限。请确认当前值后再继续。',
+      'permissions.cancel': '取消',
+      'permissions.error': '权限操作失败',
       'backup.title': '备份管理',
       'backup.description': '备份会话、配置和插件 profile 清单；不会包含 node_modules 或凭据。备份不会自动清理，请自行管理磁盘空间。',
       'backup.create': '创建备份',
@@ -80,6 +89,15 @@ window.__ModuleLoader__.load({
       'health.activeJobs': 'Background jobs',
       'health.uptimeValue': '{hours} h {minutes} min',
       'health.error': 'Could not read health metrics',
+      'permissions.title': 'File permissions',
+      'permissions.description': 'Shows the current owner and mode for DSH_HOME and every workspace directory. Repair recursively changes ownership to the process user, directories to 755, and files to 644.',
+      'permissions.target': 'Target owner: {owner}',
+      'permissions.repair': 'Repair permissions',
+      'permissions.repairing': 'Repairing…',
+      'permissions.confirm': 'Confirm repair',
+      'permissions.confirmHint': 'This will recursively modify ownership and permissions for every directory above. Review the current values before continuing.',
+      'permissions.cancel': 'Cancel',
+      'permissions.error': 'Permission operation failed',
       'backup.title': 'Backup management',
       'backup.description': 'Backs up sessions, configuration, and plugin profile manifests. Credentials and node_modules are excluded. Backups are never auto-pruned; you are responsible for disk usage.',
       'backup.create': 'Create backup',
@@ -237,6 +255,10 @@ window.__ModuleLoader__.load({
         const translate = useTranslation()
         const [health, setHealth] = useState(null)
         const [healthError, setHealthError] = useState(null)
+        const [permissions, setPermissions] = useState(null)
+        const [permissionConfirm, setPermissionConfirm] = useState(false)
+        const [permissionBusy, setPermissionBusy] = useState(false)
+        const [permissionError, setPermissionError] = useState(null)
         const [backups, setBackups] = useState({ items: [], totalBytes: 0 })
         const [backupBusy, setBackupBusy] = useState(false)
         const [backupError, setBackupError] = useState(null)
@@ -256,6 +278,15 @@ window.__ModuleLoader__.load({
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
+        }, [])
+        useEffect(() => {
+          let active = true
+          ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then((res) => {
+            if (active && res && res.ok) setPermissions(res.value)
+          }).catch(() => {
+            if (active) setPermissionError(translate('permissions.error'))
+          })
+          return () => { active = false }
         }, [])
         useEffect(() => {
           let active = true
@@ -289,6 +320,22 @@ window.__ModuleLoader__.load({
           poll()
           return () => { active = false }
         }, [])
+
+        const repairPermissions = async () => {
+          if (!permissions || permissions.supported !== true) return
+          setPermissionBusy(true)
+          setPermissionError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'permissions-repair', { planId: permissions.planId })
+            if (!res || res.ok === false) throw new Error('permission repair failed')
+            setPermissions(res.value)
+            setPermissionConfirm(false)
+          } catch (_) {
+            setPermissionError(translate('permissions.error'))
+          } finally {
+            setPermissionBusy(false)
+          }
+        }
 
         const createBackup = async () => {
           setBackupBusy(true)
@@ -430,6 +477,29 @@ window.__ModuleLoader__.load({
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
 
+        const permissionBlock = permissions && permissions.supported === true
+          ? React.createElement('div', { key: 'permissions-section' },
+              React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
+              React.createElement('p', { style: hint }, translate('permissions.description')),
+              React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
+              React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
+                permissions.items.map((item) => React.createElement('div', {
+                  key: item.path,
+                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid rgba(128,128,128,0.2)' },
+                },
+                React.createElement('div', { style: { fontSize: '12px', fontWeight: 600 } }, item.label),
+                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '11px', color: '#888', overflowWrap: 'anywhere' } }, item.path),
+                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', marginTop: '3px' } }, `${item.owner} · ${item.mode}`)))),
+              permissionConfirm
+                ? React.createElement('div', { style: { marginTop: '10px' } },
+                    React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, translate('permissions.confirmHint')),
+                    React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                      React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
+                      React.createElement('button', { style: plain, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
+                : React.createElement('button', { style: Object.assign({}, danger, { marginTop: '10px' }), disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
+              permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, permissionError) : null)
+          : null
+
         const backupBlock = React.createElement('div', { key: 'backup-section' },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('p', { style: hint }, translate('backup.description')),
@@ -486,6 +556,7 @@ window.__ModuleLoader__.load({
         if (stage === 2) {
           return React.createElement('div', null,
             healthBlock,
+            permissionBlock,
             backupBlock,
             versionBlock,
             React.createElement('div', { key: 'restart-section' },
@@ -539,7 +610,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        return React.createElement('div', null, healthBlock, backupBlock, versionBlock, restartBlock)
+        return React.createElement('div', null, healthBlock, permissionBlock, backupBlock, versionBlock, restartBlock)
       }
 
       ctx.slots.inject('settings.section', () => ctx.slots.register(
