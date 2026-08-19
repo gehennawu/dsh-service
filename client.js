@@ -43,7 +43,9 @@ window.__ModuleLoader__.load({
       'health.check.tar': 'tar',
       'health.check.permissions': '文件权限',
       'tabs.overview': '概览',
+      'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
+      'overview.container': '容器信息',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
       'tabs.alert.title': '服务控制提醒',
@@ -110,12 +112,16 @@ window.__ModuleLoader__.load({
       'error.restart': '重启失败',
       'error.instance': '重启响应缺少进程实例标识',
       'usage.title': '模型使用',
+      'usage.structure': 'Token 结构',
+      'usage.structureHint': '按日期展示输入、输出和缓存 Token。',
+      'usage.tooltip': '精确数据：{date} · {type} · {value}',
       'usage.refresh': '刷新统计',
       'usage.refreshing': '刷新中…',
       'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
       'usage.error': '无法读取模型使用统计',
       'usage.allProjects': '全部项目',
       'usage.steps': '成功模型步骤',
+      'usage.stepsValue': '{count} 次',
       'usage.input': '输入 Token',
       'usage.output': '输出 Token',
       'usage.cache': '缓存 Token',
@@ -167,7 +173,9 @@ window.__ModuleLoader__.load({
       'health.check.tar': 'tar',
       'health.check.permissions': 'File permissions',
       'tabs.overview': 'Overview',
+      'tabs.health': 'Health diagnostics',
       'tabs.usage': 'Model statistics',
+      'overview.container': 'Container information',
       'tabs.backup': 'Backup maintenance',
       'tabs.restart': 'Restart',
       'tabs.alert.title': 'Service control alert',
@@ -234,12 +242,16 @@ window.__ModuleLoader__.load({
       'error.restart': 'Restart failed',
       'error.instance': 'Restart response is missing the process instance ID',
       'usage.title': 'Model usage',
+      'usage.structure': 'Token structure',
+      'usage.structureHint': 'Input, output, and cache tokens by date.',
+      'usage.tooltip': 'Exact data: {date} · {type} · {value}',
       'usage.refresh': 'Refresh usage',
       'usage.refreshing': 'Refreshing…',
       'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
       'usage.error': 'Could not read model usage',
       'usage.allProjects': 'All projects',
       'usage.steps': 'Successful model steps',
+      'usage.stepsValue': '{count} times',
       'usage.input': 'Input tokens',
       'usage.output': 'Output tokens',
       'usage.cache': 'Cache tokens',
@@ -453,7 +465,7 @@ window.__ModuleLoader__.load({
         const [usage, setUsage] = useState(null)
         const [usageBusy, setUsageBusy] = useState(false)
         const [usageError, setUsageError] = useState(null)
-        const [usageMetric, setUsageMetric] = useState('inputTokens')
+        const [hoveredUsageSegment, setHoveredUsageSegment] = useState(null)
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
@@ -703,12 +715,13 @@ window.__ModuleLoader__.load({
         const plain = Object.assign({}, btn, { background: 'transparent' })
         const primary = Object.assign({}, btn, { background: '#5B4CF0', color: '#fff', borderColor: '#5B4CF0' })
         const info = Object.assign({}, btn, { background: 'rgba(43,108,176,0.12)', color: '#2b6cb0', borderColor: 'rgba(43,108,176,0.35)' })
-        const toggle = Object.assign({}, btn, { background: 'rgba(128,128,128,0.08)', borderColor: 'transparent', padding: '7px 10px', width: '100%', textAlign: 'left', fontWeight: 600 })
+        const toggle = Object.assign({}, btn, { background: 'transparent', border: 0, borderTop: '1px solid rgba(128,128,128,0.22)', borderRadius: 0, padding: '10px 2px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const card = { background: 'rgba(105,115,135,0.1)', border: '1px solid rgba(105,115,135,0.28)', borderRadius: '10px', padding: '14px 16px', marginBottom: '12px' }
-        const displaySurface = { background: 'rgba(67,76,96,0.18)', border: '1px solid rgba(105,115,135,0.4)', borderRadius: '8px', padding: '10px', marginTop: '8px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }
-        const tabPanel = { background: 'rgba(47,56,76,0.15)', border: '1px solid rgba(105,115,135,0.46)', borderRadius: '11px', padding: '16px', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }
+        const card = { padding: '4px 0 14px', marginBottom: '12px' }
+        const displaySurface = { background: 'rgba(128,128,128,0.1)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
+        const tabPanel = { padding: '14px 2px 2px' }
+        const inlineTab = { background: 'transparent', border: 0, borderRadius: 0, padding: '8px 4px', cursor: 'pointer', fontSize: '13px' }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'inherit' }
 
         const formatSize = (bytes) => {
@@ -746,12 +759,10 @@ window.__ModuleLoader__.load({
           date.setDate(date.getDate() - offset)
           usageDays.push({ key: dateKey(date), label: `${date.getMonth() + 1}/${date.getDate()}` })
         }
-        const usageMetrics = [
-          ['steps', 'usage.steps'],
-          ['inputTokens', 'usage.input'],
-          ['outputTokens', 'usage.output'],
-          ['cacheTokens', 'usage.cache'],
-          ['cacheHitRate', 'usage.hitRate'],
+        const usageSegments = [
+          ['inputTokens', 'usage.input', '#79aaf7'],
+          ['outputTokens', 'usage.output', '#f1b35b'],
+          ['cacheTokens', 'usage.cache', '#48c7b0'],
         ]
         const usageTotalsFor = (day) => {
           const source = usage && usage.days ? usage.days[day] : null
@@ -760,13 +771,22 @@ window.__ModuleLoader__.load({
           const project = source.projects.find((item) => item.id === usageProject)
           return project ? project.totals : { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
         }
-        const usageValue = (totals) => usageMetric === 'cacheTokens'
+        const usageValue = (totals, metricName) => metricName === 'cacheTokens'
           ? totals.cacheReadTokens + totals.cacheWriteTokens
-          : totals[usageMetric] || 0
+          : totals[metricName] || 0
+        const formatTokenValue = (value) => {
+          const number = Number(value) || 0
+          if (number >= 1000000) return `${Math.round(number / 100000) / 10}M`
+          if (number >= 1000) return `${Math.round(number / 100) / 10}K`
+          return number.toLocaleString()
+        }
         const formatUsageValue = (value, metricName) => metricName === 'cacheHitRate'
           ? (Number(value) * 100).toFixed(1) + '%'
-          : Number(value).toLocaleString()
-        const chartValues = usageDays.map((day) => usageValue(usageTotalsFor(day.key)))
+          : metricName === 'steps'
+            ? translate('usage.stepsValue', { count: Number(value).toLocaleString() })
+            : formatTokenValue(value)
+        const chartTotals = usageDays.map((day) => usageTotalsFor(day.key))
+        const chartValues = chartTotals.map((totals) => usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0))
         const chartMax = Math.max(1, ...chartValues)
         const todayTotals = usageTotalsFor(usageDays[6].key)
         const sevenTotals = usageDays.reduce((total, day) => {
@@ -817,43 +837,63 @@ window.__ModuleLoader__.load({
                   React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
                 React.createElement('div', { style: { color: '#888', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message))))
         const usageBlock = React.createElement('div', { key: 'usage-section', 'data-testid': 'usage-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('usage.title')),
-          React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '8px 0' } },
-            usageMetrics.map(([id, label]) => React.createElement('button', { key: id, style: id === usageMetric ? primary : plain, onClick: () => setUsageMetric(id) }, translate(label)))),
+          React.createElement('div', { style: sectionTitle }, translate('usage.structure')),
+          React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('usage.structureHint')),
           usage && usage.projects.length > 0
-            ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' } },
-                React.createElement('button', { style: usageProject === 'all' ? primary : plain, onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
-                usage.projects.map((project) => React.createElement('button', { key: project.id, style: usageProject === project.id ? primary : plain, onClick: () => setUsageProject(project.id) }, project.title)))
+            ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid rgba(128,128,128,0.18)' } },
+                React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? { fontWeight: 700, borderBottom: '2px solid currentColor', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
+                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? { fontWeight: 700, borderBottom: '2px solid currentColor', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', null,
-                React.createElement('div', { style: { display: 'flex', alignItems: 'end', gap: '6px', height: '130px', padding: '10px', borderRadius: '8px', background: 'rgba(128,128,128,0.07)' } },
+                React.createElement('div', { 'data-testid': 'usage-chart', style: { display: 'flex', alignItems: 'end', gap: '8px', height: '150px', padding: '12px 10px 8px', borderRadius: '8px', background: 'rgba(128,128,128,0.1)' } },
                   usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center' } },
-                    React.createElement('div', { title: formatUsageValue(chartValues[index], usageMetric), style: { height: `${Math.max(2, chartValues[index] / chartMax * 95)}px`, background: '#5B4CF0', borderRadius: '4px 4px 0 0' } }),
+                    React.createElement('div', { style: { height: `${Math.max(2, chartValues[index] / chartMax * 112)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
+                      usageSegments.map(([metricName, label, color]) => {
+                        const value = usageValue(chartTotals[index], metricName)
+                        const segmentHeight = chartValues[index] === 0 ? 0 : value / chartValues[index] * 100
+                        const segmentId = `${day.key}-${metricName}`
+                        const active = hoveredUsageSegment && hoveredUsageSegment.id === segmentId
+                        return React.createElement('div', {
+                          key: metricName,
+                          'data-testid': `usage-segment-${segmentId}`,
+                          'data-value': value,
+                          onMouseEnter: () => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value }),
+                          onMouseLeave: () => setHoveredUsageSegment(null),
+                          style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
+                        })
+                      })),
                     React.createElement('div', { style: { fontSize: '10px', color: '#888', marginTop: '4px' } }, day.label)))),
+                React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px', fontSize: '11px' } },
+                  usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+                    React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
+                    translate(label)))),
+                hoveredUsageSegment ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', fontWeight: 600 } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '8px' } },
-                  metric('usage.today', formatUsageValue(usageValue(todayTotals), usageMetric)),
-                  metric('usage.sevenDays', formatUsageValue(usageValue(sevenTotals), usageMetric))),
+                  metric('usage.today', usageSegments.map(([metricName, label]) => `${translate(label)} ${formatTokenValue(usageValue(todayTotals, metricName))}`).join(' · ')),
+                  metric('usage.sevenDays', `${formatUsageValue(sevenTotals.steps, 'steps')} · ${formatTokenValue(usageSegments.reduce((sum, [metricName]) => sum + usageValue(sevenTotals, metricName), 0))} Token`)),
+                React.createElement('p', { style: hint }, `${translate('usage.hitRate')}：${formatUsageValue(sevenTotals.cacheHitRate, 'cacheHitRate')}`),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
-                  [...modelTotals.values()].sort((a, b) => b.steps - a.steps).map((model) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 8px', border: '1px solid rgba(128,128,128,0.18)', borderRadius: '6px' } },
+                  [...modelTotals.values()].sort((a, b) => b.steps - a.steps).map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
                     React.createElement('span', null, model.id),
-                    React.createElement('span', null, formatUsageValue(usageValue({ ...model, cacheHitRate: (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) === 0 ? 0 : model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) }), usageMetric))))),
+                    React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`)))),
                 React.createElement('div', { style: { display: 'grid', gap: '7px', marginTop: '12px' } },
                   React.createElement('div', null,
                     React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
-                    modelErrorsOpen ? React.createElement('div', { style: displaySurface },
+                    modelErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } },
                       React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
                       errorList('model', modelErrors)) : null),
                   React.createElement('div', null,
                     React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
-                    toolErrorsOpen ? React.createElement('div', { style: displaySurface },
+                    toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } },
                       React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
                       errorList('tool', toolErrors)) : null)))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
-        const healthSummaryBlock = React.createElement('div', null,
+        const containerInfoBlock = React.createElement('div', { key: 'container-info', style: { marginTop: '18px' } },
+          React.createElement('div', { style: sectionTitle }, translate('overview.container')),
           health
             ? React.createElement('div', { 'data-testid': 'health-display', style: Object.assign({}, displaySurface, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }) },
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
@@ -862,7 +902,8 @@ window.__ModuleLoader__.load({
                 metric('health.persistedSessions', String(health.persistedSessions)),
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
-            : React.createElement('p', { style: hint }, healthError || translate('version.loading')),
+            : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
+        const healthSummaryBlock = React.createElement('div', null,
           React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
             ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
@@ -911,7 +952,7 @@ window.__ModuleLoader__.load({
           : null
 
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('health.title')),
+          React.createElement('div', { style: sectionTitle }, translate('tabs.health')),
           healthSummaryBlock,
           permissionBlock)
 
@@ -1029,34 +1070,39 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
+        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
         const tabWarnings = {
-          overview: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
+          overview: false,
+          health: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
           usage: Boolean(usageError),
           backup: Boolean(backupError),
           restart: Boolean(error),
         }
         const tabs = [
           ['overview', 'tabs.overview'],
+          ['health', 'tabs.health'],
           ['usage', 'tabs.usage'],
           ['backup', 'tabs.backup'],
           ['restart', 'tabs.restart'],
         ]
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
         const tabContent = activeTab === 'overview'
-          ? React.createElement('div', null, versionBlock, healthBlock)
-          : activeTab === 'usage'
-            ? usageBlock
-            : activeTab === 'backup'
-              ? maintenanceBlock
-              : restartBlock
+          ? overviewBlock
+          : activeTab === 'health'
+            ? healthBlock
+            : activeTab === 'usage'
+              ? usageBlock
+              : activeTab === 'backup'
+                ? maintenanceBlock
+                : restartBlock
         return React.createElement('div', null,
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
-          React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: activeTab === id ? primary : Object.assign({}, plain, tabWarnings[id] ? { color: '#c68000', borderColor: 'rgba(198,128,0,0.55)', background: 'rgba(198,128,0,0.1)' } : {}), onClick: () => setActiveTab(id) }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '18px', flexWrap: 'wrap', borderBottom: '1px solid rgba(128,128,128,0.28)' } },
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: '#5B4CF0', fontWeight: 700, borderBottom: '2px solid #5B4CF0', marginBottom: '-1px' } : { color: tabWarnings[id] ? '#c68000' : 'inherit', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setActiveTab(id) }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
