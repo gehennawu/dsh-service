@@ -55,6 +55,7 @@ window.__ModuleLoader__.load({
       'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
       'overview.container': '容器信息',
+      'overview.errors': '报错信息',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
       'tabs.alert.title': '服务控制提醒',
@@ -201,6 +202,7 @@ window.__ModuleLoader__.load({
       'tabs.health': 'Health diagnostics',
       'tabs.usage': 'Model statistics',
       'overview.container': 'Container information',
+      'overview.errors': 'Error information',
       'tabs.backup': 'Backup maintenance',
       'tabs.restart': 'Restart',
       'tabs.alert.title': 'Service control alert',
@@ -509,6 +511,7 @@ window.__ModuleLoader__.load({
         const [activity, setActivity] = useState(null)
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState(null)
+        const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
         useEffect(() => {
@@ -542,13 +545,13 @@ window.__ModuleLoader__.load({
         }, [])
         useEffect(() => {
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'usage', {}).then(async (res) => {
+          ctx.connection.rpc.call('/dsh-service', 'usage', usageRequestPayload).then(async (res) => {
             if (!active) return
             if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
             setUsage(res.value)
             if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
             try {
-              const refreshed = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', {})
+              const refreshed = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', usageRequestPayload)
               if (active && refreshed && refreshed.ok) setUsage(refreshed.value)
             } catch (_) {}
           }).catch(() => {
@@ -609,7 +612,7 @@ window.__ModuleLoader__.load({
           setUsageBusy(true)
           setUsageError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', {})
+            const res = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', usageRequestPayload)
             if (!res || res.ok === false) throw new Error('usage refresh failed')
             setUsage(res.value)
           } catch (_) {
@@ -729,9 +732,9 @@ window.__ModuleLoader__.load({
 
         // 样式
         const btn = { minHeight: '32px', padding: '6px 13px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease' }
-        const neutral = Object.assign({}, btn, { background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' })
-        const primaryOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-brand-text)', borderColor: 'var(--dsw-alias-brand-primary)' })
-        const dangerOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' })
+        const neutral = Object.assign({}, btn, { background: 'var(--dsw-alias-interactive-bg-active)', color: 'var(--dsw-alias-label-primary)' })
+        const primaryOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-brand-primary)', color: '#fff', borderColor: 'var(--dsw-alias-brand-primary)' })
+        const dangerOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' })
         const danger = Object.assign({}, btn, { background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' })
         const plain = neutral
         const primary = primaryOutline
@@ -892,8 +895,8 @@ window.__ModuleLoader__.load({
           React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('usage.structureHint')),
           usage && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-                React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? { color: 'var(--dsw-alias-brand-text)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
-                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? { color: 'var(--dsw-alias-brand-text)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject(project.id) }, project.title)))
+                React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
+                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: { padding: '12px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '9px', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)' } },
@@ -951,7 +954,8 @@ window.__ModuleLoader__.load({
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
         const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', 'data-testid': 'overview-errors-region', style: Object.assign({}, displaySurface, { marginTop: '18px' }) },
-          React.createElement('div', { style: sectionTitle }, translate('usage.errors.recent')),
+          React.createElement('div', { style: sectionTitle }, translate('overview.errors')),
+          React.createElement('div', { style: Object.assign({}, hint, { margin: '-3px 0 7px' }) }, translate('usage.errors.recent')),
           React.createElement('div', { style: { display: 'grid', gap: '7px' } },
             React.createElement('div', null,
               React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
@@ -1003,7 +1007,7 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                       React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
                       React.createElement('button', { style: plain, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
-                : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-outline', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
+                : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null)
           : null
 
@@ -1016,7 +1020,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('p', { style: hint }, translate('backup.description')),
           React.createElement('div', { style: row },
-            React.createElement('button', { style: primaryOutline, 'data-variant': 'primary-outline', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('button', { style: primaryOutline, 'data-variant': 'primary-filled', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
           backups.items.length === 0
@@ -1036,7 +1040,7 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '7px' }), 'data-variant': 'danger-outline', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
+                  : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '7px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
             : null)
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
@@ -1147,7 +1151,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
           React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '18px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: 'var(--dsw-alias-brand-text)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 

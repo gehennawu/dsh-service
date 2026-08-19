@@ -279,6 +279,38 @@ test('usage RPC builds and incrementally refreshes exact daily provider, model, 
   assert.equal(reads, 2)
 })
 
+test('usage RPC groups UTC-hour buckets into the browser local calendar day', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-local-day-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const eventTime = Date.UTC(2026, 7, 19, 17, 30)
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'session-local-day', version: 0, createdAt: eventTime, cwd: '/workspace/project' }, revision: 'rev-1' }],
+    readFrom: async () => ({
+      meta: { id: 'session-local-day', version: 0, createdAt: eventTime, cwd: '/workspace/project' },
+      events: [
+        { type: 'request/header', seq: 0, time: eventTime - 1, data: { header: { config: { provider: 'deepseek', model: 'deepseek-chat' } } } },
+        { type: 'assistant/message', seq: 1, time: eventTime, data: { usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10 } } },
+      ],
+    }),
+  }
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: persistence,
+      workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }] },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const refreshed = await handler('usage-refresh', { timezoneOffsetMinutes: -480 })
+  assert.equal(refreshed.ok, true)
+  assert.equal(refreshed.value.days['2026-08-20'].totals.steps, 1)
+  assert.equal(refreshed.value.days['2026-08-19'], undefined)
+
+  const cached = await handler('usage', { timezoneOffsetMinutes: -480 })
+  assert.equal(cached.ok, true)
+  assert.equal(cached.value.days['2026-08-20'].totals.inputTokens, 100)
+})
+
 test('usage RPC groups direct and code-dispatched tool failures for the last 24 hours without persisting paths', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-tool-errors-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

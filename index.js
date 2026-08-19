@@ -17,7 +17,7 @@ const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
-const USAGE_INDEX_VERSION = 3
+const USAGE_INDEX_VERSION = 4
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
@@ -218,10 +218,14 @@ async function deleteBackup(dshHome, id) {
   return listBackups(dshHome)
 }
 
-function usageDay(time) {
-  const date = new Date(time)
-  const digits = (value) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
+function usageHour(time) {
+  return new Date(time).toISOString().slice(0, 13)
+}
+
+function localDayForHour(hour, timezoneOffsetMinutes = 0) {
+  const offset = Number.isFinite(Number(timezoneOffsetMinutes)) ? Math.max(-840, Math.min(840, Number(timezoneOffsetMinutes))) : 0
+  const utcTime = Date.parse(`${hour}:00:00.000Z`)
+  return new Date(utcTime - offset * 60 * 1000).toISOString().slice(0, 10)
 }
 
 function emptyUsageTotals() {
@@ -403,7 +407,7 @@ function pruneSessionErrors(session, cutoff) {
 
 function foldUsageEvents(ctx, record, previous, events) {
   const project = projectForCwd(ctx, record.header.cwd)
-  const session = previous || { revision: '', lastSeq: Math.max(0, record.header.seedLength || 0) - 1, project, currentModel: null, days: {} }
+  const session = previous || { revision: '', lastSeq: Math.max(0, record.header.seedLength || 0) - 1, project, currentModel: null, hours: {} }
   session.project = project
   for (const event of events) {
     if (event.seq < (record.header.seedLength || 0)) continue
@@ -418,8 +422,8 @@ function foldUsageEvents(ctx, record, previous, events) {
     if (addToolError(session, event)) continue
     if (addUsageError(session, event, model)) continue
     if (event.type !== 'assistant/message') continue
-    const day = usageDay(event.time)
-    const bucket = session.days[day] || (session.days[day] = { totals: emptyUsageTotals(), models: {}, errors: {} })
+    const hour = usageHour(event.time)
+    const bucket = session.hours[hour] || (session.hours[hour] = { totals: emptyUsageTotals(), models: {} })
     const modelBucket = bucket.models[model.id] || (bucket.models[model.id] = { id: model.id, provider: model.provider, model: model.model, totals: emptyUsageTotals() })
     const usage = event.data?.usage
     const delta = emptyUsageTotals()
@@ -437,7 +441,7 @@ function foldUsageEvents(ctx, record, previous, events) {
   return session
 }
 
-function publicUsage(index) {
+function publicUsage(index, timezoneOffsetMinutes = 0) {
   const result = { updatedAt: index.updatedAt, indexedSessions: Object.keys(index.sessions).length, totals: emptyUsageTotals(), days: {}, errors: { models: [], tools: [] } }
   const projects = new Map()
   const modelErrors = new Map()
@@ -460,7 +464,8 @@ function publicUsage(index) {
       aggregate.count += count
       toolErrors.set(key, aggregate)
     }
-    for (const [day, source] of Object.entries(session.days)) {
+    for (const [hour, source] of Object.entries(session.hours || {})) {
+      const day = localDayForHour(hour, timezoneOffsetMinutes)
       const dayBucket = result.days[day] || (result.days[day] = { totals: emptyUsageTotals(), projects: new Map() })
       addUsageTotals(dayBucket.totals, source.totals)
       addUsageTotals(result.totals, source.totals)
@@ -512,7 +517,7 @@ async function refreshUsageIndex(ctx, dshHome, index) {
   }
   index.updatedAt = Date.now()
   await saveUsageIndex(dshHome, index)
-  return publicUsage(index)
+  return index
 }
 
 function modeString(mode) {
@@ -882,7 +887,7 @@ function apply(ctx) {
 
     if (endpoint === 'usage') {
       try {
-        return { ok: true, value: publicUsage(await usageIndexPromise) }
+        return { ok: true, value: publicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -893,7 +898,7 @@ function apply(ctx) {
         if (usageRefreshPromise === undefined) {
           usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
         }
-        return { ok: true, value: await usageRefreshPromise }
+        return { ok: true, value: publicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
