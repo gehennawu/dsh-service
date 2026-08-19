@@ -2,57 +2,28 @@
 
 [中文](./README.md)
 
-A DSH Web plugin (package: `@gehennawu/dsh-service`) that provides service controls, version information, and update checks in Settings.
+A service-control and operations plugin for self-hosted DSH Web. The current release provides host version information, DSH update checks, and safe process restarts, with restart protection, runtime status, backups, and Linux file-permission maintenance planned for later releases.
 
-> This project only sends an exit signal to the current DSH Web process. Automatic recovery is the responsibility of an external process manager.
+> This project is still in early development and is currently verified mainly with **Linux + Docker**. Docker, systemd, pm2, or another external process manager must restart DSH Web after the plugin exits the process.
 
-## Scope and platform support
+## Development status
 
-### Summary
+| Stage | Status | Scope |
+| --- | --- | --- |
+| Current `0.2.1` | ✅ Available | Package and RPC identities unified as `@gehennawu/dsh-service` / `/dsh-service`; DSH version display, DSH update check, two-step restart confirmation, loopback RPC, Chinese and English documentation |
+| v0.3 Safety and UX | 🚧 In progress | Detect active agents, background jobs, and terminals before restart; automatically detect recovery and reload; update badge; zh+en UI |
+| v0.4 Observability | 📋 Planned | Uptime, memory RSS, session and task counts; a status-code-only `/healthz` endpoint |
+| v0.5 Data and maintenance | 📋 Planned | Session/config/plugin-list backups; backup listing and deletion; Linux permission inspection and repair for DSH_HOME and workspaces |
 
-The plugin itself is **not Linux-only**. Version display, update checks, the Settings UI, and RPC use cross-platform DSH/Node.js capabilities and should theoretically work on Linux, macOS, and Windows.
+Deferred ideas: one-click DSH upgrades, scheduled restarts, token aggregation, and historical system metrics.
 
-However, the project is currently verified only with **Linux + Docker**. Whether the service starts again after an exit depends on the configured process manager, not on this plugin alone.
+## Current features
 
-| Platform / runtime | Plugin loading, version display, update check | Restart button | Automatic recovery after exit | Verification |
-| --- | --- | --- | --- | --- |
-| Linux + Docker Compose | Supported | Supported | Supported with `restart: unless-stopped` / `always` | Verified |
-| Linux + systemd | Supported | Supported | Supported with `Restart=on-failure` / `always` | Mechanism confirmed; not separately tested here |
-| Linux / macOS / Windows + pm2 | Supported | Supported | Managed by pm2 | Depends on pm2 configuration; not separately tested |
-| Windows / macOS + another process manager | Supported | Supported | Supported if the manager restarts the DSH command after exit code `42` | Not separately tested |
-| Direct `dsh web` execution without a process manager | Supported | Process exits | No automatic recovery | Expected behavior |
-
-### Requirements
-
-- Node.js must satisfy the version in package.json (currently `>=22`).
-- DSH Web must be able to load both the Host and Client halves of the plugin.
-- Update checks require access to `registry.npmjs.org`. Network failures only affect update checks, not plugin loading.
-- The restart button exits the DSH Web process with code `42`. Docker, systemd, pm2, launchd, or another external process manager must restart it.
-
-### Windows and macOS
-
-Windows and macOS are not blocked by the code, but neither platform has received a full regression test. Validate the following on a test instance first:
-
-1. The process manager observes exit code `42`.
-2. The manager starts the same `dsh web` command again.
-3. Both the Host and Client plugin halves load correctly.
-
-## Features
-
-- **Version information**: displays the installed DSH version.
+- **Host version**: displays the installed `@deepseek-ai/dsh` version.
 - **Update check**: reads the `latest` version of `@deepseek-ai/dsh` from a fixed npm registry URL.
-- **One-click restart**: after a two-step confirmation, exits with code `42` and lets Docker, systemd, or pm2 take over.
-- **Loopback RPC**: restart and version interfaces are registered only on a loopback channel and do not accept external network requests.
-- **Current RPC layout**: uses a single-level `/dsh-service` channel with `version`, `check-update`, and `web` endpoints.
-- **Lifecycle safety**: prefers the DSH `timer` service for scheduling the exit so Fiber disposal can clean it up; exits immediately only when the service is unavailable.
-
-## Security
-
-- The plugin does not accept user-provided URLs, package names, commands, or file paths.
-- Update checks only access `https://registry.npmjs.org/@deepseek-ai%2Fdsh`, with a 256 KiB response limit and a 10-second timeout.
-- The plugin contains no tokens, passwords, private keys, or persistent credentials.
-- Restarting interrupts active work. Only trusted users should have access to DSH Web.
-- Exit code `42` does not restart the process by itself. Without a process manager, the service stops after restart is requested.
+- **Safe restart**: exits the current DSH Web process with code `42` after a two-step confirmation.
+- **Loopback RPC**: uses the single-level `/dsh-service` channel with `version`, `check-update`, and `web` endpoints, available only to loopback callers.
+- **Lifecycle cleanup**: prefers the DSH `timer` service for delayed exit so pending work can be disposed with the plugin Fiber.
 
 ## Installation
 
@@ -62,32 +33,23 @@ Windows and macOS are not blocked by the code, but neither platform has received
 dsh plugin --profile web add github:gehennawu/dsh-service
 ```
 
-Restart DSH Web after installing or updating so both plugin halves are loaded:
+Restart DSH Web after installation or updates so both the Host and Client plugin halves are reloaded:
 
 ```sh
 dsh web
 ```
 
-### Local development
+Open DSH Web Settings and select **Service Control**.
+
+### Local development install
 
 ```sh
 dsh plugin --profile web add link:/path/to/dsh-service
 ```
 
-### Migrating from restart-dsh
-
-The package name, Client module ID, Cordis plugin ID, and RPC channel now consistently use dsh-service. Remove the old package and reinstall from the same repository:
-
-```sh
-dsh plugin --profile web remove @dsh-nas/restart-dsh
-dsh plugin --profile web add github:gehennawu/dsh-service
-```
-
-Restart `dsh web` after migrating. This rename does not migrate or delete sessions, workspaces, or other DSH data.
-
 ## Automatic restart configuration
 
-The following configurations only restart the process after it exits. The plugin does not install or modify system services.
+The plugin only sends an exit signal; it does not start the process again. Without a process manager, selecting restart stops DSH Web.
 
 ### Docker Compose
 
@@ -112,27 +74,39 @@ RestartSec=2
 pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 ```
 
-## Usage
+## Platform support
 
-Open DSH Web Settings and select **Service Control**:
+| Environment | Plugin features | Automatic recovery | Verification |
+| --- | --- | --- | --- |
+| Linux + Docker Compose | Supported | Supported with a restart policy | Verified |
+| Linux + systemd / pm2 | Expected to work | Managed externally | Not separately tested |
+| macOS / Windows + pm2 or similar | Not blocked by the code | Managed externally | Not tested |
+| Direct `dsh web` execution | Supported | Not supported | Expected behavior |
 
-1. View the current DSH version.
-2. Select **Check for updates** to see the latest npm version.
-3. Select **Restart dsh web**, then confirm to restart the service.
+Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-## Development and validation
+## Security design
 
-This project is a two-sided DSH plugin:
+- The browser cannot supply URLs, package names, commands, or file paths.
+- Update checks only access `https://registry.npmjs.org/@deepseek-ai%2Fdsh`.
+- npm responses are limited to 256 KiB with a 10-second timeout.
+- The RPC channel is loopback-only and does not expose control operations to external network callers.
+- The plugin stores no tokens, passwords, private keys, or other credentials.
+- Restarting interrupts active work; v0.3 will add task detection and an explicit force-restart warning.
 
-- `index.js`: Host half; registers loopback RPC.
-- `client.js`: Browser half; registers the Settings UI.
-- `cordis.patch.yml`: inserts the plugin into the DSH plugin tree.
+## Project structure
+
+- `index.js`: Host half; reads the version, checks for updates, and registers restart RPC.
+- `client.js`: Browser half; registers the Service Control page in Settings.
+- `cordis.patch.yml`: inserts the Host and Client plugin into the DSH Web profile.
+- `README.md`: Chinese documentation.
 
 Basic checks:
 
 ```sh
 node --check index.js
 node --check client.js
+npm pack --dry-run
 ```
 
 ## License
