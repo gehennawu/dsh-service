@@ -316,6 +316,43 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.equal(healthCalls, 2)
 })
 
+test('settings mount checks updates, degrades silently, and exposes an update badge with details', async () => {
+  let updateCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'check-update') {
+      updateCalls += 1
+      if (updateCalls === 1) return { ok: false, error: 'registry unavailable' }
+      return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.2.0', upToDate: false } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { initiallyUnmounted: ['settings.section'] })
+
+  await renderer.load()
+  assert.equal(updateCalls, 0)
+  assert.doesNotMatch(renderer.text(), /DSH 有更新/)
+
+  renderer.mount('settings.section')
+  await renderer.flush()
+  assert.equal(updateCalls, 1)
+  assert.doesNotMatch(renderer.text(), /registry unavailable|检查失败/)
+  assert.doesNotMatch(renderer.text(), /DSH 有更新/)
+
+  await renderer.findButton('检查更新').props.onClick()
+  await renderer.flush()
+  assert.equal(updateCalls, 2)
+  assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
+
+  await renderer.findButton('DSH 有更新').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('shell.overlay'), /当前版本：0\.1\.0-rc\.7/)
+  assert.match(renderer.text('shell.overlay'), /最新版本：0\.2\.0/)
+})
+
 test('permission panel shows the host plan and requires explicit confirmation before repair', async () => {
   const repairs = []
   const before = {

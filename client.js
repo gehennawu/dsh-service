@@ -52,6 +52,11 @@ window.__ModuleLoader__.load({
       'update.checking': '检查中…',
       'update.current': '✓ 已是最新版本',
       'update.available': '有新版本可用：{version}',
+      'update.badge': 'DSH 有更新',
+      'update.details.title': 'DSH 更新可用',
+      'update.details.current': '当前版本：{version}',
+      'update.details.latest': '最新版本：{version}',
+      'update.details.close': '关闭',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。',
       'restart.button': '重启 dsh web',
@@ -116,6 +121,11 @@ window.__ModuleLoader__.load({
       'update.checking': 'Checking…',
       'update.current': '✓ Up to date',
       'update.available': 'New version available: {version}',
+      'update.badge': 'DSH update',
+      'update.details.title': 'DSH update available',
+      'update.details.current': 'Current version: {version}',
+      'update.details.latest': 'Latest version: {version}',
+      'update.details.close': 'Close',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed.',
       'restart.button': 'Restart dsh web',
@@ -149,12 +159,38 @@ window.__ModuleLoader__.load({
         return t
       }
       const recoveryListeners = new Set()
+      const updateListeners = new Set()
       let recoveryState = { status: 'idle', elapsedMs: 0 }
       let recoveryGeneration = 0
+      let availableUpdate = null
+      let updateDetailsOpen = false
 
       const setRecoveryState = (next) => {
         recoveryState = next
         for (const listener of recoveryListeners) listener(next)
+      }
+
+      const publishUpdateState = () => {
+        const snapshot = { update: availableUpdate, open: updateDetailsOpen }
+        for (const listener of updateListeners) listener(snapshot)
+      }
+      const setAvailableUpdate = (value) => {
+        availableUpdate = value
+        if (value === null) updateDetailsOpen = false
+        publishUpdateState()
+      }
+      const setUpdateDetailsOpen = (open) => {
+        updateDetailsOpen = open === true
+        publishUpdateState()
+      }
+      const useUpdateState = () => {
+        const [snapshot, setSnapshot] = useState({ update: availableUpdate, open: updateDetailsOpen })
+        useEffect(() => {
+          updateListeners.add(setSnapshot)
+          setSnapshot({ update: availableUpdate, open: updateDetailsOpen })
+          return () => updateListeners.delete(setSnapshot)
+        }, [])
+        return snapshot
       }
 
       const useRecoveryState = () => {
@@ -204,12 +240,38 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => {
         recoveryGeneration += 1
         recoveryListeners.clear()
+        updateListeners.clear()
       }, 'dsh-service recovery')
 
-      function RestartOverlay() {
-        const recovery = useRecoveryState()
+      function UpdateBadge() {
+        const state = useUpdateState()
         const translate = useTranslation()
-        if (recovery.status === 'idle') return null
+        if (state.update === null) return null
+        return React.createElement('button', {
+          type: 'button',
+          onClick: () => setUpdateDetailsOpen(true),
+          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: '#d80', color: '#fff', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
+        }, translate('update.badge'))
+      }
+
+      function ServiceOverlay() {
+        const recovery = useRecoveryState()
+        const updateState = useUpdateState()
+        const translate = useTranslation()
+        if (recovery.status === 'idle' && !updateState.open) return null
+        if (recovery.status === 'idle') {
+          const update = updateState.update
+          if (update === null) return null
+          return React.createElement('div', {
+            style: { position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', background: 'rgba(12, 14, 20, 0.72)', backdropFilter: 'blur(4px)', pointerEvents: 'auto' },
+          }, React.createElement('div', {
+            style: { width: 'min(420px, 100%)', padding: '24px', borderRadius: '12px', background: 'var(--color-background, #fff)', color: 'var(--color-foreground, #222)', boxShadow: '0 18px 60px rgba(0,0,0,0.35)', textAlign: 'center' },
+          },
+          React.createElement('div', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '10px' } }, translate('update.details.title')),
+          React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.current', { version: update.current })),
+          React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.latest', { version: update.latest })),
+          React.createElement('button', { style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: '#5B4CF0', color: '#fff', cursor: 'pointer' }, onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
+        }
 
         const timedOut = recovery.status === 'timeout'
         return React.createElement('div', {
@@ -251,6 +313,10 @@ window.__ModuleLoader__.load({
           : null))
       }
 
+      function RestartOverlay() {
+        return React.createElement(ServiceOverlay, null)
+      }
+
       function ServicePanel() {
         const translate = useTranslation()
         const [health, setHealth] = useState(null)
@@ -278,6 +344,15 @@ window.__ModuleLoader__.load({
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
+        }, [])
+        useEffect(() => {
+          let active = true
+          ctx.connection.rpc.call('/dsh-service', 'check-update', {}).then((res) => {
+            if (!active || !res || res.ok === false) return
+            setUpdateInfo(res.value)
+            setAvailableUpdate(res.value.upToDate ? null : res.value)
+          }).catch(() => {})
+          return () => { active = false }
         }, [])
         useEffect(() => {
           let active = true
@@ -377,6 +452,7 @@ window.__ModuleLoader__.load({
               throw new Error(translate('error.update'))
             }
             setUpdateInfo(res.value)
+            setAvailableUpdate(res.value.upToDate ? null : res.value)
           } catch (err) {
             setUpdateError(err && err.message ? String(err.message) : String(err))
           } finally {
@@ -613,6 +689,10 @@ window.__ModuleLoader__.load({
         return React.createElement('div', null, healthBlock, permissionBlock, backupBlock, versionBlock, restartBlock)
       }
 
+      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
+        { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
+        () => React.createElement(UpdateBadge, null),
+      ))
       ctx.slots.inject('settings.section', () => ctx.slots.register(
         { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
         () => React.createElement(ServicePanel, null),
