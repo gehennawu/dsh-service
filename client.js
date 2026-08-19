@@ -61,12 +61,12 @@ window.__ModuleLoader__.load({
       'tabs.alert.title': '服务控制提醒',
       'tabs.alert.body': '以下功能需要处理：{tabs}',
       'permissions.title': '文件权限',
-      'permissions.description': '检查 DSH_HOME 和全部工作区的属主与权限。深检仅要求 DSH_HOME 凭据文件为 owner-only；修复会设置目录 755、普通文件 644，并将该凭据文件规范化为 600。',
+      'permissions.description': '检查 Agent 是否能读取、写入并进入 DSH_HOME 和工作区。深检跳过 .git 内部文件；修复只补充当前用户所需权限并保留执行位，DSH 凭据文件固定为 600。',
       'permissions.target': '目标属主：{owner}',
       'permissions.repair': '修复权限',
       'permissions.repairing': '修复中…',
       'permissions.confirm': '确认修复',
-      'permissions.confirmHint': '将递归修改以上目录的属主和权限。请确认当前值后再继续。',
+      'permissions.confirmHint': '将跳过 .git，递归恢复当前用户属主并补充 Agent 读写权限，保留已有执行位。请确认后继续。',
       'permissions.cancel': '取消',
       'permissions.error': '权限操作失败',
       'permissions.summary.ok': '{count} 个根目录检查正常',
@@ -75,7 +75,7 @@ window.__ModuleLoader__.load({
       'permissions.hideDetails': '隐藏详情',
       'permissions.deep': '深度检查',
       'permissions.deepChecking': '扫描中…',
-      'permissions.deepSummary': '扫描 {scanned} 项，用时 {duration} ms；属主异常 {owner}，目录权限异常 {directories}，文件权限异常 {files}，无法读取 {unreadable}。',
+      'permissions.deepSummary': '扫描 {scanned} 项，用时 {duration} ms；目录不可编辑 {directories}，文件不可编辑 {files}，无法读取 {unreadable}。',
       'backup.title': '备份管理',
       'backup.description': '备份会话、配置和插件 profile 清单；不会包含 node_modules 或凭据。备份不会自动清理，请自行管理磁盘空间。',
       'backup.create': '创建备份',
@@ -208,12 +208,12 @@ window.__ModuleLoader__.load({
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
       'permissions.title': 'File permissions',
-      'permissions.description': 'Checks ownership and modes across DSH_HOME and every workspace. Deep scans require only the DSH_HOME credentials file to be owner-only; repair sets directories to 755, regular files to 644, and normalizes that credential file to 600.',
+      'permissions.description': 'Checks whether the Agent can read, write, and enter DSH_HOME and workspaces. Deep scans skip internal .git files; repair only adds permissions needed by the current user while preserving execute bits, and keeps the DSH credential file at 600.',
       'permissions.target': 'Target owner: {owner}',
       'permissions.repair': 'Repair permissions',
       'permissions.repairing': 'Repairing…',
       'permissions.confirm': 'Confirm repair',
-      'permissions.confirmHint': 'This will recursively modify ownership and permissions for every directory above. Review the current values before continuing.',
+      'permissions.confirmHint': 'This skips .git, restores ownership to the current user, and adds Agent read/write access while preserving existing execute bits. Confirm to continue.',
       'permissions.cancel': 'Cancel',
       'permissions.error': 'Permission operation failed',
       'permissions.summary.ok': '{count} root path(s) passed the check',
@@ -222,7 +222,7 @@ window.__ModuleLoader__.load({
       'permissions.hideDetails': 'Hide details',
       'permissions.deep': 'Deep check',
       'permissions.deepChecking': 'Scanning…',
-      'permissions.deepSummary': 'Scanned {scanned} entries in {duration} ms; owner issues {owner}, directory mode issues {directories}, file mode issues {files}, unreadable {unreadable}.',
+      'permissions.deepSummary': 'Scanned {scanned} entries in {duration} ms; non-editable directories {directories}, non-editable files {files}, unreadable {unreadable}.',
       'backup.title': 'Backup management',
       'backup.description': 'Backs up sessions, configuration, and plugin profile manifests. Credentials and node_modules are excluded. Backups are never auto-pruned; you are responsible for disk usage.',
       'backup.create': 'Create backup',
@@ -978,7 +978,7 @@ window.__ModuleLoader__.load({
             : null)
 
         const permissionAbnormal = permissions && permissions.supported === true
-          ? permissions.items.filter((item) => item.owner !== permissions.targetOwner || item.mode !== '0755').length
+          ? permissions.items.filter((item) => item.writable === false).length
           : 0
         const permissionBlock = permissions && permissions.supported === true
           ? React.createElement('div', { key: 'permissions-section', style: Object.assign({}, displaySurface, { marginTop: '12px' }) },

@@ -532,7 +532,7 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
 })
 
 test('tab and top alerts identify health and backup failures without treating an empty backup list as failure', async () => {
-  const permissions = { supported: true, planId: 'p1', targetOwner: '1000:1000', items: [{ label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0755' }] }
+  const permissions = { supported: true, planId: 'p1', targetOwner: '1000:1000', items: [{ label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0555', writable: false }] }
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
@@ -642,8 +642,8 @@ test('permission panel shows the host plan and requires explicit confirmation be
     planId: 'permission-plan-1',
     targetOwner: '1000:1000',
     items: [
-      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0700' },
-      { label: 'Project', path: '/workspace/project', owner: '1000:1000', mode: '0755' },
+      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '0:0', mode: '0700', writable: true },
+      { label: 'Project', path: '/workspace/project', owner: '0:0', mode: '0555', writable: false },
     ],
   }
   const after = {
@@ -651,8 +651,8 @@ test('permission panel shows the host plan and requires explicit confirmation be
     planId: 'permission-plan-2',
     targetOwner: '1000:1000',
     items: [
-      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '1000:1000', mode: '0755' },
-      { label: 'Project', path: '/workspace/project', owner: '1000:1000', mode: '0755' },
+      { label: 'DSH_HOME', path: '/home/node/.dsh', owner: '1000:1000', mode: '0700', writable: true },
+      { label: 'Project', path: '/workspace/project', owner: '1000:1000', mode: '0755', writable: true },
     ],
   }
   const renderer = createRenderer(async (channel, endpoint, payload) => {
@@ -684,17 +684,17 @@ test('permission panel shows the host plan and requires explicit confirmation be
   assert.match(renderer.text('settings.section'), /DSH_HOME.*0:0.*0700/)
   await renderer.findButton('深度检查').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /扫描 12 项.*目录权限异常 1.*文件权限异常 2/)
+  assert.match(renderer.text('settings.section'), /扫描 12 项.*目录不可编辑 1.*文件不可编辑 2/)
 
   await renderer.findButton('修复权限').props.onClick()
   await renderer.flush()
   assert.equal(repairs.length, 0)
-  assert.match(renderer.text('settings.section'), /递归修改以上目录/)
+  assert.match(renderer.text('settings.section'), /跳过 \.git.*补充 Agent 读写权限.*保留已有执行位/)
 
   await renderer.findButton('确认修复').props.onClick()
   await renderer.flush()
   assert.deepEqual(repairs, [{ planId: before.planId }])
-  assert.match(renderer.text('settings.section'), /DSH_HOME.*1000:1000.*0755/)
+  assert.match(renderer.text('settings.section'), /DSH_HOME.*1000:1000.*0700/)
 })
 
 test('permission panel stays hidden when the host reports a non-Linux platform', async () => {

@@ -1,7 +1,8 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import { access, cp, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
@@ -567,6 +568,7 @@ async function permissionSnapshot(ctx, dshHome, plans) {
         path: entry.path,
         owner: `${info.uid}:${info.gid}`,
         mode: modeString(info.mode),
+        writable: await hasAgentAccess(entry.path, true),
       })
     } catch (error) {
       items.push({
@@ -574,6 +576,7 @@ async function permissionSnapshot(ctx, dshHome, plans) {
         path: entry.path,
         owner: 'unavailable',
         mode: '----',
+        writable: false,
         error: error?.code || error?.message || String(error),
       })
     }
@@ -593,15 +596,18 @@ function isAtOrUnderPath(ancestor, path) {
   return child === '' || (child !== '..' && !child.startsWith(`..${sep}`))
 }
 
-// 只有宿主自己的凭据文档使用 owner-only 契约；工作区里的同名文件仍是普通 0644 文件。
+// 只有宿主自己的凭据文档使用 owner-only 契约；工作区里的同名文件按 Agent 可写性检查。
 function isCredentialsDocument(path, dshHome) {
   return path === join(dshHome, '.credentials.yaml')
 }
 
-function fileModeCompliant(path, mode, dshHome) {
-  // dsh-credentials-local 接受所有 group/other 位为零的模式；修复动作再统一规范化为 0600。
-  if (isCredentialsDocument(path, dshHome)) return (mode & 0o077) === 0
-  return mode === 0o644
+async function hasAgentAccess(path, directory) {
+  try {
+    await access(path, directory ? fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK : fsConstants.R_OK | fsConstants.W_OK)
+    return true
+  } catch (_) {
+    return false
+  }
 }
 
 async function deepCheckPermissions(dshHome, plans, planId) {
@@ -610,8 +616,6 @@ async function deepCheckPermissions(dshHome, plans, planId) {
   if (paths === undefined) return undefined
   const startedAt = Date.now()
   const result = { scanned: 0, ownerIssues: 0, directoryModeIssues: 0, fileModeIssues: 0, unreadable: 0, samples: [] }
-  const targetUid = process.getuid()
-  const targetGid = process.getgid()
   const visit = async (path) => {
     let info
     try {
@@ -623,10 +627,19 @@ async function deepCheckPermissions(dshHome, plans, planId) {
       return
     }
     const issues = []
-    if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
     const mode = info.mode & 0o777
-    if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
-    else if (info.isFile() && !fileModeCompliant(path, mode, dshHome)) { result.fileModeIssues += 1; issues.push('file-mode') }
+    if (isCredentialsDocument(path, dshHome)) {
+      const accessible = await hasAgentAccess(path, false)
+      if ((mode & 0o077) !== 0 || !accessible) { result.fileModeIssues += 1; issues.push('file-access') }
+      if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
+      return
+    }
+    if (info.isDirectory()) {
+      if (!(await hasAgentAccess(path, true))) { result.directoryModeIssues += 1; issues.push('directory-access') }
+    } else if (info.isFile() && !(await hasAgentAccess(path, false))) {
+      result.fileModeIssues += 1
+      issues.push('file-access')
+    }
     if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
     if (!info.isDirectory()) return
     let entries
@@ -635,7 +648,10 @@ async function deepCheckPermissions(dshHome, plans, planId) {
       if (result.samples.length < 50) result.samples.push({ path, issue: 'unreadable', detail: error?.code || error?.message || String(error) })
       return
     }
-    for (const entry of entries) await visit(join(path, entry.name))
+    for (const entry of entries) {
+      if (entry.name === '.git') continue
+      await visit(join(path, entry.name))
+    }
   }
   // 工作区注册表常含嵌套路径（如 /workspace 与 /workspace/projects/<x>）：被其他根
   // 覆盖的路径只随外层根扫描一次，否则同一批文件会被 stat 两到三次，异常也被重复计数。
@@ -655,10 +671,16 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
   if (paths === undefined) return undefined
   plans.delete(planId)
   const owner = `${process.getuid()}:${process.getgid()}`
-  for (const path of paths) {
-    await runFixedCommand(ctx, ['chown', '-R', owner, '--', path])
-    await runFixedCommand(ctx, ['find', path, '-type', 'd', '-exec', 'chmod', '755', '{}', '+'])
-    await runFixedCommand(ctx, ['find', path, '-type', 'f', '-exec', 'chmod', '644', '{}', '+'])
+  const roots = []
+  for (const path of [...paths].sort((a, b) => a.length - b.length)) {
+    if (roots.some((root) => isAtOrUnderPath(root, path))) continue
+    roots.push(path)
+  }
+  for (const path of roots) {
+    // 先逐个恢复目录遍历能力；使用 `{} ;` 让 find 在进入子目录前立即 chmod，且完整跳过 .git。
+    await runFixedCommand(ctx, ['find', path, '-name', '.git', '-prune', '-o', '-type', 'd', '-exec', 'chmod', 'u+rwx', '{}', ';'])
+    await runFixedCommand(ctx, ['find', path, '-name', '.git', '-prune', '-o', '-exec', 'chown', '-h', owner, '--', '{}', '+'])
+    await runFixedCommand(ctx, ['find', path, '-name', '.git', '-prune', '-o', '-type', 'f', '-exec', 'chmod', 'u+rw', '{}', '+'])
   }
   try {
     const credentials = join(dshHome, '.credentials.yaml')
@@ -711,7 +733,7 @@ async function collectDiagnostics(ctx, dshHome) {
     const snapshot = await permissionSnapshot(ctx, dshHome, new Map())
     if (snapshot.supported !== true) add('permissions', 'info', 'unsupported')
     else {
-      const abnormal = snapshot.items.filter((item) => item.owner !== snapshot.targetOwner || item.mode !== '0755').length
+      const abnormal = snapshot.items.filter((item) => item.writable === false).length
       add('permissions', abnormal === 0 ? 'ok' : 'warning', abnormal)
     }
   } catch (error) { add('permissions', 'warning', error?.message || error) }
