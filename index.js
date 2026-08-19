@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url)
 const name = 'dsh-service'
 const inject = ['connection']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
+const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -32,7 +33,7 @@ try {
 }
 
 // 只请求固定的 npm registry 包元数据：不接受来自浏览器的 URL 或包名，避免 SSRF。
-function fetchLatestVersion() {
+function fetchLatestVersion(packageName) {
   return new Promise((resolve, reject) => {
     let settled = false
     const fail = (error) => {
@@ -46,7 +47,7 @@ function fetchLatestVersion() {
       resolve(value)
     }
 
-    const url = NPM_REGISTRY + encodeURIComponent(DSH_PACKAGE)
+    const url = NPM_REGISTRY + encodeURIComponent(packageName)
     const request = https.get(url, {
       timeout: 10000,
       headers: {
@@ -582,11 +583,24 @@ async function permissionSnapshot(ctx, dshHome, plans) {
   }
 }
 
-function requiredFileMode(path) {
-  return basename(path) === '.credentials.yaml' ? 0o600 : 0o644
+function isAtOrUnderPath(ancestor, path) {
+  const child = relative(ancestor, path)
+  return child === '' || (child !== '..' && !child.startsWith(`..${sep}`))
 }
 
-async function deepCheckPermissions(plans, planId) {
+function isCredentialsDocument(path, dshHome) {
+  return path === join(dshHome, '.credentials.yaml')
+}
+
+// 宿主 dsh-credentials-local 对凭据文档的真实契约是 group/other 权限位为零（owner-only，
+// 0400/0600 等 owner-only 形式均合规，并非「必须恰好 600」），且只约束 <DSH_HOME>/.credentials.yaml
+// 本身；普通文件仍按归一化目标 0644 判断。
+function fileModeCompliant(path, mode, dshHome) {
+  if (isCredentialsDocument(path, dshHome)) return (mode & 0o077) === 0
+  return mode === 0o644
+}
+
+async function deepCheckPermissions(dshHome, plans, planId) {
   if (typeof planId !== 'string') return undefined
   const paths = plans.get(planId)
   if (paths === undefined) return undefined
@@ -608,7 +622,7 @@ async function deepCheckPermissions(plans, planId) {
     if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
     const mode = info.mode & 0o777
     if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
-    else if (info.isFile() && mode !== requiredFileMode(path)) { result.fileModeIssues += 1; issues.push('file-mode') }
+    else if (info.isFile() && !fileModeCompliant(path, mode, dshHome)) { result.fileModeIssues += 1; issues.push('file-mode') }
     if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
     if (!info.isDirectory()) return
     let entries
@@ -619,7 +633,14 @@ async function deepCheckPermissions(plans, planId) {
     }
     for (const entry of entries) await visit(join(path, entry.name))
   }
-  for (const path of paths) await visit(path)
+  // 工作区注册表常含嵌套路径（如 /workspace 与 /workspace/projects/<x>）：被其他根
+  // 覆盖的路径只随外层根扫描一次，否则同一批文件会被 stat 两到三次，异常也被重复计数。
+  const roots = []
+  for (const path of [...paths].sort((a, b) => a.length - b.length)) {
+    if (roots.some((root) => isAtOrUnderPath(root, path))) continue
+    roots.push(path)
+  }
+  for (const path of roots) await visit(path)
   result.durationMs = Date.now() - startedAt
   return result
 }
@@ -779,6 +800,8 @@ function apply(ctx) {
   const permissionPlans = new Map()
   let usageIndexPromise = loadUsageIndex(dshHome)
   let usageRefreshPromise
+  let updateCache
+  let updatePromise
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
@@ -805,14 +828,32 @@ function apply(ctx) {
     }
 
     if (endpoint === 'check-update') {
+      const now = Date.now()
+      if (updateCache && now - updateCache.checkedAt < updateCache.ttl) {
+        return updateCache.ok
+          ? { ok: true, value: Object.assign({}, updateCache.value, { cached: true }) }
+          : { ok: false, error: updateCache.error, cached: true }
+      }
       try {
-        const latest = await fetchLatestVersion()
-        return {
-          ok: true,
-          value: { current: dshVersion, latest, upToDate: dshVersion === latest },
+        if (updatePromise === undefined) {
+          updatePromise = Promise.all([
+            fetchLatestVersion(DSH_PACKAGE),
+            fetchLatestVersion(PLUGIN_PACKAGE),
+          ]).finally(() => { updatePromise = undefined })
         }
+        const [latestDsh, latestPlugin] = await updatePromise
+        const value = {
+          checkedAt: now,
+          cached: false,
+          dsh: { current: dshVersion, latest: latestDsh, upToDate: dshVersion === latestDsh, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+          plugin: { current: pluginVersion, latest: latestPlugin, upToDate: pluginVersion === latestPlugin, url: 'https://github.com/gehennawu/dsh-service/releases' },
+        }
+        updateCache = { ok: true, value, checkedAt: now, ttl: 10 * 60 * 1000 }
+        return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        const message = error?.message || String(error)
+        updateCache = { ok: false, error: message, checkedAt: now, ttl: 60 * 1000 }
+        return { ok: false, error: message, cached: false }
       }
     }
 
@@ -865,7 +906,7 @@ function apply(ctx) {
 
     if (endpoint === 'permissions-deep') {
       try {
-        const value = await deepCheckPermissions(permissionPlans, payload?.planId)
+        const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
         return { ok: true, value }
       } catch (error) {

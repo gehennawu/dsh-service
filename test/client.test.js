@@ -490,41 +490,64 @@ test('tab and top alerts identify health and backup failures without treating an
   assert.doesNotMatch(text, /⚠ 概览|⚠ 模型统计|⚠ 重启/)
 })
 
-test('settings mount checks updates, degrades silently, and exposes an update badge with details', async () => {
+test('settings mount automatically shows separate DSH and plugin update states with release links', async () => {
   let updateCalls = 0
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
-    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
     if (endpoint === 'health') return { ok: false, error: 'not relevant' }
     if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'check-update') {
       updateCalls += 1
-      if (updateCalls === 1) return { ok: false, error: 'registry unavailable' }
-      return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.2.0', upToDate: false } }
+      return { ok: true, value: {
+        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
+      } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { initiallyUnmounted: ['settings.section'] })
 
   await renderer.load()
   assert.equal(updateCalls, 0)
-  assert.doesNotMatch(renderer.text(), /DSH 有更新/)
-
   renderer.mount('settings.section')
   await renderer.flush()
   assert.equal(updateCalls, 1)
-  assert.doesNotMatch(renderer.text(), /registry unavailable|检查失败/)
-  assert.doesNotMatch(renderer.text(), /DSH 有更新/)
-
-  await renderer.findButton('检查更新').props.onClick()
-  await renderer.flush()
-  assert.equal(updateCalls, 2)
+  const text = renderer.text('settings.section')
+  assert.match(text, /DSH.*0\.1\.0-rc\.7.*有新版本.*0\.2\.0/)
+  assert.match(text, /dsh-service.*0\.9\.0.*已是最新版本/)
+  assert.doesNotMatch(text, /检查更新/)
+  assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
+  assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
   assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
+})
 
-  await renderer.findButton('DSH 有更新').props.onClick()
+test('opening health diagnostics runs once and reuses its short-lived result until explicitly refreshed', async () => {
+  let calls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') { calls += 1; return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'permissions', status: 'ok', detail: '0' }] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.equal(calls, 0)
+  await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('shell.overlay'), /当前版本：0\.1\.0-rc\.7/)
-  assert.match(renderer.text('shell.overlay'), /最新版本：0\.2\.0/)
+  assert.equal(calls, 1)
+  assert.match(renderer.text('settings.section'), /文件权限.*检查正常/)
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.equal(calls, 1)
+  await renderer.findButton('重新诊断').props.onClick()
+  await renderer.flush()
+  assert.equal(calls, 2)
 })
 
 test('health check button runs deep diagnostics and displays individual results', async () => {
@@ -544,8 +567,6 @@ test('health check button runs deep diagnostics and displays individual results'
   })
   await renderer.load()
   await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
-  await renderer.findButton('立即健康检查').props.onClick()
   await renderer.flush()
   assert.equal(calls, 1)
   assert.match(renderer.text('settings.section'), /健康提醒.*检查结果存在警告/)

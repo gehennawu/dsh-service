@@ -60,7 +60,7 @@ window.__ModuleLoader__.load({
       'tabs.alert.title': '服务控制提醒',
       'tabs.alert.body': '以下功能需要处理：{tabs}',
       'permissions.title': '文件权限',
-      'permissions.description': '检查 DSH_HOME 和全部工作区的属主与权限。修复会设置目录 755、普通文件 644，并强制凭据文件保持 600。',
+      'permissions.description': '检查 DSH_HOME 和全部工作区的属主与权限。修复会设置目录 755、普通文件 644，并将 DSH_HOME 的凭据文件恢复为仅所有者可读写（600）。',
       'permissions.target': '目标属主：{owner}',
       'permissions.repair': '修复权限',
       'permissions.repairing': '修复中…',
@@ -94,8 +94,11 @@ window.__ModuleLoader__.load({
       'version.loading': '加载中…',
       'update.check': '检查更新',
       'update.checking': '检查中…',
-      'update.current': '✓ 已是最新版本',
-      'update.available': '有新版本可用：{version}',
+      'update.current': '已是最新版本',
+      'update.available': '有新版本：{version}',
+      'update.unavailable': '暂时无法检查最新版本',
+      'update.openReleases': '查看发布记录',
+      'health.recheck': '重新诊断',
       'update.badge': 'DSH 有更新',
       'update.details.title': 'DSH 更新可用',
       'update.details.current': '当前版本：{version}',
@@ -199,7 +202,7 @@ window.__ModuleLoader__.load({
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
       'permissions.title': 'File permissions',
-      'permissions.description': 'Checks ownership and modes across DSH_HOME and every workspace. Repair sets directories to 755, regular files to 644, and always keeps the credentials file at 600.',
+      'permissions.description': 'Checks ownership and modes across DSH_HOME and every workspace. Repair sets directories to 755, regular files to 644, and restores the DSH_HOME credentials file to owner-only (600).',
       'permissions.target': 'Target owner: {owner}',
       'permissions.repair': 'Repair permissions',
       'permissions.repairing': 'Repairing…',
@@ -233,8 +236,11 @@ window.__ModuleLoader__.load({
       'version.loading': 'Loading…',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
-      'update.current': '✓ Up to date',
-      'update.available': 'New version available: {version}',
+      'update.current': 'Up to date',
+      'update.available': 'New version: {version}',
+      'update.unavailable': 'Latest version is temporarily unavailable',
+      'update.openReleases': 'View releases',
+      'health.recheck': 'Run again',
       'update.badge': 'DSH update',
       'update.details.title': 'DSH update available',
       'update.details.current': 'Current version: {version}',
@@ -463,6 +469,7 @@ window.__ModuleLoader__.load({
         const [healthError, setHealthError] = useState(null)
         const [diagnostics, setDiagnostics] = useState(null)
         const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
+        const [diagnosticsLoadedAt, setDiagnosticsLoadedAt] = useState(0)
         const [permissions, setPermissions] = useState(null)
         const [permissionConfirm, setPermissionConfirm] = useState(false)
         const [permissionBusy, setPermissionBusy] = useState(false)
@@ -477,8 +484,7 @@ window.__ModuleLoader__.load({
         const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
         const [pluginVersion, setPluginVersion] = useState(null)
-        const [updateInfo, setUpdateInfo] = useState(null) // { latest, upToDate } | null
-        const [updateBusy, setUpdateBusy] = useState(false)
+        const [updateInfo, setUpdateInfo] = useState(null)
         const [updateError, setUpdateError] = useState(null)
         const [usage, setUsage] = useState(null)
         const [usageBusy, setUsageBusy] = useState(false)
@@ -506,10 +512,11 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'check-update', {}).then((res) => {
-            if (!active || !res || res.ok === false) return
+            if (!active || !res || res.ok === false) { if (active) setUpdateError(translate('update.unavailable')); return }
             setUpdateInfo(res.value)
-            setAvailableUpdate(res.value.upToDate ? null : res.value)
-          }).catch(() => {})
+            setUpdateError(null)
+            setAvailableUpdate(res.value.dsh && !res.value.dsh.upToDate ? res.value.dsh : null)
+          }).catch(() => { if (active) setUpdateError(translate('update.unavailable')) })
           return () => { active = false }
         }, [])
         useEffect(() => {
@@ -573,12 +580,14 @@ window.__ModuleLoader__.load({
           }
         }, [])
 
-        const runDiagnostics = async () => {
+        const runDiagnostics = async (force = false) => {
+          if (!force && diagnosticsLoadedAt > 0 && Date.now() - diagnosticsLoadedAt <= 30000) return
           setDiagnosticsBusy(true)
           try {
             const res = await ctx.connection.rpc.call('/dsh-service', 'diagnostics', {})
             if (!res || res.ok === false) throw new Error('diagnostics failed')
             setDiagnostics(res.value)
+            setDiagnosticsLoadedAt(Date.now())
           } catch (_) {
             setHealthError(translate('health.error'))
           } finally {
@@ -657,25 +666,6 @@ window.__ModuleLoader__.load({
             setBackupError(translate('backup.error'))
           } finally {
             setBackupBusy(false)
-          }
-        }
-
-        const checkUpdate = async () => {
-          setUpdateBusy(true)
-          setUpdateError(null)
-          setUpdateInfo(null)
-          try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'check-update', {})
-            if (res && res.ok === false) {
-              console.error('dsh-service: update check failed', res.error)
-              throw new Error(translate('error.update'))
-            }
-            setUpdateInfo(res.value)
-            setAvailableUpdate(res.value.upToDate ? null : res.value)
-          } catch (err) {
-            setUpdateError(err && err.message ? String(err.message) : String(err))
-          } finally {
-            setUpdateBusy(false)
           }
         }
 
@@ -938,7 +928,7 @@ window.__ModuleLoader__.load({
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
         const healthSummaryBlock = React.createElement('div', null,
-          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
+          React.createElement('div', { style: row }, React.createElement('button', { style: info, 'data-variant': 'info', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
             ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
@@ -1017,35 +1007,21 @@ window.__ModuleLoader__.load({
                   : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '7px' }), disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
             : null)
 
+        const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsh-border, #dedbd4)' } },
+          React.createElement('div', null,
+            React.createElement('div', { style: { fontSize: '13px', fontWeight: 650 } }, label),
+            React.createElement('code', { style: { fontSize: '12px', color: '#777' } }, state?.current || fallbackVersion || translate('version.loading'))),
+          React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
+            React.createElement('div', { style: { color: !state ? '#888' : state.upToDate ? '#49725a' : '#9a6700', fontWeight: 600 } }, !state
+              ? (updateError || translate('update.checking'))
+              : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
+            state?.url ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: '#5B4CF0', textDecoration: 'none' } }, translate('update.openReleases')) : null))
         // 版本信息区块
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
-          React.createElement('div', { key: 'ver-section' },
-            React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
-            React.createElement('div', { key: 'body', style: { fontSize: '13px', lineHeight: 1.6 } },
-              React.createElement('span', null, translate('version.current')),
-              React.createElement('code', { style: { background: 'rgba(128,128,128,0.15)', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' } }, version || translate('version.loading')),
-              React.createElement('br'),
-              React.createElement('span', null, translate('version.plugin')),
-              React.createElement('code', { style: { background: 'rgba(128,128,128,0.15)', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' } }, pluginVersion || translate('version.loading'))
-            )
-          ),
-          // 检查更新
-          React.createElement('div', { key: 'update-section' },
-            React.createElement('div', { style: row },
-              React.createElement('button', { style: info, 'data-variant': 'info', onClick: checkUpdate, disabled: updateBusy }, translate(updateBusy ? 'update.checking' : 'update.check')),
-              updateInfo
-                ? React.createElement('span', {
-                    key: 'result',
-                    style: { fontSize: '13px', color: updateInfo.upToDate ? '#2a7' : '#d80' }
-                  }, updateInfo.upToDate
-                    ? translate('update.current')
-                    : translate('update.available', { version: updateInfo.latest }))
-                : null
-            ),
-            updateError
-              ? React.createElement('p', { key: 'update-err', style: Object.assign({}, hint, { color: '#d33' }) }, String(updateError))
-              : null
-          ))
+          React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
+          React.createElement('div', { style: displaySurface },
+            versionRow('dsh', 'DSH', version, updateInfo?.dsh),
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin)))
 
         // 重启后提示
         if (stage === 2) {
@@ -1136,7 +1112,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
           React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '18px', flexWrap: 'wrap', borderBottom: '1px solid rgba(128,128,128,0.28)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: '#5B4CF0', fontWeight: 700, borderBottom: '2px solid #5B4CF0', marginBottom: '-1px' } : { color: tabWarnings[id] ? '#c68000' : 'inherit', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setActiveTab(id) }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: '#5B4CF0', fontWeight: 700, borderBottom: '2px solid #5B4CF0', marginBottom: '-1px' } : { color: tabWarnings[id] ? '#c68000' : 'inherit', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
