@@ -42,6 +42,15 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': '备份存储',
       'health.check.tar': 'tar',
       'health.check.permissions': '文件权限',
+      'health.detail.session-storage.ok': '可用，共 {count} 个会话快照',
+      'health.detail.workspace-registry.ok': '可用，共 {count} 个工作区',
+      'health.detail.dsh-home.ok': '目录可访问，权限模式 {mode}',
+      'health.detail.backup-storage.empty': '备份目录可用，当前暂无备份',
+      'health.detail.backup-storage.ok': '备份目录可用，共 {count} 个备份，占用 {size}',
+      'health.detail.tar.ok': 'tar 可执行文件可用',
+      'health.detail.permissions.ok': '文件权限检查正常，未发现异常',
+      'health.detail.permissions.warning': '发现 {count} 个文件或目录权限异常',
+      'health.detail.generic': '{status}',
       'tabs.overview': '概览',
       'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
@@ -172,6 +181,15 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': 'Backup storage',
       'health.check.tar': 'tar',
       'health.check.permissions': 'File permissions',
+      'health.detail.session-storage.ok': 'Available, with {count} session snapshots',
+      'health.detail.workspace-registry.ok': 'Available, with {count} workspaces',
+      'health.detail.dsh-home.ok': 'Directory is accessible with mode {mode}',
+      'health.detail.backup-storage.empty': 'Backup directory is available; no backups exist yet',
+      'health.detail.backup-storage.ok': 'Backup directory is available, with {count} backups using {size}',
+      'health.detail.tar.ok': 'The tar executable is available',
+      'health.detail.permissions.ok': 'Permission check passed with no anomalies',
+      'health.detail.permissions.warning': 'Found {count} file or directory permission anomalies',
+      'health.detail.generic': '{status}',
       'tabs.overview': 'Overview',
       'tabs.health': 'Health diagnostics',
       'tabs.usage': 'Model statistics',
@@ -719,7 +737,7 @@ window.__ModuleLoader__.load({
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: '#888', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const card = { padding: '4px 0 14px', marginBottom: '12px' }
-        const displaySurface = { background: 'rgba(128,128,128,0.1)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
+        const displaySurface = { background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
         const tabPanel = { padding: '14px 2px 2px' }
         const inlineTab = { background: 'transparent', border: 0, borderRadius: 0, padding: '8px 4px', cursor: 'pointer', fontSize: '13px' }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'inherit' }
@@ -744,7 +762,7 @@ window.__ModuleLoader__.load({
         }
         const metric = (labelKey, value) => React.createElement('div', {
           key: labelKey,
-          style: { padding: '8px 10px', borderRadius: '6px', background: 'rgba(128,128,128,0.08)' },
+          style: { padding: '8px 10px', borderRadius: '6px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)' },
         },
         React.createElement('div', { style: { color: '#888', fontSize: '11px', marginBottom: '2px' } }, translate(labelKey)),
         React.createElement('div', { style: { fontSize: '14px', fontWeight: 600 } }, value))
@@ -821,6 +839,21 @@ window.__ModuleLoader__.load({
             }
           }
         }
+        const diagnosticDetail = (check) => {
+          const detail = String(check.detail ?? '')
+          if (check.id === 'session-storage' && check.status === 'ok') return translate('health.detail.session-storage.ok', { count: detail })
+          if (check.id === 'workspace-registry' && check.status === 'ok') return translate('health.detail.workspace-registry.ok', { count: detail })
+          if (check.id === 'dsh-home' && check.status === 'ok') return translate('health.detail.dsh-home.ok', { mode: detail })
+          if (check.id === 'backup-storage') {
+            const [count = '0', size = '0'] = detail.split(':')
+            return Number(count) === 0
+              ? translate('health.detail.backup-storage.empty')
+              : translate('health.detail.backup-storage.ok', { count, size: formatSize(size) })
+          }
+          if (check.id === 'tar' && check.status === 'ok') return translate('health.detail.tar.ok')
+          if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
+          return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
+        }
         const selectedErrors = (list) => (list || [])
           .filter((error) => usageProject === 'all' || error.projectId === usageProject)
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
@@ -846,7 +879,7 @@ window.__ModuleLoader__.load({
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', null,
-                React.createElement('div', { 'data-testid': 'usage-chart', style: { display: 'flex', alignItems: 'end', gap: '8px', height: '150px', padding: '12px 10px 8px', borderRadius: '8px', background: 'rgba(128,128,128,0.1)' } },
+                React.createElement('div', { 'data-testid': 'usage-chart', style: { display: 'flex', alignItems: 'end', gap: '8px', height: '150px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)' } },
                   usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center' } },
                     React.createElement('div', { style: { height: `${Math.max(2, chartValues[index] / chartMax * 112)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
                       usageSegments.map(([metricName, label, color]) => {
@@ -858,7 +891,8 @@ window.__ModuleLoader__.load({
                           key: metricName,
                           'data-testid': `usage-segment-${segmentId}`,
                           'data-value': value,
-                          onMouseEnter: () => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value }),
+                          onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value, x: event.clientX, y: event.clientY }),
+                          onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
                           onMouseLeave: () => setHoveredUsageSegment(null),
                           style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
                         })
@@ -868,7 +902,7 @@ window.__ModuleLoader__.load({
                   usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
                     translate(label)))),
-                hoveredUsageSegment ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', fontWeight: 600 } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
+                hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: '#282724', color: '#fff', border: '1px solid #45433e', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap' } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '8px' } },
                   metric('usage.today', usageSegments.map(([metricName, label]) => `${translate(label)} ${formatTokenValue(usageValue(todayTotals, metricName))}`).join(' · ')),
                   metric('usage.sevenDays', `${formatUsageValue(sevenTotals.steps, 'steps')} · ${formatTokenValue(usageSegments.reduce((sum, [metricName]) => sum + usageValue(sevenTotals, metricName), 0))} Token`)),
@@ -912,9 +946,9 @@ window.__ModuleLoader__.load({
             : null,
           diagnostics
             ? React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
-                diagnostics.checks.map((check) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '12px', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,0.07)' } },
+                diagnostics.checks.map((check, index) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '14px', fontSize: '12px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-border, #dedbd4)' } },
                   React.createElement('span', null, translate(`health.check.${check.id}`)),
-                  React.createElement('span', null, `${translate(`health.status.${check.status}`)}${check.detail === undefined ? '' : ` · ${check.detail}`}`))))
+                  React.createElement('span', { style: { color: check.status === 'ok' ? '#49725a' : check.status === 'warning' ? '#9a6700' : '#b42318', textAlign: 'right' } }, diagnosticDetail(check)))))
             : null)
 
         const permissionAbnormal = permissions && permissions.supported === true
