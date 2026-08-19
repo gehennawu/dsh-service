@@ -156,6 +156,23 @@ function collectActiveWork(ctx) {
 }
 
 function apply(ctx) {
+  const webServer = ctx.get('webServer')
+  if (webServer !== undefined) {
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/healthz',
+      handler: (req, res) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        res.writeHead(200)
+        res.end()
+      },
+    }), 'dsh-service healthz route')
+  }
+
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
   // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
   ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {

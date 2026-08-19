@@ -6,6 +6,7 @@ import { apply, name } from '../index.js'
 function createHost(overrides = {}) {
   const handlers = []
   const scheduled = []
+  const disposers = []
   const services = new Map(Object.entries(overrides.services || {}))
   services.set('timer', {
     timeout(callback, delay) {
@@ -26,12 +27,49 @@ function createHost(overrides = {}) {
     get(service) {
       return services.get(service)
     },
+    effect(callback) {
+      const dispose = callback()
+      if (typeof dispose === 'function') disposers.push(dispose)
+      return typeof dispose === 'function' ? dispose : () => {}
+    },
   }
 
   apply(ctx)
   assert.equal(handlers.length, 1)
-  return { handler: handlers[0].handler, scheduled }
+  return { handler: handlers[0].handler, scheduled, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
+
+test('healthz serves empty liveness responses and unregisters with the plugin fiber', async () => {
+  let route
+  let unregisters = 0
+  const { dispose } = createHost({
+    services: {
+      webServer: {
+        register(nextRoute) {
+          route = nextRoute
+          return () => { unregisters += 1 }
+        },
+      },
+    },
+  })
+
+  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/healthz' })
+
+  for (const [method, expectedStatus] of [['GET', 200], ['HEAD', 200], ['POST', 405]]) {
+    let statusCode
+    let body = 'not-ended'
+    const response = {
+      writeHead(status) { statusCode = status },
+      end(value) { body = value === undefined ? '' : String(value) },
+    }
+    await route.handler({ method }, response)
+    assert.equal(statusCode, expectedStatus)
+    assert.equal(body, '')
+  }
+
+  dispose()
+  assert.equal(unregisters, 1)
+})
 
 test('health RPC reports process and service metrics with persisted-only session count', async () => {
   const runningAgent = { id: 'agent-running', status: 'running' }
