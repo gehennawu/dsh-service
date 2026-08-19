@@ -25,6 +25,21 @@ window.__ModuleLoader__.load({
       'health.activeJobs': '后台任务',
       'health.uptimeValue': '{hours} 小时 {minutes} 分钟',
       'health.error': '无法读取运行状况',
+      'health.check': '立即健康检查',
+      'health.checking': '检查中…',
+      'health.overall.ok': '正常',
+      'health.overall.warning': '警告',
+      'health.overall.error': '错误',
+      'health.status.ok': '正常',
+      'health.status.warning': '警告',
+      'health.status.error': '错误',
+      'health.status.info': '信息',
+      'health.check.session-storage': '会话存储',
+      'health.check.workspace-registry': '工作区注册表',
+      'health.check.dsh-home': 'DSH_HOME',
+      'health.check.backup-storage': '备份存储',
+      'health.check.tar': 'tar',
+      'health.check.permissions': '文件权限',
       'permissions.title': '文件权限',
       'permissions.description': '查看 DSH_HOME 和全部工作区目录的当前属主与权限。修复会递归改为进程用户，并设置目录 755、文件 644。',
       'permissions.target': '目标属主：{owner}',
@@ -34,6 +49,13 @@ window.__ModuleLoader__.load({
       'permissions.confirmHint': '将递归修改以上目录的属主和权限。请确认当前值后再继续。',
       'permissions.cancel': '取消',
       'permissions.error': '权限操作失败',
+      'permissions.summary.ok': '{count} 个根目录检查正常',
+      'permissions.summary.warning': '发现 {count} 个根目录异常',
+      'permissions.showDetails': '查看详情',
+      'permissions.hideDetails': '隐藏详情',
+      'permissions.deep': '深度检查',
+      'permissions.deepChecking': '扫描中…',
+      'permissions.deepSummary': '扫描 {scanned} 项，用时 {duration} ms；属主异常 {owner}，目录权限异常 {directories}，文件权限异常 {files}，无法读取 {unreadable}。',
       'backup.title': '备份管理',
       'backup.description': '备份会话、配置和插件 profile 清单；不会包含 node_modules 或凭据。备份不会自动清理，请自行管理磁盘空间。',
       'backup.create': '创建备份',
@@ -45,8 +67,11 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
       'backup.cancel': '取消',
       'backup.error': '备份操作失败',
+      'backup.showRecords': '备份记录',
+      'backup.hideRecords': '隐藏备份记录',
       'version.title': '版本信息',
-      'version.current': '当前版本：',
+      'version.current': 'DSH：',
+      'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
       'update.check': '检查更新',
       'update.checking': '检查中…',
@@ -76,6 +101,25 @@ window.__ModuleLoader__.load({
       'error.activity': '检查运行状态失败',
       'error.restart': '重启失败',
       'error.instance': '重启响应缺少进程实例标识',
+      'usage.title': '模型使用',
+      'usage.refresh': '刷新统计',
+      'usage.refreshing': '刷新中…',
+      'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
+      'usage.error': '无法读取模型使用统计',
+      'usage.allProjects': '全部项目',
+      'usage.steps': '成功模型步骤',
+      'usage.input': '输入 Token',
+      'usage.output': '输出 Token',
+      'usage.cache': '缓存 Token',
+      'usage.hitRate': '缓存命中率',
+      'usage.today': '今天',
+      'usage.sevenDays': '近 7 天',
+      'usage.missing': '{count} 个步骤没有 Token 数据',
+      'usage.errors.title': '模型报错',
+      'usage.errors.recent': '最近 24 小时',
+      'usage.errors.history': '历史累计',
+      'usage.errors.empty': '没有记录到模型报错。',
+      'usage.errors.count': '{count} 次',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -94,6 +138,21 @@ window.__ModuleLoader__.load({
       'health.activeJobs': 'Background jobs',
       'health.uptimeValue': '{hours} h {minutes} min',
       'health.error': 'Could not read health metrics',
+      'health.check': 'Run health check',
+      'health.checking': 'Checking…',
+      'health.overall.ok': 'Healthy',
+      'health.overall.warning': 'Warning',
+      'health.overall.error': 'Error',
+      'health.status.ok': 'Healthy',
+      'health.status.warning': 'Warning',
+      'health.status.error': 'Error',
+      'health.status.info': 'Info',
+      'health.check.session-storage': 'Session storage',
+      'health.check.workspace-registry': 'Workspace registry',
+      'health.check.dsh-home': 'DSH_HOME',
+      'health.check.backup-storage': 'Backup storage',
+      'health.check.tar': 'tar',
+      'health.check.permissions': 'File permissions',
       'permissions.title': 'File permissions',
       'permissions.description': 'Shows the current owner and mode for DSH_HOME and every workspace directory. Repair recursively changes ownership to the process user, directories to 755, and files to 644.',
       'permissions.target': 'Target owner: {owner}',
@@ -103,6 +162,13 @@ window.__ModuleLoader__.load({
       'permissions.confirmHint': 'This will recursively modify ownership and permissions for every directory above. Review the current values before continuing.',
       'permissions.cancel': 'Cancel',
       'permissions.error': 'Permission operation failed',
+      'permissions.summary.ok': '{count} root path(s) passed the check',
+      'permissions.summary.warning': '{count} root path(s) need attention',
+      'permissions.showDetails': 'Show details',
+      'permissions.hideDetails': 'Hide details',
+      'permissions.deep': 'Deep check',
+      'permissions.deepChecking': 'Scanning…',
+      'permissions.deepSummary': 'Scanned {scanned} entries in {duration} ms; owner issues {owner}, directory mode issues {directories}, file mode issues {files}, unreadable {unreadable}.',
       'backup.title': 'Backup management',
       'backup.description': 'Backs up sessions, configuration, and plugin profile manifests. Credentials and node_modules are excluded. Backups are never auto-pruned; you are responsible for disk usage.',
       'backup.create': 'Create backup',
@@ -114,8 +180,11 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': 'Delete this backup? This cannot be undone.',
       'backup.cancel': 'Cancel',
       'backup.error': 'Backup operation failed',
+      'backup.showRecords': 'Backup records',
+      'backup.hideRecords': 'Hide backup records',
       'version.title': 'Version information',
-      'version.current': 'Current version: ',
+      'version.current': 'DSH: ',
+      'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
@@ -145,6 +214,25 @@ window.__ModuleLoader__.load({
       'error.activity': 'Could not check active work',
       'error.restart': 'Restart failed',
       'error.instance': 'Restart response is missing the process instance ID',
+      'usage.title': 'Model usage',
+      'usage.refresh': 'Refresh usage',
+      'usage.refreshing': 'Refreshing…',
+      'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
+      'usage.error': 'Could not read model usage',
+      'usage.allProjects': 'All projects',
+      'usage.steps': 'Successful model steps',
+      'usage.input': 'Input tokens',
+      'usage.output': 'Output tokens',
+      'usage.cache': 'Cache tokens',
+      'usage.hitRate': 'Cache hit rate',
+      'usage.today': 'Today',
+      'usage.sevenDays': 'Last 7 days',
+      'usage.missing': '{count} step(s) have no token data',
+      'usage.errors.title': 'Model errors',
+      'usage.errors.recent': 'Last 24 hours',
+      'usage.errors.history': 'All time',
+      'usage.errors.empty': 'No model errors were recorded.',
+      'usage.errors.count': '{count} occurrence(s)',
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale']
@@ -321,18 +409,30 @@ window.__ModuleLoader__.load({
         const translate = useTranslation()
         const [health, setHealth] = useState(null)
         const [healthError, setHealthError] = useState(null)
+        const [diagnostics, setDiagnostics] = useState(null)
+        const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
         const [permissions, setPermissions] = useState(null)
         const [permissionConfirm, setPermissionConfirm] = useState(false)
         const [permissionBusy, setPermissionBusy] = useState(false)
         const [permissionError, setPermissionError] = useState(null)
+        const [permissionDetails, setPermissionDetails] = useState(false)
+        const [permissionDeep, setPermissionDeep] = useState(null)
+        const [permissionDeepBusy, setPermissionDeepBusy] = useState(false)
         const [backups, setBackups] = useState({ items: [], totalBytes: 0 })
         const [backupBusy, setBackupBusy] = useState(false)
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
+        const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
+        const [pluginVersion, setPluginVersion] = useState(null)
         const [updateInfo, setUpdateInfo] = useState(null) // { latest, upToDate } | null
         const [updateBusy, setUpdateBusy] = useState(false)
         const [updateError, setUpdateError] = useState(null)
+        const [usage, setUsage] = useState(null)
+        const [usageBusy, setUsageBusy] = useState(false)
+        const [usageError, setUsageError] = useState(null)
+        const [usageMetric, setUsageMetric] = useState('inputTokens')
+        const [usageProject, setUsageProject] = useState('all')
         // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
         const [activity, setActivity] = useState(null)
@@ -342,7 +442,10 @@ window.__ModuleLoader__.load({
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
         useEffect(() => {
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
-            if (res && res.ok) setVersion(res.value.current)
+            if (res && res.ok) {
+              setVersion(res.value.current)
+              setPluginVersion(res.value.pluginVersion || null)
+            }
           }).catch(() => {})
         }, [])
         useEffect(() => {
@@ -360,6 +463,21 @@ window.__ModuleLoader__.load({
             if (active && res && res.ok) setPermissions(res.value)
           }).catch(() => {
             if (active) setPermissionError(translate('permissions.error'))
+          })
+          return () => { active = false }
+        }, [])
+        useEffect(() => {
+          let active = true
+          ctx.connection.rpc.call('/dsh-service', 'usage', {}).then(async (res) => {
+            if (!active || !res || !res.ok) return
+            setUsage(res.value)
+            if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
+            try {
+              const refreshed = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', {})
+              if (active && refreshed && refreshed.ok) setUsage(refreshed.value)
+            } catch (_) {}
+          }).catch(() => {
+            if (active) setUsageError(translate('usage.error'))
           })
           return () => { active = false }
         }, [])
@@ -394,6 +512,48 @@ window.__ModuleLoader__.load({
             cancelNext()
           }
         }, [])
+
+        const runDiagnostics = async () => {
+          setDiagnosticsBusy(true)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'diagnostics', {})
+            if (!res || res.ok === false) throw new Error('diagnostics failed')
+            setDiagnostics(res.value)
+          } catch (_) {
+            setHealthError(translate('health.error'))
+          } finally {
+            setDiagnosticsBusy(false)
+          }
+        }
+
+        const refreshUsage = async () => {
+          setUsageBusy(true)
+          setUsageError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', {})
+            if (!res || res.ok === false) throw new Error('usage refresh failed')
+            setUsage(res.value)
+          } catch (_) {
+            setUsageError(translate('usage.error'))
+          } finally {
+            setUsageBusy(false)
+          }
+        }
+
+        const deepCheckPermissions = async () => {
+          if (!permissions || permissions.supported !== true) return
+          setPermissionDeepBusy(true)
+          setPermissionError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'permissions-deep', { planId: permissions.planId })
+            if (!res || res.ok === false) throw new Error('deep permission check failed')
+            setPermissionDeep(res.value)
+          } catch (_) {
+            setPermissionError(translate('permissions.error'))
+          } finally {
+            setPermissionDeepBusy(false)
+          }
+        }
 
         const repairPermissions = async () => {
           if (!permissions || permissions.supported !== true) return
@@ -540,6 +700,116 @@ window.__ModuleLoader__.load({
         },
         React.createElement('div', { style: { color: '#888', fontSize: '11px', marginBottom: '2px' } }, translate(labelKey)),
         React.createElement('div', { style: { fontSize: '14px', fontWeight: 600 } }, value))
+        const dateKey = (date) => {
+          const digits = (value) => String(value).padStart(2, '0')
+          return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
+        }
+        const usageDays = []
+        for (let offset = 6; offset >= 0; offset -= 1) {
+          const date = new Date()
+          date.setHours(0, 0, 0, 0)
+          date.setDate(date.getDate() - offset)
+          usageDays.push({ key: dateKey(date), label: `${date.getMonth() + 1}/${date.getDate()}` })
+        }
+        const usageMetrics = [
+          ['steps', 'usage.steps'],
+          ['inputTokens', 'usage.input'],
+          ['outputTokens', 'usage.output'],
+          ['cacheTokens', 'usage.cache'],
+          ['cacheHitRate', 'usage.hitRate'],
+        ]
+        const usageTotalsFor = (day) => {
+          const source = usage && usage.days ? usage.days[day] : null
+          if (!source) return { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+          if (usageProject === 'all') return source.totals
+          const project = source.projects.find((item) => item.id === usageProject)
+          return project ? project.totals : { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+        }
+        const usageValue = (totals) => usageMetric === 'cacheTokens'
+          ? totals.cacheReadTokens + totals.cacheWriteTokens
+          : totals[usageMetric] || 0
+        const formatUsageValue = (value, metricName) => metricName === 'cacheHitRate'
+          ? (Number(value) * 100).toFixed(1) + '%'
+          : Number(value).toLocaleString()
+        const chartValues = usageDays.map((day) => usageValue(usageTotalsFor(day.key)))
+        const chartMax = Math.max(1, ...chartValues)
+        const todayTotals = usageTotalsFor(usageDays[6].key)
+        const sevenTotals = usageDays.reduce((total, day) => {
+          const source = usageTotalsFor(day.key)
+          total.steps += source.steps || 0
+          total.missingUsage += source.missingUsage || 0
+          total.inputTokens += source.inputTokens || 0
+          total.outputTokens += source.outputTokens || 0
+          total.cacheReadTokens += source.cacheReadTokens || 0
+          total.cacheWriteTokens += source.cacheWriteTokens || 0
+          return total
+        }, { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+        const sevenDenominator = sevenTotals.inputTokens + sevenTotals.cacheReadTokens + sevenTotals.cacheWriteTokens
+        sevenTotals.cacheHitRate = sevenDenominator === 0 ? 0 : sevenTotals.cacheReadTokens / sevenDenominator
+        const selectedProjects = usageProject === 'all'
+          ? (usage?.projects || []).map((project) => project.id)
+          : [usageProject]
+        const modelTotals = new Map()
+        for (const day of usageDays) {
+          const source = usage?.days?.[day.key]
+          if (!source) continue
+          for (const project of source.projects) {
+            if (!selectedProjects.includes(project.id)) continue
+            for (const model of project.models) {
+              const existing = modelTotals.get(model.id) || { id: model.id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+              existing.steps += model.totals.steps || 0
+              existing.inputTokens += model.totals.inputTokens || 0
+              existing.outputTokens += model.totals.outputTokens || 0
+              existing.cacheReadTokens += model.totals.cacheReadTokens || 0
+              existing.cacheWriteTokens += model.totals.cacheWriteTokens || 0
+              modelTotals.set(model.id, existing)
+            }
+          }
+        }
+        const selectedErrors = (list) => (list || [])
+          .filter((error) => usageProject === 'all' || error.projectId === usageProject)
+          .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
+        const recentErrors = selectedErrors(usage?.errors?.last24Hours)
+        const historyErrors = selectedErrors(usage?.errors?.history)
+        const errorList = (titleKey, errors) => React.createElement('div', { key: titleKey },
+          React.createElement('div', { style: { fontSize: '12px', fontWeight: 600, margin: '8px 0 5px' } }, translate(titleKey)),
+          errors.length === 0
+            ? React.createElement('p', { style: hint }, translate('usage.errors.empty'))
+            : React.createElement('div', { style: { display: 'grid', gap: '6px' } },
+                errors.map((failure) => React.createElement('div', { key: `${titleKey}:${failure.projectId}:${failure.key}`, style: { padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(211,51,51,0.25)', fontSize: '12px' } },
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontWeight: 600 } },
+                    React.createElement('span', null, `${failure.provider}/${failure.model} · ${failure.code}${failure.status === null ? '' : ` · ${failure.status}`}`),
+                    React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
+                  React.createElement('div', { style: { color: '#888', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message)))))
+        const usageBlock = React.createElement('div', { key: 'usage-section' },
+          React.createElement('div', { style: sectionTitle }, translate('usage.title')),
+          React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '8px 0' } },
+            usageMetrics.map(([id, label]) => React.createElement('button', { key: id, style: id === usageMetric ? primary : plain, onClick: () => setUsageMetric(id) }, translate(label)))),
+          usage && usage.projects.length > 0
+            ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' } },
+                React.createElement('button', { style: usageProject === 'all' ? primary : plain, onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
+                usage.projects.map((project) => React.createElement('button', { key: project.id, style: usageProject === project.id ? primary : plain, onClick: () => setUsageProject(project.id) }, project.title)))
+            : null,
+          usage && usage.indexedSessions > 0
+            ? React.createElement('div', null,
+                React.createElement('div', { style: { display: 'flex', alignItems: 'end', gap: '6px', height: '130px', padding: '10px', borderRadius: '8px', background: 'rgba(128,128,128,0.07)' } },
+                  usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center' } },
+                    React.createElement('div', { title: formatUsageValue(chartValues[index], usageMetric), style: { height: `${Math.max(2, chartValues[index] / chartMax * 95)}px`, background: '#5B4CF0', borderRadius: '4px 4px 0 0' } }),
+                    React.createElement('div', { style: { fontSize: '10px', color: '#888', marginTop: '4px' } }, day.label)))),
+                React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '8px' } },
+                  metric('usage.today', formatUsageValue(usageValue(todayTotals), usageMetric)),
+                  metric('usage.sevenDays', formatUsageValue(usageValue(sevenTotals), usageMetric))),
+                sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
+                React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
+                  [...modelTotals.values()].sort((a, b) => b.steps - a.steps).map((model) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 8px', border: '1px solid rgba(128,128,128,0.18)', borderRadius: '6px' } },
+                    React.createElement('span', null, model.id),
+                    React.createElement('span', null, formatUsageValue(usageValue({ ...model, cacheHitRate: (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) === 0 ? 0 : model.cacheReadTokens / (model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens) }), usageMetric))))),
+                React.createElement('div', { style: Object.assign({}, sectionTitle, { marginTop: '14px' }) }, translate('usage.errors.title')),
+                errorList('usage.errors.recent', recentErrors),
+                errorList('usage.errors.history', historyErrors))
+            : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
+          React.createElement('div', { style: row }, React.createElement('button', { style: primary, onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
+
         const healthBlock = React.createElement('div', { key: 'health-section' },
           React.createElement('div', { style: sectionTitle }, translate('health.title')),
           health
@@ -550,21 +820,36 @@ window.__ModuleLoader__.load({
                 metric('health.persistedSessions', String(health.persistedSessions)),
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
-            : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
+            : React.createElement('p', { style: hint }, healthError || translate('version.loading')),
+          React.createElement('div', { style: row }, React.createElement('button', { style: primary, onClick: runDiagnostics, disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : 'health.check'))),
+          diagnostics
+            ? React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
+                diagnostics.checks.map((check) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '12px', padding: '6px 8px', borderRadius: '6px', background: 'rgba(128,128,128,0.07)' } },
+                  React.createElement('span', null, translate(`health.check.${check.id}`)),
+                  React.createElement('span', null, `${translate(`health.status.${check.status}`)}${check.detail === undefined ? '' : ` · ${check.detail}`}`))))
+            : null)
 
+        const permissionAbnormal = permissions && permissions.supported === true
+          ? permissions.items.filter((item) => item.owner !== permissions.targetOwner || item.mode !== '0755').length
+          : 0
         const permissionBlock = permissions && permissions.supported === true
           ? React.createElement('div', { key: 'permissions-section' },
               React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
               React.createElement('p', { style: hint }, translate('permissions.description')),
+              React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600, color: permissionAbnormal > 0 ? '#c68000' : 'inherit' }) }, translate(permissionAbnormal > 0 ? 'permissions.summary.warning' : 'permissions.summary.ok', { count: permissionAbnormal > 0 ? permissionAbnormal : permissions.items.length })),
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
-              React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
+              React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+                React.createElement('button', { style: plain, onClick: () => setPermissionDetails((value) => !value) }, translate(permissionDetails ? 'permissions.hideDetails' : 'permissions.showDetails')),
+                React.createElement('button', { style: plain, onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
+              permissionDeep ? React.createElement('p', { style: hint }, translate('permissions.deepSummary', { scanned: permissionDeep.scanned, duration: permissionDeep.durationMs, owner: permissionDeep.ownerIssues, directories: permissionDeep.directoryModeIssues, files: permissionDeep.fileModeIssues, unreadable: permissionDeep.unreadable })) : null,
+              permissionDetails ? React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
                 permissions.items.map((item) => React.createElement('div', {
                   key: item.path,
                   style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid rgba(128,128,128,0.2)' },
                 },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 600 } }, item.label),
                 React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '11px', color: '#888', overflowWrap: 'anywhere' } }, item.path),
-                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', marginTop: '3px' } }, `${item.owner} · ${item.mode}`)))),
+                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', marginTop: '3px' } }, `${item.owner} · ${item.mode}`)))) : null,
               permissionConfirm
                 ? React.createElement('div', { style: { marginTop: '10px' } },
                     React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, translate('permissions.confirmHint')),
@@ -584,7 +869,9 @@ window.__ModuleLoader__.load({
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, backupError) : null,
           backups.items.length === 0
             ? React.createElement('p', { style: hint }, translate('backup.empty'))
-            : React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
+            : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords')),
+          backups.items.length > 0 && backupDetails
+            ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
                 backups.items.map((item) => React.createElement('div', {
                   key: item.id,
                   style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid rgba(128,128,128,0.2)' },
@@ -597,7 +884,8 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '7px' }), disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete'))))))
+                  : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '7px' }), disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
+            : null)
 
         // 版本信息区块
         const versionBlock = [
@@ -605,7 +893,10 @@ window.__ModuleLoader__.load({
             React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
             React.createElement('div', { key: 'body', style: { fontSize: '13px', lineHeight: 1.6 } },
               React.createElement('span', null, translate('version.current')),
-              React.createElement('code', { style: { background: 'rgba(128,128,128,0.15)', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' } }, version || translate('version.loading'))
+              React.createElement('code', { style: { background: 'rgba(128,128,128,0.15)', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' } }, version || translate('version.loading')),
+              React.createElement('br'),
+              React.createElement('span', null, translate('version.plugin')),
+              React.createElement('code', { style: { background: 'rgba(128,128,128,0.15)', padding: '1px 6px', borderRadius: '4px', fontSize: '12px' } }, pluginVersion || translate('version.loading'))
             )
           ),
           // 检查更新
@@ -685,7 +976,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null
         )
 
-        return React.createElement('div', null, healthBlock, permissionBlock, backupBlock, versionBlock, restartBlock)
+        return React.createElement('div', null, versionBlock, healthBlock, usageBlock, backupBlock, permissionBlock, restartBlock)
       }
 
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(

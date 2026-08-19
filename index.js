@@ -1,9 +1,9 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
-import { cp, mkdir, readdir, rename, rm, stat, unlink } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import https from 'node:https'
 
@@ -16,9 +16,13 @@ const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
+const USAGE_INDEX_VERSION = 2
+const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
 let dshVersion = 'unknown'
+let pluginVersion = 'unknown'
+try { pluginVersion = require('./package.json').version } catch (_) {}
 try {
   dshVersion = require(`${DSH_PACKAGE}/package.json`).version
 } catch (_) {
@@ -213,6 +217,217 @@ async function deleteBackup(dshHome, id) {
   return listBackups(dshHome)
 }
 
+function usageDay(time) {
+  const date = new Date(time)
+  const digits = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
+}
+
+function emptyUsageTotals() {
+  return { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+}
+
+function addUsageTotals(target, source) {
+  target.steps += source.steps || 0
+  target.missingUsage += source.missingUsage || 0
+  target.inputTokens += source.inputTokens || 0
+  target.outputTokens += source.outputTokens || 0
+  target.cacheReadTokens += source.cacheReadTokens || 0
+  target.cacheWriteTokens += source.cacheWriteTokens || 0
+  return target
+}
+
+function cacheHitRate(totals) {
+  const denominator = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
+  return denominator === 0 ? 0 : totals.cacheReadTokens / denominator
+}
+
+function projectForCwd(ctx, cwd) {
+  if (typeof cwd !== 'string' || cwd.length === 0) return { id: 'ungrouped', title: 'Ungrouped', path: null }
+  const registry = ctx.get('workspaceRegistry')
+  let workspaces = []
+  if (registry !== undefined) {
+    try {
+      const listed = registry.list()
+      workspaces = Array.isArray(listed) ? listed : [...listed]
+    } catch (_) {}
+  }
+  const absoluteCwd = resolve(cwd)
+  let selected
+  for (const workspace of workspaces) {
+    const workspacePath = resolve(String(workspace.path))
+    const child = relative(workspacePath, absoluteCwd)
+    if (child === '..' || child.startsWith(`..${sep}`) || resolve(workspacePath, child) !== absoluteCwd) continue
+    if (selected === undefined || workspacePath.length > selected.path.length) {
+      selected = { id: String(workspace.id), title: String(workspace.title || workspace.id), path: workspacePath }
+    }
+  }
+  return selected || { id: `cwd:${absoluteCwd}`, title: basename(absoluteCwd) || absoluteCwd, path: absoluteCwd }
+}
+
+function revisionKey(revision) {
+  return typeof revision === 'string' ? revision : JSON.stringify(revision)
+}
+
+function createUsageIndex() {
+  return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions: {} }
+}
+
+async function loadUsageIndex(dshHome) {
+  try {
+    const parsed = JSON.parse(await readFile(join(dshHome, USAGE_INDEX_FILE), 'utf8'))
+    if (parsed?.version !== USAGE_INDEX_VERSION || typeof parsed.sessions !== 'object' || parsed.sessions === null) return createUsageIndex()
+    return parsed
+  } catch (error) {
+    if (error?.code === 'ENOENT') return createUsageIndex()
+    return createUsageIndex()
+  }
+}
+
+async function saveUsageIndex(dshHome, index) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, USAGE_INDEX_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(index), { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+function usageFailure(event) {
+  if (event.type === 'llm/retry') return event.data?.failure
+  if (event.type === 'turn/end' && event.data?.reason?.kind === 'error') return event.data.reason.error
+  return undefined
+}
+
+function addUsageError(session, event, model) {
+  const failure = usageFailure(event)
+  if (failure === undefined) return false
+  const day = usageDay(event.time)
+  const bucket = session.days[day] || (session.days[day] = { totals: emptyUsageTotals(), models: {} })
+  if (session.errors === undefined) session.errors = {}
+  const provider = event.type === 'llm/retry' && typeof event.data?.provider === 'string' ? event.data.provider : model.provider
+  const errorModel = provider === model.provider ? model.model : 'unknown'
+  const code = typeof failure.code === 'string' && failure.code.length > 0 ? failure.code : 'UNKNOWN'
+  const status = Number.isSafeInteger(failure.status) ? failure.status : null
+  const key = `${provider}/${errorModel}|${code}|${status === null ? '-' : status}`
+  const current = session.errors[key] || { key, provider, model: errorModel, code, status, message: String(failure.message || code), count: 0, recentTimes: [] }
+  current.count += 1
+  current.recentTimes.push(event.time)
+  session.errors[key] = current
+  return true
+}
+
+function foldUsageEvents(ctx, record, previous, events) {
+  const project = projectForCwd(ctx, record.header.cwd)
+  const session = previous || { revision: '', lastSeq: Math.max(0, record.header.seedLength || 0) - 1, project, currentModel: null, days: {} }
+  session.project = project
+  for (const event of events) {
+    if (event.seq < (record.header.seedLength || 0)) continue
+    session.lastSeq = Math.max(session.lastSeq, event.seq)
+    if (event.type === 'request/header') {
+      const provider = event.data?.header?.config?.provider
+      const model = event.data?.header?.config?.model
+      if (typeof provider === 'string' && typeof model === 'string') session.currentModel = { provider, model, id: `${provider}/${model}` }
+      continue
+    }
+    const model = session.currentModel || { provider: 'unknown', model: 'unknown', id: 'unknown/unknown' }
+    if (addUsageError(session, event, model)) continue
+    if (event.type !== 'assistant/message') continue
+    const day = usageDay(event.time)
+    const bucket = session.days[day] || (session.days[day] = { totals: emptyUsageTotals(), models: {}, errors: {} })
+    const modelBucket = bucket.models[model.id] || (bucket.models[model.id] = { id: model.id, provider: model.provider, model: model.model, totals: emptyUsageTotals() })
+    const usage = event.data?.usage
+    const delta = emptyUsageTotals()
+    delta.steps = 1
+    if (usage === undefined) delta.missingUsage = 1
+    else {
+      delta.inputTokens = Number(usage.inputTokens) || 0
+      delta.outputTokens = Number(usage.outputTokens) || 0
+      delta.cacheReadTokens = Number(usage.cacheReadTokens) || 0
+      delta.cacheWriteTokens = Number(usage.cacheWriteTokens) || 0
+    }
+    addUsageTotals(bucket.totals, delta)
+    addUsageTotals(modelBucket.totals, delta)
+  }
+  return session
+}
+
+function publicUsage(index) {
+  const result = { updatedAt: index.updatedAt, indexedSessions: Object.keys(index.sessions).length, totals: emptyUsageTotals(), days: {}, errors: { history: [], last24Hours: [] } }
+  const projects = new Map()
+  const historyErrors = new Map()
+  const recentErrors = new Map()
+  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
+  for (const session of Object.values(index.sessions)) {
+    projects.set(session.project.id, session.project)
+    for (const error of Object.values(session.errors || {})) {
+      const key = `${session.project.id}|${error.key}`
+      const history = historyErrors.get(key) || { key: error.key, provider: error.provider, model: error.model, code: error.code, status: error.status, message: error.message, count: 0, projectId: session.project.id, projectTitle: session.project.title }
+      history.count += error.count
+      historyErrors.set(key, history)
+      const recentCount = (error.recentTimes || []).filter((time) => time >= recentCutoff).length
+      if (recentCount > 0) {
+        const recent = recentErrors.get(key) || { ...history, count: 0 }
+        recent.count += recentCount
+        recentErrors.set(key, recent)
+      }
+    }
+    for (const [day, source] of Object.entries(session.days)) {
+      const dayBucket = result.days[day] || (result.days[day] = { totals: emptyUsageTotals(), projects: new Map() })
+      addUsageTotals(dayBucket.totals, source.totals)
+      addUsageTotals(result.totals, source.totals)
+      const projectBucket = dayBucket.projects.get(session.project.id) || { ...session.project, totals: emptyUsageTotals(), models: new Map() }
+      addUsageTotals(projectBucket.totals, source.totals)
+      for (const model of Object.values(source.models)) {
+        const modelBucket = projectBucket.models.get(model.id) || { id: model.id, provider: model.provider, model: model.model, totals: emptyUsageTotals() }
+        addUsageTotals(modelBucket.totals, model.totals)
+        projectBucket.models.set(model.id, modelBucket)
+      }
+      dayBucket.projects.set(session.project.id, projectBucket)
+    }
+  }
+  const errorSort = (a, b) => b.count - a.count || a.key.localeCompare(b.key) || a.projectId.localeCompare(b.projectId)
+  result.errors.history = [...historyErrors.values()].sort(errorSort)
+  result.errors.last24Hours = [...recentErrors.values()].sort(errorSort)
+  const finishTotals = (totals) => ({ ...totals, cacheHitRate: cacheHitRate(totals) })
+  result.totals = finishTotals(result.totals)
+  result.projects = [...projects.values()].sort((a, b) => a.title.localeCompare(b.title))
+  for (const bucket of Object.values(result.days)) {
+    bucket.totals = finishTotals(bucket.totals)
+    bucket.projects = [...bucket.projects.values()].map((project) => ({
+      ...project,
+      totals: finishTotals(project.totals),
+      models: [...project.models.values()].map((model) => ({ ...model, totals: finishTotals(model.totals) })).sort((a, b) => a.id.localeCompare(b.id)),
+    })).sort((a, b) => a.title.localeCompare(b.title))
+  }
+  return result
+}
+
+async function refreshUsageIndex(ctx, dshHome, index) {
+  const persistence = ctx.get('sessionPersistence')
+  if (persistence === undefined) throw new Error('session-persistence-unavailable')
+  const snapshots = await persistence.listSnapshots()
+  const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
+  for (const id of Object.keys(index.sessions)) if (!liveIds.has(id)) delete index.sessions[id]
+  for (const record of snapshots) {
+    const id = String(record.header.id)
+    const revision = revisionKey(record.revision)
+    const previous = index.sessions[id]
+    if (previous?.revision === revision) continue
+    const fromSeq = previous === undefined ? Math.max(0, record.header.seedLength || 0) : previous.lastSeq + 1
+    const read = await persistence.readFrom(record.header.id, fromSeq)
+    const next = foldUsageEvents(ctx, record, previous, read.events)
+    next.revision = revision
+    index.sessions[id] = next
+  }
+  index.updatedAt = Date.now()
+  await saveUsageIndex(dshHome, index)
+  return publicUsage(index)
+}
+
 function modeString(mode) {
   return '0' + (mode & 0o777).toString(8).padStart(3, '0')
 }
@@ -281,6 +496,44 @@ async function permissionSnapshot(ctx, dshHome, plans) {
   }
 }
 
+async function deepCheckPermissions(plans, planId) {
+  if (typeof planId !== 'string') return undefined
+  const paths = plans.get(planId)
+  if (paths === undefined) return undefined
+  const startedAt = Date.now()
+  const result = { scanned: 0, ownerIssues: 0, directoryModeIssues: 0, fileModeIssues: 0, unreadable: 0, samples: [] }
+  const targetUid = process.getuid()
+  const targetGid = process.getgid()
+  const visit = async (path) => {
+    let info
+    try {
+      info = await lstat(path)
+      result.scanned += 1
+    } catch (error) {
+      result.unreadable += 1
+      if (result.samples.length < 50) result.samples.push({ path, issue: 'unreadable', detail: error?.code || error?.message || String(error) })
+      return
+    }
+    const issues = []
+    if (info.uid !== targetUid || info.gid !== targetGid) { result.ownerIssues += 1; issues.push('owner') }
+    const mode = info.mode & 0o777
+    if (info.isDirectory() && mode !== 0o755) { result.directoryModeIssues += 1; issues.push('directory-mode') }
+    else if (info.isFile() && mode !== 0o644) { result.fileModeIssues += 1; issues.push('file-mode') }
+    if (issues.length > 0 && result.samples.length < 50) result.samples.push({ path, issue: issues.join(','), detail: modeString(info.mode) })
+    if (!info.isDirectory()) return
+    let entries
+    try { entries = await readdir(path, { withFileTypes: true }) } catch (error) {
+      result.unreadable += 1
+      if (result.samples.length < 50) result.samples.push({ path, issue: 'unreadable', detail: error?.code || error?.message || String(error) })
+      return
+    }
+    for (const entry of entries) await visit(join(path, entry.name))
+  }
+  for (const path of paths) await visit(path)
+  result.durationMs = Date.now() - startedAt
+  return result
+}
+
 async function repairPermissions(ctx, dshHome, plans, planId) {
   if (typeof planId !== 'string') return undefined
   const paths = plans.get(planId)
@@ -293,6 +546,58 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
     await runFixedCommand(ctx, ['find', path, '-type', 'f', '-exec', 'chmod', '644', '{}', '+'])
   }
   return permissionSnapshot(ctx, dshHome, plans)
+}
+
+async function collectDiagnostics(ctx, dshHome) {
+  const checks = []
+  const add = (id, status, detail) => checks.push({ id, status, ...(detail === undefined ? {} : { detail: String(detail) }) })
+
+  const persistence = ctx.get('sessionPersistence')
+  if (persistence === undefined) add('session-storage', 'error', 'unavailable')
+  else {
+    try { add('session-storage', 'ok', (await persistence.listSnapshots()).length) } catch (error) { add('session-storage', 'error', error?.message || error) }
+  }
+
+  const registry = ctx.get('workspaceRegistry')
+  let workspaceCount = 0
+  if (registry === undefined) add('workspace-registry', 'warning', 'unavailable')
+  else {
+    try {
+      const listed = registry.list()
+      workspaceCount = Array.isArray(listed) ? listed.length : [...listed].length
+      add('workspace-registry', 'ok', workspaceCount)
+    } catch (error) { add('workspace-registry', 'error', error?.message || error) }
+  }
+
+  try {
+    const info = await stat(dshHome)
+    add('dsh-home', info.isDirectory() ? 'ok' : 'error', modeString(info.mode))
+  } catch (error) { add('dsh-home', 'error', error?.code || error?.message || error) }
+
+  try {
+    const backups = await listBackups(dshHome)
+    add('backup-storage', backups.items.length === 0 ? 'warning' : 'ok', `${backups.items.length}:${backups.totalBytes}`)
+  } catch (error) { add('backup-storage', 'error', error?.code || error?.message || error) }
+
+  const subprocess = ctx.get('subprocess')
+  if (subprocess === undefined) add('tar', 'error', 'subprocess-unavailable')
+  else {
+    try { add('tar', 'ok', await subprocess.resolveExecutable('tar')) } catch (error) { add('tar', 'error', error?.message || error) }
+  }
+
+  try {
+    const snapshot = await permissionSnapshot(ctx, dshHome, new Map())
+    if (snapshot.supported !== true) add('permissions', 'info', 'unsupported')
+    else {
+      const abnormal = snapshot.items.filter((item) => item.owner !== snapshot.targetOwner || item.mode !== '0755').length
+      add('permissions', abnormal === 0 ? 'ok' : 'warning', abnormal)
+    }
+  } catch (error) { add('permissions', 'warning', error?.message || error) }
+
+  let status = 'ok'
+  if (checks.some((check) => check.status === 'error')) status = 'error'
+  else if (checks.some((check) => check.status === 'warning')) status = 'warning'
+  return { status, checkedAt: Date.now(), checks }
 }
 
 async function collectHealth(ctx) {
@@ -375,6 +680,8 @@ function collectActiveWork(ctx) {
 function apply(ctx) {
   const dshHome = resolveDshHome()
   const permissionPlans = new Map()
+  let usageIndexPromise = loadUsageIndex(dshHome)
+  let usageRefreshPromise
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
@@ -397,7 +704,7 @@ function apply(ctx) {
   // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
   ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {
     if (endpoint === 'version') {
-      return { ok: true, value: { current: dshVersion, instanceId } }
+      return { ok: true, value: { current: dshVersion, pluginVersion, instanceId } }
     }
 
     if (endpoint === 'check-update') {
@@ -424,9 +731,46 @@ function apply(ctx) {
       }
     }
 
+    if (endpoint === 'diagnostics') {
+      try {
+        return { ok: true, value: await collectDiagnostics(ctx, dshHome) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'usage') {
+      try {
+        return { ok: true, value: publicUsage(await usageIndexPromise) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'usage-refresh') {
+      try {
+        if (usageRefreshPromise === undefined) {
+          usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
+        }
+        return { ok: true, value: await usageRefreshPromise }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
     if (endpoint === 'permissions-plan') {
       try {
         return { ok: true, value: await permissionSnapshot(ctx, dshHome, permissionPlans) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'permissions-deep') {
+      try {
+        const value = await deepCheckPermissions(permissionPlans, payload?.planId)
+        if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
+        return { ok: true, value }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

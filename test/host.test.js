@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -127,6 +127,134 @@ test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs 
   assert.deepEqual(replayed, { ok: false, error: 'unknown-permission-plan' })
 })
 
+test('permission deep check scans only host-planned roots and reports bounded anomalies without changing files', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-deep-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-deep-workspace-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
+  await mkdir(join(workspace, 'nested'))
+  await writeFile(join(workspace, 'nested', 'bad.txt'), 'test')
+  await chmod(workspace, 0o755)
+  await chmod(join(workspace, 'nested'), 0o700)
+  await chmod(join(workspace, 'nested', 'bad.txt'), 0o600)
+  await symlink(workspace, join(workspace, 'nested', 'loop'))
+  const { handler } = createHost({ services: { workspaceRegistry: { list: () => [{ id: 'project', path: workspace }] }, subprocess: localSubprocess() }, env: { DSH_HOME: dshHome } })
+  const plan = await handler('permissions-plan', {})
+  const deep = await handler('permissions-deep', { planId: plan.value.planId })
+  assert.equal(deep.ok, true)
+  assert.equal(deep.value.scanned >= 5, true)
+  assert.equal(deep.value.scanned < 10, true)
+  assert.equal(deep.value.directoryModeIssues >= 1, true)
+  assert.equal(deep.value.fileModeIssues >= 1, true)
+  assert.equal(deep.value.samples.length >= 2, true)
+  assert.equal((await stat(join(workspace, 'nested'))).mode & 0o777, 0o700)
+  const repaired = await handler('permissions-repair', { planId: plan.value.planId })
+  assert.equal(repaired.ok, true)
+  assert.equal((await stat(join(workspace, 'nested'))).mode & 0o777, 0o755)
+  const forged = await handler('permissions-deep', { planId: 'forged' })
+  assert.deepEqual(forged, { ok: false, error: 'unknown-permission-plan' })
+})
+
+test('usage RPC builds and incrementally refreshes exact daily provider, model, and project totals', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const day = new Date(now).toLocaleDateString('en-CA')
+  let revision = 'rev-1'
+  let reads = 0
+  let events = [
+    { type: 'request/header', seq: 0, time: now - 2000, data: { header: { config: { provider: 'deepseek', model: 'deepseek-chat' } }, reason: 'initial' } },
+    { type: 'assistant/message', seq: 1, time: now - 1000, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10 } } },
+    { type: 'llm/retry', seq: 2, time: now - 900, data: { retryId: 'r1', turn: 1, step: 0, provider: 'deepseek', mode: 'normal', policyKey: 'default', retry: 1, maxRetries: 2, delayMs: 100, failure: { code: 'RATE_LIMIT', status: 429, message: 'request id abc123 rate limit exceeded after 1.2s' } } },
+    { type: 'llm/retry', seq: 3, time: now - 800, data: { retryId: 'r2', turn: 1, step: 0, provider: 'deepseek', mode: 'normal', policyKey: 'default', retry: 2, maxRetries: 2, delayMs: 200, failure: { code: 'RATE_LIMIT', status: 429, message: 'request id xyz789 rate limit exceeded after 2.4s' } } },
+    { type: 'turn/end', seq: 4, time: now - 700, data: { turn: 2, reason: { kind: 'error', error: { code: 'AUTH', status: 401, message: 'invalid api key' } } } },
+  ]
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'session-1', version: 0, createdAt: now, cwd: '/workspace/project/src' }, revision }],
+    async readFrom(id, fromSeq) {
+      reads += 1
+      assert.equal(id, 'session-1')
+      return { meta: { id, version: 0, createdAt: now, cwd: '/workspace/project/src' }, events: events.filter((event) => event.seq >= fromSeq) }
+    },
+  }
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: persistence,
+      workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }] },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const first = await handler('usage-refresh', {})
+  assert.equal(first.ok, true)
+  assert.equal(first.value.indexedSessions, 1)
+  assert.equal(reads, 1)
+  assert.deepEqual(first.value.days[day].totals, {
+    steps: 1,
+    missingUsage: 0,
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 300,
+    cacheWriteTokens: 10,
+    cacheHitRate: 300 / 410,
+  })
+  assert.equal(first.value.days[day].projects[0].id, 'project-1')
+  assert.equal(first.value.days[day].projects[0].models[0].id, 'deepseek/deepseek-chat')
+  assert.deepEqual(first.value.errors.history, [
+    { key: 'deepseek/deepseek-chat|RATE_LIMIT|429', provider: 'deepseek', model: 'deepseek-chat', code: 'RATE_LIMIT', status: 429, message: 'request id abc123 rate limit exceeded after 1.2s', count: 2, projectId: 'project-1', projectTitle: 'Project One' },
+    { key: 'deepseek/deepseek-chat|AUTH|401', provider: 'deepseek', model: 'deepseek-chat', code: 'AUTH', status: 401, message: 'invalid api key', count: 1, projectId: 'project-1', projectTitle: 'Project One' },
+  ])
+  assert.deepEqual(first.value.errors.last24Hours, first.value.errors.history)
+
+  const unchanged = await handler('usage-refresh', {})
+  assert.equal(unchanged.ok, true)
+  assert.equal(reads, 1)
+
+  revision = 'rev-2'
+  events = events.concat([
+    { type: 'request/header', seq: 5, time: now, data: { header: { config: { provider: 'openai', model: 'gpt-5' } }, reason: 'change' } },
+    { type: 'assistant/message', seq: 6, time: now + 1, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ])
+  const resumed = await handler('usage-refresh', {})
+  assert.equal(resumed.ok, true)
+  assert.equal(reads, 2)
+  assert.equal(resumed.value.days[day].totals.steps, 2)
+  assert.deepEqual(resumed.value.days[day].projects[0].models.map((model) => model.id).sort(), ['deepseek/deepseek-chat', 'openai/gpt-5'])
+
+  const cached = await handler('usage', {})
+  assert.equal(cached.ok, true)
+  assert.equal(cached.value.days[day].totals.steps, 2)
+  assert.equal(reads, 2)
+
+  const restarted = createHost({ services: { sessionPersistence: persistence, workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }] } }, env: { DSH_HOME: dshHome } })
+  const persisted = await restarted.handler('usage', {})
+  assert.equal(persisted.ok, true)
+  assert.equal(persisted.value.days[day].totals.steps, 2)
+  await restarted.handler('usage-refresh', {})
+  assert.equal(reads, 2)
+})
+
+test('usage index skips inherited fork events and removes deleted sessions', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-fork-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const time = new Date(2026, 7, 19, 8).getTime()
+  let snapshots = [{ header: { id: 'fork', version: 0, createdAt: time, cwd: '/workspace', seedLength: 2 }, revision: 'a' }]
+  const persistence = {
+    listSnapshots: async () => snapshots,
+    readFrom: async () => ({ meta: snapshots[0].header, events: [
+      { type: 'request/header', seq: 2, time, data: { header: { config: { provider: 'anthropic', model: 'claude' } }, reason: 'resume' } },
+      { type: 'assistant/message', seq: 3, time, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] } } },
+    ] }),
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const built = await handler('usage-refresh', {})
+  assert.equal(built.value.totals.steps, 1)
+  assert.equal(built.value.totals.missingUsage, 1)
+  snapshots = []
+  const deleted = await handler('usage-refresh', {})
+  assert.equal(deleted.value.totals.steps, 0)
+  assert.equal(deleted.value.indexedSessions, 0)
+})
+
 test('backup RPC creates the fixed archive shape, lists totals, rejects forged ids, and deletes listed backups', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -211,6 +339,30 @@ test('healthz serves empty liveness responses and unregisters with the plugin fi
 
   dispose()
   assert.equal(unregisters, 1)
+})
+
+test('diagnostics RPC returns one overall report with storage, workspace, backup, executable, permission, and update checks', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-diagnostics-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-diagnostics-workspace-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [{ header: { id: 's1' }, revision: '1' }] },
+      workspaceRegistry: { list: () => [{ id: 'project', title: 'Project', path: workspace }] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  assert.match(result.value.status, /^(ok|warning)$/)
+  assert.equal(typeof result.value.checkedAt, 'number')
+  assert.deepEqual(result.value.checks.slice(0, 5).map((check) => check.id), ['session-storage', 'workspace-registry', 'dsh-home', 'backup-storage', 'tar'])
+  assert.equal(result.value.checks.find((check) => check.id === 'session-storage').detail, '1')
+  assert.equal(result.value.checks.find((check) => check.id === 'workspace-registry').detail, '1')
+  assert.equal(result.value.checks.find((check) => check.id === 'permissions').status, 'ok')
 })
 
 test('health RPC reports process and service metrics with persisted-only session count', async () => {

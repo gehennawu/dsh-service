@@ -324,6 +324,63 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.equal(healthCalls, 2)
 })
 
+test('service panel puts versions first and renders switchable provider-prefixed usage charts by project', async () => {
+  const day = new Date().toLocaleDateString('en-CA')
+  let refreshes = 0
+  const usage = {
+    updatedAt: Date.now() - 301000,
+    indexedSessions: 2,
+    totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: {
+      history: [
+        { key: 'deepseek/deepseek-chat|RATE_LIMIT|429', provider: 'deepseek', model: 'deepseek-chat', code: 'RATE_LIMIT', status: 429, message: 'rate limit exceeded', count: 9, projectId: 'project-1', projectTitle: 'Project One' },
+        { key: 'deepseek/deepseek-chat|AUTH|401', provider: 'deepseek', model: 'deepseek-chat', code: 'AUTH', status: 401, message: 'invalid api key', count: 3, projectId: 'project-1', projectTitle: 'Project One' },
+      ],
+      last24Hours: [
+        { key: 'deepseek/deepseek-chat|RATE_LIMIT|429', provider: 'deepseek', model: 'deepseek-chat', code: 'RATE_LIMIT', status: 429, message: 'rate limit exceeded', count: 4, projectId: 'project-1', projectTitle: 'Project One' },
+        { key: 'deepseek/deepseek-chat|AUTH|401', provider: 'deepseek', model: 'deepseek-chat', code: 'AUTH', status: 401, message: 'invalid api key', count: 2, projectId: 'project-1', projectTitle: 'Project One' },
+      ],
+    },
+    days: {
+      [day]: {
+        totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
+        projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 }, models: [{ id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 } }] }],
+
+      },
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: usage } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  const text = renderer.text('settings.section')
+  assert.ok(text.indexOf('版本信息') < text.indexOf('运行状况'))
+  assert.match(text, /模型使用/)
+  assert.match(text, /deepseek\/deepseek-chat/)
+  assert.match(text, /缓存命中率/)
+  assert.match(text, /Project One/)
+  assert.match(text, /最近 24 小时.*RATE_LIMIT.*429.*4 次.*AUTH.*401.*2 次.*历史累计.*RATE_LIMIT.*429.*9 次.*AUTH.*401.*3 次/)
+  assert.ok(text.indexOf('RATE_LIMIT') < text.indexOf('AUTH'))
+  assert.equal(refreshes, 1)
+  assert.ok(renderer.findButton('输入 Token'))
+  await renderer.findButton('缓存命中率').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /73\.2%/)
+  await renderer.findButton('刷新统计').props.onClick()
+  await renderer.flush()
+  assert.equal(refreshes, 2)
+})
+
 test('settings mount checks updates, degrades silently, and exposes an update badge with details', async () => {
   let updateCalls = 0
   const renderer = createRenderer(async (channel, endpoint) => {
@@ -361,6 +418,29 @@ test('settings mount checks updates, degrades silently, and exposes an update ba
   assert.match(renderer.text('shell.overlay'), /最新版本：0\.2\.0/)
 })
 
+test('health check button runs deep diagnostics and displays individual results', async () => {
+  let calls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') {
+      calls += 1
+      return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [{ id: 'session-storage', status: 'ok', detail: '2' }, { id: 'backup-storage', status: 'warning', detail: '0:0' }] } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('立即健康检查').props.onClick()
+  await renderer.flush()
+  assert.equal(calls, 1)
+  assert.match(renderer.text('settings.section'), /会话存储.*正常.*2/)
+  assert.match(renderer.text('settings.section'), /备份存储.*警告.*0:0/)
+})
+
 test('permission panel shows the host plan and requires explicit confirmation before repair', async () => {
   const repairs = []
   const before = {
@@ -387,6 +467,7 @@ test('permission panel shows the host plan and requires explicit confirmation be
     if (endpoint === 'health') return { ok: false, error: 'not relevant' }
     if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: before }
+    if (endpoint === 'permissions-deep') return { ok: true, value: { scanned: 12, durationMs: 3, ownerIssues: 1, directoryModeIssues: 1, fileModeIssues: 2, unreadable: 0, samples: [] } }
     if (endpoint === 'permissions-repair') {
       repairs.push(payload)
       return { ok: true, value: after }
@@ -396,8 +477,15 @@ test('permission panel shows the host plan and requires explicit confirmation be
 
   await renderer.load()
   assert.match(renderer.text('settings.section'), /文件权限/)
-  assert.match(renderer.text('settings.section'), /DSH_HOME.*0:0.*0700/)
+  assert.doesNotMatch(renderer.text('settings.section'), /\/home\/node\/\.dsh/)
+  assert.match(renderer.text('settings.section'), /发现 1 个根目录异常/)
   assert.match(renderer.text('settings.section'), /目标属主：1000:1000/)
+  await renderer.findButton('查看详情').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /DSH_HOME.*0:0.*0700/)
+  await renderer.findButton('深度检查').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /扫描 12 项.*目录权限异常 1.*文件权限异常 2/)
 
   await renderer.findButton('修复权限').props.onClick()
   await renderer.flush()
@@ -454,8 +542,11 @@ test('backup panel creates, lists, and requires a second click before deleting a
 
   await renderer.load()
   assert.match(renderer.text('settings.section'), /备份管理/)
-  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
   assert.match(renderer.text('settings.section'), /总体积：1\.5 KB/)
+  assert.doesNotMatch(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
+  await renderer.findButton('备份记录').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
 
   await renderer.findButton('创建备份').props.onClick()
   await renderer.flush()
