@@ -1,10 +1,10 @@
-// Host half of @dsh-nas/restart-dsh
+// Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
 import { createRequire } from 'node:module'
 import https from 'node:https'
 
 const require = createRequire(import.meta.url)
-const name = 'restart-dsh'
+const name = 'dsh-service'
 const inject = ['connection']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
@@ -40,7 +40,7 @@ function fetchLatestVersion() {
       timeout: 10000,
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'dsh-restart-dsh',
+        'User-Agent': 'dsh-service',
       },
     }, (response) => {
       const status = response.statusCode || 0
@@ -88,8 +88,8 @@ function fetchLatestVersion() {
 
 function apply(ctx) {
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
-  // 合法示例：channel=/restart-dsh，endpoint=version/check-update/web。
-  ctx.connection.rpc.handle('/restart-dsh', async (endpoint) => {
+  // 合法示例：channel=/dsh-service，endpoint=version/check-update/web。
+  ctx.connection.rpc.handle('/dsh-service', async (endpoint) => {
     if (endpoint === 'version') {
       return { ok: true, value: { current: dshVersion } }
     }
@@ -112,7 +112,7 @@ function apply(ctx) {
           // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
           process.exit(42)
         } catch (error) {
-          console.error('restart-dsh: exit failed', error?.message || error)
+          console.error('dsh-service: exit failed', error?.message || error)
         }
       }
       const timer = ctx.get('timer')

@@ -1,7 +1,7 @@
-// Browser half of @dsh-nas/restart-dsh
+// Browser half of @gehennawu/dsh-service
 // 设置面板「服务控制」：版本信息 + 检查更新 + 一键重启
 window.__ModuleLoader__.load({
-  id: '@dsh-nas/restart-dsh',
+  id: '@gehennawu/dsh-service',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
         // 进入面板时拉取当前版本
         useEffect(() => {
-          ctx.connection.rpc.call('/restart-dsh', 'version', {}).then((res) => {
+          ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) setVersion(res.value.current)
           }).catch(() => {})
         }, [])
@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
           setUpdateError(null)
           setUpdateInfo(null)
           try {
-            const res = await ctx.connection.rpc.call('/restart-dsh', 'check-update', {})
+            const res = await ctx.connection.rpc.call('/dsh-service', 'check-update', {})
             if (res && res.ok === false) throw new Error(res.error || '检查失败')
             setUpdateInfo(res.value)
           } catch (err) {
@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
           setBusy(true)
           setError(null)
           try {
-            const res = await ctx.connection.rpc.call('/restart-dsh', 'web', {})
+            const res = await ctx.connection.rpc.call('/dsh-service', 'web', {})
             if (res && res.ok === false) throw new Error(res.error || '重启失败')
             setStage(2)
           } catch (err) {
@@ -130,7 +130,7 @@ window.__ModuleLoader__.load({
       }
 
       ctx.slots.inject('settings.section', () => ctx.slots.register(
-        { name: 'settings.section', id: 'restart-dsh', order: 99, label: () => '服务控制' },
+        { name: 'settings.section', id: 'dsh-service', order: 99, label: () => '服务控制' },
         () => React.createElement(ServicePanel, null),
       ))
     }

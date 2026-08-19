@@ -8,3 +8,7 @@ pnpm-debug.log*
 .env.*
 !.env.example
 *.log
+
+# Local agent planning documents
+AGENTS.md
+TODO.md

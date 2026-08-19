@@ -1,6 +1,8 @@
 # dsh-service
 
-DSH Web 插件：在设置页提供服务控制、版本信息和更新检查。
+[English](./README.en.md)
+
+DSH Web 插件（包名：`@gehennawu/dsh-service`）：在设置页提供服务控制、版本信息和更新检查。
 
 > 本项目只负责向当前 DSH Web 进程发送退出信号；真正的自动重启由外层进程管理器负责。
 
@@ -41,7 +43,7 @@ Windows/macOS 并不是代码层面禁止的平台，但目前没有在这两个
 - **检查更新**：从固定的 npm registry 地址读取 `@deepseek-ai/dsh` 的 `latest` 版本。
 - **一键重启**：两段式确认后，以退出码 `42` 退出当前进程，让 Docker、systemd 或 pm2 的重启策略接管。
 - **回环 RPC**：重启与版本接口只注册为 loopback channel，不接受外部网络请求。
-- **新版 RPC 兼容**：使用单层 `/restart-dsh` channel，并以 `version`、`check-update`、`web` 作为 endpoint。
+- **新版 RPC 兼容**：使用单层 `/dsh-service` channel，并以 `version`、`check-update`、`web` 作为 endpoint。
 - **生命周期安全**：优先使用 DSH 的 `timer` 服务调度退出，插件停止或更新时由 Fiber 自动清理；没有 timer 时才立即退出。
 
 ## 安全说明
@@ -71,6 +73,17 @@ dsh web
 ```sh
 dsh plugin --profile web add link:/path/to/dsh-service
 ```
+
+### 从 restart-dsh 迁移
+
+包名、Client 模块 ID、Cordis 插件 ID 和 RPC channel 已统一改为 dsh-service。旧版本用户先移除旧包，再从同一仓库重新安装：
+
+```sh
+dsh plugin --profile web remove @dsh-nas/restart-dsh
+dsh plugin --profile web add github:gehennawu/dsh-service
+```
+
+迁移后重启 `dsh web`。本次改名不迁移或删除会话、工作区及其他 DSH 数据。
 
 ## 自动重启配置
 
