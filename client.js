@@ -896,29 +896,31 @@ window.__ModuleLoader__.load({
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: { padding: '12px', border: '1px solid var(--dsh-border, #dedbd4)', borderRadius: '9px', background: 'var(--dsh-surface, #ffffff)' } },
-                React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '174px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
+                React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '180px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsh-surface, #ffffff)', border: '1px solid var(--dsh-border, #dedbd4)', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
                   React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '136px', fontSize: '10px', color: '#888' } },
                     chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
-                  React.createElement('div', { style: { position: 'relative', display: 'flex', alignItems: 'end', gap: '8px', height: '136px', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
-                    chartTicks.map((_, index) => React.createElement('div', { key: index, 'data-testid': `usage-grid-${index}`, style: { position: 'absolute', left: 0, right: 0, top: `${index * 25}%`, borderTop: '1px solid var(--dsh-grid, #ebe8e2)', pointerEvents: 'none' } })),
-                  usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { position: 'relative', zIndex: 1, flex: 1, minWidth: 0, textAlign: 'center' } },
-                    React.createElement('div', { style: { height: `${Math.max(2, chartValues[index] / chartMax * 112)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
-                      usageSegments.map(([metricName, label, color]) => {
-                        const value = usageValue(chartTotals[index], metricName)
-                        const segmentHeight = chartValues[index] === 0 ? 0 : value / chartValues[index] * 100
-                        const segmentId = `${day.key}-${metricName}`
-                        const active = hoveredUsageSegment && hoveredUsageSegment.id === segmentId
-                        return React.createElement('div', {
-                          key: metricName,
-                          'data-testid': `usage-segment-${segmentId}`,
-                          'data-value': value,
-                          onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value, x: event.clientX, y: event.clientY }),
-                          onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
-                          onMouseLeave: () => setHoveredUsageSegment(null),
-                          style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
-                        })
-                      })),
-                    React.createElement('div', { style: { fontSize: '10px', color: '#888', marginTop: '4px' } }, day.label))))),
+                  React.createElement('div', { 'data-testid': 'usage-plot', style: { position: 'relative', height: '156px' } },
+                    React.createElement('div', { style: { position: 'absolute', inset: '0 0 20px', display: 'flex', alignItems: 'end', gap: '8px', borderBottom: '1px solid var(--dsh-border-strong, #aaa59c)' } },
+                      chartTicks.map((_, index) => React.createElement('div', { key: index, 'data-testid': `usage-grid-${index}`, style: { position: 'absolute', left: 0, right: 0, top: `${index * 25}%`, borderTop: '1px solid var(--dsh-grid, #ebe8e2)', pointerEvents: 'none' } })),
+                      usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { position: 'relative', zIndex: 1, flex: 1, minWidth: 0, alignSelf: 'end' } },
+                        React.createElement('div', { 'data-testid': `usage-bar-${day.key}`, style: { height: `${Math.max(2, chartValues[index] / chartMax * 136)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
+                          usageSegments.map(([metricName, label, color]) => {
+                            const value = usageValue(chartTotals[index], metricName)
+                            const segmentHeight = chartValues[index] === 0 ? 0 : value / chartValues[index] * 100
+                            const segmentId = `${day.key}-${metricName}`
+                            const active = hoveredUsageSegment && hoveredUsageSegment.id === segmentId
+                            return React.createElement('div', {
+                              key: metricName,
+                              'data-testid': `usage-segment-${segmentId}`,
+                              'data-value': value,
+                              onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value, x: event.clientX, y: event.clientY }),
+                              onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+                              onMouseLeave: () => setHoveredUsageSegment(null),
+                              style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
+                            })
+                          }))))),
+                    React.createElement('div', { 'data-testid': 'usage-x-axis', style: { position: 'absolute', left: 0, right: 0, bottom: '0', height: '20px', display: 'flex', gap: '8px', alignItems: 'end' } },
+                      usageDays.map((day) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center', fontSize: '10px', color: '#888' } }, day.label))))),
                 React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px', fontSize: '11px' } },
                   usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
@@ -932,18 +934,7 @@ window.__ModuleLoader__.load({
                   visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid rgba(128,128,128,0.18)' } },
                     React.createElement('span', null, model.id),
                     React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`))),
-                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid rgba(128,128,128,0.18)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null),
-                React.createElement('div', { style: { display: 'grid', gap: '7px', marginTop: '12px' } },
-                  React.createElement('div', null,
-                    React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
-                    modelErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } },
-                      React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
-                      errorList('model', modelErrors)) : null),
-                  React.createElement('div', null,
-                    React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
-                    toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } },
-                      React.createElement('div', { style: { fontSize: '11px', color: '#888', fontWeight: 600 } }, translate('usage.errors.recent')),
-                      errorList('tool', toolErrors)) : null)))
+                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid rgba(128,128,128,0.18)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
@@ -958,6 +949,15 @@ window.__ModuleLoader__.load({
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
+        const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', 'data-testid': 'overview-errors-region', style: Object.assign({}, displaySurface, { marginTop: '18px' }) },
+          React.createElement('div', { style: sectionTitle }, translate('usage.errors.recent')),
+          React.createElement('div', { style: { display: 'grid', gap: '7px' } },
+            React.createElement('div', null,
+              React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
+              modelErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('model', modelErrors)) : null),
+            React.createElement('div', null,
+              React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
+              toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('tool', toolErrors)) : null)))
         const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
@@ -1097,7 +1097,7 @@ window.__ModuleLoader__.load({
           activityWarning,
           React.createElement('div', { style: row },
             stage === 0
-              ? React.createElement('button', { style: dangerOutline, 'data-variant': 'danger-outline', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
+              ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
               : stage === 1
                 ? [
                     React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.confirm')),
@@ -1114,7 +1114,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: '#d33' }) }, String(error)) : null)
         )
 
-        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock)
+        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
         const tabWarnings = {
