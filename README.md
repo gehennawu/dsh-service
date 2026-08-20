@@ -44,6 +44,27 @@
 - **Linux 文件可编辑性**：打开面板时在健康诊断中检查当前 DSH/Agent 进程能否读取、写入并进入 DSH_HOME 与全部工作区根目录；手动深检递归验证同一实际访问能力，而不是要求固定的 755/644，因此 700/600 等只要 Agent 可编辑就不会误报。`.git` 内部元数据不属于 Agent 直接编辑目标，深检与修复均跳过。嵌套工作区只随最外层根扫描一次。修复仍需两段式确认：递归恢复当前进程属主，目录只增加 owner `rwx`，普通文件只增加 owner `rw`，不会删除执行位或放宽 group/other 权限；`$DSH_HOME/.credentials.yaml` 最后固定为 600，以满足 DSH 启动契约。非 Linux 不显示此功能。
 - **生命周期清理**：优先使用 DSH `timer` 服务延迟退出与调度恢复探测，使未完成的定时动作可随插件 Fiber 清理。
 
+## 截图
+
+<!-- 截图待补充：在面板中截取各标签页，放入 screenshots/ 目录后取消注释
+
+### 概览
+![概览](./screenshots/overview.png)
+
+### 健康诊断
+![健康诊断](./screenshots/health.png)
+
+### 模型统计
+![模型统计](./screenshots/usage.png)
+
+### 备份维护
+![备份维护](./screenshots/backup.png)
+
+### 深色模式
+![深色模式](./screenshots/dark-mode.png)
+
+-->
+
 ## 安装
 
 ### 从 npm 安装（推荐）

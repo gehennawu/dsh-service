@@ -44,6 +44,27 @@ The plugin is currently developed and verified for **DSH `0.1.0-rc.8`** and is r
 - **Backup management**: creates archives under `$DSH_HOME/backups/` containing sessions, configuration, and plugin profile manifests; sorts records newest-first, shows up to 10 directly, and collapses only after that. Each record provides export, restore, and delete actions: export delivers the `.tar.gz` to the browser via a one-time HTTP download endpoint whose token expires in 60 seconds; restore extracts sessions, configuration, and profile manifests from the backup to their corresponding paths, requires two-step confirmation, and automatically restarts the service afterward; delete also requires two-step confirmation. The panel can import a selected `.tar.gz` file. Backups are unlimited and never auto-pruned, so disk usage is the user's responsibility. Credentials and `node_modules` are excluded. The panel UI fully adapts to DSH's light and dark themes, with display surfaces, button semantics, and tab styles using theme tokens.
 - **Lifecycle cleanup**: uses the DSH `timer` service for delayed exit and recovery probes so pending work can be disposed with the plugin Fiber.
 
+## Screenshots
+
+<!-- Screenshots pending: capture each tab from the panel, place in screenshots/ directory, then uncomment
+
+### Overview
+![Overview](./screenshots/overview.png)
+
+### Health diagnostics
+![Health diagnostics](./screenshots/health.png)
+
+### Model statistics
+![Model statistics](./screenshots/usage.png)
+
+### Backup maintenance
+![Backup maintenance](./screenshots/backup.png)
+
+### Dark mode
+![Dark mode](./screenshots/dark-mode.png)
+
+-->
+
 ## Installation
 
 ### Install from npm (recommended)
