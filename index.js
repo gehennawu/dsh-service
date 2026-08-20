@@ -328,15 +328,14 @@ async function deleteBackup(dshHome, id) {
   return listBackups(dshHome)
 }
 
-async function exportBackup(dshHome, id) {
+async function exportBackup(dshHome, downloadTokens, id) {
   if (typeof id !== 'string' || id.length === 0) return undefined
   const snapshot = await listBackups(dshHome)
   const item = snapshot.items.find((candidate) => candidate.id === id)
   if (item === undefined) return undefined
-  const filePath = join(dshHome, 'backups', basename(item.name))
-  const data = await readFile(filePath)
-  if (data.length > MAX_BACKUP_TRANSFER_BYTES) throw new Error('backup-too-large')
-  return { name: item.name, data: data.toString('base64') }
+  const token = randomUUID()
+  downloadTokens.set(token, { name: item.name, path: join(dshHome, 'backups', basename(item.name)), expires: Date.now() + 60000 })
+  return { name: item.name, url: `/dsh-backup-download?token=${token}` }
 }
 
 async function importBackup(dshHome, name, encoded) {
@@ -976,6 +975,7 @@ function scheduleRestart(ctx) {
 function apply(ctx) {
   const dshHome = resolveDshHome()
   const permissionPlans = new Map()
+  const downloadTokens = new Map()
   let usageIndexPromise = loadUsageIndex(dshHome)
   let usageRefreshPromise
   let updateCache
@@ -1010,6 +1010,26 @@ function apply(ctx) {
         res.end()
       },
     }), 'dsh-service healthz route')
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/dsh-backup-download',
+      handler: async (req, res) => {
+        const url = new URL(req.url, 'http://localhost')
+        const token = url.searchParams.get('token')
+        if (!token) { res.writeHead(400); res.end(); return }
+        const entry = downloadTokens.get(token)
+        if (!entry || Date.now() > entry.expires) { downloadTokens.delete(token); res.writeHead(404); res.end(); return }
+        downloadTokens.delete(token)
+        try {
+          const data = await readFile(entry.path)
+          res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="${entry.name}"`, 'Content-Length': data.length })
+          res.end(data)
+        } catch (_) {
+          res.writeHead(500)
+          res.end()
+        }
+      },
+    }), 'dsh-service backup download route')
   }
 
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
@@ -1137,7 +1157,7 @@ function apply(ctx) {
 
     if (endpoint === 'backup-export') {
       try {
-        const value = await exportBackup(dshHome, payload?.id)
+        const value = await exportBackup(dshHome, downloadTokens, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
         return { ok: true, value }
       } catch (error) {
