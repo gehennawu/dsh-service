@@ -725,15 +725,15 @@ window.__ModuleLoader__.load({
           try {
             const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id })
             if (!res || res.ok === false) throw new Error('export failed')
-            const binary = atob(res.value.data)
-            const bytes = new Uint8Array(binary.length)
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+            const bytes = Uint8Array.from(atob(res.value.data), (c) => c.charCodeAt(0))
             const blob = new Blob([bytes], { type: 'application/gzip' })
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
             a.download = res.value.name
+            document.body.appendChild(a)
             a.click()
+            document.body.removeChild(a)
             URL.revokeObjectURL(url)
           } catch (_) {
             setBackupError(translate('backup.exportError'))
