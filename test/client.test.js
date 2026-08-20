@@ -578,7 +578,7 @@ test('settings mount automatically shows separate DSH and plugin update states w
   const text = renderer.text('settings.section')
   assert.match(text, /DSH 0\.1\.0-rc\.7.*latest：0\.1\.0-rc\.7 · next：0\.2\.0.*有新版本.*0\.2\.0/)
    assert.equal(renderer.findByTestId('version-plugin-link').props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.match(text, /latest：0\.9\.0 · next：0\.9\.0/)
+  assert.doesNotMatch(text, /latest：0\.9\.0 · next：0\.9\.0/)
   assert.match(text, /dsh-service.*0\.9\.0.*已是最新版本/)
   assert.doesNotMatch(text, /检查更新/)
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')

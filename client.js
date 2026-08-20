@@ -115,6 +115,10 @@ window.__ModuleLoader__.load({
       'update.details.latest': '最新版本：{version}',
       'update.channels': 'latest：{latest} · next：{next}',
       'update.details.close': '关闭',
+      'update.upgrade': '升级插件',
+      'update.upgrading': '升级中…',
+      'update.upgradeError': '插件升级失败',
+      'update.upgradeSuccess': '升级成功，服务重启中…',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 进程。运行中的工作会中断，持久化会话可恢复。也可在对话中输入 /restart。',
       'restart.button': '重启 dsh web',
@@ -287,6 +291,10 @@ window.__ModuleLoader__.load({
       'update.details.latest': 'Latest version: {version}',
       'update.channels': 'latest: {latest} · next: {next}',
       'update.details.close': 'Close',
+      'update.upgrade': 'Upgrade plugin',
+      'update.upgrading': 'Upgrading…',
+      'update.upgradeError': 'Plugin upgrade failed',
+      'update.upgradeSuccess': 'Upgrade successful, restarting…',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation.',
       'restart.button': 'Restart dsh web',
@@ -615,6 +623,8 @@ window.__ModuleLoader__.load({
         const [usage, setUsage] = useState(null)
         const [usageBusy, setUsageBusy] = useState(false)
         const [usageError, setUsageError] = useState(null)
+        const [upgradeBusy, setUpgradeBusy] = useState(false)
+        const [upgradeError, setUpgradeError] = useState(null)
         const [hoveredUsageSegment, setHoveredUsageSegment] = useState(null)
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
@@ -862,6 +872,24 @@ window.__ModuleLoader__.load({
            }
            reader.readAsArrayBuffer(file)
          }
+
+        const upgradePlugin = async () => {
+          setUpgradeBusy(true)
+          setUpgradeError(null)
+          try {
+            const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
+            const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
+            const res = await ctx.connection.rpc.call('/dsh-service', 'upgrade', {})
+            if (!res || res.ok === false) throw new Error('upgrade failed')
+            if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
+              startRecovery(previousInstanceId).catch(() => {})
+            }
+          } catch (_) {
+            setUpgradeError(translate('update.upgradeError'))
+          } finally {
+            setUpgradeBusy(false)
+          }
+        }
 
          const checkRestart = async () => {
           setBusy(true)
@@ -1265,7 +1293,7 @@ window.__ModuleLoader__.load({
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap' } },
-            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, label),
+            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
@@ -1277,11 +1305,17 @@ window.__ModuleLoader__.load({
                 : state.status === 'unavailable' ? translate('update.unavailable')
                   : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest }))))
         // 版本信息区块
+        const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
             versionRow('dsh', 'DSH', version, updateInfo?.dsh),
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin)))
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin),
+            pluginUpdate || upgradeError
+              ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
+                  pluginUpdate ? React.createElement('button', { style: primary, disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade')) : null,
+                  upgradeError ? React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } }, upgradeError) : null)
+              : null))
 
         // 重启后提示
         if (stage === 2) {

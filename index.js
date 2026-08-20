@@ -683,6 +683,12 @@ async function runFixedCommand(ctx, argv) {
   }
 }
 
+async function upgradePlugin(ctx) {
+  await runFixedCommand(ctx, ['npm', 'install', '-g', `${PLUGIN_PACKAGE}@latest`])
+  scheduleRestart(ctx)
+  return { ok: true }
+}
+
 async function permissionSnapshot(ctx, dshHome, plans) {
   if (process.platform !== 'linux' || typeof process.getuid !== 'function' || typeof process.getgid !== 'function') {
     return { supported: false }
@@ -1069,6 +1075,14 @@ function apply(ctx) {
         const message = error?.message || String(error)
         updateCache = { ok: false, error: message, checkedAt: now, ttl: 60 * 1000 }
         return { ok: false, error: message, cached: false }
+      }
+    }
+
+    if (endpoint === 'upgrade') {
+      try {
+        return { ok: true, value: await upgradePlugin(ctx) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
       }
     }
 
