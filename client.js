@@ -370,9 +370,16 @@ window.__ModuleLoader__.load({
       // 全局 agent 完成通知轮询
       let notifyEnabled = false
       try { notifyEnabled = localStorage.getItem('dsh-service-notify') !== 'false' } catch (_) {}
+      const notifyListeners = new Set()
       const setNotifyEnabled = (value) => {
         notifyEnabled = value
         try { localStorage.setItem('dsh-service-notify', value ? 'true' : 'false') } catch (_) {}
+        for (const listener of notifyListeners) listener(value)
+      }
+      const useNotifyState = () => {
+        const [state, setState] = useState(notifyEnabled)
+        React.useEffect(() => { notifyListeners.add(setState); return () => notifyListeners.delete(setState) }, [])
+        return [state, (v) => setNotifyEnabled(v)]
       }
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         const previousAgentIds = new Set()
@@ -497,13 +504,12 @@ window.__ModuleLoader__.load({
       }
 
       function NotificationBell() {
-        const [on, setOn] = useState(notifyEnabled)
+        const [on, toggle] = useNotifyState()
         const translate = useTranslation()
         if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return null
-        const toggle = () => { const next = !on; setNotifyEnabled(next); setOn(next) }
         return React.createElement('button', {
           type: 'button',
-          onClick: toggle,
+          onClick: () => toggle(!on),
           title: translate(on ? 'notification.bellOn' : 'notification.bellOff'),
           style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', color: on ? '#fff' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
         }, on ? '🔔' : '🔕')
@@ -1329,8 +1335,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(error)) : null)
         )
 
-        const [notifyOn, setNotifyOn] = useState(notifyEnabled)
-        const toggleNotify = (value) => { setNotifyEnabled(value); setNotifyOn(value) }
+        const [notifyOn, toggleNotify] = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
         const notifPermission = notifSupported ? Notification.permission : 'denied'
         const notificationBlock = !notifSupported ? null
@@ -1340,7 +1345,7 @@ window.__ModuleLoader__.load({
                 React.createElement('p', { style: hint }, translate('notification.description')),
                 notifPermission !== 'granted'
                   ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                      React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') { setNotifyEnabled(true); setNotifyOn(true) } }) } }, translate('notification.enable')),
+                      React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') { toggleNotify(true) } }) } }, translate('notification.enable')),
                       React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
                   : React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
                       React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
@@ -1381,6 +1386,27 @@ window.__ModuleLoader__.load({
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
+      function InlineNotifyBell() {
+        const [on, toggle] = useNotifyState()
+        const translate = useTranslation()
+        return React.createElement('button', {
+          type: 'button',
+          title: translate(on ? 'notification.bellOn' : 'notification.bellOff'),
+          style: { background: 'transparent', border: 0, cursor: 'pointer', fontSize: '15px', padding: '2px 4px', color: 'inherit', opacity: on ? 1 : 0.45 },
+          onClick: () => {
+            if (typeof Notification === 'undefined') return
+            if (Notification.permission !== 'granted') {
+              Notification.requestPermission().then((p) => { if (p === 'granted') toggle(true) })
+              return
+            }
+            toggle(!on)
+          },
+        }, on ? '🔔' : '🔕')
+      }
+      ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
+        { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
+        () => React.createElement(InlineNotifyBell, null),
+      ))
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
         { name: 'sidebar.footer.action', id: 'dsh-service-actions', order: 90, label: () => t('nav.label') },
         () => React.createElement('div', { style: { display: 'flex', alignItems: 'center' } },
