@@ -1291,13 +1291,14 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
-          React.createElement('div', { style: { whiteSpace: 'nowrap' } },
+        const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+          React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
              state?.tags && id === 'dsh' ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, translate('update.channels', { latest: state.tags.latest || '—', next: state.tags.next || '—' })) : null,
+            action || null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
               ? (updateError || translate('update.checking'))
@@ -1306,16 +1307,15 @@ window.__ModuleLoader__.load({
                   : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest }))))
         // 版本信息区块
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
+        const pluginAction = pluginUpdate
+          ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
+          : null
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
             versionRow('dsh', 'DSH', version, updateInfo?.dsh),
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin),
-            pluginUpdate || upgradeError
-              ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                  pluginUpdate ? React.createElement('button', { style: primary, disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade')) : null,
-                  upgradeError ? React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } }, upgradeError) : null)
-              : null))
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
+            upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 
         // 重启后提示
         if (stage === 2) {
