@@ -4,7 +4,7 @@
 
 A service-control and operations plugin for self-hosted DSH Web. Provides safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, backup management, task notifications, and Linux file-permission maintenance.
 
-![Overview](./screenshots/overview.png)
+![Overview](./screenshots/overview_en.png)
 
 ## Features
 
