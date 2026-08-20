@@ -412,7 +412,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   const text = renderer.text('settings.section')
-  assert.match(text, /Token 结构/)
+  assert.match(text, /tok 结构/)
   const projectTabs = renderer.findByTestId('usage-project-tabs')
   const activeProjectTab = renderer.findButton('全部项目')
   const usageChart = renderer.findByTestId('usage-chart')
@@ -420,15 +420,15 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(activeProjectTab.props.style.color, 'var(--dsw-alias-label-primary)')
   assert.equal(activeProjectTab.props.style.borderBottom, '2px solid var(--dsw-alias-brand-primary)')
   assert.ok(usageChart.props.style.background)
-  assert.equal(renderer.findByTestId('usage-y-axis').props['aria-label'], 'Token 纵轴')
+  assert.equal(renderer.findByTestId('usage-y-axis').props['aria-label'], 'tok 纵轴')
   assert.equal(renderer.findAllByTestIdPrefix('usage-grid-').length, 5)
   assert.match(text, /4\.3K.*3\.2K.*2\.2K.*1\.1K.*0/)
   assert.match(usageChart.props.style.borderBottom, /solid/)
-  assert.match(text, /输入 Token.*输出 Token.*缓存 Token/)
+  assert.match(text, /输入 tok.*输出 tok.*缓存 tok/)
   const statisticsRegion = renderer.findByTestId('usage-statistics-region')
   assert.match(statisticsRegion.props.style.border, /solid/)
-  assert.match(text, /今天.*输入 Token.*输出 Token.*缓存 Token.*成功模型步骤.*缓存命中率/)
-  assert.match(text, /近 7 天.*输入 Token.*输出 Token.*缓存 Token.*成功模型步骤.*缓存命中率/)
+  assert.match(text, /今天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
+  assert.match(text, /近 7 天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
   assert.equal(renderer.findAllByTestIdPrefix('usage-summary-today-').length, 5)
   assert.equal(renderer.findAllByTestIdPrefix('usage-summary-seven-').length, 5)
   assert.match(text, /1K|3K|4\.1K/)
@@ -452,7 +452,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(tooltip.props.style.position, 'fixed')
   assert.equal(tooltip.props.style.left, '232px')
   assert.equal(tooltip.props.style.top, '152px')
-  assert.equal(tooltip.children[0].includes('日期：2026-08-20\n输入 1,000 Token\n输出 200 Token\n缓存命中 3,100 Token'), true)
+  assert.equal(tooltip.children[0].includes('日期：2026-08-20\n输入 1,000 tok\n输出 200 tok\n缓存命中 3,100 tok'), true)
   visibleSegment.props.onMouseLeave()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /日期：.*输入.*Token/)
@@ -468,7 +468,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(bars.length, 7)
   assert.equal(bars.some((bar) => Number.parseFloat(bar.props.style.height) > 112), true)
   assert.equal(refreshes, 1)
-  assert.match(renderer.text('settings.section'), /输入 Token.*缓存命中率.*73\.2%/)
+  assert.match(renderer.text('settings.section'), /输入 tok.*缓存命中率.*73\.2%/)
   await renderer.findButton('刷新统计').props.onClick()
   await renderer.flush()
   assert.equal(refreshes, 2)
@@ -563,8 +563,8 @@ test('settings mount automatically shows separate DSH and plugin update states w
     if (endpoint === 'check-update') {
       updateCalls += 1
       return { ok: true, value: {
-        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
-        plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
+        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: '0.2.0' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        plugin: { current: '0.9.0', latest: '0.9.0', tags: { latest: '0.9.0', next: '0.9.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
       } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
@@ -576,8 +576,9 @@ test('settings mount automatically shows separate DSH and plugin update states w
   await renderer.flush()
   assert.equal(updateCalls, 1)
   const text = renderer.text('settings.section')
-  assert.match(text, /DSH 0\.1\.0-rc\.7.*有新版本.*0\.2\.0/)
+  assert.match(text, /DSH 0\.1\.0-rc\.7.*latest：0\.1\.0-rc\.7 · next：0\.2\.0.*有新版本.*0\.2\.0/)
    assert.equal(renderer.findByTestId('version-plugin-link').props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.match(text, /latest：0\.9\.0 · next：0\.9\.0/)
   assert.match(text, /dsh-service.*0\.9\.0.*已是最新版本/)
   assert.doesNotMatch(text, /检查更新/)
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')

@@ -463,19 +463,15 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.deepEqual(forged, { ok: false, error: 'unknown-backup' })
   assert.equal(await readFile(archivePath).then(() => true), true)
 
-  const exported = await handler('backup-export', { id: listed.value.items[0].id })
-  assert.equal(exported.ok, true)
-  assert.equal(exported.value.name, created.value.item.name)
-  assert.ok(exported.value.data.length > 0)
-  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: exported.value.data })
+  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: Buffer.from('imported archive').toString('base64') })
   assert.equal(imported.ok, true)
   assert.equal(imported.value.items.length, 2)
-  const duplicate = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: exported.value.data })
+  const duplicate = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: Buffer.from('imported archive').toString('base64') })
   assert.deepEqual(duplicate, { ok: false, error: 'invalid-backup' })
   const deleted = await handler('backup-delete', { id: listed.value.items[0].id })
   assert.equal(deleted.ok, true)
   assert.equal(deleted.value.items.length, 1)
-   assert.equal(deleted.value.totalBytes, imported.value.items[0].sizeBytes)
+  assert.equal(deleted.value.totalBytes, imported.value.items.find((item) => item.name === 'dsh-backup-20250819-120000.tar.gz').sizeBytes)
 })
 
 test('healthz serves empty liveness responses and unregisters with the plugin fiber', async () => {
@@ -739,8 +735,8 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
     request.destroy = () => {}
     process.nextTick(() => {
       callback(response)
-      const latest = String(url).includes('%40deepseek-ai%2Fdsh') ? '0.1.0-rc.7' : '0.10.1'
-      response.emit('data', JSON.stringify({ 'dist-tags': { latest } }))
+      const isDsh = String(url).includes('%40deepseek-ai%2Fdsh')
+      response.emit('data', JSON.stringify({ 'dist-tags': isDsh ? { latest: '0.1.0-rc.7', next: '0.2.0-rc.1' } : { latest: '0.10.1', next: '0.11.0' } }))
       response.emit('end')
     })
     return request
@@ -751,10 +747,13 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
   const second = await host.handler('check-update', {})
   assert.equal(first.ok, true)
   assert.equal(first.value.dsh.current, '0.1.0-rc.7')
-  assert.equal(first.value.dsh.upToDate, true)
+  assert.equal(first.value.dsh.latest, '0.2.0-rc.1')
+  assert.deepEqual(first.value.dsh.tags, { latest: '0.1.0-rc.7', next: '0.2.0-rc.1' })
+  assert.equal(first.value.dsh.upToDate, false)
   assert.equal(first.value.plugin.current, '0.11.0')
-  assert.equal(first.value.plugin.latest, '0.10.1')
-  assert.equal(first.value.plugin.upToDate, false)
+  assert.equal(first.value.plugin.latest, '0.11.0')
+  assert.deepEqual(first.value.plugin.tags, { latest: '0.10.1', next: '0.11.0' })
+  assert.equal(first.value.plugin.upToDate, true)
   assert.equal(first.value.cached, false)
   assert.equal(second.value.cached, true)
   assert.equal(requests.length, 2)
@@ -772,7 +771,7 @@ test('update RPC preserves the DSH result when the unpublished plugin package re
     process.nextTick(() => {
       callback(response)
       if (response.statusCode === 200) {
-        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '0.1.0-rc.7' } }))
+        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '0.1.0-rc.7', next: '0.1.0-rc.7' } }))
         response.emit('end')
       }
     })

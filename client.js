@@ -87,8 +87,6 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
       'backup.cancel': '取消',
       'backup.error': '备份操作失败',
-      'backup.export': '导出',
-      'backup.exporting': '导出中…',
       'backup.import': '导入备份',
       'backup.importing': '导入中…',
       'backup.showRecords': '展开备份记录',
@@ -108,6 +106,7 @@ window.__ModuleLoader__.load({
       'update.details.title': 'DSH 更新可用',
       'update.details.current': '当前版本：{version}',
       'update.details.latest': '最新版本：{version}',
+      'update.channels': 'latest：{latest} · next：{next}',
       'update.details.close': '关闭',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。也可以在对话中输入 /restart；检测到运行中的工作时，命令会拒绝重启，请先处理工作或在本页查看并确认强制重启。',
@@ -129,13 +128,13 @@ window.__ModuleLoader__.load({
       'error.restart': '重启失败',
       'error.instance': '重启响应缺少进程实例标识',
       'usage.title': '模型使用',
-      'usage.structure': 'Token 结构',
-      'usage.structureHint': '按日期展示输入、输出和缓存 Token。',
+      'usage.structure': 'tok 结构',
+      'usage.structureHint': '按日期展示输入、输出和缓存 tok。',
       'usage.tooltip.date': '日期：{date}',
-      'usage.tooltip.input': '输入 {value} Token',
-      'usage.tooltip.output': '输出 {value} Token',
-      'usage.tooltip.cache': '缓存命中 {value} Token',
-      'usage.axis': 'Token 纵轴',
+      'usage.tooltip.input': '输入 {value} tok',
+      'usage.tooltip.output': '输出 {value} tok',
+      'usage.tooltip.cache': '缓存命中 {value} tok',
+      'usage.axis': 'tok 纵轴',
       'usage.models.more': '展开其余 {count} 个模型',
       'usage.models.less': '收起模型列表',
       'usage.refresh': '刷新统计',
@@ -145,14 +144,14 @@ window.__ModuleLoader__.load({
       'usage.allProjects': '全部项目',
       'usage.steps': '成功模型步骤',
       'usage.stepsValue': '{count} 次',
-      'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} Token · 输出 {output} Token',
-      'usage.input': '输入 Token',
-      'usage.output': '输出 Token',
-      'usage.cache': '缓存 Token',
+      'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} tok · 输出 {output} tok',
+      'usage.input': '输入 tok',
+      'usage.output': '输出 tok',
+      'usage.cache': '缓存 tok',
       'usage.hitRate': '缓存命中率',
       'usage.today': '今天',
       'usage.sevenDays': '近 7 天',
-      'usage.missing': '{count} 个步骤没有 Token 数据',
+      'usage.missing': '{count} 个步骤没有 tok 数据',
       'usage.errors.title': '模型报错',
       'usage.errors.toggle': '模型报错（{count} 类）',
       'usage.errors.recent': '最近 24 小时',
@@ -241,8 +240,6 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': 'Delete this backup? This cannot be undone.',
       'backup.cancel': 'Cancel',
       'backup.error': 'Backup operation failed',
-      'backup.export': 'Export',
-      'backup.exporting': 'Exporting…',
       'backup.import': 'Import backup',
       'backup.importing': 'Importing…',
       'backup.showRecords': 'Show backup records',
@@ -262,6 +259,7 @@ window.__ModuleLoader__.load({
       'update.details.title': 'DSH update available',
       'update.details.current': 'Current version: {version}',
       'update.details.latest': 'Latest version: {version}',
+      'update.channels': 'latest: {latest} · next: {next}',
       'update.details.close': 'Close',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation; the command refuses to restart while active work is detected, so handle it first or confirm a force restart here.',
@@ -283,13 +281,13 @@ window.__ModuleLoader__.load({
       'error.restart': 'Restart failed',
       'error.instance': 'Restart response is missing the process instance ID',
       'usage.title': 'Model usage',
-      'usage.structure': 'Token structure',
-      'usage.structureHint': 'Input, output, and cache tokens by date.',
+      'usage.structure': 'tok structure',
+      'usage.structureHint': 'Input, output, and cache tok by date.',
       'usage.tooltip.date': 'Date: {date}',
-      'usage.tooltip.input': 'Input {value} tokens',
-      'usage.tooltip.output': 'Output {value} tokens',
-      'usage.tooltip.cache': 'Cache hit {value} tokens',
-      'usage.axis': 'Token vertical axis',
+      'usage.tooltip.input': 'Input {value} tok',
+      'usage.tooltip.output': 'Output {value} tok',
+      'usage.tooltip.cache': 'Cache hit {value} tok',
+      'usage.axis': 'tok vertical axis',
       'usage.models.more': 'Show {count} more models',
       'usage.models.less': 'Collapse model list',
       'usage.refresh': 'Refresh usage',
@@ -299,10 +297,10 @@ window.__ModuleLoader__.load({
       'usage.allProjects': 'All projects',
       'usage.steps': 'Successful model steps',
       'usage.stepsValue': '{count} times',
-      'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} tokens · Output {output} tokens',
-      'usage.input': 'Input tokens',
-      'usage.output': 'Output tokens',
-      'usage.cache': 'Cache tokens',
+      'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} tok · Output {output} tok',
+      'usage.input': 'Input tok',
+      'usage.output': 'Output tok',
+      'usage.cache': 'Cache tok',
       'usage.hitRate': 'Cache hit rate',
       'usage.today': 'Today',
       'usage.sevenDays': 'Last 7 days',
@@ -440,6 +438,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '10px' } }, translate('update.details.title')),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.current', { version: update.current })),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.latest', { version: update.latest })),
+          React.createElement('p', { style: { margin: '4px 0', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('update.channels', { latest: update.tags?.latest || '—', next: update.tags?.next || '—' })),
           React.createElement('button', { style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer' }, onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
         }
 
@@ -506,7 +505,6 @@ window.__ModuleLoader__.load({
         const [backupBusy, setBackupBusy] = useState(false)
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
-        const [backupExportId, setBackupExportId] = useState(null)
         const [backupImportBusy, setBackupImportBusy] = useState(false)
         const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
@@ -697,26 +695,6 @@ window.__ModuleLoader__.load({
             setBackupBusy(false)
           }
         }
-
-        const exportBackup = async (id) => {
-           setBackupExportId(id)
-           setBackupError(null)
-           try {
-             const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id })
-             if (!res || res.ok === false) throw new Error('backup export failed')
-             const bytes = Uint8Array.from(atob(res.value.data), (char) => char.charCodeAt(0))
-             const url = URL.createObjectURL(new Blob([bytes], { type: 'application/gzip' }))
-             const anchor = document.createElement('a')
-             anchor.href = url
-             anchor.download = res.value.name
-             anchor.click()
-             URL.revokeObjectURL(url)
-           } catch (_) {
-             setBackupError(translate('backup.error'))
-           } finally {
-             setBackupExportId(null)
-           }
-         }
 
          const importBackup = (event) => {
            const file = event.target.files && event.target.files[0]
@@ -1123,7 +1101,7 @@ window.__ModuleLoader__.load({
                     backupDeleteId === item.id
                       ? null
                       : React.createElement('button', { style: Object.assign({}, dangerOutline, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
-                    React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy || backupExportId === item.id, onClick: () => exportBackup(item.id) }, translate(backupExportId === item.id ? 'backup.exporting' : 'backup.export')))),
+                  )),
                 backupDeleteId === item.id
                   ? React.createElement('div', { style: { marginTop: '8px' } },
                       React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '0 0 6px' }) }, translate('backup.confirmHint')),
@@ -1139,6 +1117,7 @@ window.__ModuleLoader__.load({
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)' } }, state?.current || fallbackVersion || translate('version.loading'))),
+             state?.tags ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, translate('update.channels', { latest: state.tags.latest || '—', next: state.tags.next || '—' })) : null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
               ? (updateError || translate('update.checking'))

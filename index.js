@@ -35,8 +35,65 @@ try {
   } catch (__) {}
 }
 
+function isSemverIdentifier(value) {
+  if (value.length === 0) return false
+  return [...value].every((char) => (char >= '0' && char <= '9') || (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || char === '-')
+}
+
+function isNumericSemverIdentifier(value) {
+  return value.length > 0 && [...value].every((char) => char >= '0' && char <= '9')
+}
+
+function parseSemver(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  const buildParts = trimmed.split('+')
+  if (buildParts.length > 2 || (buildParts.length === 2 && !buildParts[1].split('.').every((part) => isSemverIdentifier(part)))) return null
+  const versionPart = buildParts[0]
+  const dashIndex = versionPart.indexOf('-')
+  const corePart = dashIndex === -1 ? versionPart : versionPart.slice(0, dashIndex)
+  const prereleasePart = dashIndex === -1 ? '' : versionPart.slice(dashIndex + 1)
+  if (dashIndex !== -1 && prereleasePart.length === 0) return null
+  const core = corePart.split('.')
+  if (core.length !== 3 || !core.every((part) => isNumericSemverIdentifier(part) && (part.length === 1 || !part.startsWith('0')))) return null
+  const prerelease = prereleasePart === '' ? [] : prereleasePart.split('.')
+  if (!prerelease.every((part) => isSemverIdentifier(part) && !(isNumericSemverIdentifier(part) && part.length > 1 && part.startsWith('0')))) return null
+  return { major: Number(core[0]), minor: Number(core[1]), patch: Number(core[2]), prerelease }
+}
+
+function compareSemver(left, right) {
+  const a = parseSemver(left)
+  const b = parseSemver(right)
+  if (!a || !b) return 0
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1
+  }
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0
+  if (a.prerelease.length === 0) return 1
+  if (b.prerelease.length === 0) return -1
+  const length = Math.max(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index += 1) {
+    if (index >= a.prerelease.length) return -1
+    if (index >= b.prerelease.length) return 1
+    const leftPart = a.prerelease[index]
+    const rightPart = b.prerelease[index]
+    if (leftPart === rightPart) continue
+    const leftNumeric = /^[0-9]+$/.test(leftPart)
+    const rightNumeric = /^[0-9]+$/.test(rightPart)
+    if (leftNumeric && rightNumeric) return Number(leftPart) > Number(rightPart) ? 1 : -1
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    return leftPart > rightPart ? 1 : -1
+  }
+  return 0
+}
+
+function atLeastSemver(current, target) {
+  if (parseSemver(current) && parseSemver(target)) return compareSemver(current, target) >= 0
+  return current === target
+}
+
 // 只请求固定的 npm registry 包元数据：不接受来自浏览器的 URL 或包名，避免 SSRF。
-function fetchLatestVersion(packageName) {
+function fetchPublishedVersions(packageName) {
   return new Promise((resolve, reject) => {
     let settled = false
     const fail = (error) => {
@@ -82,12 +139,22 @@ function fetchLatestVersion(packageName) {
         if (settled) return
         try {
           const data = JSON.parse(body)
-          const latest = data?.['dist-tags']?.latest
-          if (typeof latest !== 'string' || latest.length === 0) {
-            fail(new Error('npm 响应中没有 latest 版本'))
+          const distTags = data?.['dist-tags'] || {}
+          const normalizeTag = (value) => {
+            const version = typeof value === 'string' ? value.trim() : ''
+            return parseSemver(version) === null ? null : version
+          }
+          const tags = {
+            latest: normalizeTag(distTags.latest),
+            next: normalizeTag(distTags.next),
+          }
+          const versions = [tags.latest, tags.next].filter((version) => parseSemver(version) !== null)
+          if (versions.length === 0) {
+            fail(new Error('npm 响应中没有有效的 latest 或 next 版本'))
             return
           }
-          succeed(latest)
+          const latest = versions.reduce((selected, version) => compareSemver(version, selected) > 0 ? version : selected)
+          succeed({ latest, tags })
         } catch (_) {
           fail(new Error('解析 npm 响应失败'))
         }
@@ -219,15 +286,6 @@ async function deleteBackup(dshHome, id) {
   if (item === undefined) return undefined
   await unlink(join(dshHome, 'backups', basename(item.name)))
   return listBackups(dshHome)
-}
-
-async function exportBackup(dshHome, id) {
-  if (typeof id !== 'string' || id.length === 0) return undefined
-  const snapshot = await listBackups(dshHome)
-  const item = snapshot.items.find((candidate) => candidate.id === id)
-  if (item === undefined || item.sizeBytes > MAX_BACKUP_TRANSFER_BYTES) return undefined
-  const data = await readFile(join(dshHome, 'backups', basename(item.name)))
-  return { name: item.name, data: data.toString('base64') }
 }
 
 async function importBackup(dshHome, name, encoded) {
@@ -920,18 +978,18 @@ function apply(ctx) {
       try {
         if (updatePromise === undefined) {
           updatePromise = Promise.allSettled([
-            fetchLatestVersion(DSH_PACKAGE),
-            fetchLatestVersion(PLUGIN_PACKAGE),
+            fetchPublishedVersions(DSH_PACKAGE),
+            fetchPublishedVersions(PLUGIN_PACKAGE),
           ]).finally(() => { updatePromise = undefined })
         }
         const [dshResult, pluginResult] = await updatePromise
         const dsh = dshResult.status === 'fulfilled'
-          ? { current: dshVersion, latest: dshResult.value, upToDate: dshVersion === dshResult.value, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
-          : { current: dshVersion, latest: null, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
+          ? { current: dshVersion, latest: dshResult.value.latest, tags: dshResult.value.tags, upToDate: atLeastSemver(dshVersion, dshResult.value.latest), status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
+          : { current: dshVersion, latest: null, tags: { latest: null, next: null }, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
         const pluginError = pluginResult.status === 'rejected' ? String(pluginResult.reason?.message || pluginResult.reason) : ''
         const plugin = pluginResult.status === 'fulfilled'
-          ? { current: pluginVersion, latest: pluginResult.value, upToDate: pluginVersion === pluginResult.value, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
-          : { current: pluginVersion, latest: null, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          ? { current: pluginVersion, latest: pluginResult.value.latest, tags: pluginResult.value.tags, upToDate: atLeastSemver(pluginVersion, pluginResult.value.latest), status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          : { current: pluginVersion, latest: null, tags: { latest: null, next: null }, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
         if (dsh.status === 'unavailable' && plugin.status === 'unavailable') throw dshResult.reason
         const value = { checkedAt: now, cached: false, dsh, plugin }
         updateCache = { ok: true, value, checkedAt: now, ttl: 10 * 60 * 1000 }
@@ -1029,16 +1087,6 @@ function apply(ctx) {
     if (endpoint === 'backup-delete') {
       try {
         const value = await deleteBackup(dshHome, payload?.id)
-        if (value === undefined) return { ok: false, error: 'unknown-backup' }
-        return { ok: true, value }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
-
-    if (endpoint === 'backup-export') {
-      try {
-        const value = await exportBackup(dshHome, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
         return { ok: true, value }
       } catch (error) {
