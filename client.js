@@ -109,7 +109,7 @@ window.__ModuleLoader__.load({
       'update.channels': 'latest：{latest} · next：{next}',
       'update.details.close': '关闭',
       'restart.title': '服务重启',
-      'restart.description': '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。也可以在对话中输入 /restart；检测到运行中的工作时，命令会拒绝重启，请先处理工作或在本页查看并确认强制重启。',
+      'restart.description': '重启 dsh web 进程。运行中的工作会中断，持久化会话可恢复。也可在对话中输入 /restart。',
       'restart.button': '重启 dsh web',
       'restart.sending': '发送中…',
       'restart.confirm': '确认重启',
@@ -128,13 +128,13 @@ window.__ModuleLoader__.load({
       'error.restart': '重启失败',
       'error.instance': '重启响应缺少进程实例标识',
       'usage.title': '模型使用',
-      'usage.structure': 'tok 结构',
-      'usage.structureHint': '按日期展示输入、输出和缓存 tok。',
+      'usage.structure': 'token 结构',
+      'usage.structureHint': '按日期展示输入、输出和缓存 token。',
       'usage.tooltip.date': '日期：{date}',
-      'usage.tooltip.input': '输入 {value} tok',
-      'usage.tooltip.output': '输出 {value} tok',
-      'usage.tooltip.cache': '缓存命中 {value} tok',
-      'usage.axis': 'tok 纵轴',
+      'usage.tooltip.input': '输入 {value} token',
+      'usage.tooltip.output': '输出 {value} token',
+      'usage.tooltip.cache': '缓存命中 {value} token',
+      'usage.axis': 'token 纵轴',
       'usage.models.more': '展开其余 {count} 个模型',
       'usage.models.less': '收起模型列表',
       'usage.refresh': '刷新统计',
@@ -144,14 +144,14 @@ window.__ModuleLoader__.load({
       'usage.allProjects': '全部项目',
       'usage.steps': '成功模型步骤',
       'usage.stepsValue': '{count} 次',
-      'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} tok · 输出 {output} tok',
-      'usage.input': '输入 tok',
-      'usage.output': '输出 tok',
-      'usage.cache': '缓存 tok',
+      'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} token · 输出 {output} token',
+      'usage.input': '输入 token',
+      'usage.output': '输出 token',
+      'usage.cache': '缓存 token',
       'usage.hitRate': '缓存命中率',
       'usage.today': '今天',
       'usage.sevenDays': '近 7 天',
-      'usage.missing': '{count} 个步骤没有 tok 数据',
+      'usage.missing': '{count} 个步骤没有 token 数据',
       'usage.errors.title': '模型报错',
       'usage.errors.toggle': '模型报错（{count} 类）',
       'usage.errors.recent': '最近 24 小时',
@@ -262,7 +262,7 @@ window.__ModuleLoader__.load({
       'update.channels': 'latest: {latest} · next: {next}',
       'update.details.close': 'Close',
       'restart.title': 'Service restart',
-      'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation; the command refuses to restart while active work is detected, so handle it first or confirm a force restart here.',
+      'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation.',
       'restart.button': 'Restart dsh web',
       'restart.sending': 'Sending…',
       'restart.confirm': 'Confirm restart',
@@ -281,13 +281,13 @@ window.__ModuleLoader__.load({
       'error.restart': 'Restart failed',
       'error.instance': 'Restart response is missing the process instance ID',
       'usage.title': 'Model usage',
-      'usage.structure': 'tok structure',
-      'usage.structureHint': 'Input, output, and cache tok by date.',
+      'usage.structure': 'token structure',
+      'usage.structureHint': 'Input, output, and cache token by date.',
       'usage.tooltip.date': 'Date: {date}',
-      'usage.tooltip.input': 'Input {value} tok',
-      'usage.tooltip.output': 'Output {value} tok',
-      'usage.tooltip.cache': 'Cache hit {value} tok',
-      'usage.axis': 'tok vertical axis',
+      'usage.tooltip.input': 'Input {value} token',
+      'usage.tooltip.output': 'Output {value} token',
+      'usage.tooltip.cache': 'Cache hit {value} token',
+      'usage.axis': 'token vertical axis',
       'usage.models.more': 'Show {count} more models',
       'usage.models.less': 'Collapse model list',
       'usage.refresh': 'Refresh usage',
@@ -297,10 +297,10 @@ window.__ModuleLoader__.load({
       'usage.allProjects': 'All projects',
       'usage.steps': 'Successful model steps',
       'usage.stepsValue': '{count} times',
-      'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} tok · Output {output} tok',
-      'usage.input': 'Input tok',
-      'usage.output': 'Output tok',
-      'usage.cache': 'Cache tok',
+      'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} token · Output {output} token',
+      'usage.input': 'Input token',
+      'usage.output': 'Output token',
+      'usage.cache': 'Cache token',
       'usage.hitRate': 'Cache hit rate',
       'usage.today': 'Today',
       'usage.sevenDays': 'Last 7 days',
@@ -773,21 +773,21 @@ window.__ModuleLoader__.load({
         }
 
         // 样式
-        const btn = { minHeight: '32px', padding: '6px 13px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease' }
-        const neutral = Object.assign({}, btn, { background: 'var(--dsw-alias-interactive-bg-active)', color: 'var(--dsw-alias-label-primary)' })
-        const primaryOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-brand-primary)', color: '#fff', borderColor: 'var(--dsw-alias-brand-primary)' })
-        const dangerOutline = Object.assign({}, btn, { background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' })
-        const danger = Object.assign({}, btn, { background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' })
-        const plain = neutral
-        const primary = primaryOutline
-        const info = neutral
+        const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
+        const primary      = { ...btn, background: 'var(--dsw-alias-brand-primary)', color: '#fff', borderColor: 'var(--dsw-alias-brand-primary)' }
+        const secondary    = { ...btn, background: 'transparent', color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)' }
+        const neutral      = { ...btn, background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
+        const danger       = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
+        const dangerGhost  = { ...btn, background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' }
+        const ghost        = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
         const toggle = Object.assign({}, btn, { background: 'transparent', color: 'var(--dsw-alias-label-primary)', border: 0, borderTop: '1px solid var(--dsw-alias-border-l1)', borderRadius: 0, padding: '10px 2px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
-        const displaySurface = { background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px', marginTop: '8px' }
+        const displaySurface = { background: '#f3f4f6', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
-        const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-primary)', border: 0, borderRadius: 0, padding: '8px 4px', cursor: 'pointer', fontSize: '13px' }
+        const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 14px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
+        const inlineTabActive = { color: 'var(--dsw-alias-brand-primary)', borderBottom: '2px solid var(--dsw-alias-brand-primary)', fontWeight: 700 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
         const formatSize = (bytes) => {
@@ -941,11 +941,11 @@ window.__ModuleLoader__.load({
           React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('usage.structureHint')),
           usage && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-                React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
-                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => setUsageProject(project.id) }, project.title)))
+                React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
+                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
           usage && usage.indexedSessions > 0
-            ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: { padding: '12px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '9px', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)' } },
+            ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: Object.assign({}, displaySurface, { padding: '12px', borderRadius: '9px' }) },
                 React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '180px', padding: '12px 10px 8px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
                   React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '136px', fontSize: '10px', color: 'var(--dsw-alias-label-secondary)' } },
                     chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
@@ -980,8 +980,8 @@ window.__ModuleLoader__.load({
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
-                React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
-                  visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+                React.createElement('div', { 'data-testid': 'usage-model-list', style: { marginTop: '10px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)' } },
+                   visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
                     React.createElement('span', null, model.id),
                     React.createElement('span', { style: { textAlign: 'right' } }, translate('usage.modelLine', {
                        steps: Number(model.steps || 0).toLocaleString(),
@@ -1023,7 +1023,7 @@ window.__ModuleLoader__.load({
                 React.createElement('div', { style: hint }, translate('health.alert.diagnostics', { status: translate(`health.overall.${diagnostics.status}`) })))
             : null,
           diagnostics
-            ? React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
+            ? React.createElement('div', { 'data-testid': 'health-check-list', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '8px 10px' }) },
                 diagnostics.checks.map((check, index) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '14px', fontSize: '12px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
                   React.createElement('span', null, translate(`health.check.${check.id}`)),
                   React.createElement('span', { style: { color: check.status === 'ok' ? 'var(--dsw-alias-state-success-primary)' : check.status === 'warning' ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-error-primary)', textAlign: 'right' } }, diagnosticDetail(check)))))
@@ -1034,8 +1034,9 @@ window.__ModuleLoader__.load({
           : 0
         const permissionNeedsRepair = permissionAbnormal > 0 || (permissionDeep && (permissionDeep.ownerIssues > 0 || permissionDeep.directoryModeIssues > 0 || permissionDeep.fileModeIssues > 0 || permissionDeep.unreadable > 0))
         const permissionBlock = permissions && permissions.supported === true
-          ? React.createElement('div', { key: 'permissions-section', style: Object.assign({}, displaySurface, { marginTop: '12px' }) },
+          ? React.createElement('div', { key: 'permissions-section', style: { marginTop: '18px' } },
               React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
+              React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
               React.createElement('p', { style: hint }, translate('permissions.description')),
               permissionAbnormal > 0 ? React.createElement('div', { style: { marginTop: '8px', padding: '9px 11px', borderRadius: '7px', background: 'rgba(198,128,0,0.12)', border: '1px solid rgba(198,128,0,0.3)' } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
@@ -1043,7 +1044,7 @@ window.__ModuleLoader__.load({
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600, color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)' }) }, translate(permissionAbnormal > 0 ? 'permissions.summary.warning' : 'permissions.summary.ok', { count: permissionAbnormal > 0 ? permissionAbnormal : permissions.items.length })),
               React.createElement('p', { style: Object.assign({}, hint, { fontWeight: 600 }) }, translate('permissions.target', { owner: permissions.targetOwner })),
               React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-                React.createElement('button', { style: plain, onClick: () => setPermissionDetails((value) => !value) }, translate(permissionDetails ? 'permissions.hideDetails' : 'permissions.showDetails')),
+                React.createElement('button', { style: neutral, onClick: () => setPermissionDetails((value) => !value) }, translate(permissionDetails ? 'permissions.hideDetails' : 'permissions.showDetails')),
                 React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: deepCheckPermissions, disabled: permissionDeepBusy }, translate(permissionDeepBusy ? 'permissions.deepChecking' : 'permissions.deep'))),
               permissionDeep ? React.createElement('p', { style: hint }, translate('permissions.deepSummary', { scanned: permissionDeep.scanned, duration: permissionDeep.durationMs, owner: permissionDeep.ownerIssues, directories: permissionDeep.directoryModeIssues, files: permissionDeep.fileModeIssues, unreadable: permissionDeep.unreadable })) : null,
               permissionDetails ? React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
@@ -1059,11 +1060,11 @@ window.__ModuleLoader__.load({
                     React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, translate('permissions.confirmHint')),
                     React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                       React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
-                      React.createElement('button', { style: plain, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
+                      React.createElement('button', { style: ghost, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
                 : permissionNeedsRepair
-                   ? React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
+                   ? React.createElement('button', { style: Object.assign({}, dangerGhost, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
                    : null,
-              permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null)
+              permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null))
           : null
 
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
@@ -1071,21 +1072,21 @@ window.__ModuleLoader__.load({
           healthSummaryBlock,
           permissionBlock)
 
-        const backupBlock = React.createElement('div', { key: 'backup-section', style: displaySurface },
+        const backupBlock = React.createElement('div', { key: 'backup-section' },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
+          React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
           React.createElement('p', { style: hint }, translate('backup.description')),
-          React.createElement('div', { style: row },
-            React.createElement('button', { style: primaryOutline, 'data-variant': 'primary-filled', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
-            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
-          backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
-          React.createElement('div', { style: row },
-            React.createElement('label', { style: Object.assign({}, neutral, { display: 'inline-flex', alignItems: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
+          React.createElement('div', { style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
+            React.createElement('button', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }), onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('label', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
               translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
               React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
+          React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
+          backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
           backups.items.length === 0
             ? React.createElement('p', { style: hint }, translate('backup.empty'))
             : backups.items.length > 10
-              ? React.createElement('button', { style: Object.assign({}, plain, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
+              ? React.createElement('button', { style: Object.assign({}, ghost, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
               : null,
           backups.items.length > 0 && (backups.items.length <= 10 || backupDetails)
             ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
@@ -1100,16 +1101,16 @@ window.__ModuleLoader__.load({
                   React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
                     backupDeleteId === item.id
                       ? null
-                      : React.createElement('button', { style: Object.assign({}, dangerOutline, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
+                      : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
                   )),
                 backupDeleteId === item.id
                   ? React.createElement('div', { style: { marginTop: '8px' } },
                       React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '0 0 6px' }) }, translate('backup.confirmHint')),
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
-                        React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
+                        React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
                   : null)))
-            : null)
+            : null))
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap' } },
@@ -1176,12 +1177,12 @@ window.__ModuleLoader__.load({
               : stage === 1
                 ? [
                     React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.confirm')),
-                    React.createElement('button', { key: 'cancel', style: plain, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
+                    React.createElement('button', { key: 'cancel', style: ghost, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
                   ]
                 : stage === 3
                   ? [
                       React.createElement('button', { key: 'force', style: danger, onClick: () => restart(true), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.force')),
-                      React.createElement('button', { key: 'cancel', style: plain, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
+                      React.createElement('button', { key: 'cancel', style: ghost, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
                     ]
                   : null
           ),
@@ -1221,7 +1222,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
           React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '18px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? { color: 'var(--dsw-alias-label-primary)', fontWeight: 700, borderBottom: '2px solid var(--dsw-alias-brand-primary)', marginBottom: '-1px' } : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', borderBottom: '2px solid transparent', marginBottom: '-1px' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
