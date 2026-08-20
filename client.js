@@ -319,6 +319,10 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const { useState, useEffect } = React
+      const svcStyle = document.createElement('style')
+      svcStyle.textContent = ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}'
+      document.head.appendChild(svcStyle)
+      ctx.effect(() => () => svcStyle.remove(), 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
       const useTranslation = () => {
@@ -439,7 +443,7 @@ window.__ModuleLoader__.load({
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.current', { version: update.current })),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.latest', { version: update.latest })),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('update.channels', { latest: update.tags?.latest || '—', next: update.tags?.next || '—' })),
-          React.createElement('button', { style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer' }, onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
+          React.createElement('button', { style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-button-contrast-fill)', cursor: 'pointer' }, onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
         }
 
         const timedOut = recovery.status === 'timeout'
@@ -477,7 +481,7 @@ window.__ModuleLoader__.load({
             : translate('recovery.waiting.body', { seconds: Math.floor(recovery.elapsedMs / 1000) })),
         timedOut
           ? React.createElement('button', {
-              style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer' },
+              style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-button-contrast-fill)', cursor: 'pointer' },
               onClick: () => window.location.reload(),
             }, translate('recovery.manual'))
           : null))
@@ -774,7 +778,7 @@ window.__ModuleLoader__.load({
 
         // 样式
         const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
-        const primary      = { ...btn, background: 'var(--dsw-alias-brand-primary)', color: '#fff', borderColor: 'var(--dsw-alias-brand-primary)' }
+        const primary      = { ...btn, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-button-contrast-fill)', borderColor: 'var(--dsw-alias-brand-primary)' }
         const secondary    = { ...btn, background: 'transparent', color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)' }
         const neutral      = { ...btn, background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
         const danger       = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
@@ -784,7 +788,7 @@ window.__ModuleLoader__.load({
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
-        const displaySurface = { background: '#f3f4f6', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
+        const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
         const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 14px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
         const inlineTabActive = { color: 'var(--dsw-alias-brand-primary)', borderBottom: '2px solid var(--dsw-alias-brand-primary)', fontWeight: 700 }
