@@ -10,7 +10,7 @@ A service-control and operations plugin for self-hosted DSH Web. The current rel
 
 | Stage | Status | Scope |
 | --- | --- | --- |
-| Current `0.11.1` | ✅ Feature complete | Version links, latest/next update checks, model-token breakdowns, backup import, the `/restart` command, and editability-based permission repair are implemented and tested |
+| Current `0.12.0` | ✅ Feature complete | Version links, one-click upgrade, latest/next update checks, model-token breakdowns, backup import/export/restore, task notifications, the `/restart` command, and editability-based permission repair are implemented and tested |
 | v0.3 Safety and UX | ✅ Implemented | Restart guard, automatic post-restart recovery, update badge/details overlay, dynamic zh/en UI |
 | v0.4 Observability | ✅ Implemented | Health panel and status-code-only `/healthz` endpoint |
 | v0.5 Data and maintenance | ✅ Implemented | Session/config/plugin-manifest backups, backup listing/deletion, and controlled Linux permission inspection/repair |
