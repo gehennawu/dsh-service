@@ -228,11 +228,11 @@ window.__ModuleLoader__.load({
       'health.detail.permissions.warning': 'Found {count} file or directory permission anomalies',
       'health.detail.generic': '{status}',
       'tabs.overview': 'Overview',
-      'tabs.health': 'Health diagnostics',
-      'tabs.usage': 'Model statistics',
-      'overview.container': 'Container information',
-      'overview.errors': 'Error information',
-      'tabs.backup': 'Backup maintenance',
+      'tabs.health': 'Health',
+      'tabs.usage': 'Models',
+      'overview.container': 'Container info',
+      'overview.errors': 'Errors',
+      'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
@@ -953,7 +953,7 @@ window.__ModuleLoader__.load({
         const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
         const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
-        const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 14px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
+        const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 10px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
         const inlineTabActive = { color: 'var(--dsw-alias-brand-primary)', borderBottom: '2px solid var(--dsw-alias-brand-primary)', fontWeight: 700 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
@@ -1424,7 +1424,7 @@ window.__ModuleLoader__.load({
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
-          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '18px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '10px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
             tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
