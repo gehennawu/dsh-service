@@ -167,12 +167,16 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': '工具报错（{count} 类）',
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
+      'notification.title': '任务通知',
+      'notification.description': '当运行中的 Agent 完成一轮任务时，发送浏览器通知提醒。需要授权浏览器通知权限；开关状态在页面刷新后保持。',
       'notification.enable': '开启通知',
       'notification.enabled': '通知已开启',
       'notification.disable': '关闭通知',
       'notification.denied': '通知权限被拒绝',
       'notification.agentDone': '任务完成',
       'notification.agentDoneBody': 'Agent {id} 已完成本轮任务',
+      'notification.bellOn': '通知开启',
+      'notification.bellOff': '通知关闭',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -333,12 +337,16 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': 'Tool errors ({count} types)',
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
+      'notification.title': 'Task notifications',
+      'notification.description': 'Receive a browser notification when a running Agent finishes its turn. Requires browser notification permission; the toggle state persists across page reloads.',
       'notification.enable': 'Enable notifications',
       'notification.enabled': 'Notifications enabled',
       'notification.disable': 'Disable notifications',
       'notification.denied': 'Notification permission denied',
       'notification.agentDone': 'Task complete',
       'notification.agentDoneBody': 'Agent {id} has finished its turn',
+      'notification.bellOn': 'Notifications on',
+      'notification.bellOff': 'Notifications off',
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale']
@@ -486,6 +494,19 @@ window.__ModuleLoader__.load({
           onClick: () => setUpdateDetailsOpen(true),
           style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: '#d80', color: '#fff', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
         }, translate('update.badge'))
+      }
+
+      function NotificationBell() {
+        const [on, setOn] = useState(notifyEnabled)
+        const translate = useTranslation()
+        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return null
+        const toggle = () => { const next = !on; setNotifyEnabled(next); setOn(next) }
+        return React.createElement('button', {
+          type: 'button',
+          onClick: toggle,
+          title: translate(on ? 'notification.bellOn' : 'notification.bellOff'),
+          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', color: on ? '#fff' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
+        }, on ? '🔔' : '🔕')
       }
 
       function ServiceOverlay() {
@@ -1313,13 +1334,17 @@ window.__ModuleLoader__.load({
         const notifSupported = typeof Notification !== 'undefined'
         const notifPermission = notifSupported ? Notification.permission : 'denied'
         const notificationBlock = !notifSupported ? null
-          : notifPermission !== 'granted'
-            ? React.createElement('div', { style: { marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') { setNotifyEnabled(true); setNotifyOn(true) } }) } }, translate('notification.enable')),
-                React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
-            : React.createElement('div', { style: { marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
-                React.createElement('button', { style: ghost, onClick: () => toggleNotify(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable')))
+          : React.createElement('div', { style: { marginTop: '18px' } },
+              React.createElement('div', { style: sectionTitle }, translate('notification.title')),
+              React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
+                React.createElement('p', { style: hint }, translate('notification.description')),
+                notifPermission !== 'granted'
+                  ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
+                      React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') { setNotifyEnabled(true); setNotifyOn(true) } }) } }, translate('notification.enable')),
+                      React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
+                  : React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
+                      React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
+                      React.createElement('button', { style: ghost, onClick: () => toggleNotify(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable')))))
         const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
@@ -1357,8 +1382,10 @@ window.__ModuleLoader__.load({
       }
 
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-        { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
-        () => React.createElement(UpdateBadge, null),
+        { name: 'sidebar.footer.action', id: 'dsh-service-actions', order: 90, label: () => t('nav.label') },
+        () => React.createElement('div', { style: { display: 'flex', alignItems: 'center' } },
+          React.createElement(NotificationBell, null),
+          React.createElement(UpdateBadge, null)),
       ))
       ctx.slots.inject('settings.section', () => ctx.slots.register(
         { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
