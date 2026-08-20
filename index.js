@@ -279,6 +279,46 @@ async function createBackup(ctx, dshHome) {
   }
 }
 
+async function restoreBackup(ctx, dshHome, id) {
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const snapshot = await listBackups(dshHome)
+  const item = snapshot.items.find((candidate) => candidate.id === id)
+  if (item === undefined) return undefined
+  const staging = join(dshHome, 'backups', `.restore-${randomUUID()}`)
+  await mkdir(staging, { recursive: true, mode: 0o700 })
+  try {
+    await runTar(ctx, join(dshHome, 'backups'), ['-xzf', basename(item.name), '-C', staging])
+    const extractedSessions = join(staging, 'sessions')
+    if (await pathExists(extractedSessions)) {
+      const targetSessions = join(dshHome, 'sessions')
+      await rm(targetSessions, { recursive: true, force: true })
+      await cp(extractedSessions, targetSessions, { recursive: true })
+    }
+    const extractedConfig = join(staging, 'config')
+    if (await pathExists(extractedConfig)) {
+      for (const file of ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']) {
+        const source = join(extractedConfig, file)
+        if (await pathExists(source)) await cp(source, join(dshHome, file), { recursive: true })
+      }
+    }
+    const extractedProfiles = join(staging, 'profiles')
+    if (await pathExists(extractedProfiles)) {
+      const targetProfiles = join(dshHome, 'profiles')
+      for (const entry of await readdir(extractedProfiles, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        const manifest = join(extractedProfiles, entry.name, 'package.json')
+        if (!(await pathExists(manifest))) continue
+        const target = join(targetProfiles, entry.name)
+        await mkdir(target, { recursive: true })
+        await cp(manifest, join(target, 'package.json'))
+      }
+    }
+    return { restoredFrom: item.name }
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
 async function deleteBackup(dshHome, id) {
   if (typeof id !== 'string' || id.length === 0) return undefined
   const snapshot = await listBackups(dshHome)
@@ -1088,6 +1128,17 @@ function apply(ctx) {
       try {
         const value = await deleteBackup(dshHome, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        return { ok: true, value }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-restore') {
+      try {
+        const value = await restoreBackup(ctx, dshHome, payload?.id)
+        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        scheduleRestart(ctx)
         return { ok: true, value }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }

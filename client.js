@@ -87,6 +87,10 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
       'backup.cancel': '取消',
       'backup.error': '备份操作失败',
+      'backup.restore': '恢复',
+      'backup.restoreConfirm': '确认恢复',
+      'backup.restoreHint': '确认恢复此备份？当前会话和配置将被覆盖，恢复后服务将自动重启。',
+      'backup.restoreError': '备份恢复失败',
       'backup.import': '导入备份',
       'backup.importing': '导入中…',
       'backup.showRecords': '展开备份记录',
@@ -240,6 +244,10 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': 'Delete this backup? This cannot be undone.',
       'backup.cancel': 'Cancel',
       'backup.error': 'Backup operation failed',
+      'backup.restore': 'Restore',
+      'backup.restoreConfirm': 'Confirm restore',
+      'backup.restoreHint': 'Restore this backup? Current sessions and configuration will be overwritten. The service will restart automatically after restoration.',
+      'backup.restoreError': 'Backup restore failed',
       'backup.import': 'Import backup',
       'backup.importing': 'Importing…',
       'backup.showRecords': 'Show backup records',
@@ -319,10 +327,13 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const { useState, useEffect } = React
-      const svcStyle = document.createElement('style')
-      svcStyle.textContent = ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}'
-      document.head.appendChild(svcStyle)
-      ctx.effect(() => () => svcStyle.remove(), 'dsh-service theme styles')
+      let svcStyle
+      if (typeof document !== 'undefined' && document.head) {
+        svcStyle = document.createElement('style')
+        svcStyle.textContent = ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}'
+        document.head.appendChild(svcStyle)
+      }
+      ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
       const useTranslation = () => {
@@ -509,6 +520,7 @@ window.__ModuleLoader__.load({
         const [backupBusy, setBackupBusy] = useState(false)
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
+        const [backupRestoreId, setBackupRestoreId] = useState(null)
         const [backupImportBusy, setBackupImportBusy] = useState(false)
         const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
@@ -695,6 +707,25 @@ window.__ModuleLoader__.load({
             setBackupDeleteId(null)
           } catch (_) {
             setBackupError(translate('backup.error'))
+          } finally {
+            setBackupBusy(false)
+          }
+        }
+
+        const restoreBackup = async (id) => {
+          setBackupBusy(true)
+          setBackupError(null)
+          try {
+            const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
+            const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore', { id })
+            if (!res || res.ok === false) throw new Error('backup restore failed')
+            setBackupRestoreId(null)
+            if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
+              startRecovery(previousInstanceId).catch(() => {})
+            }
+          } catch (_) {
+            setBackupError(translate('backup.restoreError'))
           } finally {
             setBackupBusy(false)
           }
@@ -1103,7 +1134,10 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
                     React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`)),
                   React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
-                    backupDeleteId === item.id
+                    backupDeleteId === item.id || backupRestoreId === item.id
+                      ? null
+                      : React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
+                    backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
                       : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
                   )),
@@ -1113,7 +1147,13 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : null)))
+                  : backupRestoreId === item.id
+                    ? React.createElement('div', { style: { marginTop: '8px' } },
+                        React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
+                        React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                          React.createElement('button', { style: primary, disabled: backupBusy, onClick: () => restoreBackup(item.id) }, translate('backup.restoreConfirm')),
+                          React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupRestoreId(null) }, translate('backup.cancel'))))
+                    : null)))
             : null))
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
