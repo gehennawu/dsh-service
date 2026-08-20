@@ -1387,14 +1387,12 @@ window.__ModuleLoader__.load({
                   ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
                       React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') setNotifyOn(true) }) } }, translate('notification.enable')),
                       React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
-                  : React.createElement('div', { style: { marginTop: '8px' } },
-                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-                        React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
-                        React.createElement('button', { style: ghost, onClick: () => setNotifyOn(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable'))),
-                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' } },
-                        React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('notification.interval')),
-                        React.createElement('input', { type: 'number', min: 5, max: 300, step: 5, value: notifyIntv, onChange: (e) => setNotifyIntv(e.target.value), style: { width: '60px', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', textAlign: 'center' } }),
-                        React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('notification.intervalUnit'))))))
+                  : React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } },
+                      React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
+                      React.createElement('button', { style: ghost, onClick: () => setNotifyOn(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable')),
+                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginLeft: '4px' } }, translate('notification.interval')),
+                      React.createElement('input', { type: 'number', min: 5, max: 300, step: 5, value: notifyIntv, onChange: (e) => setNotifyIntv(e.target.value), style: { width: '60px', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', textAlign: 'center' } }),
+                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('notification.intervalUnit')))))
         const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
