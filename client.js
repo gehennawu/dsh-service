@@ -168,7 +168,7 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
       'notification.title': '任务通知',
-      'notification.description': '当运行中的 Agent 完成一轮任务时，发送浏览器通知提醒。需要授权浏览器通知权限；开关状态在页面刷新后保持。',
+      'notification.description': '当运行中的 Agent 完成一轮任务时，发送浏览器通知提醒。需要授权浏览器通知权限；开关和轮询间隔在页面刷新后保持。',
       'notification.enable': '开启通知',
       'notification.enabled': '通知已开启',
       'notification.disable': '关闭通知',
@@ -177,6 +177,8 @@ window.__ModuleLoader__.load({
       'notification.agentDoneBody': 'Agent {id} 已完成本轮任务',
       'notification.bellOn': '通知开启',
       'notification.bellOff': '通知关闭',
+      'notification.interval': '轮询间隔',
+      'notification.intervalUnit': '秒（5-300）',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -338,7 +340,7 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
       'notification.title': 'Task notifications',
-      'notification.description': 'Receive a browser notification when a running Agent finishes its turn. Requires browser notification permission; the toggle state persists across page reloads.',
+      'notification.description': 'Receive a browser notification when a running Agent finishes its turn. Requires browser notification permission; the toggle and polling interval persist across page reloads.',
       'notification.enable': 'Enable notifications',
       'notification.enabled': 'Notifications enabled',
       'notification.disable': 'Disable notifications',
@@ -347,6 +349,8 @@ window.__ModuleLoader__.load({
       'notification.agentDoneBody': 'Agent {id} has finished its turn',
       'notification.bellOn': 'Notifications on',
       'notification.bellOff': 'Notifications off',
+      'notification.interval': 'Polling interval',
+      'notification.intervalUnit': 'seconds (5–300)',
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale']
@@ -369,23 +373,37 @@ window.__ModuleLoader__.load({
       }
       // 全局 agent 完成通知轮询
       let notifyEnabled = false
+      let notifyInterval = 30
       try { notifyEnabled = localStorage.getItem('dsh-service-notify') !== 'false' } catch (_) {}
+      try { const v = parseInt(localStorage.getItem('dsh-service-notify-interval'), 10); if (v >= 5 && v <= 300) notifyInterval = v } catch (_) {}
       const notifyListeners = new Set()
       const setNotifyEnabled = (value) => {
         notifyEnabled = value
         try { localStorage.setItem('dsh-service-notify', value ? 'true' : 'false') } catch (_) {}
-        for (const listener of notifyListeners) listener(value)
+        for (const listener of notifyListeners) listener()
+      }
+      const setNotifyInterval = (value) => {
+        const v = Math.max(5, Math.min(300, Math.round(Number(value) || 30)))
+        notifyInterval = v
+        try { localStorage.setItem('dsh-service-notify-interval', String(v)) } catch (_) {}
+        for (const listener of notifyListeners) listener()
       }
       const useNotifyState = () => {
-        const [state, setState] = useState(notifyEnabled)
-        React.useEffect(() => { notifyListeners.add(setState); return () => notifyListeners.delete(setState) }, [])
-        return [state, (v) => setNotifyEnabled(v)]
+        const [, setTick] = useState(0)
+        const [enabled, setEnabled] = useState(notifyEnabled)
+        const [interval, setInterval_] = useState(notifyInterval)
+        React.useEffect(() => {
+          const update = () => { setEnabled(notifyEnabled); setInterval_(notifyInterval); setTick((t) => t + 1) }
+          notifyListeners.add(update)
+          return () => notifyListeners.delete(update)
+        }, [])
+        return { enabled, interval, setEnabled: (v) => setNotifyEnabled(v), setInterval: (v) => setNotifyInterval(v) }
       }
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         const previousAgentIds = new Set()
         let initialized = false
         const pollActivity = async () => {
-          if (!notifyEnabled) { ctx.timer.timeout(pollActivity, 30000); return }
+          if (!notifyEnabled) { ctx.timer.timeout(pollActivity, notifyInterval * 1000); return }
           try {
             const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
             if (res && res.ok) {
@@ -402,9 +420,9 @@ window.__ModuleLoader__.load({
               initialized = true
             }
           } catch (_) {}
-          ctx.timer.timeout(pollActivity, 30000)
+          ctx.timer.timeout(pollActivity, notifyInterval * 1000)
         }
-        ctx.timer.timeout(pollActivity, 30000)
+        ctx.timer.timeout(pollActivity, notifyInterval * 1000)
       }
 
       const recoveryListeners = new Set()
@@ -501,18 +519,6 @@ window.__ModuleLoader__.load({
           onClick: () => setUpdateDetailsOpen(true),
           style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: '#d80', color: '#fff', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
         }, translate('update.badge'))
-      }
-
-      function NotificationBell() {
-        const [on, toggle] = useNotifyState()
-        const translate = useTranslation()
-        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return null
-        return React.createElement('button', {
-          type: 'button',
-          onClick: () => toggle(!on),
-          title: translate(on ? 'notification.bellOn' : 'notification.bellOff'),
-          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', color: on ? '#fff' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 },
-        }, on ? '🔔' : '🔕')
       }
 
       function ServiceOverlay() {
@@ -1335,7 +1341,7 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(error)) : null)
         )
 
-        const [notifyOn, toggleNotify] = useNotifyState()
+        const { enabled: notifyOn, interval: notifyIntv, setEnabled: setNotifyOn, setInterval: setNotifyIntv } = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
         const notifPermission = notifSupported ? Notification.permission : 'denied'
         const notificationBlock = !notifSupported ? null
@@ -1345,11 +1351,16 @@ window.__ModuleLoader__.load({
                 React.createElement('p', { style: hint }, translate('notification.description')),
                 notifPermission !== 'granted'
                   ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                      React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') { toggleNotify(true) } }) } }, translate('notification.enable')),
+                      React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') setNotifyOn(true) }) } }, translate('notification.enable')),
                       React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
-                  : React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
-                      React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
-                      React.createElement('button', { style: ghost, onClick: () => toggleNotify(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable')))))
+                  : React.createElement('div', { style: { marginTop: '8px' } },
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+                        React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
+                        React.createElement('button', { style: ghost, onClick: () => setNotifyOn(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable'))),
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' } },
+                        React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('notification.interval')),
+                        React.createElement('input', { type: 'number', min: 5, max: 300, step: 5, value: notifyIntv, onChange: (e) => setNotifyIntv(e.target.value), style: { width: '60px', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', textAlign: 'center' } }),
+                        React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('notification.intervalUnit'))))))
         const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
@@ -1387,31 +1398,29 @@ window.__ModuleLoader__.load({
       }
 
       function InlineNotifyBell() {
-        const [on, toggle] = useNotifyState()
+        const { enabled, setEnabled } = useNotifyState()
         const translate = useTranslation()
         return React.createElement('button', {
           type: 'button',
-          title: translate(on ? 'notification.bellOn' : 'notification.bellOff'),
-          style: { background: 'transparent', border: 0, cursor: 'pointer', fontSize: '15px', padding: '2px 4px', color: 'inherit', opacity: on ? 1 : 0.45 },
+          title: translate(enabled ? 'notification.bellOn' : 'notification.bellOff'),
+          style: { background: 'transparent', border: 0, cursor: 'pointer', fontSize: '15px', padding: '2px 4px', color: 'inherit', opacity: enabled ? 1 : 0.45 },
           onClick: () => {
             if (typeof Notification === 'undefined') return
             if (Notification.permission !== 'granted') {
-              Notification.requestPermission().then((p) => { if (p === 'granted') toggle(true) })
+              Notification.requestPermission().then((p) => { if (p === 'granted') setEnabled(true) })
               return
             }
-            toggle(!on)
+            setEnabled(!enabled)
           },
-        }, on ? '🔔' : '🔕')
+        }, enabled ? '🔔' : '🔕')
       }
       ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
         { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
         () => React.createElement(InlineNotifyBell, null),
       ))
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-        { name: 'sidebar.footer.action', id: 'dsh-service-actions', order: 90, label: () => t('nav.label') },
-        () => React.createElement('div', { style: { display: 'flex', alignItems: 'center' } },
-          React.createElement(NotificationBell, null),
-          React.createElement(UpdateBadge, null)),
+        { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
+        () => React.createElement(UpdateBadge, null),
       ))
       ctx.slots.inject('settings.section', () => ctx.slots.register(
         { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
