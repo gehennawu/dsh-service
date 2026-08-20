@@ -36,11 +36,20 @@ function createHost(overrides = {}) {
   const handlers = []
   const scheduled = []
   const disposers = []
+  const registeredCommands = []
   const services = new Map(Object.entries(overrides.services || {}))
   const previousEnv = {}
   for (const [key, value] of Object.entries(overrides.env || {})) {
     previousEnv[key] = process.env[key]
     process.env[key] = value
+  }
+  if (overrides.commands) {
+    services.set('commands', {
+      register(definition) {
+        registeredCommands.push(definition)
+        return () => {}
+      },
+    })
   }
   services.set('timer', {
     timeout(callback, delay) {
@@ -74,7 +83,7 @@ function createHost(overrides = {}) {
     else process.env[key] = value
   }
   assert.equal(handlers.length, 1)
-  return { handler: handlers[0].handler, scheduled, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  return { handler: handlers[0].handler, scheduled, registeredCommands, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -454,9 +463,19 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.deepEqual(forged, { ok: false, error: 'unknown-backup' })
   assert.equal(await readFile(archivePath).then(() => true), true)
 
+  const exported = await handler('backup-export', { id: listed.value.items[0].id })
+  assert.equal(exported.ok, true)
+  assert.equal(exported.value.name, created.value.item.name)
+  assert.ok(exported.value.data.length > 0)
+  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: exported.value.data })
+  assert.equal(imported.ok, true)
+  assert.equal(imported.value.items.length, 2)
+  const duplicate = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: exported.value.data })
+  assert.deepEqual(duplicate, { ok: false, error: 'invalid-backup' })
   const deleted = await handler('backup-delete', { id: listed.value.items[0].id })
   assert.equal(deleted.ok, true)
-  assert.deepEqual(deleted.value, { items: [], totalBytes: 0 })
+  assert.equal(deleted.value.items.length, 1)
+   assert.equal(deleted.value.totalBytes, imported.value.items[0].sizeBytes)
 })
 
 test('healthz serves empty liveness responses and unregisters with the plugin fiber', async () => {
@@ -733,7 +752,7 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
   assert.equal(first.ok, true)
   assert.equal(first.value.dsh.current, '0.1.0-rc.7')
   assert.equal(first.value.dsh.upToDate, true)
-  assert.equal(first.value.plugin.current, '0.10.0')
+  assert.equal(first.value.plugin.current, '0.11.0')
   assert.equal(first.value.plugin.latest, '0.10.1')
   assert.equal(first.value.plugin.upToDate, false)
   assert.equal(first.value.cached, false)
@@ -765,7 +784,7 @@ test('update RPC preserves the DSH result when the unpublished plugin package re
   assert.equal(result.ok, true)
   assert.equal(result.value.dsh.upToDate, true)
   assert.equal(result.value.plugin.status, 'unpublished')
-  assert.equal(result.value.plugin.current, '0.10.0')
+  assert.equal(result.value.plugin.current, '0.11.0')
   assert.equal(result.value.plugin.latest, null)
 })
 
@@ -781,6 +800,25 @@ test('version and restart responses expose one stable process instance id', asyn
   assert.notEqual(first.value.instanceId, '')
   assert.equal(second.value.instanceId, first.value.instanceId)
   assert.equal(restart.value.instanceId, first.value.instanceId)
+})
+
+test('optional commands service registers a guarded /restart command and cleans it up', async () => {
+  const host = createHost({ commands: true })
+  assert.equal(host.registeredCommands.length, 1)
+  const command = host.registeredCommands[0]
+  assert.equal(command.name, 'restart')
+  assert.match(command.description, /restart/i)
+  const success = await command.handler({ rawInput: '   ' })
+  assert.deepEqual(success, { kind: 'success', text: 'Restart scheduled. The DSH Web process will exit in 0.5 seconds.' })
+  assert.deepEqual(host.scheduled.map((entry) => entry.delay), [500])
+  const invalid = await command.handler({ rawInput: ' now' })
+  assert.deepEqual(invalid, { kind: 'error', text: '/restart does not accept arguments.' })
+  const activeHost = createHost({ commands: true, services: { agents: { list: () => [{ id: 'agent-1', status: 'running' }] } } })
+  const blocked = await activeHost.registeredCommands[0].handler({ rawInput: '' })
+  assert.deepEqual(blocked, { kind: 'error', text: 'Restart refused: 1 active item(s) detected. Use the Service Control restart tab to review them.' })
+  assert.deepEqual(activeHost.scheduled, [])
+  host.dispose()
+  activeHost.dispose()
 })
 
 test('host plugin keeps the dsh-service public identity', () => {

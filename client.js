@@ -87,8 +87,12 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
       'backup.cancel': '取消',
       'backup.error': '备份操作失败',
-      'backup.showRecords': '备份记录',
-      'backup.hideRecords': '隐藏备份记录',
+      'backup.export': '导出',
+      'backup.exporting': '导出中…',
+      'backup.import': '导入备份',
+      'backup.importing': '导入中…',
+      'backup.showRecords': '展开备份记录',
+      'backup.hideRecords': '收起备份记录',
       'version.title': '版本信息',
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
@@ -99,7 +103,6 @@ window.__ModuleLoader__.load({
       'update.available': '有新版本：{version}',
       'update.unavailable': '暂时无法检查最新版本',
       'update.unpublished': '尚未发布可检查版本',
-      'update.openReleases': '查看发布记录',
       'health.recheck': '重新诊断',
       'update.badge': 'DSH 有更新',
       'update.details.title': 'DSH 更新可用',
@@ -107,7 +110,7 @@ window.__ModuleLoader__.load({
       'update.details.latest': '最新版本：{version}',
       'update.details.close': '关闭',
       'restart.title': '服务重启',
-      'restart.description': '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。',
+      'restart.description': '重启 dsh web 服务进程：运行中的任务会中断，持久化的会话可恢复。也可以在对话中输入 /restart；检测到运行中的工作时，命令会拒绝重启，请先处理工作或在本页查看并确认强制重启。',
       'restart.button': '重启 dsh web',
       'restart.sending': '发送中…',
       'restart.confirm': '确认重启',
@@ -128,7 +131,10 @@ window.__ModuleLoader__.load({
       'usage.title': '模型使用',
       'usage.structure': 'Token 结构',
       'usage.structureHint': '按日期展示输入、输出和缓存 Token。',
-      'usage.tooltip': '精确数据：{date} · {type} · {value}',
+      'usage.tooltip.date': '日期：{date}',
+      'usage.tooltip.input': '输入 {value} Token',
+      'usage.tooltip.output': '输出 {value} Token',
+      'usage.tooltip.cache': '缓存命中 {value} Token',
       'usage.axis': 'Token 纵轴',
       'usage.models.more': '展开其余 {count} 个模型',
       'usage.models.less': '收起模型列表',
@@ -139,6 +145,7 @@ window.__ModuleLoader__.load({
       'usage.allProjects': '全部项目',
       'usage.steps': '成功模型步骤',
       'usage.stepsValue': '{count} 次',
+      'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} Token · 输出 {output} Token',
       'usage.input': '输入 Token',
       'usage.output': '输出 Token',
       'usage.cache': '缓存 Token',
@@ -234,7 +241,11 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': 'Delete this backup? This cannot be undone.',
       'backup.cancel': 'Cancel',
       'backup.error': 'Backup operation failed',
-      'backup.showRecords': 'Backup records',
+      'backup.export': 'Export',
+      'backup.exporting': 'Exporting…',
+      'backup.import': 'Import backup',
+      'backup.importing': 'Importing…',
+      'backup.showRecords': 'Show backup records',
       'backup.hideRecords': 'Hide backup records',
       'version.title': 'Version information',
       'version.current': 'DSH: ',
@@ -246,7 +257,6 @@ window.__ModuleLoader__.load({
       'update.available': 'New version: {version}',
       'update.unavailable': 'Latest version is temporarily unavailable',
       'update.unpublished': 'No published version is available to check',
-      'update.openReleases': 'View releases',
       'health.recheck': 'Run again',
       'update.badge': 'DSH update',
       'update.details.title': 'DSH update available',
@@ -254,7 +264,7 @@ window.__ModuleLoader__.load({
       'update.details.latest': 'Latest version: {version}',
       'update.details.close': 'Close',
       'restart.title': 'Service restart',
-      'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed.',
+      'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation; the command refuses to restart while active work is detected, so handle it first or confirm a force restart here.',
       'restart.button': 'Restart dsh web',
       'restart.sending': 'Sending…',
       'restart.confirm': 'Confirm restart',
@@ -275,7 +285,10 @@ window.__ModuleLoader__.load({
       'usage.title': 'Model usage',
       'usage.structure': 'Token structure',
       'usage.structureHint': 'Input, output, and cache tokens by date.',
-      'usage.tooltip': 'Exact data: {date} · {type} · {value}',
+      'usage.tooltip.date': 'Date: {date}',
+      'usage.tooltip.input': 'Input {value} tokens',
+      'usage.tooltip.output': 'Output {value} tokens',
+      'usage.tooltip.cache': 'Cache hit {value} tokens',
       'usage.axis': 'Token vertical axis',
       'usage.models.more': 'Show {count} more models',
       'usage.models.less': 'Collapse model list',
@@ -286,6 +299,7 @@ window.__ModuleLoader__.load({
       'usage.allProjects': 'All projects',
       'usage.steps': 'Successful model steps',
       'usage.stepsValue': '{count} times',
+      'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} tokens · Output {output} tokens',
       'usage.input': 'Input tokens',
       'usage.output': 'Output tokens',
       'usage.cache': 'Cache tokens',
@@ -492,6 +506,8 @@ window.__ModuleLoader__.load({
         const [backupBusy, setBackupBusy] = useState(false)
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
+        const [backupExportId, setBackupExportId] = useState(null)
+        const [backupImportBusy, setBackupImportBusy] = useState(false)
         const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
         const [pluginVersion, setPluginVersion] = useState(null)
@@ -682,7 +698,55 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const checkRestart = async () => {
+        const exportBackup = async (id) => {
+           setBackupExportId(id)
+           setBackupError(null)
+           try {
+             const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id })
+             if (!res || res.ok === false) throw new Error('backup export failed')
+             const bytes = Uint8Array.from(atob(res.value.data), (char) => char.charCodeAt(0))
+             const url = URL.createObjectURL(new Blob([bytes], { type: 'application/gzip' }))
+             const anchor = document.createElement('a')
+             anchor.href = url
+             anchor.download = res.value.name
+             anchor.click()
+             URL.revokeObjectURL(url)
+           } catch (_) {
+             setBackupError(translate('backup.error'))
+           } finally {
+             setBackupExportId(null)
+           }
+         }
+
+         const importBackup = (event) => {
+           const file = event.target.files && event.target.files[0]
+           event.target.value = ''
+           if (!file) return
+           setBackupImportBusy(true)
+           setBackupError(null)
+           const reader = new FileReader()
+           reader.onload = async () => {
+             try {
+               const bytes = new Uint8Array(reader.result)
+               let binary = ''
+               for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+               const res = await ctx.connection.rpc.call('/dsh-service', 'backup-import', { name: file.name, data: btoa(binary) })
+               if (!res || res.ok === false) throw new Error('backup import failed')
+               setBackups(res.value)
+             } catch (_) {
+               setBackupError(translate('backup.error'))
+             } finally {
+               setBackupImportBusy(false)
+             }
+           }
+           reader.onerror = () => {
+             setBackupImportBusy(false)
+             setBackupError(translate('backup.error'))
+           }
+           reader.readAsArrayBuffer(file)
+         }
+
+         const checkRestart = async () => {
           setBusy(true)
           setError(null)
           try {
@@ -795,7 +859,11 @@ window.__ModuleLoader__.load({
           const project = source.projects.find((item) => item.id === usageProject)
           return project ? project.totals : { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
         }
-        const usageValue = (totals, metricName) => metricName === 'cacheTokens'
+        const modelCacheHitRate = (model) => {
+           const denominator = Number(model.inputTokens || 0) + Number(model.cacheReadTokens || 0) + Number(model.cacheWriteTokens || 0)
+           return denominator === 0 ? 0 : Number(model.cacheReadTokens || 0) / denominator
+         }
+         const usageValue = (totals, metricName) => metricName === 'cacheTokens'
           ? totals.cacheReadTokens + totals.cacheWriteTokens
           : totals[metricName] || 0
         const formatTokenValue = (value) => {
@@ -917,7 +985,7 @@ window.__ModuleLoader__.load({
                               key: metricName,
                               'data-testid': `usage-segment-${segmentId}`,
                               'data-value': value,
-                              onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.label, type: translate(label), value, x: event.clientX, y: event.clientY }),
+                              onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.key, totals: chartTotals[index], x: event.clientX, y: event.clientY }),
                               onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
                               onMouseLeave: () => setHoveredUsageSegment(null),
                               style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
@@ -929,15 +997,20 @@ window.__ModuleLoader__.load({
                   usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
                     translate(label)))),
-                hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap' } }, translate('usage.tooltip', { date: hoveredUsageSegment.date, type: hoveredUsageSegment.type, value: Number(hoveredUsageSegment.value).toLocaleString() })) : null,
+                hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'pre-line', textAlign: 'left' } }, `${translate('usage.tooltip.date', { date: hoveredUsageSegment.date })}\n${translate('usage.tooltip.input', { value: Number(hoveredUsageSegment.totals.inputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.output', { value: Number(hoveredUsageSegment.totals.outputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.cache', { value: Number((hoveredUsageSegment.totals.cacheReadTokens || 0) + (hoveredUsageSegment.totals.cacheWriteTokens || 0)).toLocaleString() })}`) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
                 sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { style: { display: 'grid', gap: '5px', marginTop: '8px' } },
-                  visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+                  visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
                     React.createElement('span', null, model.id),
-                    React.createElement('span', null, `${formatUsageValue(model.steps, 'steps')} · ${formatTokenValue(model.inputTokens + model.outputTokens + model.cacheReadTokens + model.cacheWriteTokens)} Token`))),
+                    React.createElement('span', { style: { textAlign: 'right' } }, translate('usage.modelLine', {
+                       steps: Number(model.steps || 0).toLocaleString(),
+                       hitRate: formatUsageValue(modelCacheHitRate(model), 'cacheHitRate'),
+                       input: formatTokenValue(model.inputTokens),
+                       output: formatTokenValue(model.outputTokens),
+                     })))),
                   hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
@@ -953,16 +1026,17 @@ window.__ModuleLoader__.load({
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
-        const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', 'data-testid': 'overview-errors-region', style: Object.assign({}, displaySurface, { marginTop: '18px' }) },
-          React.createElement('div', { style: sectionTitle }, translate('overview.errors')),
-          React.createElement('div', { style: Object.assign({}, hint, { margin: '-3px 0 7px' }) }, translate('usage.errors.recent')),
-          React.createElement('div', { style: { display: 'grid', gap: '7px' } },
-            React.createElement('div', null,
-              React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
-              modelErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('model', modelErrors)) : null),
-            React.createElement('div', null,
-              React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
-              toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('tool', toolErrors)) : null)))
+        const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', style: { marginTop: '18px' } },
+          React.createElement('div', { 'data-testid': 'overview-errors-title', style: sectionTitle }, translate('overview.errors')),
+          React.createElement('div', { 'data-testid': 'overview-errors-region', style: displaySurface },
+            React.createElement('div', { style: Object.assign({}, hint, { margin: '-3px 0 7px' }) }, translate('usage.errors.recent')),
+            React.createElement('div', { style: { display: 'grid', gap: '7px' } },
+              React.createElement('div', null,
+                React.createElement('button', { style: toggle, onClick: () => setModelErrorsOpen((value) => !value) }, `${modelErrorsOpen ? '▾' : '▸'} ${translate('usage.errors.toggle', { count: modelErrors.length })}`),
+                modelErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('model', modelErrors)) : null),
+              React.createElement('div', null,
+                React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
+                toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('tool', toolErrors)) : null))))
         const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
@@ -980,6 +1054,7 @@ window.__ModuleLoader__.load({
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length
           : 0
+        const permissionNeedsRepair = permissionAbnormal > 0 || (permissionDeep && (permissionDeep.ownerIssues > 0 || permissionDeep.directoryModeIssues > 0 || permissionDeep.fileModeIssues > 0 || permissionDeep.unreadable > 0))
         const permissionBlock = permissions && permissions.supported === true
           ? React.createElement('div', { key: 'permissions-section', style: Object.assign({}, displaySurface, { marginTop: '12px' }) },
               React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
@@ -1007,7 +1082,9 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                       React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
                       React.createElement('button', { style: plain, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
-                : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair')),
+                : permissionNeedsRepair
+                   ? React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
+                   : null,
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null)
           : null
 
@@ -1023,37 +1100,51 @@ window.__ModuleLoader__.load({
             React.createElement('button', { style: primaryOutline, 'data-variant': 'primary-filled', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('backup.total', { size: formatSize(backups.totalBytes) }))),
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
+          React.createElement('div', { style: row },
+            React.createElement('label', { style: Object.assign({}, neutral, { display: 'inline-flex', alignItems: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
+              translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
+              React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
           backups.items.length === 0
             ? React.createElement('p', { style: hint }, translate('backup.empty'))
-            : React.createElement('button', { style: Object.assign({}, plain, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords')),
-          backups.items.length > 0 && backupDetails
+            : backups.items.length > 10
+              ? React.createElement('button', { style: Object.assign({}, plain, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
+              : null,
+          backups.items.length > 0 && (backups.items.length <= 10 || backupDetails)
             ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
                 backups.items.map((item) => React.createElement('div', {
                   key: item.id,
                   style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
                 },
-                React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
-                React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`),
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' } },
+                  React.createElement('div', null,
+                    React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
+                    React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`)),
+                  React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
+                    backupDeleteId === item.id
+                      ? null
+                      : React.createElement('button', { style: Object.assign({}, dangerOutline, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
+                    React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy || backupExportId === item.id, onClick: () => exportBackup(item.id) }, translate(backupExportId === item.id ? 'backup.exporting' : 'backup.export')))),
                 backupDeleteId === item.id
                   ? React.createElement('div', { style: { marginTop: '8px' } },
                       React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '0 0 6px' }) }, translate('backup.confirmHint')),
                       React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: plain, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : React.createElement('button', { style: Object.assign({}, dangerOutline, { marginTop: '7px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')))))
+                  : null)))
             : null)
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
-          React.createElement('div', null,
-            React.createElement('div', { style: { fontSize: '13px', fontWeight: 650 } }, label),
-            React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, state?.current || fallbackVersion || translate('version.loading'))),
+          React.createElement('div', { style: { whiteSpace: 'nowrap' } },
+            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
+            state?.url
+              ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap' } }, state.current || fallbackVersion || translate('version.loading'))
+              : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)' } }, state?.current || fallbackVersion || translate('version.loading'))),
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
               ? (updateError || translate('update.checking'))
               : state.status === 'unpublished' ? translate('update.unpublished')
                 : state.status === 'unavailable' ? translate('update.unavailable')
-                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
-            state?.url ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-text)', textDecoration: 'none' } }, translate('update.openReleases')) : null))
+                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest }))))
         // 版本信息区块
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),

@@ -1,6 +1,7 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
 import { access, cp, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -15,6 +16,7 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
 const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
+const MAX_BACKUP_TRANSFER_BYTES = 128 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
@@ -216,6 +218,33 @@ async function deleteBackup(dshHome, id) {
   const item = snapshot.items.find((candidate) => candidate.id === id)
   if (item === undefined) return undefined
   await unlink(join(dshHome, 'backups', basename(item.name)))
+  return listBackups(dshHome)
+}
+
+async function exportBackup(dshHome, id) {
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const snapshot = await listBackups(dshHome)
+  const item = snapshot.items.find((candidate) => candidate.id === id)
+  if (item === undefined || item.sizeBytes > MAX_BACKUP_TRANSFER_BYTES) return undefined
+  const data = await readFile(join(dshHome, 'backups', basename(item.name)))
+  return { name: item.name, data: data.toString('base64') }
+}
+
+async function importBackup(dshHome, name, encoded) {
+  if (typeof name !== 'string' || !BACKUP_NAME.test(name) || typeof encoded !== 'string' || encoded.length === 0) return undefined
+  const data = Buffer.from(encoded, 'base64')
+  if (data.length === 0 || data.length > MAX_BACKUP_TRANSFER_BYTES) return undefined
+  const backupDir = join(dshHome, 'backups')
+  await mkdir(backupDir, { recursive: true, mode: 0o700 })
+  const target = join(backupDir, basename(name))
+  if (basename(name) !== name || await pathExists(target)) return undefined
+  const temporary = join(backupDir, `.${name}.${randomUUID()}.import`)
+  try {
+    await writeFile(temporary, data, { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
   return listBackups(dshHome)
 }
 
@@ -821,6 +850,20 @@ function collectActiveWork(ctx) {
   return { hasActive: items.length > 0, items }
 }
 
+function scheduleRestart(ctx) {
+  const doExit = () => {
+    try {
+      // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
+      process.exit(42)
+    } catch (error) {
+      console.error('dsh-service: exit failed', error?.message || error)
+    }
+  }
+  const timer = ctx.get('timer')
+  if (timer !== undefined) return timer.timeout(doExit, 500)
+  return doExit()
+}
+
 function apply(ctx) {
   const dshHome = resolveDshHome()
   const permissionPlans = new Map()
@@ -829,6 +872,20 @@ function apply(ctx) {
   let updateCache
   let updatePromise
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
+  const commands = ctx.get('commands')
+  if (commands !== undefined) {
+    ctx.effect(() => commands.register({
+      name: 'restart',
+      description: 'Restart the DSH Web process after checking active work',
+      handler: async (invocation) => {
+        if (invocation.rawInput.trim() !== '') return { kind: 'error', text: '/restart does not accept arguments.' }
+        const activity = collectActiveWork(ctx)
+        if (activity.hasActive) return { kind: 'error', text: `Restart refused: ${activity.items.length} active item(s) detected. Use the Service Control restart tab to review them.` }
+        scheduleRestart(ctx)
+        return { kind: 'success', text: 'Restart scheduled. The DSH Web process will exit in 0.5 seconds.' }
+      },
+    }), 'dsh-service restart command')
+  }
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
     ctx.effect(() => webServer.register({
@@ -979,23 +1036,33 @@ function apply(ctx) {
       }
     }
 
+    if (endpoint === 'backup-export') {
+      try {
+        const value = await exportBackup(dshHome, payload?.id)
+        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        return { ok: true, value }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-import') {
+      try {
+        const value = await importBackup(dshHome, payload?.name, payload?.data)
+        if (value === undefined) return { ok: false, error: 'invalid-backup' }
+        return { ok: true, value }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
     if (endpoint === 'web') {
       const activity = collectActiveWork(ctx)
       if (activity.hasActive && payload?.force !== true) {
         return { ok: false, error: 'active-work', value: activity }
       }
 
-      const doExit = () => {
-        try {
-          // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
-          process.exit(42)
-        } catch (error) {
-          console.error('dsh-service: exit failed', error?.message || error)
-        }
-      }
-      const timer = ctx.get('timer')
-      if (timer !== undefined) timer.timeout(doExit, 500)
-      else doExit()
+      scheduleRestart(ctx)
       return {
         ok: true,
         value: {
