@@ -167,6 +167,11 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': '工具报错（{count} 类）',
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
+      'notification.enable': '开启通知',
+      'notification.enabled': '通知已开启',
+      'notification.denied': '通知权限被拒绝',
+      'notification.agentDone': '任务完成',
+      'notification.agentDoneBody': 'Agent {id} 已完成本轮任务',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -327,6 +332,11 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': 'Tool errors ({count} types)',
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
+      'notification.enable': 'Enable notifications',
+      'notification.enabled': 'Notifications enabled',
+      'notification.denied': 'Notification permission denied',
+      'notification.agentDone': 'Task complete',
+      'notification.agentDoneBody': 'Agent {id} has finished its turn',
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale']
@@ -543,6 +553,7 @@ window.__ModuleLoader__.load({
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
         const [activeTab, setActiveTab] = useState('overview')
+        const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'denied')
         // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
         const [stage, setStage] = useState(0)
         const [activity, setActivity] = useState(null)
@@ -629,6 +640,37 @@ window.__ModuleLoader__.load({
             cancelNext()
           }
         }, [])
+
+        // Agent 完成通知轮询：每 10 秒检查活动状态，检测到 agent 结束时触发通知
+        useEffect(() => {
+          if (notificationPermission !== 'granted') return
+          let active = true
+          let cancelNext = () => {}
+          const previousAgentIds = new Set()
+          let initialized = false
+          const poll = async () => {
+            try {
+              const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
+              if (!active) return
+              if (res && res.ok) {
+                const currentAgentIds = new Set(res.value.items.filter((item) => item.type === 'agent').map((item) => item.id))
+                if (initialized) {
+                  for (const id of previousAgentIds) {
+                    if (!currentAgentIds.has(id)) {
+                      try { new Notification(translate('notification.agentDone'), { body: translate('notification.agentDoneBody', { id }) }) } catch (_) {}
+                    }
+                  }
+                }
+                previousAgentIds.clear()
+                for (const id of currentAgentIds) previousAgentIds.add(id)
+                initialized = true
+              }
+            } catch (_) {}
+            if (active) cancelNext = ctx.timer.timeout(poll, 10000)
+          }
+          poll()
+          return () => { active = false; cancelNext() }
+        }, [notificationPermission])
 
         const runDiagnostics = async (force = false) => {
           if (!force && diagnosticsLoadedAt > 0 && Date.now() - diagnosticsLoadedAt <= 30000) return
@@ -1263,7 +1305,15 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(error)) : null)
         )
 
-        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
+        const notificationBlock = typeof Notification !== 'undefined' && notificationPermission !== 'granted'
+          ? React.createElement('div', { style: { marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' } },
+              React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => setNotificationPermission(p)) } }, translate('notification.enable')),
+              React.createElement('span', { style: hint }, notificationPermission === 'denied' ? translate('notification.denied') : ''))
+          : notificationPermission === 'granted'
+            ? React.createElement('div', { style: { marginTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' } },
+                React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' } }, `✓ ${translate('notification.enabled')}`))
+            : null
+        const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
         const tabWarnings = {
