@@ -1265,10 +1265,10 @@ window.__ModuleLoader__.load({
 
         const versionRow = (id, label, fallbackVersion, state) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap' } },
-            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
+            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, label),
             state?.url
-              ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap' } }, state.current || fallbackVersion || translate('version.loading'))
-              : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)' } }, state?.current || fallbackVersion || translate('version.loading'))),
+              ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
+              : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
              state?.tags && id === 'dsh' ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, translate('update.channels', { latest: state.tags.latest || '—', next: state.tags.next || '—' })) : null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
