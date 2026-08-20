@@ -328,6 +328,17 @@ async function deleteBackup(dshHome, id) {
   return listBackups(dshHome)
 }
 
+async function exportBackup(dshHome, id) {
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const snapshot = await listBackups(dshHome)
+  const item = snapshot.items.find((candidate) => candidate.id === id)
+  if (item === undefined) return undefined
+  const filePath = join(dshHome, 'backups', basename(item.name))
+  const data = await readFile(filePath)
+  if (data.length > MAX_BACKUP_TRANSFER_BYTES) throw new Error('backup-too-large')
+  return { name: item.name, data: data.toString('base64') }
+}
+
 async function importBackup(dshHome, name, encoded) {
   if (typeof name !== 'string' || !BACKUP_NAME.test(name) || typeof encoded !== 'string' || encoded.length === 0) return undefined
   const data = Buffer.from(encoded, 'base64')
@@ -1119,6 +1130,16 @@ function apply(ctx) {
     if (endpoint === 'backup-create') {
       try {
         return { ok: true, value: await createBackup(ctx, dshHome) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-export') {
+      try {
+        const value = await exportBackup(dshHome, payload?.id)
+        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        return { ok: true, value }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

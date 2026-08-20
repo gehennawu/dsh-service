@@ -87,6 +87,9 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': '确认删除这个备份？此操作无法撤销。',
       'backup.cancel': '取消',
       'backup.error': '备份操作失败',
+      'backup.export': '导出',
+      'backup.exporting': '导出中…',
+      'backup.exportError': '备份导出失败',
       'backup.restore': '恢复',
       'backup.restoreConfirm': '确认恢复',
       'backup.restoreHint': '确认恢复此备份？当前会话和配置将被覆盖，恢复后服务将自动重启。',
@@ -244,6 +247,9 @@ window.__ModuleLoader__.load({
       'backup.confirmHint': 'Delete this backup? This cannot be undone.',
       'backup.cancel': 'Cancel',
       'backup.error': 'Backup operation failed',
+      'backup.export': 'Export',
+      'backup.exporting': 'Exporting…',
+      'backup.exportError': 'Backup export failed',
       'backup.restore': 'Restore',
       'backup.restoreConfirm': 'Confirm restore',
       'backup.restoreHint': 'Restore this backup? Current sessions and configuration will be overwritten. The service will restart automatically after restoration.',
@@ -521,6 +527,7 @@ window.__ModuleLoader__.load({
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
         const [backupRestoreId, setBackupRestoreId] = useState(null)
+        const [backupExportBusy, setBackupExportBusy] = useState(false)
         const [backupImportBusy, setBackupImportBusy] = useState(false)
         const [backupDetails, setBackupDetails] = useState(false)
         const [version, setVersion] = useState(null)
@@ -709,6 +716,29 @@ window.__ModuleLoader__.load({
             setBackupError(translate('backup.error'))
           } finally {
             setBackupBusy(false)
+          }
+        }
+
+        const exportBackup = async (id) => {
+          setBackupExportBusy(true)
+          setBackupError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id })
+            if (!res || res.ok === false) throw new Error('export failed')
+            const binary = atob(res.value.data)
+            const bytes = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+            const blob = new Blob([bytes], { type: 'application/gzip' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = res.value.name
+            a.click()
+            URL.revokeObjectURL(url)
+          } catch (_) {
+            setBackupError(translate('backup.exportError'))
+          } finally {
+            setBackupExportBusy(false)
           }
         }
 
@@ -1134,6 +1164,9 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
                     React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`)),
                   React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
+                    backupDeleteId === item.id || backupRestoreId === item.id
+                      ? null
+                      : React.createElement('button', { style: Object.assign({}, ghost, { minHeight: '28px', padding: '4px 9px' }), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
                       : React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
