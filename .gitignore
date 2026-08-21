@@ -13,3 +13,6 @@ pnpm-debug.log*
 AGENTS.md
 TODO.md
 KNOWLEDGE.md
+
+# Project-local skills (not shared)
+.agents/skills/
