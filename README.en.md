@@ -11,7 +11,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 ### Version and updates
 
 - Displays current DSH and plugin versions with links to GitHub Releases
-- Automatically checks npm registry for stable and preview releases, shows update status; stable and preview version numbers link to the matching npm version pages, with an npmmirror fallback link (npmjs.com is blocked on some networks)
+- Automatically checks npm registry for stable and preview releases; when a new version exists, a `View details` action opens a dialog with both dist-tag versions, each with npmjs and npmmirror links (npmjs.com is blocked on some networks; npmmirror serves as the mirror entry)
 - One-click plugin upgrade with automatic restart after completion
 
 ### Safe restart

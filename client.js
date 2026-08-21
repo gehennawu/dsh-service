@@ -108,6 +108,7 @@ window.__ModuleLoader__.load({
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
       'update.available': '有新版本：{version}',
+      'update.detailsButton': '查看详情',
       'update.unavailable': '暂时无法检查最新版本',
       'update.unpublished': '尚未发布可检查版本',
       'health.recheck': '重新诊断',
@@ -115,10 +116,8 @@ window.__ModuleLoader__.load({
       'update.details.title': 'DSH 更新可用',
       'update.details.current': '当前版本：{version}',
       'update.details.latest': '最新版本：{version}',
-      'update.channels': '正式版 {latest} · 预览版 {next}',
       'update.channelStable': '正式版',
       'update.channelPreview': '预览版',
-      'update.channelSep': ' · ',
       'update.details.close': '关闭',
       'update.upgrade': '升级插件',
       'update.upgrading': '升级中…',
@@ -317,6 +316,7 @@ window.__ModuleLoader__.load({
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
       'update.available': 'New version: {version}',
+      'update.detailsButton': 'View details',
       'update.unavailable': 'Latest version is temporarily unavailable',
       'update.unpublished': 'No published version is available to check',
       'health.recheck': 'Run again',
@@ -324,10 +324,8 @@ window.__ModuleLoader__.load({
       'update.details.title': 'DSH update available',
       'update.details.current': 'Current version: {version}',
       'update.details.latest': 'Latest version: {version}',
-      'update.channels': 'Stable {latest} · Preview {next}',
       'update.channelStable': 'Stable',
       'update.channelPreview': 'Preview',
-      'update.channelSep': ' · ',
       'update.details.close': 'Close',
       'update.upgrade': 'Upgrade plugin',
       'update.upgrading': 'Upgrading…',
@@ -708,6 +706,27 @@ window.__ModuleLoader__.load({
         }, translate('update.badge'))
       }
 
+      // 正式/预览通道行：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接。
+      // 版本串嵌进 URL 前过安全字符集校验，不过校验的标签降级为纯文本。供更新详情浮层使用。
+      const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
+      const packageVersionHref = (base, version) => {
+        if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
+        return `${base}${version}`
+      }
+      const siteLabelLink = (kind, label, href) => {
+        const testid = `version-dsh-channel-${kind}-${label}`
+        if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '6px' } }, label)
+        return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline', marginLeft: '6px' } }, label)
+      }
+      const channelLine = (translate, kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap' } },
+        kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
+        ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}` }, version || '—'),
+        siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
+        siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
+      const channelLines = (translate, tags) => React.createElement('div', { style: { margin: '4px 0', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
+        channelLine(translate, 'latest', tags && tags.latest),
+        channelLine(translate, 'next', tags && tags.next))
+
       function ServiceOverlay() {
         const recovery = useRecoveryState()
         const updateState = useUpdateState()
@@ -724,7 +743,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '10px' } }, translate('update.details.title')),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.current', { version: update.current })),
           React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.latest', { version: update.latest })),
-          React.createElement('p', { style: { margin: '4px 0', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('update.channels', { latest: update.tags?.latest || '—', next: update.tags?.next || '—' })),
+          channelLines(translate, update.tags),
           React.createElement('button', { style: { marginTop: '16px', padding: '7px 16px', borderRadius: '6px', border: 0, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-button-contrast-fill)', cursor: 'pointer' }, onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
         }
 
@@ -1533,39 +1552,23 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式版/预览版分两行展示：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接；
-        // 两个链接都会把版本串嵌进 URL，一律过安全字符集校验，不过校验的降级为纯文本。
-        const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
-        const packageVersionHref = (base, version) => {
-          if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
-          return `${base}${version}`
-        }
-        const siteLabelLink = (kind, label, href) => {
-          const testid = `version-dsh-channel-${kind}-${label}`
-          if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '6px' } }, label)
-          return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'underline', marginLeft: '6px' } }, label)
-        }
-        const channelLine = (kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap' } },
-          kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
-          ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}` }, version || '—'),
-          siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
-          siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
+        // 正式/预览通道两行信息在更新详情浮层展示（channelLines 于 apply 作用域），版本行只留状态与「查看详情」
         const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
-             state?.tags && id === 'dsh' ? React.createElement('div', { style: { marginLeft: '8px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
-               channelLine('latest', state.tags.latest),
-               channelLine('next', state.tags.next)) : null,
             action || null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
               ? (updateError || translate('update.checking'))
               : state.status === 'unpublished' ? translate('update.unpublished')
                 : state.status === 'unavailable' ? translate('update.unavailable')
-                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest }))))
+                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
+            id === 'dsh' && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
+              ? React.createElement('button', { type: 'button', style: { background: 'transparent', border: 0, padding: '2px 0 0', cursor: 'pointer', fontSize: '12px', fontWeight: 550, color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' }, onClick: () => setUpdateDetailsOpen(true) }, translate('update.detailsButton'))
+              : null))
         // 版本信息区块
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         const pluginAction = pluginUpdate
