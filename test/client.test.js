@@ -524,7 +524,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   const plot = renderer.findByTestId('usage-plot')
   const xAxis = renderer.findByTestId('usage-x-axis')
   const bars = renderer.findAllByTestIdPrefix('usage-bar-')
-  assert.equal(plot.props.style.height, '156px')
+  assert.equal(plot.props.style.height, '164px')
   assert.equal(xAxis.props.style.position, 'absolute')
   assert.equal(xAxis.props.style.bottom, '0')
   assert.equal(bars.length, 7)
