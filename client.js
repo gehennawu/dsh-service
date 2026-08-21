@@ -109,6 +109,7 @@ window.__ModuleLoader__.load({
       'update.current': '已是最新版本',
       'update.available': '有新版本：{version}',
       'update.detailsButton': '查看详情',
+      'update.detailsHide': '收起',
       'update.unavailable': '暂时无法检查最新版本',
       'update.unpublished': '尚未发布可检查版本',
       'health.recheck': '重新诊断',
@@ -317,6 +318,7 @@ window.__ModuleLoader__.load({
       'update.current': 'Up to date',
       'update.available': 'New version: {version}',
       'update.detailsButton': 'View details',
+      'update.detailsHide': 'Collapse',
       'update.unavailable': 'Latest version is temporarily unavailable',
       'update.unpublished': 'No published version is available to check',
       'health.recheck': 'Run again',
@@ -912,6 +914,8 @@ window.__ModuleLoader__.load({
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
         const [activeTab, setActiveTab] = useState('overview')
+        // 版本详情行内展开（不用浮层：弹层会被设置模态盖住）
+        const [channelOpen, setChannelOpen] = useState(false)
         // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
         const restartFlowState = useRestartFlow()
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
@@ -1552,8 +1556,8 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式/预览通道两行信息在更新详情浮层展示（channelLines 于 apply 作用域），版本行只留状态与「查看详情」
-        const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+        // 正式/预览通道两行信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住），版本行只留状态与「查看详情」
+        const versionRow = (id, label, fallbackVersion, state, action, detailsToggle) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
@@ -1566,10 +1570,13 @@ window.__ModuleLoader__.load({
               : state.status === 'unpublished' ? translate('update.unpublished')
                 : state.status === 'unavailable' ? translate('update.unavailable')
                   : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
-            id === 'dsh' && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
-              ? React.createElement('button', { type: 'button', style: { background: 'transparent', border: 0, padding: '2px 0 0', cursor: 'pointer', fontSize: '12px', fontWeight: 550, color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' }, onClick: () => setUpdateDetailsOpen(true) }, translate('update.detailsButton'))
-              : null))
-        // 版本信息区块
+            detailsToggle || null))
+        // 版本信息区块：DSH 行在有更新时提供「查看详情/收起」，行内下拉展示当前/最新与正式/预览双通道
+        const dshUpdate = updateInfo?.dsh
+        const dshUpdateAvailable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
+        const dshDetailsToggle = dshUpdateAvailable
+          ? React.createElement('button', { type: 'button', style: { background: 'transparent', border: 0, padding: '2px 0 0', cursor: 'pointer', fontSize: '12px', fontWeight: 550, color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' }, onClick: () => setChannelOpen((value) => !value) }, translate(channelOpen ? 'update.detailsHide' : 'update.detailsButton'))
+          : null
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         const pluginAction = pluginUpdate
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
@@ -1577,8 +1584,14 @@ window.__ModuleLoader__.load({
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('dsh', 'DSH', version, updateInfo?.dsh),
+            versionRow('dsh', 'DSH', version, dshUpdate, null, dshDetailsToggle),
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
+            channelOpen
+              ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '3px' } },
+                  React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
+                  React.createElement('div', null, translate('update.details.latest', { version: dshUpdate?.latest || '—' })),
+                  channelLines(translate, dshUpdate?.tags))
+              : null,
             upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 
         // 重启区块复用共享组件（「重启」标签还承载设置页左列入口的显示开关；左侧入口默认关闭）
