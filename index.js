@@ -3,10 +3,11 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
-import { access, cp, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import https from 'node:https'
 
 const require = createRequire(import.meta.url)
@@ -22,6 +23,14 @@ const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 const USAGE_INDEX_VERSION = 4
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+
+// 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
+// TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
+const TARGET_RE = /^[A-Za-z0-9@:./_#+~^=-]+$/
+const RELEASE_AGE_OVERRIDE = '--config.minimumReleaseAge=0'
+const FETCH_TIMEOUT_OVERRIDE = '--config.fetchTimeout=600000'
+// 当前正在运行的插件源码目录：定位「本插件由哪个 profile 挂载」时与磁盘副本做 realpath 匹配。
+const loadedPluginDir = dirname(fileURLToPath(import.meta.url))
 
 // 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
 let dshVersion = 'unknown'
@@ -665,11 +674,19 @@ function modeString(mode) {
 }
 
 async function runFixedCommand(ctx, argv) {
+  const result = await runCommandResult(ctx, argv)
+  if (result.exitCode !== 0 || result.signal !== null) {
+    throw new Error(`${argv[0]}-failed: ${(result.stderr || '').trim() || result.signal || result.exitCode}`)
+  }
+}
+
+// 非抛出的命令执行：返回退出码/信号/stdout/stderr，供升级流程做失败分类与一次性恢复。
+async function runCommandResult(ctx, argv) {
   const subprocess = ctx.get('subprocess')
   if (subprocess === undefined) throw new Error('subprocess-unavailable')
   const executable = await subprocess.resolveExecutable(argv[0])
   let spawnArgv = [executable, ...argv.slice(1)]
-  // Windows 上白名单命令（如 npm）经 PATHEXT 解析为 .cmd/.bat 脚本；subprocess 服务的
+  // Windows 上白名单命令（如 npm/dsh）经 PATHEXT 解析为 .cmd/.bat 脚本；subprocess 服务的
   // spawn 不带 shell，Node 对 .cmd/.bat 一律抛 EINVAL，无法直接执行。固定包一层
   // cmd.exe /d /s /c + 已解析的绝对路径，全部参数仍是宿主白名单常量，无输入拼接。
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
@@ -682,22 +699,160 @@ async function runFixedCommand(ctx, argv) {
     cwd: process.platform === 'win32' ? (process.env.SystemRoot || 'C:\\Windows') : '/',
     stdio: {
       stdin: 'ignore',
-      stdout: { maxBytes: 16 * 1024 },
-      stderr: { maxBytes: 64 * 1024 },
+      stdout: { maxBytes: 64 * 1024 },
+      stderr: { maxBytes: 512 * 1024 },
     },
     graceMs: 5000,
   })
   const outcome = await handle.done
   const stderr = handle.collected.stderr?.readFrom(0).text || ''
-  if (outcome.exitCode !== 0 || outcome.signal !== null) {
-    throw new Error(`${argv[0]}-failed: ${stderr.trim() || outcome.signal || outcome.exitCode}`)
+  const stdout = handle.collected.stdout?.readFrom(0).text || ''
+  return { exitCode: outcome.exitCode ?? 1, signal: outcome.signal, stdout, stderr }
+}
+
+// 定位「安装了本插件的 profile」。只读扫描 DSH_HOME/profiles/*/package.json，浏览器不传
+// 任何路径/名字；多候选时优先匹配当前正在运行的插件源码目录（realpath），避免同秒竞态。
+async function resolveUpgradeProfile(dshHome) {
+  const profilesDir = join(dshHome, 'profiles')
+  let entries
+  try {
+    entries = await readdir(profilesDir, { withFileTypes: true })
+  } catch (_) {
+    throw new Error('no-profile-found')
+  }
+  const candidates = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === 'node_modules') continue
+    const dir = join(profilesDir, entry.name)
+    let manifest
+    try {
+      manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'))
+    } catch (_) {
+      continue
+    }
+    const spec = manifest?.dependencies?.[PLUGIN_PACKAGE]
+    if (typeof spec !== 'string') continue
+    candidates.push({ name: entry.name, dir, spec })
+  }
+  if (candidates.length === 0) throw new Error('no-profile-found')
+  let loadedReal = null
+  try { loadedReal = await realpath(loadedPluginDir) } catch (_) {}
+  const matches = []
+  if (loadedReal !== null) {
+    for (const candidate of candidates) {
+      let installedReal = null
+      try { installedReal = await realpath(join(candidate.dir, 'node_modules', PLUGIN_PACKAGE)) } catch (_) {}
+      if (installedReal === loadedReal) matches.push(candidate)
+    }
+  }
+  const selected = matches.length === 1 ? matches[0] : (candidates.length === 1 ? candidates[0] : null)
+  if (selected === null) throw new Error('ambiguous-profile')
+  let workspace = false
+  try { workspace = (await stat(join(selected.dir, 'pnpm-workspace.yaml'))).isFile() } catch (_) {}
+  return { name: selected.name, dir: selected.dir, spec: selected.spec, workspace }
+}
+
+async function readInstalledPluginVersion(profile) {
+  try {
+    const manifest = JSON.parse(await readFile(join(profile.dir, 'node_modules', PLUGIN_PACKAGE, 'package.json'), 'utf8'))
+    const version = typeof manifest?.version === 'string' ? manifest.version : ''
+    return version === '' ? null : version
+  } catch (_) {
+    return null
   }
 }
 
-async function upgradePlugin(ctx) {
-  await runFixedCommand(ctx, ['npm', 'install', '-g', `${PLUGIN_PACKAGE}@latest`])
+// pnpm 失败分类：dsh plugin 转发 pnpm 时只报「pnpm failed in profile directory」，不报原因；
+// 必须按输出特征识别真实失败（踩坑见 KNOWLEDGE.md「pnpm 失败模式识别与自动恢复」）。
+function classifyUpgradeFailure(output) {
+  const text = String(output || '')
+  if (text.includes('ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF')) {
+    return { code: 'hoist-pattern-diff', recoverable: true, message: 'hoist-pattern-diff' }
+  }
+  if (text.includes('ERR_PNPM_ADDING_TO_ROOT')) {
+    return { code: 'adding-to-root', recoverable: false, message: 'adding-to-root' }
+  }
+  if (/--workspace-root may only be used inside a workspace/i.test(text)) {
+    return { code: 'not-a-workspace', recoverable: false, message: 'not-a-workspace' }
+  }
+  if (text.includes('ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION') || text.includes('ERR_PNPM_NO_MATURE_MATCHING_VERSION')) {
+    return { code: 'release-age-violation', recoverable: true, message: 'release-age-violation' }
+  }
+  if (text.includes('ERR_PNPM_IGNORED_BUILDS')) {
+    return { code: 'ignored-builds', recoverable: false, message: 'ignored-builds' }
+  }
+  if (/ERR_PNPM_FETCH_5\d\d|ERR_PNPM_META_FETCH_FAIL|FetchError|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network timeout/i.test(text)) {
+    return { code: 'transient-network', recoverable: true, message: 'transient-network' }
+  }
+  if (/operation was aborted due to timeout|TimeoutError|error \(23\)/i.test(text)) {
+    return { code: 'fetch-timeout', recoverable: true, message: 'fetch-timeout' }
+  }
+  if (text.includes('pnpm not found on PATH')) {
+    return { code: 'pnpm-missing', recoverable: false, message: 'pnpm-missing' }
+  }
+  return null
+}
+
+// 一键升级：走「dsh plugin --profile <p> add <pkg>@<版本>」，落在 DSH 真正读取的 profile
+// node_modules，替代旧的无升级语义的 npm install -g。命令、包名、版本全部宿主白名单常量。
+// 安全教义守卫：活动工作拒用、link/file 拒绝、latest 不高于当前版本拒绝（防降级）一律先于网络。
+async function upgradePlugin(ctx, dshHome) {
+  const activity = collectActiveWork(ctx)
+  if (activity.hasActive) throw new Error('active-work')
+
+  const profile = await resolveUpgradeProfile(dshHome)
+  if (profile.spec.startsWith('link:')) throw new Error('link-install')
+  if (profile.spec.startsWith('file:')) throw new Error('file-install')
+
+  const published = await fetchPublishedVersions(PLUGIN_PACKAGE)
+  const targetVersion = published.latest
+  if (parseSemver(targetVersion) !== null && parseSemver(pluginVersion) !== null && compareSemver(targetVersion, pluginVersion) <= 0) {
+    throw new Error('no-newer-version')
+  }
+  const target = `${PLUGIN_PACKAGE}@${targetVersion}`
+  if (!TARGET_RE.test(PLUGIN_PACKAGE) || !TARGET_RE.test(target) || !/^[A-Za-z0-9][A-Za-z0-9._+\-]*$/.test(targetVersion)) {
+    throw new Error('invalid-upgrade-target')
+  }
+
+  const addArgs = profile.workspace ? ['add', '-w'] : ['add']
+  const dshArgs = ['dsh', 'plugin', '--profile', profile.name]
+  const run = (extra) => runCommandResult(ctx, [...dshArgs, ...extra])
+  const ok = (result) => result.exitCode === 0 && result.signal === null
+
+  // pnpm 中断（signal 非 null）表示进程被终止，不做自动恢复。
+  let result = await run([...addArgs, target])
+  if (!ok(result) && result.signal === null) {
+    const failure = classifyUpgradeFailure(`${result.stderr}\n${result.stdout}`)
+    if (failure !== null) {
+      if (failure.code === 'hoist-pattern-diff') {
+        const rebuild = await run(['install', '--no-frozen-lockfile'])
+        if (ok(rebuild)) result = await run([...addArgs, target])
+      } else if (failure.code === 'release-age-violation' || failure.code === 'fetch-timeout') {
+        const override = failure.code === 'release-age-violation' ? RELEASE_AGE_OVERRIDE : FETCH_TIMEOUT_OVERRIDE
+        if (!addArgs.includes(override)) result = await run([addArgs[0], override, ...addArgs.slice(1), target])
+      } else if (failure.code === 'transient-network') {
+        result = await run([...addArgs, target])
+      } else {
+        throw new Error(failure.code)
+      }
+    }
+  }
+
+  if (!ok(result)) {
+    const failure = classifyUpgradeFailure(`${result.stderr}\n${result.stdout}`)
+    throw new Error(failure !== null ? failure.code : `dsh-failed: ${(result.stderr || '').trim().slice(-400) || result.signal || result.exitCode}`)
+  }
+
+  // pnpm 干净退出 ≠ 真升级：minimumReleaseAge 会静默保住旧版。重读磁盘安装版本确认变化，只在其进了才重启。
+  const installed = await readInstalledPluginVersion(profile)
+  if (installed === null) throw new Error('installed-version-unreadable')
+  const advanced = parseSemver(installed) !== null && parseSemver(pluginVersion) !== null
+    ? compareSemver(installed, pluginVersion) > 0
+    : installed !== pluginVersion
+  if (!advanced) throw new Error('upgrade-stale')
+
   scheduleRestart(ctx)
-  return { ok: true }
+  return { result: 'upgraded', profile: profile.name, previous: pluginVersion, installed }
 }
 
 async function permissionSnapshot(ctx, dshHome, plans) {
@@ -1090,7 +1245,7 @@ function apply(ctx) {
 
     if (endpoint === 'upgrade') {
       try {
-        return { ok: true, value: await upgradePlugin(ctx) }
+        return { ok: true, value: await upgradePlugin(ctx, dshHome) }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

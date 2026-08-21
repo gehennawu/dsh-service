@@ -120,6 +120,22 @@ window.__ModuleLoader__.load({
       'update.upgradeError': '插件升级失败',
       'update.upgradeErrorDetail': '插件升级失败（{detail}）',
       'update.upgradeSuccess': '升级成功，服务重启中…',
+      'update.guardActiveWork': '有活动中的会话或后台任务，请处理完毕后再升级',
+      'update.guardLinkInstall': '插件通过 link: 安装（开发模式），不能从 registry 一键升级；请更新源码仓库后重启',
+      'update.guardFileInstall': '插件通过 file: 安装，不能从 registry 一键升级',
+      'update.guardNoNewer': 'registry 最新版不高于当前版本，已拒绝可能回退的升级',
+      'update.guardNoProfile': '没有找到安装了本插件的 profile，无法定位升级目标',
+      'update.guardAmbiguous': '多个 profile 都安装了本插件且无法确定当前加载的副本，已中止',
+      'update.guardStale': '命令报告成功但安装版本没有变化（可能被 pnpm 安全等待期拦下），保持当前版本不重启',
+      'update.guardUnreadable': '命令成功但无法确认安装后的版本，已中止重启',
+      'update.failPnpmMissing': '找不到 pnpm，无法执行升级；请先安装 pnpm 再重试',
+      'update.failNetwork': '拉取依赖时网络临时失败，请稍后重试',
+      'update.failFetchTimeout': '下载超时（网络较慢或安装包较大），请稍后重试',
+      'update.failReleaseAge': '新版本被 pnpm 安全等待期拦截，已自动放行重试仍失败',
+      'update.failHoist': 'profile 的 node_modules 由不同版本的 pnpm 创建，已重建重试仍失败',
+      'update.failAddingToRoot': 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）',
+      'update.failNotWorkspace': 'profile 不是 pnpm workspace 却传入了 -w',
+      'update.failIgnoredBuilds': '依赖构建脚本被 pnpm 默认拦截，无法完成升级',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 进程。运行中的工作会中断，持久化会话可恢复。也可在对话中输入 /restart。',
       'restart.button': '重启 dsh web',
@@ -306,6 +322,22 @@ window.__ModuleLoader__.load({
       'update.upgradeError': 'Plugin upgrade failed',
       'update.upgradeErrorDetail': 'Plugin upgrade failed ({detail})',
       'update.upgradeSuccess': 'Upgrade successful, restarting…',
+      'update.guardActiveWork': 'Active sessions or background tasks are running; resolve them before upgrading',
+      'update.guardLinkInstall': 'Installed via link: (development mode) — cannot one-click upgrade from the registry; update the source checkout and restart',
+      'update.guardFileInstall': 'Installed via file: — cannot one-click upgrade from the registry',
+      'update.guardNoNewer': 'The registry latest is not higher than the current version; refused a possible downgrade',
+      'update.guardNoProfile': 'No profile with this plugin installed was found to target the upgrade at',
+      'update.guardAmbiguous': 'Several profiles install this plugin and the loaded copy could not be determined; aborted',
+      'update.guardStale': 'The command reported success but the installed version did not change (pnpm safety wait likely blocked it); keeping the current version without restarting',
+      'update.guardUnreadable': 'The command succeeded but the installed version could not be confirmed; the restart was cancelled',
+      'update.failPnpmMissing': 'pnpm was not found, so the upgrade cannot run; install pnpm first and retry',
+      'update.failNetwork': 'A transient network failure occurred while fetching dependencies; please retry shortly',
+      'update.failFetchTimeout': 'Download timed out (slow network or large package); please retry later',
+      'update.failReleaseAge': 'The new release is blocked by pnpm\'s fresh-release safety wait; one automatic bypass retry also failed',
+      'update.failHoist': 'This profile\'s node_modules was created by a different pnpm major; the rebuild retry also failed',
+      'update.failAddingToRoot': 'pnpm refused to add at the workspace root (missing -w)',
+      'update.failNotWorkspace': '-w was passed but the profile is not a pnpm workspace',
+      'update.failIgnoredBuilds': 'Dependency build scripts are blocked by pnpm by default, so the upgrade could not finish',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation.',
       'restart.button': 'Restart dsh web',
@@ -913,6 +945,25 @@ window.__ModuleLoader__.load({
            reader.readAsArrayBuffer(file)
          }
 
+        // 宿主返回的稳定失败码 → 词典文案；未知错误详情（如 dsh-failed: …）透出原文。
+        const UPGRADE_FAILURES = {
+          'active-work': 'update.guardActiveWork',
+          'link-install': 'update.guardLinkInstall',
+          'file-install': 'update.guardFileInstall',
+          'no-newer-version': 'update.guardNoNewer',
+          'no-profile-found': 'update.guardNoProfile',
+          'ambiguous-profile': 'update.guardAmbiguous',
+          'upgrade-stale': 'update.guardStale',
+          'installed-version-unreadable': 'update.guardUnreadable',
+          'pnpm-missing': 'update.failPnpmMissing',
+          'transient-network': 'update.failNetwork',
+          'fetch-timeout': 'update.failFetchTimeout',
+          'release-age-violation': 'update.failReleaseAge',
+          'hoist-pattern-diff': 'update.failHoist',
+          'adding-to-root': 'update.failAddingToRoot',
+          'not-a-workspace': 'update.failNotWorkspace',
+          'ignored-builds': 'update.failIgnoredBuilds',
+        }
         const upgradePlugin = async () => {
           setUpgradeBusy(true)
           setUpgradeError(null)
@@ -920,10 +971,16 @@ window.__ModuleLoader__.load({
             const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
             const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
             const res = await ctx.connection.rpc.call('/dsh-service', 'upgrade', {})
-            // 宿主错误详情（如 npm-failed: …、npm was not found on PATH）随通用文案透出，便于排查。
             if (!res || res.ok === false) {
-              const detail = res && typeof res.error === 'string' ? res.error.trim() : ''
-              throw new Error(detail || 'upgrade failed')
+              const code = res && typeof res.error === 'string' ? res.error.trim() : ''
+              const mapped = typeof code === 'string' && code.length > 0 ? UPGRADE_FAILURES[code] : undefined
+              // 已知失败码走双语词典；其余（如 npm-failed: …、dsh-failed: …）随通用文案透出宿主错误详情。
+              if (mapped !== undefined) {
+                setUpgradeError(translate(mapped))
+              } else {
+                setUpgradeError(translate('update.upgradeErrorDetail', { detail: code || 'upgrade failed' }))
+              }
+              return
             }
             if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
               startRecovery(previousInstanceId).catch(() => {})

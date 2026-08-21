@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import https from 'node:https'
 import test from 'node:test'
@@ -863,34 +864,313 @@ test('host plugin keeps the dsh-service public identity', () => {
   assert.equal(name, 'dsh-service')
 })
 
-function recordingSubprocess(executables) {
-  const spawned = []
-  const resolved = []
-  return {
-    spawned,
-    resolved,
-    service: {
-      resolveExecutable: async (command) => {
-        resolved.push(command)
-        const found = executables[command]
-        if (found === undefined) throw new Error(`not found: ${command}`)
-        return found
-      },
-      spawn(spec) {
-        spawned.push(spec)
-        return {
-          collected: {
-            stdout: { readFrom: () => ({ text: '' }) },
-            stderr: { readFrom: () => ({ text: '' }) },
-          },
-          done: Promise.resolve({ exitCode: 0, signal: null }),
-        }
-      },
-    },
-  }
+// ---- 一键升级（profile 中继 + 白名单收口）----
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+
+async function makeHome(t, prefix = 'dsh-service-upgrade-') {
+  const dshHome = await mkdtemp(join(tmpdir(), prefix))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  return dshHome
 }
 
-test('upgrade RPC wraps a resolved .cmd through cmd.exe on Windows and uses a valid cwd', async (t) => {
+// 被测临时环境的 profile 脚手架：写入 manifest、可选 pnpm-workspace.yaml 与已安装副本
+// （真实目录或指向本仓库的 symlink，后者用于「当前加载副本」匹配测试）。
+async function scaffoldProfile(dshHome, { name = 'web', spec = '0.13.0', workspace = true, installedVersion, linkToRepo = false }) {
+  const dir = join(dshHome, 'profiles', name)
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ name: `dsh-profile-${name}`, private: true, dependencies: { '@gehennawu/dsh-service': spec } }))
+  if (workspace) await writeFile(join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - .\n')
+  if (linkToRepo) {
+    await mkdir(join(dir, 'node_modules', '@gehennawu'), { recursive: true })
+    await symlink(repoRoot, join(dir, 'node_modules', '@gehennawu', 'dsh-service'), 'dir')
+  } else if (installedVersion !== undefined) {
+    const pkgDir = join(dir, 'node_modules', '@gehennawu', 'dsh-service')
+    await mkdir(pkgDir, { recursive: true })
+    await writeFile(join(pkgDir, 'package.json'), JSON.stringify({ name: '@gehennawu/dsh-service', version: installedVersion }))
+  }
+  return dir
+}
+
+// 模拟 subprocess：记录 argv，可选按 logical argv 命中一次性失败行为（pnpm 各特征），
+// 成功且 simulateInstall 时把目标版本写进 profile 的 node_modules（模拟 registry 安装落盘）。
+function upgradeSubprocess({ dshHome, simulateInstall = true, executables = { dsh: '/usr/bin/dsh' }, behaviors = [] }) {
+  const spawned = []
+  const resolved = []
+  const service = {
+    resolveExecutable: async (command) => {
+      resolved.push(command)
+      const found = executables[command]
+      if (found === undefined) throw new Error(`not found: ${command}`)
+      return found
+    },
+    spawn(spec) {
+      spawned.push(spec)
+      const win32Routed = /[/\\]cmd(\.exe)?$/i.test(spec.argv[0]) && spec.argv[1] === '/d'
+      const logical = win32Routed ? spec.argv.slice(5) : spec.argv.slice(1)
+      const behavior = behaviors.find((entry) => !entry.used && entry.match(logical))
+      if (behavior !== undefined) behavior.used = true
+      const exitCode = behavior === undefined ? 0 : behavior.exitCode
+      const signal = exitCode === -1 ? 'SIGKILL' : null
+      const stderr = behavior === undefined ? '' : (behavior.stderr || '')
+      const stdout = behavior === undefined ? '' : (behavior.stdout || '')
+      if (simulateInstall && exitCode === 0 && signal === null && logical.includes('add')) {
+        const profileName = logical[logical.indexOf('--profile') + 1]
+        const target = logical[logical.length - 1]
+        const version = target.slice(target.lastIndexOf('@') + 1)
+        const installed = join(dshHome, 'profiles', profileName, 'node_modules', '@gehennawu', 'dsh-service', 'package.json')
+        mkdirSync(dirname(installed), { recursive: true })
+        writeFileSync(installed, JSON.stringify({ name: '@gehennawu/dsh-service', version }))
+      }
+      return {
+        collected: {
+          stdout: { readFrom: () => ({ text: stdout }) },
+          stderr: { readFrom: () => ({ text: stderr }) },
+        },
+        done: Promise.resolve({ exitCode, signal }),
+      }
+    },
+  }
+  return { spawned, resolved, service }
+}
+
+function mockPluginRegistry(t, latest = '9.9.9') {
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify({ 'dist-tags': { latest, next: latest } }))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+}
+
+test('upgrade refuses while active work exists', async (t) => {
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler, scheduled } = createHost({
+    env: { DSH_HOME: home },
+    services: { subprocess, agents: { list: () => [{ id: 'agent-a', status: 'running' }] }, jobs: { list: () => [] } },
+  })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'active-work')
+  assert.equal(spawned.length, 0)
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade refuses link: and file: installs and reports missing profiles', async (t) => {
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: 'link:/workspace/projects/dsh-service' })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const linkHost = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const link = await linkHost.handler('upgrade', {})
+  assert.equal(link.ok, false)
+  assert.equal(link.error, 'link-install')
+  assert.equal(spawned.length, 0)
+
+  const fileHome = await makeHome(t, 'dsh-service-upgrade-file-')
+  await scaffoldProfile(fileHome, { spec: 'file:/workspace/junk/dsh-service' })
+  const { service: subprocess2 } = upgradeSubprocess({ dshHome: fileHome })
+  const fileHost = createHost({ env: { DSH_HOME: fileHome }, services: { subprocess: subprocess2 } })
+  const file = await fileHost.handler('upgrade', {})
+  assert.equal(file.ok, false)
+  assert.equal(file.error, 'file-install')
+
+  const emptyHome = await makeHome(t, 'dsh-service-upgrade-empty-')
+  await mkdir(join(emptyHome, 'profiles'), { recursive: true })
+  const { service: subprocess3 } = upgradeSubprocess({ dshHome: emptyHome })
+  const missingHost = createHost({ env: { DSH_HOME: emptyHome }, services: { subprocess: subprocess3 } })
+  const missing = await missingHost.handler('upgrade', {})
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error, 'no-profile-found')
+})
+
+test('upgrade refuses to downgrade when latest is not newer than the loaded version', async (t) => {
+  mockPluginRegistry(t, '0.1.0')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'no-newer-version')
+  assert.equal(spawned.length, 0)
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade runs dsh plugin add against the discovered workspace profile and restarts', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const { service: subprocess, spawned, resolved } = upgradeSubprocess({ dshHome: home })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(resolved, ['dsh'])
+  assert.equal(spawned.length, 1)
+  assert.deepEqual(spawned[0].argv, ['/usr/bin/dsh', 'plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'])
+  assert.equal(spawned[0].cwd, '/')
+  assert.deepEqual(result.value, { result: 'upgraded', profile: 'web', previous: pluginVersion, installed: '9.9.9' })
+  assert.deepEqual(scheduled.map((entry) => entry.delay), [500])
+})
+
+test('upgrade omits -w when the profile is not a pnpm workspace', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { name: 'tui', spec: '^0.13.0', installedVersion: pluginVersion, workspace: false })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(spawned[0].argv, ['/usr/bin/dsh', 'plugin', '--profile', 'tui', 'add', '@gehennawu/dsh-service@9.9.9'])
+})
+
+test('upgrade fails as ambiguous when several profiles install the plugin and none matches', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { name: 'tui', spec: '^0.13.0', installedVersion: '0.13.0', workspace: false })
+  await scaffoldProfile(home, { name: 'web', spec: '^0.13.0', installedVersion: '0.13.0', workspace: true })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'ambiguous-profile')
+  assert.equal(spawned.length, 0)
+})
+
+test('upgrade selects the multi-profile winner by matching the loaded plugin copy', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { name: 'tui', spec: '^0.13.0', installedVersion: '0.13.0', workspace: false })
+  await scaffoldProfile(home, { name: 'web', spec: '^0.13.0', workspace: true, linkToRepo: true })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, simulateInstall: false })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  // 选中 web（当前加载副本指向本仓库）而非报 ambiguous；web 版本与运行副本一致 → 视为陈旧，不重启。
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'upgrade-stale')
+  assert.deepEqual(spawned[0].argv, ['/usr/bin/dsh', 'plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'])
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade does not restart when pnpm exits 0 but the installed version did not change', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, simulateInstall: false })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'upgrade-stale')
+  assert.equal(spawned.length, 1)
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade fails when the installed version cannot be read after pnpm succeeds', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', workspace: true })
+  const { service: subprocess } = upgradeSubprocess({ dshHome: home, simulateInstall: false })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'installed-version-unreadable')
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade rebuilds a stale pnpm-major modules dir and retries the add once', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const behaviors = [
+    { match: (l) => l.includes('add') && !l.includes('install'), exitCode: 7, stderr: 'ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF: public-hoist-pattern[] differs' },
+  ]
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, behaviors })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.equal(spawned.length, 3)
+  assert.deepEqual(spawned.map((spec) => spec.argv.slice(1)), [
+    ['plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'],
+    ['plugin', '--profile', 'web', 'install', '--no-frozen-lockfile'],
+    ['plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'],
+  ])
+  assert.ok(scheduled.length >= 1, 'restart is scheduled after the recovered upgrade')
+})
+
+test('upgrade retries once with minimumReleaseAge=0 after pnpm blocks a too-young release', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const behaviors = [
+    { match: (l) => l.includes('add') && !l.includes('minimumReleaseAge'), exitCode: 1, stderr: 'ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION\nVerification failed during install:' },
+  ]
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, behaviors })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.equal(spawned.length, 2)
+  assert.deepEqual(spawned[1].argv.slice(1), ['plugin', '--profile', 'web', 'add', '--config.minimumReleaseAge=0', '-w', '@gehennawu/dsh-service@9.9.9'])
+  assert.ok(scheduled.length >= 1)
+})
+
+test('upgrade retries a transient network failure once with the original command', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const behaviors = [
+    { match: (l) => l.includes('add'), exitCode: 1, stderr: 'FetchError: request to https://registry failed, reason: socket hang up' },
+  ]
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, behaviors })
+  const { handler } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.equal(spawned.length, 2)
+  assert.deepEqual(spawned[1].argv, spawned[0].argv)
+})
+
+test('upgrade surfaces a residual unknown pnpm failure without restarting', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const behaviors = [
+    { match: (l) => l.includes('add'), exitCode: 5, stderr: 'mystery boom' },
+  ]
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, behaviors })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.match(result.error, /^dsh-failed: mystery boom/)
+  assert.equal(spawned.length, 1)
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade reports when pnpm is missing on PATH', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const behaviors = [
+    { match: (l) => l.includes('add'), exitCode: 127, stderr: 'dsh: pnpm not found on PATH — install pnpm to manage profile plugins' },
+  ]
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home, behaviors })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'pnpm-missing')
+  assert.equal(spawned.length, 1)
+  assert.equal(scheduled.length, 0)
+})
+
+test('upgrade wraps a resolved dsh.cmd through cmd.exe on Windows with a valid cwd', async (t) => {
   const originalPlatform = process.platform
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
   t.after(() => Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true }))
@@ -901,32 +1181,21 @@ test('upgrade RPC wraps a resolved .cmd through cmd.exe on Windows and uses a va
     else process.env.SystemRoot = originalSystemRoot
   })
 
-  const recorder = recordingSubprocess({
-    npm: 'C:\\Program Files\\nodejs\\npm.CMD',
-    'cmd.exe': 'C:\\Windows\\System32\\cmd.exe',
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const { service: subprocess, spawned, resolved } = upgradeSubprocess({
+    dshHome: home,
+    executables: { dsh: 'C:\\Program Files\\nodejs\\dsh.CMD', 'cmd.exe': 'C:\\Windows\\System32\\cmd.exe' },
   })
-  const { handler, scheduled } = createHost({ services: { subprocess: recorder.service } })
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
 
   const result = await handler('upgrade', {})
 
   assert.equal(result.ok, true)
-  assert.deepEqual(recorder.resolved, ['npm', 'cmd.exe'])
-  assert.equal(recorder.spawned.length, 1)
-  assert.deepEqual(recorder.spawned[0].argv, ['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c', 'C:\\Program Files\\nodejs\\npm.CMD', 'install', '-g', '@gehennawu/dsh-service@latest'])
-  assert.equal(recorder.spawned[0].cwd, 'C:\\FakeWindows')
-  assert.ok(scheduled.length >= 1, 'restart is scheduled after a successful upgrade')
-})
-
-test('upgrade RPC spawns the resolved executable directly on POSIX with root cwd', async () => {
-  const recorder = recordingSubprocess({ npm: '/usr/bin/npm' })
-  const { handler, scheduled } = createHost({ services: { subprocess: recorder.service } })
-
-  const result = await handler('upgrade', {})
-
-  assert.equal(result.ok, true)
-  assert.deepEqual(recorder.resolved, ['npm'])
-  assert.equal(recorder.spawned.length, 1)
-  assert.deepEqual(recorder.spawned[0].argv, ['/usr/bin/npm', 'install', '-g', '@gehennawu/dsh-service@latest'])
-  assert.equal(recorder.spawned[0].cwd, '/')
+  assert.deepEqual(resolved, ['dsh', 'cmd.exe'])
+  assert.equal(spawned.length, 1)
+  assert.deepEqual(spawned[0].argv, ['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c', 'C:\\Program Files\\nodejs\\dsh.CMD', 'plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'])
+  assert.equal(spawned[0].cwd, 'C:\\FakeWindows')
   assert.ok(scheduled.length >= 1, 'restart is scheduled after a successful upgrade')
 })
