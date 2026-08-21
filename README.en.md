@@ -8,6 +8,8 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ## Features
 
+The Settings panel "Service Control" page has six top-level tabs: **Overview, Notifications, Health, Model stats, Backups, Restart**; the Restart tab can also enable a `Restart` quick entry at the bottom of the settings left navigation (off by default).
+
 ### Version and updates
 
 - Displays current DSH and plugin versions with links to GitHub Releases
@@ -44,7 +46,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ### Task notifications
 
-- Browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
+- Notification settings live in the top-level Notifications tab: browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
 - Clicking a notification focuses the DSH page and closes the popup
 - Three toggle switches: master switch, task completion, and approvals & questions, each controlled independently
 - Bell icon in the conversation input bar toggles the master switch quickly
