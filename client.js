@@ -1533,12 +1533,12 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式版/预览版分两行展示：版本号后跟 npmjs（版本页）与 npmmirror（包页）两个文字链接；
-        // 版本串过安全字符集校验才生成 npmjs 链接；npmmirror 链接为固定常量 URL，无输入拼接。
+        // 正式版/预览版分两行展示：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接；
+        // 两个链接都会把版本串嵌进 URL，一律过安全字符集校验，不过校验的降级为纯文本。
         const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
-        const npmVersionHref = (version) => {
+        const packageVersionHref = (base, version) => {
           if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
-          return `https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/${version}`
+          return `${base}${version}`
         }
         const siteLabelLink = (kind, label, href) => {
           const testid = `version-dsh-channel-${kind}-${label}`
@@ -1548,8 +1548,8 @@ window.__ModuleLoader__.load({
         const channelLine = (kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap' } },
           kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
           ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}` }, version || '—'),
-          siteLabelLink(kind, 'npmjs', npmVersionHref(version)),
-          siteLabelLink(kind, 'npmmirror', `https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}`))
+          siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
+          siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
         const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
