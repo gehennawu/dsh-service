@@ -872,14 +872,13 @@ async function collectDiagnostics(ctx, dshHome) {
     try { add('tar', 'ok', await subprocess.resolveExecutable('tar')) } catch (error) { add('tar', 'error', error?.message || error) }
   }
 
-  try {
-    const snapshot = await permissionSnapshot(ctx, dshHome, new Map())
-    if (snapshot.supported !== true) add('permissions', 'info', 'unsupported')
-    else {
+  if (process.platform === 'linux' && typeof process.getuid === 'function' && typeof process.getgid === 'function') {
+    try {
+      const snapshot = await permissionSnapshot(ctx, dshHome, new Map())
       const abnormal = snapshot.items.filter((item) => item.writable === false).length
       add('permissions', abnormal === 0 ? 'ok' : 'warning', abnormal)
-    }
-  } catch (error) { add('permissions', 'warning', error?.message || error) }
+    } catch (error) { add('permissions', 'warning', error?.message || error) }
+  }
 
   let status = 'ok'
   if (checks.some((check) => check.status === 'error')) status = 'error'
