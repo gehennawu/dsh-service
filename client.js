@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-service'
     const zh = {
       'nav.label': '服务控制',
-      'nav.restart': '重启 dsh web',
+      'nav.restart': '重启',
       'overlay.label': '服务重启状态',
       'recovery.waiting.title': '服务重启中…',
       'recovery.waiting.body': '正在等待新的 DSH Web 进程启动，已等待 {seconds} 秒。',
@@ -213,7 +213,7 @@ window.__ModuleLoader__.load({
     }
     const en = {
       'nav.label': 'Service Control',
-      'nav.restart': 'Restart dsh web',
+      'nav.restart': 'Restart',
       'overlay.label': 'Service restart status',
       'recovery.waiting.title': 'Restarting service…',
       'recovery.waiting.body': 'Waiting for a new DSH Web process. Elapsed: {seconds} seconds.',

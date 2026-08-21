@@ -923,10 +923,10 @@ test('settings left column bottom registers a dedicated restart page after the s
   const sections = renderer.registrations()['settings.section']
   assert.deepEqual(sections.map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
   assert.ok(sections[1].order > sections[0].order, 'restart entry sits below the service control page in the left nav')
-  assert.equal(sections[1].label(), '重启 dsh web')
+  assert.equal(sections[1].label(), '重启')
   renderer.setLocale('en')
   await renderer.flush()
-  assert.equal(sections[1].label(), 'Restart dsh web')
+  assert.equal(sections[1].label(), 'Restart')
 })
 
 test('dedicated restart page runs the same activity check, force, and sent flow as the restart tab', async () => {
