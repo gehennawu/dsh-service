@@ -147,6 +147,8 @@ window.__ModuleLoader__.load({
       'restart.sent': '重启指令已发出。',
       'restart.sentHint': '页面连接即将断开，服务恢复后将自动刷新。',
       'restart.idleHint': '当前没有检测到运行中的工作。确认后将断开连接，等待服务自动重启。',
+      'restart.navToggle': '设置页左列显示「重启」入口',
+      'restart.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示快捷重启入口',
       'activity.agent': 'Agent',
       'activity.job': '后台任务',
       'activity.terminal': '终端',
@@ -350,6 +352,8 @@ window.__ModuleLoader__.load({
       'restart.sent': 'Restart request sent.',
       'restart.sentHint': 'The connection will close shortly. The page will reload automatically after recovery.',
       'restart.idleHint': 'No active work was detected. Confirm to disconnect and wait for the service to restart.',
+      'restart.navToggle': 'Show "Restart" entry in settings left nav',
+      'restart.navToggleHint': 'Off by default; when enabled, a quick-restart entry appears at the bottom of the settings left navigation',
       'activity.agent': 'Agent',
       'activity.job': 'Background job',
       'activity.terminal': 'Terminal',
@@ -457,6 +461,36 @@ window.__ModuleLoader__.load({
           return () => notifyListeners.delete(update)
         }, [])
         return { enabled, done, input, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v) }
+      }
+      // 设置页左列「重启」入口显示开关：默认关闭，localStorage 持久化；
+      // 开启时才注册 settings.section 条目（导航列单元格由外壳渲染，开关不生效就不能用 null 内容占位）。
+      let restartNavEnabled = false
+      try { restartNavEnabled = localStorage.getItem('dsh-service-restart-nav') === 'true' } catch (_) {}
+      let restartNavDispose = null
+      const syncRestartNavEntry = () => {
+        if (restartNavDispose) { restartNavDispose(); restartNavDispose = null }
+        if (!restartNavEnabled) return
+        restartNavDispose = ctx.slots.register(
+          { name: 'settings.section', id: 'dsh-service-restart', order: 499, label: () => t('nav.restart') },
+          () => React.createElement(RestartSection, null),
+        )
+      }
+      const restartNavListeners = new Set()
+      const setRestartNavEnabled = (value) => {
+        restartNavEnabled = value === true
+        try { localStorage.setItem('dsh-service-restart-nav', restartNavEnabled ? 'true' : 'false') } catch (_) {}
+        syncRestartNavEntry()
+        for (const listener of restartNavListeners) listener()
+      }
+      const useRestartNavEnabled = () => {
+        const [enabled, setEnabled] = useState(restartNavEnabled)
+        useEffect(() => {
+          const update = () => setEnabled(restartNavEnabled)
+          restartNavListeners.add(update)
+          setEnabled(restartNavEnabled)
+          return () => restartNavListeners.delete(update)
+        }, [])
+        return [enabled, setRestartNavEnabled]
       }
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
@@ -724,9 +758,11 @@ window.__ModuleLoader__.load({
       }
 
       // 重启区块：设置面板「重启」标签与设置页左列底部的专属入口共用，状态取自共享重启流。
-      function RestartSection() {
+      // showNavToggle 仅「重启」标签传入：控制设置页左列入口是否显示（默认关闭）。
+      function RestartSection({ showNavToggle }) {
         const translate = useTranslation()
         const flow = useRestartFlow()
+        const [navEnabled, setNavEnabled] = useRestartNavEnabled()
         const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
         const danger = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
         const ghost = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
@@ -786,7 +822,21 @@ window.__ModuleLoader__.load({
                     : null
             ),
             flow.stage === 1 ? React.createElement('p', { style: hint }, translate('restart.idleHint')) : null,
-            flow.error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(flow.error)) : null)
+            flow.error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(flow.error)) : null,
+            showNavToggle
+              ? React.createElement('div', { style: { marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+                  React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                    React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('restart.navToggle')),
+                    React.createElement('span', { style: hint }, translate('restart.navToggleHint'))),
+                  React.createElement('button', {
+                    type: 'button',
+                    role: 'switch',
+                    'data-testid': 'restart-nav-switch',
+                    'aria-checked': String(navEnabled),
+                    onClick: () => setNavEnabled(!navEnabled),
+                    style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+                  }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+              : null)
         )
       }
 
@@ -1493,8 +1543,8 @@ window.__ModuleLoader__.load({
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
             upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 
-        // 重启区块复用共享组件（与设置页左列底部的「重启 dsh web」专属入口同源同流程）
-        const restartBlock = React.createElement(RestartSection, null)
+        // 重启区块复用共享组件（「重启」标签还承载设置页左列入口的显示开关；左侧入口默认关闭）
+        const restartBlock = React.createElement(RestartSection, { showNavToggle: true })
 
         const { enabled: notifyOn, done: notifyDoneOn, input: notifyInputOn, setEnabled: setNotifyOn, setDone: setNotifyDoneOn, setInput: setNotifyInputOn } = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
@@ -1599,17 +1649,21 @@ window.__ModuleLoader__.load({
         { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
         () => React.createElement(UpdateBadge, null),
       ))
-      ctx.slots.inject('settings.section', () => [
-        ctx.slots.register(
+      ctx.slots.inject('settings.section', () => {
+        const disposePanel = ctx.slots.register(
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
-        ),
-        ctx.slots.register(
-          // 设置面板左列最底部的「重启 dsh web」专属入口：与「重启」标签共用共享重启流
-          { name: 'settings.section', id: 'dsh-service-restart', order: 499, label: () => t('nav.restart') },
-          () => React.createElement(RestartSection, null),
-        ),
-      ])
+        )
+        // 左列「重启」入口由「重启」标签内的开关控制，默认不注册
+        syncRestartNavEntry()
+        return () => {
+          disposePanel()
+          if (restartNavDispose) {
+            restartNavDispose()
+            restartNavDispose = null
+          }
+        }
+      })
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(
         { name: 'shell.overlay', id: 'dsh-service-restart', order: 100, label: () => t('overlay.label') },
         () => React.createElement(RestartOverlay, null),

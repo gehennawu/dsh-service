@@ -912,7 +912,7 @@ test('service panel lists active work and requires an explicit force restart', a
   assert.match(renderer.text(), /重启指令已发出/)
 })
 
-test('settings left column bottom registers a dedicated restart page after the service control page', async () => {
+test('settings left nav restart entry is opt-in, defaults to hidden, and persists the toggle', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
@@ -920,13 +920,31 @@ test('settings left column bottom registers a dedicated restart page after the s
   })
 
   await renderer.load()
+  // 默认关闭：只注册服务控制一页
+  assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service'])
+  assert.equal(localStorage.getItem('dsh-service-restart-nav'), null)
+
+  // 「重启」标签内打开开关后条目注册，位于「服务控制」之下
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('restart-nav-switch').props.onClick()
+  await renderer.flush()
   const sections = renderer.registrations()['settings.section']
   assert.deepEqual(sections.map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
   assert.ok(sections[1].order > sections[0].order, 'restart entry sits below the service control page in the left nav')
   assert.equal(sections[1].label(), '重启')
+  assert.equal(localStorage.getItem('dsh-service-restart-nav'), 'true')
   renderer.setLocale('en')
   await renderer.flush()
   assert.equal(sections[1].label(), 'Restart')
+  renderer.setLocale('zh')
+  await renderer.flush()
+
+  // 关闭后条目移除并持久化
+  renderer.findByTestId('restart-nav-switch').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service'])
+  assert.equal(localStorage.getItem('dsh-service-restart-nav'), 'false')
 })
 
 test('dedicated restart page runs the same activity check, force, and sent flow as the restart tab', async () => {
@@ -941,7 +959,13 @@ test('dedicated restart page runs the same activity check, force, and sent flow 
   })
 
   await renderer.load()
-  // 概览标签激活时，唯一可见的「重启 dsh web」按钮来自左列底部的专属入口
+  // 默认关闭：先在「重启」标签打开左列入口开关
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('restart-nav-switch').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
+  // 专属入口的按钮在「服务控制」之后渲染，点它即走共享流程
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
   assert.deepEqual(calls.find((call) => call.endpoint === 'activity').payload, {})
