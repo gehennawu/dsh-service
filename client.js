@@ -382,7 +382,7 @@ window.__ModuleLoader__.load({
       // 全局 agent 完成通知轮询
       let notifyEnabled = false
       let notifyInterval = 30
-      try { notifyEnabled = localStorage.getItem('dsh-service-notify') !== 'false' } catch (_) {}
+      try { notifyEnabled = localStorage.getItem('dsh-service-notify') === 'true' } catch (_) {}
       try { const v = parseInt(localStorage.getItem('dsh-service-notify-interval'), 10); if (v >= 5 && v <= 300) notifyInterval = v } catch (_) {}
       const notifyListeners = new Set()
       const setNotifyEnabled = (value) => {
