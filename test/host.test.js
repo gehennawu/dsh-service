@@ -296,7 +296,6 @@ test('usage RPC builds and incrementally refreshes exact daily provider, model, 
   assert.equal(reads, 1)
   assert.deepEqual(first.value.days[day].totals, {
     steps: 1,
-    missingUsage: 0,
     inputTokens: 100,
     outputTokens: 20,
     cacheReadTokens: 300,
@@ -439,17 +438,64 @@ test('usage index skips inherited fork events and removes deleted sessions', asy
     listSnapshots: async () => snapshots,
     readFrom: async () => ({ meta: snapshots[0].header, events: [
       { type: 'request/header', seq: 2, time, data: { header: { config: { provider: 'anthropic', model: 'claude' } }, reason: 'resume' } },
-      { type: 'assistant/message', seq: 3, time, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] } } },
+      { type: 'assistant/message', seq: 3, time, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
     ] }),
   }
   const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
   const built = await handler('usage-refresh', {})
   assert.equal(built.value.totals.steps, 1)
-  assert.equal(built.value.totals.missingUsage, 1)
+  assert.equal(built.value.totals.inputTokens, 60)
   snapshots = []
   const deleted = await handler('usage-refresh', {})
   assert.equal(deleted.value.totals.steps, 0)
   assert.equal(deleted.value.indexedSessions, 0)
+})
+
+test('usage ignores assistant steps whose provider reports no token data', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-no-tokens-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const day = new Date(now).toLocaleDateString('en-CA')
+  const events = [
+    { type: 'request/header', seq: 0, time: now - 2000, data: { header: { config: { provider: 'deepseek', model: 'deepseek-chat' } }, reason: 'initial' } },
+    { type: 'assistant/message', seq: 1, time: now - 1000, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] } } },
+    { type: 'assistant/message', seq: 2, time: now - 500, data: { turn: 0, step: 1, message: { role: 'assistant', content: [] }, usage: { inputTokens: 40, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ]
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'no-usage-session', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'rev-1' }],
+    readFrom: async () => ({ meta: {}, events }),
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence, workspaceRegistry: { list: () => [{ id: 'project', title: 'Project', path: '/workspace/project' }] } }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.days[day].totals.steps, 1)
+  assert.equal(result.value.days[day].totals.inputTokens, 40)
+  assert.equal(result.value.days[day].totals.outputTokens, 10)
+  assert.equal(result.value.days[day].totals.cacheReadTokens, 0)
+  assert.deepEqual(result.value.days[day].projects[0].models.map((model) => model.id), ['deepseek/deepseek-chat'])
+  assert.equal('missingUsage' in result.value.days[day].totals, false)
+  assert.equal('missingUsage' in result.value.days[day].projects[0].models[0].totals, false)
+})
+
+test('usage index version mismatch rebuilds the persisted index', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const stale = { version: 4, updatedAt: now, sessions: { old: { revision: 'r', lastSeq: 1, project: { id: 'p', title: 'Old' }, currentModel: null, hours: {} } } }
+  await mkdir(dshHome, { recursive: true })
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(stale))
+  const persistence = {
+    listSnapshots: async () => [],
+    readFrom: async () => ({ meta: {}, events: [] }),
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.indexedSessions, 0)
+  const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored.version, 5)
+  assert.deepEqual(Object.keys(stored.sessions), [])
 })
 
 test('backup RPC creates the fixed archive shape, lists totals, rejects forged ids, and deletes listed backups', async (t) => {

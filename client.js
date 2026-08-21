@@ -172,11 +172,14 @@ window.__ModuleLoader__.load({
       'usage.axis': 'token 纵轴',
       'usage.models.more': '展开其余 {count} 个模型',
       'usage.models.less': '收起模型列表',
+      'usage.modelSortHint': '按 token 总量从多到少排列',
+      'usage.modelBar': '{model}：共 {total} token',
       'usage.refresh': '刷新统计',
       'usage.refreshing': '刷新中…',
       'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
       'usage.error': '无法读取模型使用统计',
       'usage.allProjects': '全部项目',
+      'usage.total': 'token 总量',
       'usage.steps': '成功模型步骤',
       'usage.stepsValue': '{count} 次',
       'usage.modelLine': '{steps}次 · 缓存命中 {hitRate} · 输入 {input} token · 输出 {output} token',
@@ -186,7 +189,6 @@ window.__ModuleLoader__.load({
       'usage.hitRate': '缓存命中率',
       'usage.today': '今天',
       'usage.sevenDays': '近 7 天',
-      'usage.missing': '{count} 个步骤没有 token 数据',
       'usage.errors.title': '模型报错',
       'usage.errors.toggle': '模型报错（{count} 类）',
       'usage.errors.recent': '最近 24 小时',
@@ -196,17 +198,14 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
       'notification.title': '通知',
-      'notification.description': '任务结束或需要你授权、选择答案时发送浏览器通知。需要授权浏览器通知权限；各开关在页面刷新后保持。',
+      'notification.description': '任务结束或需要你授权、抉择时发送浏览器通知。需要授权浏览器通知权限。',
       'notification.enable': '开启通知',
       'notification.enabled': '通知已开启',
       'notification.disable': '关闭通知',
       'notification.denied': '通知权限被拒绝',
       'notification.master': '通知总开关',
-      'notification.masterHint': '关闭时下面两个开关暂停生效',
       'notification.done': '任务结束通知',
-      'notification.doneHint': '会话完成一轮任务时提醒',
       'notification.input': '授权与提问通知',
-      'notification.inputHint': '需要授权、审阅计划或选择答案时提醒',
       'notification.doneTitle': '任务完成',
       'notification.doneBody': '{title} 已完成本轮任务',
       'notification.inputTitle': '需要你的确认',
@@ -381,11 +380,14 @@ window.__ModuleLoader__.load({
       'usage.axis': 'token vertical axis',
       'usage.models.more': 'Show {count} more models',
       'usage.models.less': 'Collapse model list',
+      'usage.modelSortHint': 'Sorted by total tokens, largest first',
+      'usage.modelBar': '{model}: {total} tokens in total',
       'usage.refresh': 'Refresh usage',
       'usage.refreshing': 'Refreshing…',
       'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
       'usage.error': 'Could not read model usage',
       'usage.allProjects': 'All projects',
+      'usage.total': 'Total tokens',
       'usage.steps': 'Successful model steps',
       'usage.stepsValue': '{count} times',
       'usage.modelLine': '{steps} times · Cache hit {hitRate} · Input {input} token · Output {output} token',
@@ -395,7 +397,6 @@ window.__ModuleLoader__.load({
       'usage.hitRate': 'Cache hit rate',
       'usage.today': 'Today',
       'usage.sevenDays': 'Last 7 days',
-      'usage.missing': '{count} step(s) have no token data',
       'usage.errors.title': 'Model errors',
       'usage.errors.toggle': 'Model errors ({count} types)',
       'usage.errors.recent': 'Last 24 hours',
@@ -405,17 +406,14 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
       'notification.title': 'Notifications',
-      'notification.description': 'Send a browser notification when a task finishes or when your approval or answer is needed. Requires browser notification permission; the toggles persist across page reloads.',
+      'notification.description': 'Send a browser notification when a task finishes or when your approval or decision is needed. Requires browser notification permission.',
       'notification.enable': 'Enable notifications',
       'notification.enabled': 'Notifications enabled',
       'notification.disable': 'Disable notifications',
       'notification.denied': 'Notification permission denied',
       'notification.master': 'Master switch',
-      'notification.masterHint': 'Both kinds below stay paused while this is off',
       'notification.done': 'Task completion',
-      'notification.doneHint': 'Notify when a session finishes its turn',
       'notification.input': 'Approvals & questions',
-      'notification.inputHint': 'Notify when approval, plan review, or an answer is requested',
       'notification.doneTitle': 'Task complete',
       'notification.doneBody': '{title} has finished its turn',
       'notification.inputTitle': 'Your attention needed',
@@ -1264,15 +1262,19 @@ window.__ModuleLoader__.load({
         ]
         const usageTotalsFor = (day) => {
           const source = usage && usage.days ? usage.days[day] : null
-          if (!source) return { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+          if (!source) return { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
           if (usageProject === 'all') return source.totals
           const project = source.projects.find((item) => item.id === usageProject)
-          return project ? project.totals : { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+          return project ? project.totals : { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
         }
         const modelCacheHitRate = (model) => {
            const denominator = Number(model.inputTokens || 0) + Number(model.cacheReadTokens || 0) + Number(model.cacheWriteTokens || 0)
            return denominator === 0 ? 0 : Number(model.cacheReadTokens || 0) / denominator
          }
+         const modelTotalTokens = (model) => Number(model.inputTokens || 0) + Number(model.outputTokens || 0) + Number(model.cacheReadTokens || 0) + Number(model.cacheWriteTokens || 0)
+         const modelSegmentValue = (model, metric) => metric === 'cacheTokens'
+           ? Number(model.cacheReadTokens || 0) + Number(model.cacheWriteTokens || 0)
+           : Number(model[metric] || 0)
          const usageValue = (totals, metricName) => metricName === 'cacheTokens'
           ? totals.cacheReadTokens + totals.cacheWriteTokens
           : totals[metricName] || 0
@@ -1295,13 +1297,12 @@ window.__ModuleLoader__.load({
         const sevenTotals = usageDays.reduce((total, day) => {
           const source = usageTotalsFor(day.key)
           total.steps += source.steps || 0
-          total.missingUsage += source.missingUsage || 0
           total.inputTokens += source.inputTokens || 0
           total.outputTokens += source.outputTokens || 0
           total.cacheReadTokens += source.cacheReadTokens || 0
           total.cacheWriteTokens += source.cacheWriteTokens || 0
           return total
-        }, { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+        }, { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
         const sevenDenominator = sevenTotals.inputTokens + sevenTotals.cacheReadTokens + sevenTotals.cacheWriteTokens
         sevenTotals.cacheHitRate = sevenDenominator === 0 ? 0 : sevenTotals.cacheReadTokens / sevenDenominator
         const selectedProjects = usageProject === 'all'
@@ -1340,6 +1341,7 @@ window.__ModuleLoader__.load({
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
         const summaryItems = (totals) => [
+          ['usage.total', formatTokenValue(usageValue(totals, 'inputTokens') + usageValue(totals, 'outputTokens') + usageValue(totals, 'cacheTokens'))],
           ...usageSegments.map(([metricName, label]) => [label, formatTokenValue(usageValue(totals, metricName))]),
           ['usage.steps', formatUsageValue(totals.steps, 'steps')],
           ['usage.hitRate', formatUsageValue(totals.cacheHitRate, 'cacheHitRate')],
@@ -1350,9 +1352,10 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, translate(label)),
             React.createElement('span', { style: { fontWeight: 650 } }, value)))
         )
-        const sortedModels = [...modelTotals.values()].sort((a, b) => b.steps - a.steps || a.id.localeCompare(b.id))
+        const sortedModels = [...modelTotals.values()].sort((a, b) => modelTotalTokens(b) - modelTotalTokens(a) || b.steps - a.steps || a.id.localeCompare(b.id))
         const visibleModels = modelsOpen ? sortedModels : sortedModels.slice(0, 3)
         const hiddenModelCount = Math.max(0, sortedModels.length - 3)
+        const maxModelTokens = Math.max(1, ...visibleModels.map((model) => modelTotalTokens(model)))
         const selectedErrors = (list) => (list || [])
           .filter((error) => usageProject === 'all' || error.projectId === usageProject)
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
@@ -1411,16 +1414,28 @@ window.__ModuleLoader__.load({
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
-                sevenTotals.missingUsage > 0 ? React.createElement('p', { style: hint }, translate('usage.missing', { count: sevenTotals.missingUsage })) : null,
                 React.createElement('div', { 'data-testid': 'usage-model-list', style: { marginTop: '10px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)' } },
-                   visibleModels.map((model, index) => React.createElement('div', { key: model.id, style: { display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '12px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
-                    React.createElement('span', null, model.id),
-                    React.createElement('span', { style: { textAlign: 'right' } }, translate('usage.modelLine', {
-                       steps: Number(model.steps || 0).toLocaleString(),
-                       hitRate: formatUsageValue(modelCacheHitRate(model), 'cacheHitRate'),
-                       input: formatTokenValue(model.inputTokens),
-                       output: formatTokenValue(model.outputTokens),
-                     })))),
+                  React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } }, translate('usage.modelSortHint')),
+                  visibleModels.map((model, index) => {
+                    const total = modelTotalTokens(model)
+                    const fillWidth = `${Math.round(total / maxModelTokens * 10000) / 100}%`
+                    return React.createElement('div', { key: model.id, 'data-testid': `usage-model-row-${model.id}`, style: { padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+                      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', fontSize: '12px' } },
+                        React.createElement('span', { style: { overflowWrap: 'anywhere' } }, model.id),
+                        React.createElement('span', { style: { fontWeight: 650, whiteSpace: 'nowrap' } }, formatTokenValue(total))),
+                      React.createElement('div', { 'data-testid': `usage-model-bar-${model.id}`, 'data-value': total, 'aria-label': translate('usage.modelBar', { model: model.id, total: formatTokenValue(total) }), style: { height: '8px', borderRadius: '4px', marginTop: '6px', overflow: 'hidden', background: 'var(--dsw-alias-border-l1)' } },
+                        React.createElement('div', { style: { display: 'flex', height: '100%', width: fillWidth } },
+                          usageSegments.map(([metricName, , color]) => {
+                            const value = modelSegmentValue(model, metricName)
+                            return value > 0 ? React.createElement('div', { key: metricName, 'data-testid': `usage-model-segment-${model.id}-${metricName}`, style: { width: `${value / total * 100}%`, background: color } }) : null
+                          }))),
+                      React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '4px', textAlign: 'right' } }, translate('usage.modelLine', {
+                        steps: Number(model.steps || 0).toLocaleString(),
+                        hitRate: formatUsageValue(modelCacheHitRate(model), 'cacheHitRate'),
+                        input: formatTokenValue(model.inputTokens),
+                        output: formatTokenValue(model.outputTokens),
+                      })))
+                  }),
                   hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
@@ -1622,10 +1637,10 @@ window.__ModuleLoader__.load({
             cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1, lineHeight: 0,
           },
         }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: on ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: on ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
-        const notifyRow = (label, labelHint, on, onChange, disabled) => React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '5px 0' } },
+        const notifyRow = (testId, label, labelHint, on, onChange, disabled) => React.createElement('div', { 'data-testid': testId, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '5px 0' } },
           React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
             React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, label),
-            React.createElement('span', { style: hint }, labelHint)),
+            labelHint ? React.createElement('span', { style: hint }, labelHint) : null),
           notifySwitch(on, onChange, disabled))
         const notificationBlock = !notifSupported ? null
           : React.createElement('div', { style: { marginTop: '18px' } },
@@ -1637,9 +1652,9 @@ window.__ModuleLoader__.load({
                       React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') setNotifyOn(true) }) } }, translate('notification.enable')),
                       React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
                   : React.createElement('div', { style: { marginTop: '8px', display: 'flex', flexDirection: 'column' } },
-                      notifyRow(translate('notification.master'), translate('notification.masterHint'), notifyOn, setNotifyOn, false),
-                      notifyRow(translate('notification.done'), translate('notification.doneHint'), notifyDoneOn, setNotifyDoneOn, !notifyOn),
-                      notifyRow(translate('notification.input'), translate('notification.inputHint'), notifyInputOn, setNotifyInputOn, !notifyOn))))
+                      notifyRow('notify-row-master', translate('notification.master'), null, notifyOn, setNotifyOn, false),
+                      notifyRow('notify-row-done', translate('notification.done'), null, notifyDoneOn, setNotifyDoneOn, !notifyOn),
+                      notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn))))
         const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
         // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
         const notifyBlock = React.createElement('div', null, notificationBlock)

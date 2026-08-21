@@ -33,7 +33,8 @@ The Settings panel "Service Control" page has six top-level tabs: **Overview, No
 
 - 7-day stacked bar chart of input/output/cache tokens with blue/orange/teal legend
 - Filter by project; hover for exact values
-- Model breakdown sorted by steps: `x times · Cache hit x% · Input xM token · Output xM token`
+- Model breakdown as horizontal stacked bars (same legend colors), sorted by total tokens, largest first; each row keeps `x times · Cache hit x% · Input xM token · Output xM token`
+- Steps whose provider reports no token usage are excluded from the statistics
 - Last-24-hour model/tool error statistics, collapsed by default
 
 ### Backup management

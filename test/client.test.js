@@ -435,7 +435,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   const usage = {
     updatedAt: Date.now() - 301000,
     indexedSessions: 2,
-    totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
+    totals: { steps: 5, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
     projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
     errors: {
       models: [
@@ -449,12 +449,12 @@ test('service panel puts versions first and renders switchable provider-prefixed
     },
     days: {
       [day]: {
-        totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
-        projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 14, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 }, models: [
-          { id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: { steps: 5, missingUsage: 0, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 } },
-          { id: 'openai/gpt-5', provider: 'openai', model: 'gpt-5', totals: { steps: 4, missingUsage: 0, inputTokens: 900, outputTokens: 180, cacheReadTokens: 2000, cacheWriteTokens: 80, cacheHitRate: 0.6 } },
-          { id: 'anthropic/claude', provider: 'anthropic', model: 'claude', totals: { steps: 3, missingUsage: 0, inputTokens: 800, outputTokens: 160, cacheReadTokens: 1000, cacheWriteTokens: 60, cacheHitRate: 0.5 } },
-          { id: 'google/gemini', provider: 'google', model: 'gemini', totals: { steps: 2, missingUsage: 0, inputTokens: 700, outputTokens: 140, cacheReadTokens: 500, cacheWriteTokens: 40, cacheHitRate: 0.4 } },
+        totals: { steps: 5, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 },
+        projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 14, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 }, models: [
+          { id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: { steps: 5, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100, cacheHitRate: 3000 / 4100 } },
+          { id: 'openai/gpt-5', provider: 'openai', model: 'gpt-5', totals: { steps: 4, inputTokens: 900, outputTokens: 180, cacheReadTokens: 2000, cacheWriteTokens: 80, cacheHitRate: 0.6 } },
+          { id: 'anthropic/claude', provider: 'anthropic', model: 'claude', totals: { steps: 3, inputTokens: 800, outputTokens: 160, cacheReadTokens: 1000, cacheWriteTokens: 60, cacheHitRate: 0.5 } },
+          { id: 'google/gemini', provider: 'google', model: 'gemini', totals: { steps: 2, inputTokens: 700, outputTokens: 140, cacheReadTokens: 500, cacheWriteTokens: 40, cacheHitRate: 0.4 } },
         ] }],
 
       },
@@ -520,16 +520,28 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.match(statisticsRegion.props.style.border, /solid/)
   assert.match(text, /今天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
   assert.match(text, /近 7 天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
-  assert.equal(renderer.findAllByTestIdPrefix('usage-summary-today-').length, 5)
-  assert.equal(renderer.findAllByTestIdPrefix('usage-summary-seven-').length, 5)
+  assert.match(text, /token 总量.*4\.3K/)
+  assert.equal(renderer.findAllByTestIdPrefix('usage-summary-today-').length, 6)
+  assert.equal(renderer.findAllByTestIdPrefix('usage-summary-seven-').length, 6)
   assert.match(text, /1K|3K|4\.1K/)
   assert.match(text, /5 次/)
   assert.match(text, /deepseek\/deepseek-chat.*openai\/gpt-5.*anthropic\/claude/)
   assert.doesNotMatch(text, /google\/gemini/)
   assert.match(text, /▸ 展开其余 1 个模型/)
+  assert.match(text, /按 token 总量从多到少排列/)
+  let topModelBars = renderer.findAllByTestIdPrefix('usage-model-bar-')
+  assert.deepEqual(topModelBars.map((bar) => Number(bar.props['data-value'])), [4300, 3160, 2020])
+  assert.equal(topModelBars[0].props['aria-label'], 'deepseek/deepseek-chat：共 4.3K token')
+  assert.equal(topModelBars[0].children[0].props.style.width, '100%')
+  assert.equal(topModelBars[1].children[0].props.style.width, '73.49%')
+  assert.equal(renderer.findAllByTestIdPrefix('usage-model-segment-').length, 9)
   await renderer.findButton('▸ 展开其余 1 个模型').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /google\/gemini.*▾ 收起模型列表/)
+  topModelBars = renderer.findAllByTestIdPrefix('usage-model-bar-')
+  assert.deepEqual(topModelBars.map((bar) => Number(bar.props['data-value'])), [4300, 3160, 2020, 1380])
+  assert.equal(topModelBars[3].children[0].props.style.width, '32.09%')
+  assert.equal(renderer.findAllByTestIdPrefix('usage-model-segment-').length, 12)
   await renderer.findButton('▾ 收起模型列表').props.onClick()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
@@ -1158,6 +1170,11 @@ test('notification switches render three independent toggles and persist each ch
   assert.doesNotMatch(renderer.text('settings.section'), /任务通知/)
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
+  assert.match(renderer.text('settings.section'), /任务结束或需要你授权、抉择时发送浏览器通知。需要授权浏览器通知权限。/)
+  assert.doesNotMatch(renderer.text('settings.section'), /关闭时下面两个开关暂停生效|页面刷新后保持|会话完成一轮任务时提醒|需要授权、审阅计划或选择答案时提醒/)
+  const notifyRows = renderer.findAllByTestIdPrefix('notify-row-')
+  assert.equal(notifyRows.length, 3)
+  assert.deepEqual(notifyRows.map((row) => row.props.style.padding), ['5px 0', '5px 0', '5px 0'], 'rows keep their vertical spacing without hints')
   let switches = renderer.findSwitches()
   assert.equal(switches.length, 3, 'master + done + input switches')
   assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true'])

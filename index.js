@@ -21,7 +21,7 @@ const MAX_BACKUP_TRANSFER_BYTES = 128 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
-const USAGE_INDEX_VERSION = 4
+const USAGE_INDEX_VERSION = 5
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 
 // 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
@@ -376,12 +376,11 @@ function localDayForHour(hour, timezoneOffsetMinutes = 0) {
 }
 
 function emptyUsageTotals() {
-  return { steps: 0, missingUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  return { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
 }
 
 function addUsageTotals(target, source) {
   target.steps += source.steps || 0
-  target.missingUsage += source.missingUsage || 0
   target.inputTokens += source.inputTokens || 0
   target.outputTokens += source.outputTokens || 0
   target.cacheReadTokens += source.cacheReadTokens || 0
@@ -571,19 +570,18 @@ function foldUsageEvents(ctx, record, previous, events) {
     if (addToolError(session, event)) continue
     if (addUsageError(session, event, model)) continue
     if (event.type !== 'assistant/message') continue
+    // 提供方未上报 token 用量的步骤直接忽略：不计步骤、不建模型桶、不提示。
+    if (event.data?.usage === undefined) continue
     const hour = usageHour(event.time)
     const bucket = session.hours[hour] || (session.hours[hour] = { totals: emptyUsageTotals(), models: {} })
     const modelBucket = bucket.models[model.id] || (bucket.models[model.id] = { id: model.id, provider: model.provider, model: model.model, totals: emptyUsageTotals() })
-    const usage = event.data?.usage
+    const usage = event.data.usage
     const delta = emptyUsageTotals()
     delta.steps = 1
-    if (usage === undefined) delta.missingUsage = 1
-    else {
-      delta.inputTokens = Number(usage.inputTokens) || 0
-      delta.outputTokens = Number(usage.outputTokens) || 0
-      delta.cacheReadTokens = Number(usage.cacheReadTokens) || 0
-      delta.cacheWriteTokens = Number(usage.cacheWriteTokens) || 0
-    }
+    delta.inputTokens = Number(usage.inputTokens) || 0
+    delta.outputTokens = Number(usage.outputTokens) || 0
+    delta.cacheReadTokens = Number(usage.cacheReadTokens) || 0
+    delta.cacheWriteTokens = Number(usage.cacheWriteTokens) || 0
     addUsageTotals(bucket.totals, delta)
     addUsageTotals(modelBucket.totals, delta)
   }
