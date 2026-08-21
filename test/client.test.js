@@ -1110,3 +1110,31 @@ test('connection reset rebuilds the baseline so replayed frames ring nothing', a
   renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
   assert.equal(renderer.notifications().length, 1, 'edges after re-baseline ring again')
 })
+
+test('upgrade failure surfaces the host error detail instead of only the generic message', async () => {
+  let upgradeCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: {
+      dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', tags: { latest: '0.1.0-rc.7', next: null }, upToDate: true, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+      plugin: { current: '0.9.0', latest: '0.10.0', tags: { latest: '0.10.0', next: null }, upToDate: false, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+    } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'upgrade') {
+      upgradeCalls += 1
+      return { ok: false, error: 'npm-failed: spawn EINVAL' }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1)
+  assert.match(renderer.text('settings.section'), /插件升级失败（npm-failed: spawn EINVAL）/)
+  assert.doesNotMatch(renderer.text('settings.section'), /升级中/)
+})

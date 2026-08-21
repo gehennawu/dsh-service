@@ -838,3 +838,71 @@ test('optional commands service registers a guarded /restart command and cleans 
 test('host plugin keeps the dsh-service public identity', () => {
   assert.equal(name, 'dsh-service')
 })
+
+function recordingSubprocess(executables) {
+  const spawned = []
+  const resolved = []
+  return {
+    spawned,
+    resolved,
+    service: {
+      resolveExecutable: async (command) => {
+        resolved.push(command)
+        const found = executables[command]
+        if (found === undefined) throw new Error(`not found: ${command}`)
+        return found
+      },
+      spawn(spec) {
+        spawned.push(spec)
+        return {
+          collected: {
+            stdout: { readFrom: () => ({ text: '' }) },
+            stderr: { readFrom: () => ({ text: '' }) },
+          },
+          done: Promise.resolve({ exitCode: 0, signal: null }),
+        }
+      },
+    },
+  }
+}
+
+test('upgrade RPC wraps a resolved .cmd through cmd.exe on Windows and uses a valid cwd', async (t) => {
+  const originalPlatform = process.platform
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+  t.after(() => Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true }))
+  const originalSystemRoot = process.env.SystemRoot
+  process.env.SystemRoot = 'C:\\FakeWindows'
+  t.after(() => {
+    if (originalSystemRoot === undefined) delete process.env.SystemRoot
+    else process.env.SystemRoot = originalSystemRoot
+  })
+
+  const recorder = recordingSubprocess({
+    npm: 'C:\\Program Files\\nodejs\\npm.CMD',
+    'cmd.exe': 'C:\\Windows\\System32\\cmd.exe',
+  })
+  const { handler, scheduled } = createHost({ services: { subprocess: recorder.service } })
+
+  const result = await handler('upgrade', {})
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(recorder.resolved, ['npm', 'cmd.exe'])
+  assert.equal(recorder.spawned.length, 1)
+  assert.deepEqual(recorder.spawned[0].argv, ['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c', 'C:\\Program Files\\nodejs\\npm.CMD', 'install', '-g', '@gehennawu/dsh-service@latest'])
+  assert.equal(recorder.spawned[0].cwd, 'C:\\FakeWindows')
+  assert.ok(scheduled.length >= 1, 'restart is scheduled after a successful upgrade')
+})
+
+test('upgrade RPC spawns the resolved executable directly on POSIX with root cwd', async () => {
+  const recorder = recordingSubprocess({ npm: '/usr/bin/npm' })
+  const { handler, scheduled } = createHost({ services: { subprocess: recorder.service } })
+
+  const result = await handler('upgrade', {})
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(recorder.resolved, ['npm'])
+  assert.equal(recorder.spawned.length, 1)
+  assert.deepEqual(recorder.spawned[0].argv, ['/usr/bin/npm', 'install', '-g', '@gehennawu/dsh-service@latest'])
+  assert.equal(recorder.spawned[0].cwd, '/')
+  assert.ok(scheduled.length >= 1, 'restart is scheduled after a successful upgrade')
+})

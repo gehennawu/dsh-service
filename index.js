@@ -666,9 +666,18 @@ async function runFixedCommand(ctx, argv) {
   const subprocess = ctx.get('subprocess')
   if (subprocess === undefined) throw new Error('subprocess-unavailable')
   const executable = await subprocess.resolveExecutable(argv[0])
+  let spawnArgv = [executable, ...argv.slice(1)]
+  // Windows 上白名单命令（如 npm）经 PATHEXT 解析为 .cmd/.bat 脚本；subprocess 服务的
+  // spawn 不带 shell，Node 对 .cmd/.bat 一律抛 EINVAL，无法直接执行。固定包一层
+  // cmd.exe /d /s /c + 已解析的绝对路径，全部参数仍是宿主白名单常量，无输入拼接。
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
+    const shell = await subprocess.resolveExecutable('cmd.exe')
+    spawnArgv = [shell, '/d', '/s', '/c', executable, ...argv.slice(1)]
+  }
   const handle = subprocess.spawn({
-    argv: [executable, ...argv.slice(1)],
-    cwd: '/',
+    argv: spawnArgv,
+    // '/' 不是合法的 Windows 目录路径；固定改用系统目录，POSIX 保持根目录。
+    cwd: process.platform === 'win32' ? (process.env.SystemRoot || 'C:\\Windows') : '/',
     stdio: {
       stdin: 'ignore',
       stdout: { maxBytes: 16 * 1024 },

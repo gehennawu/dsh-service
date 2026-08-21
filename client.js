@@ -118,6 +118,7 @@ window.__ModuleLoader__.load({
       'update.upgrade': '升级插件',
       'update.upgrading': '升级中…',
       'update.upgradeError': '插件升级失败',
+      'update.upgradeErrorDetail': '插件升级失败（{detail}）',
       'update.upgradeSuccess': '升级成功，服务重启中…',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 进程。运行中的工作会中断，持久化会话可恢复。也可在对话中输入 /restart。',
@@ -303,6 +304,7 @@ window.__ModuleLoader__.load({
       'update.upgrade': 'Upgrade plugin',
       'update.upgrading': 'Upgrading…',
       'update.upgradeError': 'Plugin upgrade failed',
+      'update.upgradeErrorDetail': 'Plugin upgrade failed ({detail})',
       'update.upgradeSuccess': 'Upgrade successful, restarting…',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation.',
@@ -918,12 +920,18 @@ window.__ModuleLoader__.load({
             const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
             const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
             const res = await ctx.connection.rpc.call('/dsh-service', 'upgrade', {})
-            if (!res || res.ok === false) throw new Error('upgrade failed')
+            // 宿主错误详情（如 npm-failed: …、npm was not found on PATH）随通用文案透出，便于排查。
+            if (!res || res.ok === false) {
+              const detail = res && typeof res.error === 'string' ? res.error.trim() : ''
+              throw new Error(detail || 'upgrade failed')
+            }
             if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
               startRecovery(previousInstanceId).catch(() => {})
             }
-          } catch (_) {
-            setUpgradeError(translate('update.upgradeError'))
+          } catch (err) {
+            const detail = err instanceof Error && typeof err.message === 'string' && err.message !== 'upgrade failed' ? err.message.trim() : ''
+            console.error('dsh-service: upgrade failed', detail || err)
+            setUpgradeError(detail ? translate('update.upgradeErrorDetail', { detail }) : translate('update.upgradeError'))
           } finally {
             setUpgradeBusy(false)
           }
