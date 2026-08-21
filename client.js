@@ -1533,17 +1533,26 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式版/预览版版本号链到 npm 包对应版本页；版本串过安全字符集校验才生成链接
+        // 正式版/预览版版本号链到 npm 包对应版本页；版本串过安全字符集校验才生成链接。
+        // npmjs.com 会对部分出口网络（代理/VPN/机房 IP）返回 Cloudflare 拦截页，
+        // 因此每个版本号旁附 npmmirror 包页备用链接（固定常量 URL，无输入拼接）。
+        const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
         const npmVersionHref = (version) => {
           if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
-          return `https://www.npmjs.com/package/@deepseek-ai/dsh/v/${version}`
+          return `https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/${version}`
         }
+        const mirrorBadge = (kind, version) => typeof version === 'string' && version.length > 0
+          ? React.createElement('a', { 'data-testid': `version-dsh-channel-${kind}-mirror`, href: `https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}`, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'underline', marginLeft: '4px' } }, 'npmmirror')
+          : null
         const channelCell = (kind, version) => {
           const value = version || '—'
           const href = npmVersionHref(version)
           const common = { 'data-testid': `version-dsh-channel-${kind}` }
-          if (!href) return React.createElement('span', common, value)
-          return React.createElement('a', Object.assign({}, common, { href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' } }), value)
+          const badge = mirrorBadge(kind, version)
+          if (!href) return React.createElement('span', null, React.createElement('span', common, value), badge)
+          return React.createElement('span', { style: { whiteSpace: 'nowrap' } },
+            React.createElement('a', Object.assign({}, common, { href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' } }), value),
+            badge)
         }
         const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },

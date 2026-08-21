@@ -667,7 +667,7 @@ test('settings mount automatically shows separate DSH and plugin update states w
   await renderer.flush()
   assert.equal(updateCalls, 1)
   const text = renderer.text('settings.section')
-  assert.match(text, /DSH 0\.1\.0-rc\.7.*正式版 0\.1\.0-rc\.7 · 预览版 0\.2\.0.*有新版本.*0\.2\.0/)
+  assert.match(text, /DSH 0\.1\.0-rc\.7.*正式版 0\.1\.0-rc\.7.*预览版 0\.2\.0.*有新版本.*0\.2\.0/)
    assert.equal(renderer.findByTestId('version-plugin-link').props.style.color, 'var(--dsw-alias-label-primary)')
   assert.doesNotMatch(text, /正式版 0\.9\.0 · 预览版 0\.9\.0/)
   assert.match(text, /dsh-service.*0\.9\.0.*已是最新版本/)
@@ -676,6 +676,8 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
   assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
   assert.equal(renderer.findByTestId('version-dsh-channel-next').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest-mirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next-mirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
   assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
 })
 
@@ -698,6 +700,7 @@ test('channel version strings outside the safe charset render plain text without
   assert.equal(next.props.href, undefined)
   assert.match(renderer.text('settings.section'), /bad\/version/)
   assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next-mirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
 })
 
 test('opening health diagnostics runs once and reuses its short-lived result until explicitly refreshed', async () => {
