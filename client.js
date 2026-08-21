@@ -504,7 +504,15 @@ window.__ModuleLoader__.load({
       const notifyPermissionGranted = () => typeof Notification !== 'undefined' && Notification.permission === 'granted'
       const fireNotification = (title, body) => {
         if (!notifyPermissionGranted()) return
-        try { new Notification(title, { body }) } catch (_) {}
+        try {
+          const notification = new Notification(title, { body })
+          // 点击系统通知弹窗：聚焦 DSH 页面并关闭该通知（chrome/ff 从通知点击回调
+          // 视为用户手势，window.focus() 可把标签页带到前台）
+          notification.onclick = () => {
+            try { window.focus() } catch (_) {}
+            try { notification.close() } catch (_) {}
+          }
+        } catch (_) {}
       }
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()

@@ -45,6 +45,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 ### Task notifications
 
 - Browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
+- Clicking a notification focuses the DSH page and closes the popup
 - Three toggle switches: master switch, task completion, and approvals & questions, each controlled independently
 - Bell icon in the conversation input bar toggles the master switch quickly
 - All toggles persist across page reloads

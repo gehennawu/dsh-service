@@ -15,6 +15,8 @@ function createRenderer(rpcCall, options = {}) {
   const sessionListeners = new Set()
   const eventHandlers = new Map()
   const sentNotifications = []
+  const notificationInstances = []
+  let focuses = 0
   const storage = new Map()
   globalThis.localStorage = {
     getItem: (key) => (storage.has(key) ? storage.get(key) : null),
@@ -73,6 +75,9 @@ function createRenderer(rpcCall, options = {}) {
       load(definition) {
         moduleDefinition = definition
       },
+    },
+    focus() {
+      focuses += 1
     },
     location: {
       reload() {
@@ -156,12 +161,14 @@ function createRenderer(rpcCall, options = {}) {
         class FakeNotification {
           constructor(title, options) {
             sentNotifications.push({ title, body: options?.body })
+            notificationInstances.push(this)
           }
           static requestPermission() {
             notificationPermission = 'granted'
             FakeNotification.permission = 'granted'
             return Promise.resolve('granted')
           }
+          close() {}
         }
         FakeNotification.permission = notificationPermission
         globalThis.Notification = FakeNotification
@@ -307,6 +314,12 @@ function createRenderer(rpcCall, options = {}) {
     },
     notifications() {
       return sentNotifications.slice()
+    },
+    notificationInstances() {
+      return notificationInstances.slice()
+    },
+    focusCount() {
+      return focuses
     },
     mount(slot) {
       assert.ok(slotComponents.has(slot), `slot ${slot} is not registered`)
@@ -1118,6 +1131,27 @@ test('notification switches render three independent toggles and persist each ch
   assert.equal(localStorage.getItem('dsh-service-notify'), 'true')
   assert.equal(localStorage.getItem('dsh-service-notify-done'), null)
   assert.equal(localStorage.getItem('dsh-service-notify-input'), 'false')
+})
+
+test('clicking a browser notification focuses the dsh page and closes the popup', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
+  const instances = renderer.notificationInstances()
+  assert.equal(instances.length, 1)
+  assert.equal(renderer.focusCount(), 0)
+  instances[0].onclick()
+  assert.equal(renderer.focusCount(), 1, 'notification click focuses the dsh page')
 })
 
 test('session edges notify for task completion and pending interaction with kind labels', async () => {
