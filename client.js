@@ -1557,7 +1557,7 @@ window.__ModuleLoader__.load({
             : null))
 
         // 正式/预览通道两行信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住），版本行只留状态与「查看详情」
-        const versionRow = (id, label, fallbackVersion, state, action, detailsToggle) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+        const versionRow = (id, label, fallbackVersion, state, action, detailsToggle, topBorder) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
@@ -1584,8 +1584,8 @@ window.__ModuleLoader__.load({
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('dsh', 'DSH', version, dshUpdate, null, dshDetailsToggle),
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, null, false),
+            versionRow('dsh', 'DSH', version, dshUpdate, null, dshDetailsToggle, true),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '3px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
