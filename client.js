@@ -1556,7 +1556,7 @@ window.__ModuleLoader__.load({
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
-             state?.tags && id === 'dsh' ? React.createElement('div', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
+             state?.tags && id === 'dsh' ? React.createElement('div', { style: { marginLeft: '8px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
                channelLine('latest', state.tags.latest),
                channelLine('next', state.tags.next)) : null,
             action || null,
