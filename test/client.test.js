@@ -675,8 +675,8 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 右侧「查看详情」行内下拉展开，正式/预览两行带 npmjs/npmmirror 链接
-  await renderer.findButton('查看详情').props.onClick()
+  // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
+  await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /当前版本：0\.1\.0-rc\.7.*最新版本：0\.2\.0.*正式版 0\.1\.0-rc\.7.*预览版 0\.2\.0/)
   assert.doesNotMatch(renderer.text('shell.overlay'), /正式版|预览版/, 'no overlay popup involved')
@@ -686,8 +686,8 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-channel-next-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.2.0')
   assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 6, 'two channel lines with number + npmjs + npmmirror each')
 
-  // 再点「收起」折叠，行内信息消失
-  await renderer.findButton('收起').props.onClick()
+  // 再点状态文本收起，行内信息消失
+  await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /正式版|预览版/)
   assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
@@ -709,7 +709,7 @@ test('channel version strings outside the safe charset render plain text without
 
   await renderer.load()
   assert.doesNotMatch(renderer.text('settings.section'), /正式版|预览版/)
-  await renderer.findButton('查看详情').props.onClick()
+  await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
   const next = renderer.findByTestId('version-dsh-channel-next')
   assert.equal(next.props.href, undefined)

@@ -11,7 +11,7 @@
 ### 版本与更新
 
 - 显示当前 DSH 和插件版本，版本号链接到 GitHub Releases
-- 自动检查 npm registry 的正式版和预览版；有新版本时右侧提供「查看详情/收起」，行内展开当前/最新版本与正式版/预览版双 tag，版本号分别带 npmjs 与 npmmirror 链接（部分网络会被 npmjs.com 拦截，npmmirror 作为镜像入口）
+- 自动检查 npm registry 的正式版和预览版；有新版本时右侧「小三角 + 有新版本」状态文本可点击展开/收起，行内展示当前/最新版本与正式版/预览版双 tag，版本号分别带 npmjs 与 npmmirror 链接（部分网络会被 npmjs.com 拦截，npmmirror 作为镜像入口）
 - 一键升级插件，升级后自动重启
 
 ### 安全重启

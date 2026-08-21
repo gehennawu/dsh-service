@@ -1556,27 +1556,36 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式/预览通道两行信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住），版本行只留状态与「查看详情」
-        const versionRow = (id, label, fallbackVersion, state, action, detailsToggle, topBorder) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
-          React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
-            React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
-            state?.url
-              ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
-              : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
+        // 正式/预览通道两行信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住）。
+        // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换展开/收起。
+        const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
+          React.createElement('path', { d: 'M9 6l6 6-6 6' }))
+        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder) => {
+          const statusText = !state
+            ? (updateError || translate('update.checking'))
+            : state.status === 'unpublished' ? translate('update.unpublished')
+              : state.status === 'unavailable' ? translate('update.unavailable')
+                : state.upToDate ? translate('update.current')
+                  : translate('update.available', { version: state.latest })
+          const statusColor = !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)'
+          const clickable = expandable && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
+          const rightSide = clickable
+            ? React.createElement('button', { type: 'button', title: translate(channelOpen ? 'update.detailsHide' : 'update.detailsButton'), style: { background: 'transparent', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: statusColor }, onClick: () => setChannelOpen((value) => !value) },
+                chevronIcon(channelOpen),
+                React.createElement('span', null, statusText))
+            : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
+          return React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
+            React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
+              React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
+              state?.url
+                ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
+                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
             action || null,
-          React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
-            React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state
-              ? (updateError || translate('update.checking'))
-              : state.status === 'unpublished' ? translate('update.unpublished')
-                : state.status === 'unavailable' ? translate('update.unavailable')
-                  : state.upToDate ? translate('update.current') : translate('update.available', { version: state.latest })),
-            detailsToggle || null))
-        // 版本信息区块：DSH 行在有更新时提供「查看详情/收起」，行内下拉展示当前/最新与正式/预览双通道
+            React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } }, rightSide))
+        }
+        // 版本信息区块：DSH 行在有更新时状态文本（小三角 + 有新版本）整体可点击，行内下拉展开
         const dshUpdate = updateInfo?.dsh
-        const dshUpdateAvailable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
-        const dshDetailsToggle = dshUpdateAvailable
-          ? React.createElement('button', { type: 'button', style: { background: 'transparent', border: 0, padding: '2px 0 0', cursor: 'pointer', fontSize: '12px', fontWeight: 550, color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' }, onClick: () => setChannelOpen((value) => !value) }, translate(channelOpen ? 'update.detailsHide' : 'update.detailsButton'))
-          : null
+        const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         const pluginAction = pluginUpdate
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
@@ -1584,8 +1593,8 @@ window.__ModuleLoader__.load({
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, null, false),
-            versionRow('dsh', 'DSH', version, dshUpdate, null, dshDetailsToggle, true),
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false),
+            versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '3px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
