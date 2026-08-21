@@ -1429,13 +1429,21 @@ window.__ModuleLoader__.load({
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
+      const bellPaths = {
+        on: ['M10.268 21a2 2 0 0 0 3.464 0', 'm15 8 2 2 4-4', 'M16.8607 4.4824A6 6 0 0 0 6 8C6 12.499 4.589 13.956 3.262 15.326', 'M3.262 15.326A1 1 0 0 0 4 17H20A1 1 0 0 0 20.74 15.327C20.209 14.779 19.665 14.218 19.203 13.454'],
+        off: ['M10.268 21a2 2 0 0 0 3.464 0', 'M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742', 'm2 2 20 20', 'M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05'],
+      }
+      function BellIcon(on) {
+        return React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block' } },
+          (on ? bellPaths.on : bellPaths.off).map(function (d, i) { return React.createElement('path', { key: i, d: d }) }))
+      }
       function InlineNotifyBell() {
         const { enabled, setEnabled } = useNotifyState()
         const translate = useTranslation()
         return React.createElement('button', {
           type: 'button',
           title: translate(enabled ? 'notification.bellOn' : 'notification.bellOff'),
-          style: { background: 'transparent', border: 0, cursor: 'pointer', fontSize: '15px', padding: '2px 4px', color: 'inherit', opacity: enabled ? 1 : 0.45 },
+          style: { background: 'transparent', border: 0, cursor: 'pointer', padding: '2px 4px', color: 'inherit', opacity: enabled ? 1 : 0.45, lineHeight: 0 },
           onClick: () => {
             if (typeof Notification === 'undefined') return
             if (Notification.permission !== 'granted') {
@@ -1444,7 +1452,7 @@ window.__ModuleLoader__.load({
             }
             setEnabled(!enabled)
           },
-        }, enabled ? '🔔' : '🔕')
+        }, BellIcon(enabled))
       }
       ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
         { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
