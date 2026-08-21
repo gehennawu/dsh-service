@@ -43,10 +43,10 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ### Task notifications
 
-- Browser notification when an Agent completes a task
-- Bell icon toggle in the conversation input bar
-- Configurable polling interval (5–300 seconds)
-- Toggle and interval persist across page reloads
+- Browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
+- Three toggle switches: master switch, task completion, and approvals & questions, each controlled independently
+- Bell icon in the conversation input bar toggles the master switch quickly
+- All toggles persist across page reloads
 
 ### External liveness probe
 

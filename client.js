@@ -171,18 +171,27 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': '工具报错（{count} 类）',
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
-      'notification.title': '任务通知',
-      'notification.description': '当运行中的 Agent 完成一轮任务时，发送浏览器通知提醒。需要授权浏览器通知权限；开关和轮询间隔在页面刷新后保持。',
+      'notification.title': '通知',
+      'notification.description': '任务结束或需要你授权、选择答案时发送浏览器通知。需要授权浏览器通知权限；各开关在页面刷新后保持。',
       'notification.enable': '开启通知',
       'notification.enabled': '通知已开启',
       'notification.disable': '关闭通知',
       'notification.denied': '通知权限被拒绝',
-      'notification.agentDone': '任务完成',
-      'notification.agentDoneBody': 'Agent {id} 已完成本轮任务',
+      'notification.master': '通知总开关',
+      'notification.masterHint': '关闭时下面两个开关暂停生效',
+      'notification.done': '任务结束通知',
+      'notification.doneHint': '会话完成一轮任务时提醒',
+      'notification.input': '授权与提问通知',
+      'notification.inputHint': '需要授权、审阅计划或选择答案时提醒',
+      'notification.doneTitle': '任务完成',
+      'notification.doneBody': '{title} 已完成本轮任务',
+      'notification.inputTitle': '需要你的确认',
+      'notification.inputBody': '{title}（{kind}）',
+      'notification.kind.approval': '等待授权',
+      'notification.kind.plan-review': '等待审阅计划',
+      'notification.kind.question': '等待选择答案',
       'notification.bellOn': '通知开启',
       'notification.bellOff': '通知关闭',
-      'notification.interval': '轮询间隔',
-      'notification.intervalUnit': '秒（5-300）',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -347,21 +356,30 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.toggle': 'Tool errors ({count} types)',
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
-      'notification.title': 'Task notifications',
-      'notification.description': 'Receive a browser notification when a running Agent finishes its turn. Requires browser notification permission; the toggle and polling interval persist across page reloads.',
+      'notification.title': 'Notifications',
+      'notification.description': 'Send a browser notification when a task finishes or when your approval or answer is needed. Requires browser notification permission; the toggles persist across page reloads.',
       'notification.enable': 'Enable notifications',
       'notification.enabled': 'Notifications enabled',
       'notification.disable': 'Disable notifications',
       'notification.denied': 'Notification permission denied',
-      'notification.agentDone': 'Task complete',
-      'notification.agentDoneBody': 'Agent {id} has finished its turn',
+      'notification.master': 'Master switch',
+      'notification.masterHint': 'Both kinds below stay paused while this is off',
+      'notification.done': 'Task completion',
+      'notification.doneHint': 'Notify when a session finishes its turn',
+      'notification.input': 'Approvals & questions',
+      'notification.inputHint': 'Notify when approval, plan review, or an answer is requested',
+      'notification.doneTitle': 'Task complete',
+      'notification.doneBody': '{title} has finished its turn',
+      'notification.inputTitle': 'Your attention needed',
+      'notification.inputBody': '{title} — {kind}',
+      'notification.kind.approval': 'approval requested',
+      'notification.kind.plan-review': 'plan review requested',
+      'notification.kind.question': 'answer requested',
       'notification.bellOn': 'Notifications on',
       'notification.bellOff': 'Notifications off',
-      'notification.interval': 'Polling interval',
-      'notification.intervalUnit': 'seconds (5–300)',
     }
 
-    const inject = ['slots', 'connection', 'timer', 'locale']
+    const inject = ['slots', 'connection', 'timer', 'locale', 'sessions']
 
     function apply(ctx) {
       const { useState, useEffect } = React
@@ -379,58 +397,78 @@ window.__ModuleLoader__.load({
         useEffect(() => ctx.locale.subscribe(() => setSnapshot(ctx.locale.getSnapshot())), [])
         return t
       }
-      // 全局 agent 完成通知轮询
+      // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
       let notifyEnabled = false
-      let notifyInterval = 30
+      let notifyDone = true
+      let notifyInput = true
       try { notifyEnabled = localStorage.getItem('dsh-service-notify') === 'true' } catch (_) {}
-      try { const v = parseInt(localStorage.getItem('dsh-service-notify-interval'), 10); if (v >= 5 && v <= 300) notifyInterval = v } catch (_) {}
+      try { notifyDone = localStorage.getItem('dsh-service-notify-done') !== 'false' } catch (_) {}
+      try { notifyInput = localStorage.getItem('dsh-service-notify-input') !== 'false' } catch (_) {}
       const notifyListeners = new Set()
-      const setNotifyEnabled = (value) => {
-        notifyEnabled = value
-        try { localStorage.setItem('dsh-service-notify', value ? 'true' : 'false') } catch (_) {}
-        for (const listener of notifyListeners) listener()
-      }
-      const setNotifyInterval = (value) => {
-        const v = Math.max(5, Math.min(300, Math.round(Number(value) || 30)))
-        notifyInterval = v
-        try { localStorage.setItem('dsh-service-notify-interval', String(v)) } catch (_) {}
-        for (const listener of notifyListeners) listener()
-      }
+      const persistNotify = (key, value) => { try { localStorage.setItem(key, value ? 'true' : 'false') } catch (_) {} }
+      const publishNotify = () => { for (const listener of notifyListeners) listener() }
+      const setNotifyEnabled = (value) => { notifyEnabled = value; persistNotify('dsh-service-notify', value); publishNotify() }
+      const setNotifyDone = (value) => { notifyDone = value; persistNotify('dsh-service-notify-done', value); publishNotify() }
+      const setNotifyInput = (value) => { notifyInput = value; persistNotify('dsh-service-notify-input', value); publishNotify() }
       const useNotifyState = () => {
         const [, setTick] = useState(0)
         const [enabled, setEnabled] = useState(notifyEnabled)
-        const [interval, setInterval_] = useState(notifyInterval)
+        const [done, setDone] = useState(notifyDone)
+        const [input, setInput] = useState(notifyInput)
         React.useEffect(() => {
-          const update = () => { setEnabled(notifyEnabled); setInterval_(notifyInterval); setTick((t) => t + 1) }
+          const update = () => { setEnabled(notifyEnabled); setDone(notifyDone); setInput(notifyInput); setTick((t) => t + 1) }
           notifyListeners.add(update)
           return () => notifyListeners.delete(update)
         }, [])
-        return { enabled, interval, setEnabled: (v) => setNotifyEnabled(v), setInterval: (v) => setNotifyInterval(v) }
+        return { enabled, done, input, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v) }
       }
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        const previousAgentIds = new Set()
-        let initialized = false
-        const pollActivity = async () => {
-          if (!notifyEnabled) { ctx.timer.timeout(pollActivity, notifyInterval * 1000); return }
-          try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
-            if (res && res.ok) {
-              const currentIds = new Set(res.value.items.filter((item) => item.type === 'agent').map((item) => item.id))
-              if (initialized) {
-                for (const id of previousAgentIds) {
-                  if (!currentIds.has(id)) {
-                    try { new Notification(t('notification.agentDone'), { body: t('notification.agentDoneBody', { id }) }) } catch (_) {}
-                  }
-                }
-              }
-              previousAgentIds.clear()
-              for (const id of currentIds) previousAgentIds.add(id)
-              initialized = true
+      // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
+      // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
+      const NOTIFY_KIND_KEYS = {
+        approval: 'notification.kind.approval',
+        'plan-review': 'notification.kind.plan-review',
+        question: 'notification.kind.question',
+      }
+      const notifyPermissionGranted = () => typeof Notification !== 'undefined' && Notification.permission === 'granted'
+      const fireNotification = (title, body) => {
+        if (!notifyPermissionGranted()) return
+        try { new Notification(title, { body }) } catch (_) {}
+      }
+      if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
+        const observed = new Map()
+        let baselined = false
+        const observeSessions = () => {
+          const snapshot = ctx.sessions.list.getSnapshot()
+          if (!snapshot || !snapshot.byId) return
+          if (!baselined) {
+            baselined = true
+            for (const [id, summary] of Object.entries(snapshot.byId)) {
+              observed.set(id, { running: summary.running === true, pending: summary.pendingInteraction !== undefined })
             }
-          } catch (_) {}
-          ctx.timer.timeout(pollActivity, notifyInterval * 1000)
+            return
+          }
+          for (const [id, summary] of Object.entries(snapshot.byId)) {
+            const next = { running: summary.running === true, pending: summary.pendingInteraction !== undefined }
+            const prev = observed.get(id)
+            if (prev !== undefined) {
+              if (prev.running && !next.running && notifyEnabled && notifyDone) {
+                fireNotification(t('notification.doneTitle'), t('notification.doneBody', { title: summary.displayTitle || id }))
+              }
+              if (!prev.pending && next.pending && notifyEnabled && notifyInput) {
+                const kindKey = NOTIFY_KIND_KEYS[summary.pendingInteraction]
+                const kind = kindKey ? t(kindKey) : String(summary.pendingInteraction)
+                fireNotification(t('notification.inputTitle'), t('notification.inputBody', { title: summary.displayTitle || id, kind }))
+              }
+            }
+            observed.set(id, next)
+          }
+          for (const id of [...observed.keys()]) {
+            if (!(id in snapshot.byId)) observed.delete(id)
+          }
         }
-        ctx.timer.timeout(pollActivity, notifyInterval * 1000)
+        ctx.effect(() => ctx.sessions.list.subscribe(() => observeSessions()), 'dsh-service: session notification observation')
+        ctx.effect(() => ctx.on('connection/reset', () => { observed.clear(); baselined = false }), 'dsh-service: notification rebaseline on reconnect')
+        observeSessions()
       }
 
       const recoveryListeners = new Set()
@@ -1375,9 +1413,27 @@ window.__ModuleLoader__.load({
           error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(error)) : null)
         )
 
-        const { enabled: notifyOn, interval: notifyIntv, setEnabled: setNotifyOn, setInterval: setNotifyIntv } = useNotifyState()
+        const { enabled: notifyOn, done: notifyDoneOn, input: notifyInputOn, setEnabled: setNotifyOn, setDone: setNotifyDoneOn, setInput: setNotifyInputOn } = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
         const notifPermission = notifSupported ? Notification.permission : 'denied'
+        const notifySwitch = (on, onChange, disabled) => React.createElement('button', {
+          type: 'button',
+          role: 'switch',
+          'aria-checked': String(on === true),
+          'aria-disabled': disabled ? 'true' : undefined,
+          onClick: disabled ? undefined : () => onChange(!on),
+          style: {
+            width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative',
+            border: `1px solid ${on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`,
+            background: on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)',
+            cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1, lineHeight: 0,
+          },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: on ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: on ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
+        const notifyRow = (label, labelHint, on, onChange, disabled) => React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '5px 0' } },
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+            React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, label),
+            React.createElement('span', { style: hint }, labelHint)),
+          notifySwitch(on, onChange, disabled))
         const notificationBlock = !notifSupported ? null
           : React.createElement('div', { style: { marginTop: '18px' } },
               React.createElement('div', { style: sectionTitle }, translate('notification.title')),
@@ -1387,12 +1443,10 @@ window.__ModuleLoader__.load({
                   ? React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' } },
                       React.createElement('button', { style: neutral, onClick: () => { Notification.requestPermission().then((p) => { if (p === 'granted') setNotifyOn(true) }) } }, translate('notification.enable')),
                       React.createElement('span', { style: hint }, notifPermission === 'denied' ? translate('notification.denied') : ''))
-                  : React.createElement('div', { style: { marginTop: '8px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } },
-                      React.createElement('span', { style: { fontSize: '12px', color: notifyOn ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, notifyOn ? `✓ ${translate('notification.enabled')}` : translate('notification.disable')),
-                      React.createElement('button', { style: ghost, onClick: () => setNotifyOn(!notifyOn) }, translate(notifyOn ? 'notification.disable' : 'notification.enable')),
-                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginLeft: '4px' } }, translate('notification.interval')),
-                      React.createElement('input', { type: 'number', min: 5, max: 300, step: 5, value: notifyIntv, onChange: (e) => setNotifyIntv(e.target.value), style: { width: '60px', padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', textAlign: 'center' } }),
-                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('notification.intervalUnit')))))
+                  : React.createElement('div', { style: { marginTop: '8px', display: 'flex', flexDirection: 'column' } },
+                      notifyRow(translate('notification.master'), translate('notification.masterHint'), notifyOn, setNotifyOn, false),
+                      notifyRow(translate('notification.done'), translate('notification.doneHint'), notifyDoneOn, setNotifyDoneOn, !notifyOn),
+                      notifyRow(translate('notification.input'), translate('notification.inputHint'), notifyInputOn, setNotifyInputOn, !notifyOn))))
         const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true

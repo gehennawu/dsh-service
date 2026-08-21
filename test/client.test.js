@@ -12,6 +12,17 @@ function createRenderer(rpcCall, options = {}) {
   const timers = []
   const localeListeners = new Set()
   const localeDictionaries = new Map()
+  const sessionListeners = new Set()
+  const eventHandlers = new Map()
+  const sentNotifications = []
+  const storage = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  }
+  let notificationPermission = options.notificationPermission
+  let sessionSnapshot = { ids: [], byId: {}, current: undefined, phase: 'ready' }
   let activeLocale = 'zh'
   let localeRevision = 0
   let currentComponent
@@ -135,6 +146,22 @@ function createRenderer(rpcCall, options = {}) {
 
   return {
     async load() {
+      if (notificationPermission === undefined) {
+        delete globalThis.Notification
+      } else {
+        class FakeNotification {
+          constructor(title, options) {
+            sentNotifications.push({ title, body: options?.body })
+          }
+          static requestPermission() {
+            notificationPermission = 'granted'
+            FakeNotification.permission = 'granted'
+            return Promise.resolve('granted')
+          }
+        }
+        FakeNotification.permission = notificationPermission
+        globalThis.Notification = FakeNotification
+      }
       await import(`../client.js?test=${Date.now()}-${Math.random()}`)
       assert.equal(moduleDefinition.id, '@gehennawu/dsh-service')
       const plugin = moduleDefinition.factory((name) => {
@@ -201,6 +228,21 @@ function createRenderer(rpcCall, options = {}) {
           const dispose = callback()
           return typeof dispose === 'function' ? dispose : () => {}
         },
+        on(event, handler) {
+          const handlers = eventHandlers.get(event) || new Set()
+          handlers.add(handler)
+          eventHandlers.set(event, handlers)
+          return () => handlers.delete(handler)
+        },
+        sessions: {
+          list: {
+            getSnapshot: () => sessionSnapshot,
+            subscribe(listener) {
+              sessionListeners.add(listener)
+              return () => sessionListeners.delete(listener)
+            },
+          },
+        },
       }
       plugin.apply(ctx)
       renderAll()
@@ -238,6 +280,26 @@ function createRenderer(rpcCall, options = {}) {
       }
       assert.ok(match, `button ${JSON.stringify(label)} was not rendered; tree text: ${this.text()}`)
       return match
+    },
+    findSwitches() {
+      const switches = []
+      for (const tree of roots.values()) {
+        visit(tree, (node) => {
+          if (node.type === 'button' && node.props?.role === 'switch') switches.push(node)
+        })
+      }
+      return switches
+    },
+    setSessions(byId) {
+      sessionSnapshot = { ids: Object.keys(byId), byId, current: undefined, phase: 'ready' }
+      for (const listener of sessionListeners) listener()
+      renderAll()
+    },
+    emitConnectionReset() {
+      for (const handler of eventHandlers.get('connection/reset') || []) handler()
+    },
+    notifications() {
+      return sentNotifications.slice()
     },
     mount(slot) {
       assert.ok(slotComponents.has(slot), `slot ${slot} is not registered`)
@@ -412,15 +474,15 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   const text = renderer.text('settings.section')
-  assert.match(text, /tok 结构/)
+  assert.match(text, /token 结构/)
   const projectTabs = renderer.findByTestId('usage-project-tabs')
   const activeProjectTab = renderer.findButton('全部项目')
   const usageChart = renderer.findByTestId('usage-chart')
   assert.equal(projectTabs.props.style.borderBottom.includes('solid'), true)
-  assert.equal(activeProjectTab.props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.equal(activeProjectTab.props.style.color, 'var(--dsw-alias-brand-primary)')
   assert.equal(activeProjectTab.props.style.borderBottom, '2px solid var(--dsw-alias-brand-primary)')
   assert.ok(usageChart.props.style.background)
-  assert.equal(renderer.findByTestId('usage-y-axis').props['aria-label'], 'tok 纵轴')
+  assert.equal(renderer.findByTestId('usage-y-axis').props['aria-label'], 'token 纵轴')
   assert.equal(renderer.findAllByTestIdPrefix('usage-grid-').length, 5)
   assert.match(text, /4\.3K.*3\.2K.*2\.2K.*1\.1K.*0/)
   assert.match(usageChart.props.style.borderBottom, /solid/)
@@ -452,7 +514,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(tooltip.props.style.position, 'fixed')
   assert.equal(tooltip.props.style.left, '232px')
   assert.equal(tooltip.props.style.top, '152px')
-  assert.equal(tooltip.children[0].includes('日期：2026-08-20\n输入 1,000 tok\n输出 200 tok\n缓存命中 3,100 tok'), true)
+  assert.equal(tooltip.children[0].includes(`日期：${day}\n输入 1,000 token\n输出 200 token\n缓存命中 3,100 token`), true)
   visibleSegment.props.onMouseLeave()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /日期：.*输入.*Token/)
@@ -492,40 +554,40 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   const overviewSurface = renderer.findByTestId('health-display')
   const activeOverviewTab = renderer.findButton('概览')
   assert.equal(tabs.props.style.borderBottom, '1px solid var(--dsw-alias-border-l1)')
-  assert.equal(activeOverviewTab.props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.equal(activeOverviewTab.props.style.color, 'var(--dsw-alias-brand-primary)')
   assert.equal(activeOverviewTab.props.style.borderBottom, '2px solid var(--dsw-alias-brand-primary)')
   assert.equal(panel.props.style.boxShadow, undefined)
   assert.equal(panel.props.style.border, undefined)
   assert.equal(panel.props.style.background, undefined)
-  assert.equal(overviewSurface.props.style.background, 'var(--dsw-alias-bg-layer-1)')
+  assert.equal(overviewSurface.props.style.background, 'var(--dsh-svc-surface-bg)')
   assert.equal(overviewSurface.props.style.color, 'var(--dsw-alias-label-primary)')
   assert.equal(overviewSurface.props.style.border, '1px solid var(--dsw-alias-border-l1)')
   await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   const healthRegion = renderer.findByTestId('health-diagnostics-region')
   assert.equal(healthRegion.props.style.border, '1px solid var(--dsw-alias-border-l1)')
-  assert.equal(healthRegion.props.style.background, 'var(--dsw-alias-bg-layer-1)')
+  assert.equal(healthRegion.props.style.background, 'var(--dsh-svc-surface-bg)')
   assert.equal(healthRegion.props.style.color, 'var(--dsw-alias-label-primary)')
   const healthAction = renderer.findButton('立即健康检查')
   assert.equal(healthAction.props['data-variant'], 'neutral')
-  assert.equal(healthAction.props.style.background, 'var(--dsw-alias-interactive-bg-active)')
+  assert.equal(healthAction.props.style.background, 'var(--dsw-alias-bg-layer-2)')
   assert.equal(healthAction.props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.equal(healthAction.props.style.border, '1px solid var(--dsw-alias-border-l2)')
+  assert.equal(healthAction.props.style.borderColor, 'var(--dsw-alias-border-l2)')
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   assert.equal(renderer.findButton('刷新统计').props['data-variant'], 'neutral')
   await renderer.findButton('备份维护').props.onClick()
   await renderer.flush()
   const createBackup = renderer.findButton('创建备份')
-  assert.equal(createBackup.props['data-variant'], 'primary-filled')
-  assert.equal(createBackup.props.style.background, 'var(--dsw-alias-brand-primary)')
-  assert.equal(createBackup.props.style.color, '#fff')
-  assert.equal(createBackup.props.style.borderColor, 'var(--dsw-alias-brand-primary)')
+  assert.equal(createBackup.props['data-variant'], undefined)
+  assert.equal(createBackup.props.style.background, 'var(--dsw-alias-bg-layer-2)')
+  assert.equal(createBackup.props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.equal(createBackup.props.style.borderColor, 'var(--dsw-alias-border-l2)')
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   const restartRegion = renderer.findByTestId('restart-region')
   assert.equal(restartRegion.props.style.border, '1px solid var(--dsw-alias-border-l1)')
-  assert.equal(restartRegion.props.style.background, 'var(--dsw-alias-bg-layer-1)')
+  assert.equal(restartRegion.props.style.background, 'var(--dsh-svc-surface-bg)')
   assert.equal(restartRegion.props.style.color, 'var(--dsw-alias-label-primary)')
   const restart = renderer.findButton('重启 dsh web')
   assert.equal(restart.props['data-variant'], 'danger')
@@ -576,9 +638,9 @@ test('settings mount automatically shows separate DSH and plugin update states w
   await renderer.flush()
   assert.equal(updateCalls, 1)
   const text = renderer.text('settings.section')
-  assert.match(text, /DSH 0\.1\.0-rc\.7.*latest：0\.1\.0-rc\.7 · next：0\.2\.0.*有新版本.*0\.2\.0/)
+  assert.match(text, /DSH 0\.1\.0-rc\.7.*正式版 0\.1\.0-rc\.7 · 预览版 0\.2\.0.*有新版本.*0\.2\.0/)
    assert.equal(renderer.findByTestId('version-plugin-link').props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.doesNotMatch(text, /latest：0\.9\.0 · next：0\.9\.0/)
+  assert.doesNotMatch(text, /正式版 0\.9\.0 · 预览版 0\.9\.0/)
   assert.match(text, /dsh-service.*0\.9\.0.*已是最新版本/)
   assert.doesNotMatch(text, /检查更新/)
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
@@ -936,4 +998,115 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   assert.equal(renderer.reloadCount(), 0)
   await renderer.findButton('手动刷新').props.onClick()
   assert.equal(renderer.reloadCount(), 1)
+})
+
+test('notification switches render three independent toggles and persist each choice', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  let switches = renderer.findSwitches()
+  assert.equal(switches.length, 3, 'master + done + input switches')
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true'])
+  assert.equal(switches[1].props.onClick, undefined, 'sub switches are paused while master is off')
+
+  switches[0].props.onClick()
+  await renderer.flush()
+  switches = renderer.findSwitches()
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'true'])
+  assert.equal(typeof switches[1].props.onClick, 'function')
+
+  switches[2].props.onClick()
+  await renderer.flush()
+  switches = renderer.findSwitches()
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'false'])
+  assert.equal(localStorage.getItem('dsh-service-notify'), 'true')
+  assert.equal(localStorage.getItem('dsh-service-notify-done'), null)
+  assert.equal(localStorage.getItem('dsh-service-notify-input'), 'false')
+})
+
+test('session edges notify for task completion and pending interaction with kind labels', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: true } })
+  assert.deepEqual(renderer.notifications(), [], 'baseline snapshot rings nothing')
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false } })
+  assert.deepEqual(renderer.notifications(), [
+    { title: '任务完成', body: '重构面板 已完成本轮任务' },
+  ])
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false, pendingInteraction: 'question' } })
+  assert.deepEqual(renderer.notifications().slice(1), [
+    { title: '需要你的确认', body: '重构面板（等待选择答案）' },
+  ])
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false, pendingInteraction: 'approval' } })
+  assert.deepEqual(renderer.notifications().slice(2), [
+    { title: '需要你的确认', body: '重构面板（等待授权）' },
+  ])
+})
+
+test('notification kinds are gated by the master and per-kind switches', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  const master = () => renderer.findSwitches()[0]
+  master().props.onClick()
+  await renderer.flush()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+
+  master().props.onClick()
+  await renderer.flush()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false, pendingInteraction: 'approval' } })
+  assert.deepEqual(renderer.notifications(), [], 'master off gates both kinds')
+
+  master().props.onClick()
+  await renderer.flush()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true, pendingInteraction: 'plan-review' } })
+  assert.deepEqual(renderer.notifications(), [
+    { title: '需要你的确认', body: 'A（等待审阅计划）' },
+  ], 'master back on lets the input edge ring with the plan-review label')
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+  const doneSwitch = () => renderer.findSwitches()[1]
+  doneSwitch().props.onClick()
+  await renderer.flush()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
+  assert.equal(renderer.notifications().length, 1, 'done toggle off suppresses completion')
+})
+
+test('connection reset rebuilds the baseline so replayed frames ring nothing', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+  renderer.emitConnectionReset()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
+  assert.deepEqual(renderer.notifications(), [], 'first snapshot after reset only rebuilds the baseline')
+
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
+  assert.equal(renderer.notifications().length, 1, 'edges after re-baseline ring again')
 })

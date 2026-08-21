@@ -1,13 +1,26 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import https from 'node:https'
 import test from 'node:test'
+import { createRequire } from 'node:module'
 
 import { apply, name } from '../index.js'
+
+// 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
+const requireCjs = createRequire(import.meta.url)
+const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version
+let installedDshVersion = 'unknown'
+try { installedDshVersion = requireCjs('@deepseek-ai/dsh/package.json').version } catch (_) {}
+try {
+  if (installedDshVersion === 'unknown') {
+    installedDshVersion = JSON.parse(readFileSync('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')).version
+  }
+} catch (_) {}
 
 function localSubprocess() {
   return {
@@ -748,11 +761,11 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
   const first = await host.handler('check-update', {})
   const second = await host.handler('check-update', {})
   assert.equal(first.ok, true)
-  assert.equal(first.value.dsh.current, '0.1.0-rc.7')
+  assert.equal(first.value.dsh.current, installedDshVersion)
   assert.equal(first.value.dsh.latest, '0.2.0-rc.1')
   assert.deepEqual(first.value.dsh.tags, { latest: '0.1.0-rc.7', next: '0.2.0-rc.1' })
   assert.equal(first.value.dsh.upToDate, false)
-  assert.equal(first.value.plugin.current, '0.11.0')
+  assert.equal(first.value.plugin.current, pluginVersion)
   assert.equal(first.value.plugin.latest, '0.11.0')
   assert.deepEqual(first.value.plugin.tags, { latest: '0.10.1', next: '0.11.0' })
   assert.equal(first.value.plugin.upToDate, true)
@@ -785,7 +798,7 @@ test('update RPC preserves the DSH result when the unpublished plugin package re
   assert.equal(result.ok, true)
   assert.equal(result.value.dsh.upToDate, true)
   assert.equal(result.value.plugin.status, 'unpublished')
-  assert.equal(result.value.plugin.current, '0.11.0')
+  assert.equal(result.value.plugin.current, pluginVersion)
   assert.equal(result.value.plugin.latest, null)
 })
 
