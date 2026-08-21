@@ -405,6 +405,30 @@ test('usage RPC groups direct and code-dispatched tool failures for the last 24 
   assert.doesNotMatch(stored, /\/workspace\/a|\/workspace\/b|\/missing\/one|\/old\/path/)
 })
 
+test('usage indexes a read_image failure with no error code as IMAGE_NOT_SUPPORTED', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-image-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const events = [
+    { type: 'tool/call', seq: 0, time: now - 5000, data: { turn: 0, step: 0, callId: 'img-1', name: 'read_image', arguments: '{"file_path":"/workspace/pic.png"}' } },
+    { type: 'tool/result', seq: 1, time: now - 4900, surfaceOp: 'append', sourceEventSeqs: [0], data: {
+      turn: 0, step: 0, message: { id: 'm1', role: 'user', source: { kind: 'tool' }, content: [{ type: 'tool-result', toolCallId: 'img-1', isError: true, content: [{ type: 'text', text: 'Error: cannot read "/workspace/pic.png" as an image: model "deepseek-v4" does not declare image input; switch to an image-capable model to read images' }] }] } } },
+  ]
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'img-session', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'img-rev' }],
+    readFrom: async () => ({ meta: {}, events }),
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence, workspaceRegistry: { list: () => [{ id: 'project', title: 'Project', path: '/workspace/project' }] } }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.errors.tools, [
+    { key: 'read_image|IMAGE_NOT_SUPPORTED', tool: 'read_image', code: 'IMAGE_NOT_SUPPORTED', message: 'read_image failed: the current model does not support image input; switch to an image-capable model', count: 1, projectId: 'project', projectTitle: 'Project' },
+  ])
+  const stored = await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8')
+  assert.doesNotMatch(stored, /deepseek-v4|pic\.png/)
+})
+
 test('usage index skips inherited fork events and removes deleted sessions', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-fork-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

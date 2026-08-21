@@ -476,6 +476,7 @@ function toolFailureCode(tool, code, message) {
   if (/ABORT|CANCEL/i.test(value) || /aborted|cancelled|canceled/i.test(message)) return undefined
   if (value && value !== 'UNKNOWN' && value !== 'Error') return value
   if (/requires reading\b/i.test(message)) return 'FS_NOT_OBSERVED'
+  if (/cannot read[^\n]*as an image/i.test(message)) return 'IMAGE_NOT_SUPPORTED'
   if (/old_string was not found/i.test(message)) return 'OLD_STRING_NOT_FOUND'
   if (/no such file or directory|path[^\n]*not found/i.test(message)) return 'PATH_NOT_FOUND'
   if (/file access denied|permission denied|EACCES/i.test(message)) return 'PERMISSION_DENIED'
@@ -487,6 +488,7 @@ function toolFailureCode(tool, code, message) {
 
 function toolFailureMessage(tool, code) {
   if (code === 'FS_NOT_OBSERVED') return `${tool} requires reading <path> first — read the file, then retry`
+  if (code === 'IMAGE_NOT_SUPPORTED') return `${tool} failed: the current model does not support image input; switch to an image-capable model`
   if (code === 'OLD_STRING_NOT_FOUND') return `${tool}: old_string was not found in <path>`
   if (code === 'PATH_NOT_FOUND') return `${tool} search failed: <path> not found`
   if (code === 'PERMISSION_DENIED') return `${tool} failed: permission denied for <path>`
