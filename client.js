@@ -717,15 +717,15 @@ window.__ModuleLoader__.load({
       }
       const siteLabelLink = (kind, label, href) => {
         const testid = `version-dsh-channel-${kind}-${label}`
-        if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '6px' } }, label)
-        return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline', marginLeft: '6px' } }, label)
+        if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '10px' } }, label)
+        return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline', marginLeft: '10px' } }, label)
       }
-      const channelLine = (translate, kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap' } },
+      const channelLine = (translate, kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap', lineHeight: 1.7 } },
         kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
-        ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}` }, version || '—'),
+        React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}`, style: { marginLeft: '6px' } }, version || '—'),
         siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
         siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
-      const channelLines = (translate, tags) => React.createElement('div', { style: { margin: '4px 0', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
+      const channelLines = (translate, tags) => React.createElement('div', { style: { margin: '4px 0', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
         channelLine(translate, 'latest', tags && tags.latest),
         channelLine(translate, 'next', tags && tags.next))
 
@@ -1596,7 +1596,7 @@ window.__ModuleLoader__.load({
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false),
             versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
             channelOpen
-              ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '3px' } },
+              ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
                   React.createElement('div', null, translate('update.details.latest', { version: dshUpdate?.latest || '—' })),
                   channelLines(translate, dshUpdate?.tags))
