@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
       'health.detail.permissions.warning': '发现 {count} 个文件或目录权限异常',
       'health.detail.generic': '{status}',
       'tabs.overview': '概览',
+      'tabs.notify': '通知',
       'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
       'overview.container': '容器信息',
@@ -258,6 +259,7 @@ window.__ModuleLoader__.load({
       'health.detail.permissions.warning': 'Found {count} file or directory permission anomalies',
       'health.detail.generic': '{status}',
       'tabs.overview': 'Overview',
+      'tabs.notify': 'Notifications',
       'tabs.health': 'Health',
       'tabs.usage': 'Models',
       'overview.container': 'Container info',
@@ -1580,11 +1582,14 @@ window.__ModuleLoader__.load({
                       notifyRow(translate('notification.master'), translate('notification.masterHint'), notifyOn, setNotifyOn, false),
                       notifyRow(translate('notification.done'), translate('notification.doneHint'), notifyDoneOn, setNotifyDoneOn, !notifyOn),
                       notifyRow(translate('notification.input'), translate('notification.inputHint'), notifyInputOn, setNotifyInputOn, !notifyOn))))
-        const overviewBlock = React.createElement('div', null, versionBlock, notificationBlock, containerInfoBlock, overviewErrorsBlock)
+        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
+        // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
+        const notifyBlock = React.createElement('div', null, notificationBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
         const tabWarnings = {
           overview: false,
+          notify: false,
           health: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
           usage: Boolean(usageError),
           backup: Boolean(backupError),
@@ -1592,6 +1597,7 @@ window.__ModuleLoader__.load({
         }
         const tabs = [
           ['overview', 'tabs.overview'],
+          ['notify', 'tabs.notify'],
           ['health', 'tabs.health'],
           ['usage', 'tabs.usage'],
           ['backup', 'tabs.backup'],
@@ -1600,13 +1606,15 @@ window.__ModuleLoader__.load({
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
         const tabContent = activeTab === 'overview'
           ? overviewBlock
-          : activeTab === 'health'
-            ? healthBlock
-            : activeTab === 'usage'
-              ? usageBlock
-              : activeTab === 'backup'
-                ? maintenanceBlock
-                : restartBlock
+          : activeTab === 'notify'
+            ? notifyBlock
+            : activeTab === 'health'
+              ? healthBlock
+              : activeTab === 'usage'
+                ? usageBlock
+                : activeTab === 'backup'
+                  ? maintenanceBlock
+                  : restartBlock
         return React.createElement('div', null,
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),

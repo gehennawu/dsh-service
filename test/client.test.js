@@ -1095,6 +1095,11 @@ test('notification switches render three independent toggles and persist each ch
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  // 通知区块已从概览拆出：概览标签无开关，「通知」标签内才有
+  assert.equal(renderer.findSwitches().length, 0)
+  assert.doesNotMatch(renderer.text('settings.section'), /任务通知/)
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
   let switches = renderer.findSwitches()
   assert.equal(switches.length, 3, 'master + done + input switches')
   assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true'])
@@ -1122,6 +1127,8 @@ test('session edges notify for task completion and pending interaction with kind
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
   renderer.findSwitches()[0].props.onClick()
   await renderer.flush()
 
@@ -1152,6 +1159,8 @@ test('notification kinds are gated by the master and per-kind switches', async (
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
   const master = () => renderer.findSwitches()[0]
   master().props.onClick()
   await renderer.flush()
@@ -1186,6 +1195,8 @@ test('connection reset rebuilds the baseline so replayed frames ring nothing', a
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
   renderer.findSwitches()[0].props.onClick()
   await renderer.flush()
 
