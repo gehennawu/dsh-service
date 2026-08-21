@@ -116,6 +116,9 @@ window.__ModuleLoader__.load({
       'update.details.current': '当前版本：{version}',
       'update.details.latest': '最新版本：{version}',
       'update.channels': '正式版 {latest} · 预览版 {next}',
+      'update.channelStable': '正式版',
+      'update.channelPreview': '预览版',
+      'update.channelSep': ' · ',
       'update.details.close': '关闭',
       'update.upgrade': '升级插件',
       'update.upgrading': '升级中…',
@@ -322,6 +325,9 @@ window.__ModuleLoader__.load({
       'update.details.current': 'Current version: {version}',
       'update.details.latest': 'Latest version: {version}',
       'update.channels': 'Stable {latest} · Preview {next}',
+      'update.channelStable': 'Stable',
+      'update.channelPreview': 'Preview',
+      'update.channelSep': ' · ',
       'update.details.close': 'Close',
       'update.upgrade': 'Upgrade plugin',
       'update.upgrading': 'Upgrading…',
@@ -1527,13 +1533,28 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
+        // 正式版/预览版版本号链到 npm 包对应版本页；版本串过安全字符集校验才生成链接
+        const npmVersionHref = (version) => {
+          if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
+          return `https://www.npmjs.com/package/@deepseek-ai/dsh/v/${version}`
+        }
+        const channelCell = (kind, version) => {
+          const value = version || '—'
+          const href = npmVersionHref(version)
+          const common = { 'data-testid': `version-dsh-channel-${kind}` }
+          if (!href) return React.createElement('span', common, value)
+          return React.createElement('a', Object.assign({}, common, { href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' } }), value)
+        }
         const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
-             state?.tags && id === 'dsh' ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, translate('update.channels', { latest: state.tags.latest || '—', next: state.tags.next || '—' })) : null,
+             state?.tags && id === 'dsh' ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
+               translate('update.channelStable'), ' ', channelCell('latest', state.tags.latest),
+               translate('update.channelSep'),
+               translate('update.channelPreview'), ' ', channelCell('next', state.tags.next)) : null,
             action || null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state

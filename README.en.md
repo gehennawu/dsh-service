@@ -11,7 +11,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 ### Version and updates
 
 - Displays current DSH and plugin versions with links to GitHub Releases
-- Automatically checks npm registry for stable and preview releases, shows update status
+- Automatically checks npm registry for stable and preview releases, shows update status; stable and preview version numbers link directly to the matching npm package version pages
 - One-click plugin upgrade with automatic restart after completion
 
 ### Safe restart

@@ -674,7 +674,30 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(text, /检查更新/)
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
   assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
+})
+
+test('channel version strings outside the safe charset render plain text without npm links', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return {
+      ok: true,
+      value: {
+        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: 'bad/version' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        plugin: { current: '0.9.0', latest: '0.9.0', tags: { latest: '0.9.0', next: '0.9.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
+      },
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  const next = renderer.findByTestId('version-dsh-channel-next')
+  assert.equal(next.props.href, undefined)
+  assert.match(renderer.text('settings.section'), /bad\/version/)
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
 })
 
 test('opening health diagnostics runs once and reuses its short-lived result until explicitly refreshed', async () => {
