@@ -7,8 +7,6 @@ window.__ModuleLoader__.load({
     var exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
-    var primitives
-    try { primitives = require('@deepseek-ai/dsh-client-ui-primitives') } catch (_) {}
     const NS = 'dsh-service'
     const zh = {
       'nav.label': '服务控制',
@@ -1312,9 +1310,8 @@ window.__ModuleLoader__.load({
         const pluginAction = pluginUpdate
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
-        const ArchiveIcon = primitives?.IconArchiveOutline20
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
-          React.createElement('div', { key: 'title', style: Object.assign({}, sectionTitle, { display: 'flex', alignItems: 'center', gap: '6px' }) }, ArchiveIcon ? React.createElement(ArchiveIcon, { size: 16, 'aria-hidden': 'true' }) : null, translate('version.title')),
+          React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
             versionRow('dsh', 'DSH', version, updateInfo?.dsh),
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
