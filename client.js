@@ -10,6 +10,7 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-service'
     const zh = {
       'nav.label': '服务控制',
+      'nav.restart': '重启 dsh web',
       'overlay.label': '服务重启状态',
       'recovery.waiting.title': '服务重启中…',
       'recovery.waiting.body': '正在等待新的 DSH Web 进程启动，已等待 {seconds} 秒。',
@@ -212,6 +213,7 @@ window.__ModuleLoader__.load({
     }
     const en = {
       'nav.label': 'Service Control',
+      'nav.restart': 'Restart dsh web',
       'overlay.label': 'Service restart status',
       'recovery.waiting.title': 'Restarting service…',
       'recovery.waiting.body': 'Waiting for a new DSH Web process. Elapsed: {seconds} seconds.',
@@ -540,6 +542,60 @@ window.__ModuleLoader__.load({
         return snapshot
       }
 
+      // 重启流程共享状态：设置面板「重启」标签与专属设置页共用同一份 stage/activity/busy/error，
+      // 触发路径（两段式确认、强制重启、恢复浮层）完全一致。
+      const restartFlowListeners = new Set()
+      let restartFlow = { stage: 0, activity: null, busy: false, error: null }
+      const setRestartFlow = (next) => {
+        restartFlow = next
+        for (const listener of restartFlowListeners) listener(next)
+      }
+      const useRestartFlow = () => {
+        const [snapshot, setSnapshot] = useState(restartFlow)
+        useEffect(() => {
+          restartFlowListeners.add(setSnapshot)
+          setSnapshot(restartFlow)
+          return () => restartFlowListeners.delete(setSnapshot)
+        }, [])
+        return snapshot
+      }
+      const checkRestart = async () => {
+        setRestartFlow({ ...restartFlow, busy: true, error: null })
+        try {
+          const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
+          if (res && res.ok === false) {
+            console.error('dsh-service: activity check failed', res.error)
+            throw new Error(t('error.activity'))
+          }
+          const nextActivity = res && res.value ? res.value : { hasActive: false, items: [] }
+          setRestartFlow({ ...restartFlow, activity: nextActivity, stage: nextActivity.hasActive ? 3 : 1, busy: false, error: null })
+        } catch (err) {
+          setRestartFlow({ ...restartFlow, error: err && err.message ? String(err.message) : String(err), stage: 0, busy: false })
+        }
+      }
+      const restartWeb = async (force) => {
+        setRestartFlow({ ...restartFlow, busy: true, error: null })
+        try {
+          const res = await ctx.connection.rpc.call('/dsh-service', 'web', { force: force === true })
+          if (res && res.ok === false) {
+            if (res.error === 'active-work' && res.value) {
+              setRestartFlow({ ...restartFlow, activity: res.value, stage: 3, busy: false, error: null })
+              return
+            }
+            console.error('dsh-service: restart failed', res.error)
+            throw new Error(t('error.restart'))
+          }
+          const previousInstanceId = res && res.value ? res.value.instanceId : undefined
+          if (typeof previousInstanceId !== 'string' || previousInstanceId.length === 0) {
+            throw new Error(t('error.instance'))
+          }
+          setRestartFlow({ ...restartFlow, stage: 2, busy: false, error: null })
+          startRecovery(previousInstanceId).catch((err) => console.error('dsh-service: recovery failed', err))
+        } catch (err) {
+          setRestartFlow({ ...restartFlow, error: err && err.message ? String(err.message) : String(err), stage: 0, busy: false })
+        }
+      }
+
       const useRecoveryState = () => {
         const [snapshot, setSnapshot] = useState(recoveryState)
         useEffect(() => {
@@ -587,6 +643,7 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => {
         recoveryGeneration += 1
         recoveryListeners.clear()
+        restartFlowListeners.clear()
         updateListeners.clear()
       }, 'dsh-service recovery')
 
@@ -666,6 +723,73 @@ window.__ModuleLoader__.load({
         return React.createElement(ServiceOverlay, null)
       }
 
+      // 重启区块：设置面板「重启」标签与设置页左列底部的专属入口共用，状态取自共享重启流。
+      function RestartSection() {
+        const translate = useTranslation()
+        const flow = useRestartFlow()
+        const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
+        const danger = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
+        const ghost = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
+        const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
+        const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
+        const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
+        const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
+        const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
+
+        // 重启后提示
+        if (flow.stage === 2) {
+          return React.createElement('div', { 'data-testid': 'restart-card', style: card },
+            React.createElement('div', { style: sectionTitle }, translate('restart.title')),
+            React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.sent')),
+            React.createElement('p', { style: hint }, translate('restart.sentHint')))
+        }
+
+        const activityLabels = {
+          agent: translate('activity.agent'),
+          job: translate('activity.job'),
+          terminal: translate('activity.terminal'),
+        }
+        const activityItems = flow.activity && Array.isArray(flow.activity.items) ? flow.activity.items : []
+        const activityWarning = flow.stage === 3
+          ? React.createElement('div', { style: { marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.1)', border: '1px solid rgba(211,51,51,0.35)' } },
+              React.createElement('p', { style: { margin: '0 0 8px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } },
+                translate('activity.warning', { count: activityItems.length })),
+              React.createElement('ul', { style: { margin: 0, paddingLeft: '20px', fontSize: '12px', lineHeight: 1.7 } },
+                activityItems.map((item) => React.createElement('li', { key: item.type + ':' + item.id },
+                  translate('activity.item', {
+                    type: activityLabels[item.type] || item.type,
+                    label: item.label,
+                    status: item.status,
+                  }))))
+            )
+          : null
+
+        // 重启按钮区块
+        return React.createElement('div', { 'data-testid': 'restart-card', style: card },
+          React.createElement('div', { style: sectionTitle }, translate('restart.title')),
+          React.createElement('div', { 'data-testid': 'restart-region', style: displaySurface },
+            React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.description')),
+            activityWarning,
+            React.createElement('div', { style: row },
+              flow.stage === 0
+                ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: flow.busy }, translate(flow.busy ? 'update.checking' : 'restart.button'))
+                : flow.stage === 1
+                  ? [
+                      React.createElement('button', { key: 'confirm', style: danger, onClick: () => restartWeb(false), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.confirm')),
+                      React.createElement('button', { key: 'cancel', style: ghost, onClick: () => setRestartFlow({ ...restartFlow, activity: null, stage: 0, busy: false, error: null }), disabled: flow.busy }, translate('restart.cancel')),
+                    ]
+                  : flow.stage === 3
+                    ? [
+                        React.createElement('button', { key: 'force', style: danger, onClick: () => restartWeb(true), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.force')),
+                        React.createElement('button', { key: 'cancel', style: ghost, onClick: () => setRestartFlow({ ...restartFlow, activity: null, stage: 0, busy: false, error: null }), disabled: flow.busy }, translate('restart.cancel')),
+                      ]
+                    : null
+            ),
+            flow.stage === 1 ? React.createElement('p', { style: hint }, translate('restart.idleHint')) : null,
+            flow.error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(flow.error)) : null)
+        )
+      }
+
       function ServicePanel() {
         const translate = useTranslation()
         const [health, setHealth] = useState(null)
@@ -703,11 +827,8 @@ window.__ModuleLoader__.load({
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
         const [activeTab, setActiveTab] = useState('overview')
-        // 重启状态：0=初始，1=普通确认，2=已发出，3=检测到活动工作
-        const [stage, setStage] = useState(0)
-        const [activity, setActivity] = useState(null)
-        const [busy, setBusy] = useState(false)
-        const [error, setError] = useState(null)
+        // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
+        const restartFlowState = useRestartFlow()
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
@@ -991,54 +1112,6 @@ window.__ModuleLoader__.load({
             setUpgradeError(detail ? translate('update.upgradeErrorDetail', { detail }) : translate('update.upgradeError'))
           } finally {
             setUpgradeBusy(false)
-          }
-        }
-
-         const checkRestart = async () => {
-          setBusy(true)
-          setError(null)
-          try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
-            if (res && res.ok === false) {
-              console.error('dsh-service: activity check failed', res.error)
-              throw new Error(translate('error.activity'))
-            }
-            const nextActivity = res && res.value ? res.value : { hasActive: false, items: [] }
-            setActivity(nextActivity)
-            setStage(nextActivity.hasActive ? 3 : 1)
-          } catch (err) {
-            setError(err && err.message ? String(err.message) : String(err))
-            setStage(0)
-          } finally {
-            setBusy(false)
-          }
-        }
-
-        const restart = async (force) => {
-          setBusy(true)
-          setError(null)
-          try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'web', { force: force === true })
-            if (res && res.ok === false) {
-              if (res.error === 'active-work' && res.value) {
-                setActivity(res.value)
-                setStage(3)
-                return
-              }
-              console.error('dsh-service: restart failed', res.error)
-              throw new Error(translate('error.restart'))
-            }
-            setStage(2)
-            const previousInstanceId = res && res.value ? res.value.instanceId : undefined
-            if (typeof previousInstanceId !== 'string' || previousInstanceId.length === 0) {
-              throw new Error(translate('error.instance'))
-            }
-            startRecovery(previousInstanceId).catch((err) => console.error('dsh-service: recovery failed', err))
-          } catch (err) {
-            setError(err && err.message ? String(err.message) : String(err))
-            setStage(0)
-          } finally {
-            setBusy(false)
           }
         }
 
@@ -1420,63 +1493,8 @@ window.__ModuleLoader__.load({
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction),
             upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 
-        // 重启后提示
-        if (stage === 2) {
-          return React.createElement('div', null,
-            healthBlock,
-            backupBlock,
-            versionBlock,
-            React.createElement('div', { key: 'restart-section' },
-              React.createElement('div', { style: sectionTitle }, translate('restart.title')),
-              React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.sent')),
-              React.createElement('p', { style: hint }, translate('restart.sentHint')))
-          )
-        }
-
-        const activityLabels = {
-          agent: translate('activity.agent'),
-          job: translate('activity.job'),
-          terminal: translate('activity.terminal'),
-        }
-        const activityItems = activity && Array.isArray(activity.items) ? activity.items : []
-        const activityWarning = stage === 3
-          ? React.createElement('div', { style: { marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.1)', border: '1px solid rgba(211,51,51,0.35)' } },
-              React.createElement('p', { style: { margin: '0 0 8px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } },
-                translate('activity.warning', { count: activityItems.length })),
-              React.createElement('ul', { style: { margin: 0, paddingLeft: '20px', fontSize: '12px', lineHeight: 1.7 } },
-                activityItems.map((item) => React.createElement('li', { key: item.type + ':' + item.id },
-                  translate('activity.item', {
-                    type: activityLabels[item.type] || item.type,
-                    label: item.label,
-                    status: item.status,
-                  }))))
-            )
-          : null
-
-        // 重启按钮区块
-        const restartBlock = React.createElement('div', { key: 'restart-section', 'data-testid': 'restart-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('restart.title')),
-          React.createElement('div', { 'data-testid': 'restart-region', style: displaySurface },
-          React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.description')),
-          activityWarning,
-          React.createElement('div', { style: row },
-            stage === 0
-              ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: busy }, translate(busy ? 'update.checking' : 'restart.button'))
-              : stage === 1
-                ? [
-                    React.createElement('button', { key: 'confirm', style: danger, onClick: () => restart(false), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.confirm')),
-                    React.createElement('button', { key: 'cancel', style: ghost, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
-                  ]
-                : stage === 3
-                  ? [
-                      React.createElement('button', { key: 'force', style: danger, onClick: () => restart(true), disabled: busy }, translate(busy ? 'restart.sending' : 'restart.force')),
-                      React.createElement('button', { key: 'cancel', style: ghost, onClick: () => { setActivity(null); setStage(0) }, disabled: busy }, translate('restart.cancel')),
-                    ]
-                  : null
-          ),
-          stage === 1 ? React.createElement('p', { style: hint }, translate('restart.idleHint')) : null,
-          error ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, String(error)) : null)
-        )
+        // 重启区块复用共享组件（与设置页左列底部的「重启 dsh web」专属入口同源同流程）
+        const restartBlock = React.createElement(RestartSection, null)
 
         const { enabled: notifyOn, done: notifyDoneOn, input: notifyInputOn, setEnabled: setNotifyOn, setDone: setNotifyDoneOn, setInput: setNotifyInputOn } = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
@@ -1520,7 +1538,7 @@ window.__ModuleLoader__.load({
           health: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
           usage: Boolean(usageError),
           backup: Boolean(backupError),
-          restart: Boolean(error),
+          restart: Boolean(restartFlowState.error),
         }
         const tabs = [
           ['overview', 'tabs.overview'],
@@ -1581,10 +1599,17 @@ window.__ModuleLoader__.load({
         { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
         () => React.createElement(UpdateBadge, null),
       ))
-      ctx.slots.inject('settings.section', () => ctx.slots.register(
-        { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
-        () => React.createElement(ServicePanel, null),
-      ))
+      ctx.slots.inject('settings.section', () => [
+        ctx.slots.register(
+          { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
+          () => React.createElement(ServicePanel, null),
+        ),
+        ctx.slots.register(
+          // 设置面板左列最底部的「重启 dsh web」专属入口：与「重启」标签共用共享重启流
+          { name: 'settings.section', id: 'dsh-service-restart', order: 499, label: () => t('nav.restart') },
+          () => React.createElement(RestartSection, null),
+        ),
+      ])
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(
         { name: 'shell.overlay', id: 'dsh-service-restart', order: 100, label: () => t('overlay.label') },
         () => React.createElement(RestartOverlay, null),

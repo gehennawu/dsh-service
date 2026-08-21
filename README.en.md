@@ -19,6 +19,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` command also available in conversations; automatically refuses when active work is detected
 - Automatically probes for the new process after restart and reloads the page; manual reload available after 60 seconds
+- A permanent `Restart dsh web` entry sits at the bottom of the settings left navigation, sharing the exact same confirmation flow as the Restart tab
 
 ### Health diagnostics
 

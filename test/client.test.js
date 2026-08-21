@@ -99,12 +99,16 @@ function createRenderer(rpcCall, options = {}) {
 
   function renderAll() {
     const next = new Map()
-    for (const [slot, component] of slotComponents) {
+    for (const [slot, entries] of slotComponents) {
       if (!mountedSlots.has(slot)) continue
       currentSlot = slot
-      next.set(slot, evaluate(React.createElement(component, null)))
+      const rendered = []
+      for (const { component } of entries.values()) {
+        rendered.push(evaluate(React.createElement(component, null)))
+      }
       currentSlot = undefined
-      renderedComponents.set(slot, component)
+      renderedComponents.set(slot, entries)
+      next.set(slot, rendered)
     }
     roots = next
     return roots
@@ -216,11 +220,14 @@ function createRenderer(rpcCall, options = {}) {
             return () => {}
           },
           register(slotOptions, component) {
-            slotComponents.set(slotOptions.name, component)
+            const entries = slotComponents.get(slotOptions.name) || new Map()
+            entries.set(slotOptions.id ?? 'entry', { component, options: slotOptions })
+            slotComponents.set(slotOptions.name, entries)
             if (!(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
             return () => {
               unmountSlot(slotOptions.name)
-              slotComponents.delete(slotOptions.name)
+              const live = slotComponents.get(slotOptions.name)
+              if (live) live.delete(slotOptions.id ?? 'entry')
             }
           },
         },
@@ -320,6 +327,14 @@ function createRenderer(rpcCall, options = {}) {
     },
     hasSlot(name) {
       return slotComponents.has(name)
+    },
+    registrations() {
+      const out = {}
+      for (const [slot, entries] of slotComponents) {
+        out[slot] = []
+        for (const { options } of entries.values()) out[slot].push({ ...options })
+      }
+      return out
     },
     reloadCount() {
       return reloads
@@ -450,7 +465,8 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.doesNotMatch(overviewText, /⚠ 模型统计|服务控制提醒/)
   assert.match(overviewText, /版本信息.*容器信息.*运行时间.*内存 RSS/)
   assert.match(overviewText, /报错信息.*最近 24 小时.*模型报错.*2 类.*工具报错.*2 类/)
-  assert.doesNotMatch(overviewText, /立即健康检查|文件权限|模型使用|备份管理|服务重启/)
+  const overviewPanel = renderer.text(renderer.findByTestId('tab-panel'))
+  assert.doesNotMatch(overviewPanel, /立即健康检查|文件权限|模型使用|备份管理|服务重启/)
   const overviewErrors = renderer.findByTestId('overview-errors-region')
   assert.match(overviewErrors.props.style.border, /solid/)
   assert.equal(renderer.findByTestId('overview-errors-title').children[0], '报错信息')
@@ -894,6 +910,54 @@ test('service panel lists active work and requires an explicit force restart', a
     payload: { force: true },
   })
   assert.match(renderer.text(), /重启指令已发出/)
+})
+
+test('settings left column bottom registers a dedicated restart page after the service control page', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  const sections = renderer.registrations()['settings.section']
+  assert.deepEqual(sections.map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
+  assert.ok(sections[1].order > sections[0].order, 'restart entry sits below the service control page in the left nav')
+  assert.equal(sections[1].label(), '重启 dsh web')
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.equal(sections[1].label(), 'Restart dsh web')
+})
+
+test('dedicated restart page runs the same activity check, force, and sent flow as the restart tab', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: true, items: [{ type: 'job', id: 'bash-1', label: 'pnpm test', status: 'running' }] } }
+    if (endpoint === 'web') return { ok: true, value: { message: 'restart scheduled', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  // 概览标签激活时，唯一可见的「重启 dsh web」按钮来自左列底部的专属入口
+  await renderer.findButton('重启 dsh web').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(calls.find((call) => call.endpoint === 'activity').payload, {})
+  assert.match(renderer.text('settings.section'), /检测到 1 项运行中的工作/)
+  assert.equal(calls.some((call) => call.endpoint === 'web'), false)
+
+  await renderer.findButton('取消').props.onClick()
+  await renderer.flush()
+  assert.doesNotMatch(renderer.text('settings.section'), /检测到 1 项运行中的工作/)
+
+  await renderer.findButton('重启 dsh web').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('仍要重启').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(calls.find((call) => call.endpoint === 'web').payload, { force: true })
+  assert.match(renderer.text('settings.section'), /重启指令已发出/)
 })
 
 test('restart recovery overlay ignores the old instance and reloads for a new instance', async () => {
