@@ -1533,33 +1533,32 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式版/预览版版本号链到 npm 包对应版本页；版本串过安全字符集校验才生成链接。
-        // npmjs.com 会对部分出口网络（代理/VPN/机房 IP）返回 Cloudflare 拦截页，
-        // 行尾附一个 npmmirror 包页备用链接（固定常量 URL，无输入拼接），避免与版本号粘连。
+        // 正式版/预览版分两行展示：版本号后跟 npmjs（版本页）与 npmmirror（包页）两个文字链接；
+        // 版本串过安全字符集校验才生成 npmjs 链接；npmmirror 链接为固定常量 URL，无输入拼接。
         const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
         const npmVersionHref = (version) => {
           if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
           return `https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/${version}`
         }
-        const channelCell = (kind, version) => {
-          const value = version || '—'
-          const href = npmVersionHref(version)
-          const common = { 'data-testid': `version-dsh-channel-${kind}` }
-          if (!href) return React.createElement('span', common, value)
-          return React.createElement('a', Object.assign({}, common, { href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' } }), value)
+        const siteLabelLink = (kind, label, href) => {
+          const testid = `version-dsh-channel-${kind}-${label}`
+          if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '6px' } }, label)
+          return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'underline', marginLeft: '6px' } }, label)
         }
-        const mirrorLink = React.createElement('a', { 'data-testid': 'version-dsh-channel-mirror', href: `https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}`, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'underline' } }, 'npmmirror')
+        const channelLine = (kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap' } },
+          kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
+          ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}` }, version || '—'),
+          siteLabelLink(kind, 'npmjs', npmVersionHref(version)),
+          siteLabelLink(kind, 'npmmirror', `https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}`))
         const versionRow = (id, label, fallbackVersion, state, action) => React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: id === 'dsh' ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
           React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
             React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
             state?.url
               ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
               : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
-             state?.tags && id === 'dsh' ? React.createElement('span', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
-               translate('update.channelStable'), ' ', channelCell('latest', state.tags.latest),
-               translate('update.channelSep'),
-               translate('update.channelPreview'), ' ', channelCell('next', state.tags.next),
-               translate('update.channelSep'), mirrorLink) : null,
+             state?.tags && id === 'dsh' ? React.createElement('div', { style: { marginLeft: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '2px' } },
+               channelLine('latest', state.tags.latest),
+               channelLine('next', state.tags.next)) : null,
             action || null,
           React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } },
             React.createElement('div', { style: { color: !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)', fontWeight: 600 } }, !state

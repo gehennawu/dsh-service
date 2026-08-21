@@ -674,9 +674,11 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(text, /检查更新/)
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
-  assert.equal(renderer.findByTestId('version-dsh-channel-next').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
-  assert.equal(renderer.findByTestId('version-dsh-channel-mirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
+  assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 6, 'two channel lines with number + npmjs + npmmirror each')
   assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
 })
 
@@ -697,9 +699,11 @@ test('channel version strings outside the safe charset render plain text without
   await renderer.load()
   const next = renderer.findByTestId('version-dsh-channel-next')
   assert.equal(next.props.href, undefined)
+  const nextNpm = renderer.findByTestId('version-dsh-channel-next-npmjs')
+  assert.equal(nextNpm.props.href, undefined, 'unsafe version renders the npmjs label as plain text')
   assert.match(renderer.text('settings.section'), /bad\/version/)
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
-  assert.equal(renderer.findByTestId('version-dsh-channel-mirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
+  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
+  assert.equal(renderer.findByTestId('version-dsh-channel-next-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh')
 })
 
 test('opening health diagnostics runs once and reuses its short-lived result until explicitly refreshed', async () => {
