@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）',
       'update.failNotWorkspace': 'profile 不是 pnpm workspace 却传入了 -w',
       'update.failIgnoredBuilds': '依赖构建脚本被 pnpm 默认拦截，无法完成升级',
-      'env.label': '运行环境',
+      'env.line': '运行环境：{value}',
       'env.kind.docker': 'Docker 容器',
       'env.kind.container': '容器（containerd/Kubernetes）',
       'env.kind.systemd': 'systemd 服务',
@@ -149,6 +149,7 @@ window.__ModuleLoader__.load({
       'env.kind.supervisord': 'supervisord',
       'env.kind.kubernetes': 'Kubernetes',
       'env.kind.declared': '外部进程管理器（手动指定）',
+      'env.kind.unrecognized': '检测到未识别的进程管理器',
       'env.likelyManual': '疑似终端手动启动',
       'env.unknown': '未检测到进程管理器',
       'update.manualConfirmTitle': '升级前请确认：当前疑似手动启动环境',
@@ -366,7 +367,7 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm refused to add at the workspace root (missing -w)',
       'update.failNotWorkspace': '-w was passed but the profile is not a pnpm workspace',
       'update.failIgnoredBuilds': 'Dependency build scripts are blocked by pnpm by default, so the upgrade could not finish',
-      'env.label': 'Runtime environment',
+      'env.line': 'Runtime environment: {value}',
       'env.kind.docker': 'Docker container',
       'env.kind.container': 'Container (containerd/Kubernetes)',
       'env.kind.systemd': 'systemd service',
@@ -374,6 +375,7 @@ window.__ModuleLoader__.load({
       'env.kind.supervisord': 'supervisord',
       'env.kind.kubernetes': 'Kubernetes',
       'env.kind.declared': 'External process manager (declared manually)',
+      'env.kind.unrecognized': 'Unrecognized process manager detected',
       'env.likelyManual': 'Likely launched manually from a terminal',
       'env.unknown': 'No process manager detected',
       'update.manualConfirmTitle': 'Confirm before upgrading: manual launch suspected',
@@ -646,9 +648,6 @@ window.__ModuleLoader__.load({
       // null = 宿主未返回该字段（旧版本）或尚未拉取，一切行为静默退回现状。
       const runtimeEnvListeners = new Set()
       let runtimeEnvState = null
-      // 每次页面加载只发一次带运行环境意图的 version 请求：ServicePanel 挂载即认领，
-      // 左列专属入口单独先挂载时才由这里兜底，避免同一面板重复打 version。
-      let runtimeEnvRequested = false
       const setRuntimeEnvState = (next) => {
         runtimeEnvState = next
         for (const listener of runtimeEnvListeners) listener(next)
@@ -662,11 +661,35 @@ window.__ModuleLoader__.load({
         }, [])
         return snapshot
       }
+      // 宿主字段按形状校验后才入库：manualStartLikely 必须 boolean、supervisorKind 缺省或 string，
+      // 形状不对按「旧宿主无该字段」降级，绝不让坏值悄悄关掉确认门。
       const applyVersionRuntimeEnv = (value) => {
-        if (value && value.runtimeEnv !== undefined && value.runtimeEnv !== null && typeof value.runtimeEnv === 'object') {
-          setRuntimeEnvState(value.runtimeEnv)
-        }
+        const env = value ? value.runtimeEnv : undefined
+        if (env === null || typeof env !== 'object') return
+        if (typeof env.manualStartLikely !== 'boolean') return
+        if (env.supervisorKind !== undefined && env.supervisorKind !== null && typeof env.supervisorKind !== 'string') return
+        setRuntimeEnvState({ platform: typeof env.platform === 'string' ? env.platform : '', supervisorKind: env.supervisorKind === undefined || env.supervisorKind === null ? null : env.supervisorKind, manualStartLikely: env.manualStartLikely })
       }
+      // version 快照全插件只取一次：ServicePanel 与左列入口无论谁先挂载都共享同一请求，
+      // 升级前取 instanceId/运行环境也复用它。失败清缓存，下一个消费者重试。
+      let versionSnapshotPromise = null
+      const fetchVersionSnapshot = () => {
+        if (versionSnapshotPromise === null) {
+          versionSnapshotPromise = ctx.connection.rpc.call('/dsh-service', 'version', {})
+            .then((res) => {
+              if (res && res.ok) applyVersionRuntimeEnv(res.value)
+              return res
+            })
+            .catch(() => {
+              versionSnapshotPromise = null
+              return null
+            })
+        }
+        return versionSnapshotPromise
+      }
+      // 升级执行中标志放在 factory 作用域：闭包状态挡不住同一 tick 的重入，跨渲染的新闭包
+      // 也各自持有独立的 false，只有插件级可变标志能同时覆盖两种情况。
+      let upgradeInFlight = false
       const checkRestart = async () => {
         setRestartFlow({ ...restartFlow, busy: true, error: null })
         try {
@@ -859,13 +882,9 @@ window.__ModuleLoader__.load({
         const translate = useTranslation()
         const flow = useRestartFlow()
         const runtimeEnv = useRuntimeEnv()
-        // 左列专属入口可能先于「服务控制」面板挂载：这里兜底拉一次 version 取 runtimeEnv。
+        // 左列专属入口可能先于「服务控制」面板挂载：走共享 version 快照（与面板同一次请求）。
         useEffect(() => {
-          if (runtimeEnvRequested) return
-          runtimeEnvRequested = true
-          ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
-            if (res && res.ok) applyVersionRuntimeEnv(res.value)
-          }).catch(() => {})
+          fetchVersionSnapshot()
         }, [])
         const [navEnabled, setNavEnabled] = useRestartNavEnabled()
         const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
@@ -998,15 +1017,14 @@ window.__ModuleLoader__.load({
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
+        // version 走全插件共享的缓存快照：无论哪个挂载点先到，都只有一次请求。
         useEffect(() => {
-          runtimeEnvRequested = true
-          ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
+          fetchVersionSnapshot().then((res) => {
             if (res && res.ok) {
               setVersion(res.value.current)
               setPluginVersion(res.value.pluginVersion || null)
-              applyVersionRuntimeEnv(res.value)
             }
-          }).catch(() => {})
+          })
         }, [])
         useEffect(() => {
           let active = true
@@ -1254,17 +1272,25 @@ window.__ModuleLoader__.load({
           'ignored-builds': 'update.failIgnoredBuilds',
         }
         const upgradePlugin = async () => {
-          // 疑似终端手动启动：升级成功不会自动重启，先两段式确认后果再动手（安全教义）。
-          if (!upgradeManualConfirm && runtimeEnv !== null && runtimeEnv.manualStartLikely === true) {
-            setUpgradeError(null)
-            setUpgradeManualConfirm(true)
-            return
-          }
-          setUpgradeManualConfirm(false)
-          setUpgradeBusy(true)
-          setUpgradeError(null)
+          if (upgradeInFlight) return
+          upgradeInFlight = true
           try {
-            const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
+            // check-update 先于 version 返回时按钮可能先出现：env 未知就等共享快照落地再判。
+            let env = runtimeEnv
+            if (env === null) {
+              await fetchVersionSnapshot()
+              env = runtimeEnvState
+            }
+            // 疑似终端手动启动：升级成功不会自动重启，先两段式确认后果再动手（安全教义）。
+            if (!upgradeManualConfirm && env !== null && env.manualStartLikely === true) {
+              setUpgradeError(null)
+              setUpgradeManualConfirm(true)
+              return
+            }
+            setUpgradeManualConfirm(false)
+            setUpgradeBusy(true)
+            setUpgradeError(null)
+            const versionRes = await fetchVersionSnapshot()
             const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
             const res = await ctx.connection.rpc.call('/dsh-service', 'upgrade', {})
             if (!res || res.ok === false) {
@@ -1291,6 +1317,7 @@ window.__ModuleLoader__.load({
             console.error('dsh-service: upgrade failed', detail || err)
             setUpgradeError(detail ? translate('update.upgradeErrorDetail', { detail }) : translate('update.upgradeError'))
           } finally {
+            upgradeInFlight = false
             setUpgradeBusy(false)
           }
         }
@@ -1699,7 +1726,8 @@ window.__ModuleLoader__.load({
         const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
-        // 运行环境一行：managed 显示管理器标签；疑似手动启动用警示色；unknown 照实说未检测到。
+        // 运行环境一行：managed 显示管理器标签；疑似手动启动用警示色；未知非空 kind 不得
+        // 显示成「未检测到」（那是 supervisorKind 为 null 时的语义）。
         const runtimeEnvKinds = ['docker', 'container', 'systemd', 'pm2', 'supervisord', 'kubernetes', 'declared']
         const runtimeEnvLabelKey = runtimeEnv === null
           ? null
@@ -1707,7 +1735,9 @@ window.__ModuleLoader__.load({
             ? 'env.likelyManual'
             : typeof runtimeEnv.supervisorKind === 'string' && runtimeEnvKinds.includes(runtimeEnv.supervisorKind)
               ? `env.kind.${runtimeEnv.supervisorKind}`
-              : 'env.unknown'
+              : typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0
+                ? 'env.kind.unrecognized'
+                : 'env.unknown'
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
@@ -1721,7 +1751,7 @@ window.__ModuleLoader__.load({
               : null,
             runtimeEnvLabelKey !== null
               ? React.createElement('div', { 'data-testid': 'runtime-env-line', style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: runtimeEnv.manualStartLikely === true ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)' } },
-                  `${translate('env.label')}：${translate(runtimeEnvLabelKey)}`)
+                  translate('env.line', { value: translate(runtimeEnvLabelKey) }))
               : null,
             upgradeManualConfirm
               ? React.createElement('div', { 'data-testid': 'upgrade-manual-confirm', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.08)', border: '1px solid rgba(211,51,51,0.3)' } },

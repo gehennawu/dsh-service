@@ -1155,9 +1155,9 @@ function detectRuntimeEnv(options = {}) {
   const platform = options.platform ?? process.platform
   const stdinIsTTY = options.stdinIsTTY ?? (process.stdin ? process.stdin.isTTY === true : false)
   const stdoutIsTTY = options.stdoutIsTTY ?? (process.stdout ? process.stdout.isTTY === true : false)
-  // 默认探测器只在未被注入时执行；单测全部显式传原语，不碰真实 fs。
-  const dockerEnvExists = options.dockerEnvExists ?? (() => { try { return existsSync('/.dockerenv') } catch (_) { return false } })()
-  const cgroupText = options.cgroupText ?? (() => { try { return readFileSync('/proc/1/cgroup', 'utf8') } catch (_) { return '' } })()
+  // 默认探测器只在未被注入时执行；win32 直接短路（/.dockerenv 与 /proc 不存在），单测全部显式传原语。
+  const dockerEnvExists = options.dockerEnvExists ?? (platform === 'win32' ? false : (() => { try { return existsSync('/.dockerenv') } catch (_) { return false } })())
+  const cgroupText = options.cgroupText ?? (platform === 'win32' ? '' : (() => { try { return readFileSync('/proc/1/cgroup', 'utf8') } catch (_) { return '' } })())
 
   const forced = typeof env.DSH_SERVICE_RUNTIME_ENV === 'string' ? env.DSH_SERVICE_RUNTIME_ENV.trim().toLowerCase() : ''
   if (forced === 'manual') return { platform, supervisorKind: null, manualStartLikely: true }

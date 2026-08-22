@@ -1467,3 +1467,82 @@ test('version responses without the runtime env field keep the legacy upgrade be
   await renderer.flush()
   assert.equal(upgradeCalls, 1, 'legacy hosts skip the confirmation gate entirely')
 })
+
+test('same-tick double invocation of the upgrade button issues a single upgrade RPC', async () => {
+  let upgradeCalls = 0
+  const renderer = createRenderer(stubPanelRpc({
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0', requiresManualRestart: true } }
+      },
+    },
+  }))
+
+  await renderer.load()
+  const click = renderer.findButton('升级插件').props.onClick
+  click()
+  click()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1, 'module-level in-flight flag blocks same-tick re-entry that closure state cannot')
+})
+
+test('upgrade click before the version snapshot lands still waits for it and shows the confirmation', async () => {
+  let upgradeCalls = 0
+  let resolveVersion
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return new Promise((resolve) => { resolveVersion = resolve })
+    if (endpoint === 'check-update') return { ok: true, value: {
+      dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', tags: { latest: '0.1.0-rc.7', next: null }, upToDate: true, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+      plugin: { current: '0.9.0', latest: '0.10.0', tags: { latest: '0.10.0', next: null }, upToDate: false, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+    } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'upgrade') {
+      upgradeCalls += 1
+      return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0', requiresManualRestart: true } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  // check-update 已返回、version 仍挂起：按钮可点，但处理器必须等共享快照落地再判环境。
+  const pending = renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 0, 'no upgrade RPC while the environment is still unknown')
+  resolveVersion({ ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: true } } })
+  await pending
+  await renderer.flush()
+  assert.equal(upgradeCalls, 0, 'the manual confirmation gate is applied once the environment resolves')
+  assert.match(renderer.text('settings.section'), /升级前请确认/)
+})
+
+test('malformed runtime env shapes degrade to legacy behavior and unknown kinds label honestly', async () => {
+  // 形状不对（manualStartLikely 非布尔）→ 视同旧宿主：不显示运行环境行、不设确认门。
+  let upgradeCalls = 0
+  const malformed = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: 'true' } },
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0', requiresManualRestart: true } }
+      },
+    },
+  }))
+  await malformed.load()
+  assert.doesNotMatch(malformed.text('settings.section'), /运行环境：/, 'bad shape is ignored, not half-applied')
+  await malformed.findButton('升级插件').props.onClick()
+  await malformed.flush()
+  assert.equal(upgradeCalls, 1, 'gate never arms on an untrusted shape')
+
+  // 未知 supervisorKind（未来宿主新增）→ 「未识别」，不得显示成「未检测到」。
+  const unrecognized = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'linux', supervisorKind: 'gvisor', manualStartLikely: false } },
+  }))
+  await unrecognized.load()
+  assert.match(unrecognized.text('settings.section'), /运行环境：检测到未识别的进程管理器/)
+  assert.doesNotMatch(unrecognized.text('settings.section'), /未检测到进程管理器/)
+})
