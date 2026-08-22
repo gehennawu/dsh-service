@@ -1013,12 +1013,12 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
   return permissionSnapshot(ctx, dshHome, plans)
 }
 
-// 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动 → warning（重启无保障）；
-// unknown → info（未检测到管理器也无终端特征：输出重定向、NSSM/WinSW 等包装器——维持现状
-// 行为本就是默认路径，不算异常，只提示可显式声明）。detail 是客户端映射词典的令牌。
+// 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动 → warning 但带 advisory 标记
+//（黄色行内提示，不参与 overall 聚合、不点亮标签 ⚠ 与顶部提醒——用户复核口径）；unknown →
+// info。detail 是客户端映射词典的令牌。
 function runtimeEnvCheck(runtimeEnv) {
   if (runtimeEnv === undefined || runtimeEnv === null) return null
-  if (runtimeEnv.manualStartLikely === true) return { id: 'runtime-env', status: 'warning', detail: 'manual' }
+  if (runtimeEnv.manualStartLikely === true) return { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true }
   if (runtimeEnv.supervisorKind === 'declared') return { id: 'runtime-env', status: 'ok', detail: 'declared' }
   if (typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0) {
     return { id: 'runtime-env', status: 'ok', detail: runtimeEnv.supervisorKind }
@@ -1081,8 +1081,9 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   add('node-version', Number.isFinite(nodeMajor) && nodeMajor >= requiredNodeMajor ? 'ok' : 'warning', `${process.version}:${requiredNodeMajor}`)
 
   let status = 'ok'
+  // advisory 警告（手动启动环境的黄色提示）只做行内呈现：不把 overall 拉成 warning。
   if (checks.some((check) => check.status === 'error')) status = 'error'
-  else if (checks.some((check) => check.status === 'warning')) status = 'warning'
+  else if (checks.some((check) => check.status === 'warning' && check.advisory !== true)) status = 'warning'
   return { status, checkedAt: Date.now(), checks }
 }
 

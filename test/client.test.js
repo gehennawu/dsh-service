@@ -1404,8 +1404,8 @@ test('manual-launch environment confirms before upgrade and shows hand-restart g
   }))
 
   await renderer.load()
-  // 概览版本卡显示运行环境一行（疑似手动启动）。
-  assert.match(renderer.text('settings.section'), /运行环境：疑似终端手动启动/)
+  // 版本卡不再显示运行环境行（用户复核口径）；升级前仍需确认后果。
+  assert.doesNotMatch(renderer.text('settings.section'), /运行环境：/)
   await renderer.findButton('升级插件').props.onClick()
   await renderer.flush()
   assert.equal(upgradeCalls, 0, 'first click only opens the consequence confirmation')
@@ -1442,8 +1442,6 @@ test('managed environment upgrades immediately, keeps recovery polling, and labe
   }))
 
   await renderer.load()
-  assert.match(renderer.text('settings.section'), /运行环境：pm2/)
-  assert.doesNotMatch(renderer.text('settings.section'), /疑似终端手动启动/)
   await renderer.findButton('升级插件').props.onClick()
   await renderer.flush()
   assert.equal(upgradeCalls, 1, 'no confirmation gate when a process manager is detected')
@@ -1521,8 +1519,8 @@ test('upgrade click before the version snapshot lands still waits for it and sho
   assert.match(renderer.text('settings.section'), /升级前请确认/)
 })
 
-test('malformed runtime env shapes degrade to legacy behavior and unknown kinds label honestly', async () => {
-  // 形状不对（manualStartLikely 非布尔）→ 视同旧宿主：不显示运行环境行、不设确认门。
+test('malformed runtime env shapes degrade to legacy behavior', async () => {
+  // 形状不对（manualStartLikely 非布尔）→ 视同旧宿主：不设确认门，直接按现状行为升级。
   let upgradeCalls = 0
   const malformed = createRenderer(stubPanelRpc({
     version: { runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: 'true' } },
@@ -1534,18 +1532,9 @@ test('malformed runtime env shapes degrade to legacy behavior and unknown kinds 
     },
   }))
   await malformed.load()
-  assert.doesNotMatch(malformed.text('settings.section'), /运行环境：/, 'bad shape is ignored, not half-applied')
   await malformed.findButton('升级插件').props.onClick()
   await malformed.flush()
   assert.equal(upgradeCalls, 1, 'gate never arms on an untrusted shape')
-
-  // 未知 supervisorKind（未来宿主新增）→ 「未识别」，不得显示成「未检测到」。
-  const unrecognized = createRenderer(stubPanelRpc({
-    version: { runtimeEnv: { platform: 'linux', supervisorKind: 'gvisor', manualStartLikely: false } },
-  }))
-  await unrecognized.load()
-  assert.match(unrecognized.text('settings.section'), /运行环境：检测到未识别的进程管理器/)
-  assert.doesNotMatch(unrecognized.text('settings.section'), /未检测到进程管理器/)
 })
 
 test('overview shows platform and node version metrics and diagnostics renders the runtime-env and node checks', async () => {
@@ -1558,7 +1547,7 @@ test('overview shows platform and node version metrics and diagnostics renders t
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
     if (endpoint === 'diagnostics') return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [
-      { id: 'runtime-env', status: 'warning', detail: 'manual' },
+      { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true },
       { id: 'node-version', status: 'warning', detail: 'v20.11.0:22' },
     ] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
@@ -1603,6 +1592,32 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
   assert.match(renderer.text('settings.section'), /运行环境.*由Docker 容器管理，重启后会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v22\.14\.0，满足 ≥22 要求/)
   assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
+})
+
+test('a manual-launch runtime-env check renders yellow inline but raises no alerts', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: true } } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'win32', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true },
+      { id: 'node-version', status: 'ok', detail: 'v22.14.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  // 黄色行内提示保留：检查文案照常展示；但不出现健康提醒横幅、服务控制提醒与任何 ⚠ 标志。
+  assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
+  assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
+  assert.doesNotMatch(renderer.text('settings.section'), /服务控制提醒/)
+  assert.doesNotMatch(renderer.text('settings.section'), /⚠/)
 })
 
 test('an unknown runtime environment renders as informational without warning marks', async () => {

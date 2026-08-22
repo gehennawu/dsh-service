@@ -151,7 +151,6 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）',
       'update.failNotWorkspace': 'profile 不是 pnpm workspace 却传入了 -w',
       'update.failIgnoredBuilds': '依赖构建脚本被 pnpm 默认拦截，无法完成升级',
-      'env.line': '运行环境：{value}',
       'env.kind.docker': 'Docker 容器',
       'env.kind.container': '容器（containerd/Kubernetes）',
       'env.kind.systemd': 'systemd 服务',
@@ -159,9 +158,6 @@ window.__ModuleLoader__.load({
       'env.kind.supervisord': 'supervisord',
       'env.kind.kubernetes': 'Kubernetes',
       'env.kind.declared': '外部进程管理器（手动指定）',
-      'env.kind.unrecognized': '检测到未识别的进程管理器',
-      'env.likelyManual': '疑似终端手动启动',
-      'env.unknown': '未检测到进程管理器',
       'update.manualConfirmTitle': '升级前请确认：当前疑似手动启动环境',
       'update.manualConfirm': '未检测到 Docker/systemd/pm2 等进程管理器。升级完成后 DSH 不会自动重启——新版本写入磁盘，但当前进程继续运行旧版本；你需要手动关闭并重新运行 dsh 才能启用新版本。',
       'update.manualProceed': '仍要升级',
@@ -387,7 +383,6 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm refused to add at the workspace root (missing -w)',
       'update.failNotWorkspace': '-w was passed but the profile is not a pnpm workspace',
       'update.failIgnoredBuilds': 'Dependency build scripts are blocked by pnpm by default, so the upgrade could not finish',
-      'env.line': 'Runtime environment: {value}',
       'env.kind.docker': 'Docker container',
       'env.kind.container': 'Container (containerd/Kubernetes)',
       'env.kind.systemd': 'systemd service',
@@ -395,9 +390,6 @@ window.__ModuleLoader__.load({
       'env.kind.supervisord': 'supervisord',
       'env.kind.kubernetes': 'Kubernetes',
       'env.kind.declared': 'External process manager (declared manually)',
-      'env.kind.unrecognized': 'Unrecognized process manager detected',
-      'env.likelyManual': 'Likely launched manually from a terminal',
-      'env.unknown': 'No process manager detected',
       'update.manualConfirmTitle': 'Confirm before upgrading: manual launch suspected',
       'update.manualConfirm': 'No process manager such as Docker/systemd/pm2 was detected. After the upgrade DSH will NOT restart automatically — the new version is written to disk while the current process keeps running the old one; close and rerun dsh manually to activate it.',
       'update.manualProceed': 'Upgrade anyway',
@@ -1764,18 +1756,7 @@ window.__ModuleLoader__.load({
         const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
-        // 运行环境一行：managed 显示管理器标签；疑似手动启动用警示色；未知非空 kind 不得
-        // 显示成「未检测到」（那是 supervisorKind 为 null 时的语义）。
-        const runtimeEnvKinds = ['docker', 'container', 'systemd', 'pm2', 'supervisord', 'kubernetes', 'declared']
-        const runtimeEnvLabelKey = runtimeEnv === null
-          ? null
-          : runtimeEnv.manualStartLikely === true
-            ? 'env.likelyManual'
-            : typeof runtimeEnv.supervisorKind === 'string' && runtimeEnvKinds.includes(runtimeEnv.supervisorKind)
-              ? `env.kind.${runtimeEnv.supervisorKind}`
-              : typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0
-                ? 'env.kind.unrecognized'
-                : 'env.unknown'
+        // 版本卡只放版本与升级：运行环境信息在健康诊断检查项与重启确认提示中呈现（用户复核口径）。
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
@@ -1786,10 +1767,6 @@ window.__ModuleLoader__.load({
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
                   React.createElement('div', null, translate('update.details.latest', { version: dshUpdate?.latest || '—' })),
                   channelLines(translate, dshUpdate?.tags))
-              : null,
-            runtimeEnvLabelKey !== null
-              ? React.createElement('div', { 'data-testid': 'runtime-env-line', style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: runtimeEnv.manualStartLikely === true ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)' } },
-                  translate('env.line', { value: translate(runtimeEnvLabelKey) }))
               : null,
             upgradeManualConfirm
               ? React.createElement('div', { 'data-testid': 'upgrade-manual-confirm', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.08)', border: '1px solid rgba(211,51,51,0.3)' } },
@@ -1847,7 +1824,8 @@ window.__ModuleLoader__.load({
         // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
         const notifyBlock = React.createElement('div', null, notificationBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
-        const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || check.status === 'warning') === true
+        // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
+        const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
         const tabWarnings = {
           overview: false,
           notify: false,

@@ -21,14 +21,14 @@ The Settings panel "Service Control" page has six top-level tabs: **Overview, No
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` command also available in conversations; automatically refuses when active work is detected
 - Automatically probes for the new process after restart and reloads the page; manual reload available after 60 seconds
-- Overview shows the runtime environment; when a manual terminal launch is suspected, the confirmation flow warns that nothing will bring the process back
+- When a manual terminal launch is suspected, the restart confirmation flow warns that nothing will bring the process back, and Health diagnostics marks it with a yellow inline caution
 - Optional `Restart` entry at the bottom of the settings left navigation, enabled by a switch in the Restart tab (off by default), sharing the exact same confirmation flow as the Restart tab
 
 ### Health diagnostics
 
 - Shows uptime, memory, session count, active agents, and background jobs
 - The "Process and runtime" card shows platform, architecture, and Node version
-- Full diagnostics check session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node runtime version; a manual launch is flagged as a warning (no restart assurance), while an unrecognized environment is informational only (not a warning) — both can be declared explicitly via `DSH_SERVICE_RUNTIME_ENV`
+- Full diagnostics check session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node runtime version; a manual launch is marked with a yellow inline caution (no restart assurance) that does not trigger the health alert banner, the service-control reminder, or the tab ⚠; an unrecognized environment and an empty backup list are informational only — all can be declared explicitly via `DSH_SERVICE_RUNTIME_ENV`
 - Having no backups is an informational note, not a warning, and does not light the Health tab ⚠
 - File-permission deep scan and repair: checks whether the Agent can read/write DSH_HOME and workspaces; repair requires two-step confirmation
 
@@ -93,7 +93,7 @@ dsh plugin --profile web add link:/path/to/dsh-service
 
 The plugin only sends an exit signal; it does not start the process again. Without a process manager, selecting restart stops DSH Web.
 
-The plugin passively detects whether a process manager is present (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the environment as a likely manual launch, labels the runtime environment in the overview, and switches one-click upgrade to keep the process running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers like NSSM/WinSW; set `DSH_SERVICE_RUNTIME_ENV=managed|manual` to declare it explicitly.
+The plugin passively detects whether a process manager is present (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the environment as a likely manual launch, flags it in Health diagnostics with a yellow caution, and switches one-click upgrade to keep the process running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers like NSSM/WinSW; set `DSH_SERVICE_RUNTIME_ENV=managed|manual` to declare it explicitly.
 
 ### Docker Compose
 

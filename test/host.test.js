@@ -1323,7 +1323,7 @@ test('upgrade in a declared manual environment installs without exiting and vers
   assert.equal(scheduled.length, 0, 'no exit is scheduled when nothing would restart the process')
 })
 
-test('diagnostics flags a declared manual environment as a warning with remedy tokens', async (t) => {
+test('diagnostics keeps a declared manual environment advisory: yellow inline, overall stays ok', async (t) => {
   const home = await makeHome(t, 'dsh-service-diag-manual-')
   const { handler } = createHost({
     env: { DSH_SERVICE_RUNTIME_ENV: 'manual', DSH_HOME: home },
@@ -1335,13 +1335,14 @@ test('diagnostics flags a declared manual environment as a warning with remedy t
   })
   const result = await handler('diagnostics', {})
   assert.equal(result.ok, true)
-  assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'warning', detail: 'manual' })
-  assert.equal(result.value.status, 'warning')
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true })
+  // advisory 警告不把 overall 拉成 warning：没有其他告警源时整体仍是 ok。
+  assert.equal(result.value.status, 'ok')
 })
 
-test('runtime env check maps each environment to ok, warning, or a non-alarming info', () => {
-  // 疑似手动终端启动 → warning（重启无保障，需要用户行动）。
-  assert.deepEqual(runtimeEnvCheck({ platform: 'win32', supervisorKind: null, manualStartLikely: true }), { id: 'runtime-env', status: 'warning', detail: 'manual' })
+test('runtime env check maps each environment to ok, advisory warning, or a non-alarming info', () => {
+  // 疑似手动终端启动 → warning + advisory：黄色行内提示，不参与 overall 聚合、不点亮标签 ⚠。
+  assert.deepEqual(runtimeEnvCheck({ platform: 'win32', supervisorKind: null, manualStartLikely: true }), { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true })
   // 已识别管理器与用户声明 → ok。
   assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: 'docker', manualStartLikely: false }), { id: 'runtime-env', status: 'ok', detail: 'docker' })
   assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: 'declared', manualStartLikely: false }), { id: 'runtime-env', status: 'ok', detail: 'declared' })
