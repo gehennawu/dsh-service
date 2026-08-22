@@ -2,7 +2,7 @@
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, existsSync, readFileSync } from 'node:fs'
 import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -794,7 +794,8 @@ function classifyUpgradeFailure(output) {
 // 一键升级：走「dsh plugin --profile <p> add <pkg>@<版本>」，落在 DSH 真正读取的 profile
 // node_modules，替代旧的无升级语义的 npm install -g。命令、包名、版本全部宿主白名单常量。
 // 安全教义守卫：活动工作拒用、link/file 拒绝、latest 不高于当前版本拒绝（防降级）一律先于网络。
-async function upgradePlugin(ctx, dshHome) {
+// runtimeEnv 来自 apply() 的 detectRuntimeEnv()：疑似终端手动启动时安装成功不调度 exit(42)。
+async function upgradePlugin(ctx, dshHome, runtimeEnv) {
   const activity = collectActiveWork(ctx)
   if (activity.hasActive) throw new Error('active-work')
 
@@ -848,6 +849,12 @@ async function upgradePlugin(ctx, dshHome) {
     ? compareSemver(installed, pluginVersion) > 0
     : installed !== pluginVersion
   if (!advanced) throw new Error('upgrade-stale')
+
+  // 手动终端启动环境没有进程管理器拉起 exit(42)：保持旧版本继续服务，把重启时机交给用户。
+  // requiresManualRestart 让客户端改走「手动重启指引」而不是恢复轮询（不会有新实例）。
+  if (runtimeEnv !== undefined && runtimeEnv !== null && runtimeEnv.manualStartLikely === true) {
+    return { result: 'upgraded', profile: profile.name, previous: pluginVersion, installed, requiresManualRestart: true }
+  }
 
   scheduleRestart(ctx)
   return { result: 'upgraded', profile: profile.name, previous: pluginVersion, installed }
@@ -1127,6 +1134,50 @@ function collectActiveWork(ctx) {
   return { hasActive: items.length > 0, items }
 }
 
+// ---- 运行环境探测（v0.16：Windows 终端手动启动场景，用户点名）----
+// 重启 = process.exit(42)，依赖外层进程管理器拉起（见 AGENTS.md）；PowerShell/CMD 手动
+// 启动时没有任何东西会把它拉起来。这里只用跨平台被动信号（env + 固定路径 fs + Node 自带
+// isTTY，零 spawn、浏览器零输入）把环境分成三态：
+//   supervisorKind 非 null —— 检测到管理器，exit 后会被自动拉起，维持自动重启；
+//   manualStartLikely=true —— 无管理器且 stdin/stdout 双 TTY（终端直启特征），升级后宿主
+//                            不自动退出，客户端改示手动重启指引；
+//   其余 —— unknown（输出重定向、NSSM/WinSW 等包装器），维持现状不折腾。
+// 探测不到的包装器可用 DSH_SERVICE_RUNTIME_ENV=managed|manual 由用户显式声明。
+const RUNTIME_SUPERVISOR_ENV = [
+  ['pm2', ['pm_id', 'PM2_HOME', 'pm_uptime']],
+  ['systemd', ['INVOCATION_ID', 'JOURNAL_STREAM', 'NOTIFY_SOCKET']],
+  ['supervisord', ['SUPERVISOR_ENABLED', 'SUPERVISOR_PROCESS_NAME']],
+  ['kubernetes', ['KUBERNETES_SERVICE_HOST']],
+]
+
+function detectRuntimeEnv(options = {}) {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const stdinIsTTY = options.stdinIsTTY ?? (process.stdin ? process.stdin.isTTY === true : false)
+  const stdoutIsTTY = options.stdoutIsTTY ?? (process.stdout ? process.stdout.isTTY === true : false)
+  // 默认探测器只在未被注入时执行；单测全部显式传原语，不碰真实 fs。
+  const dockerEnvExists = options.dockerEnvExists ?? (() => { try { return existsSync('/.dockerenv') } catch (_) { return false } })()
+  const cgroupText = options.cgroupText ?? (() => { try { return readFileSync('/proc/1/cgroup', 'utf8') } catch (_) { return '' } })()
+
+  const forced = typeof env.DSH_SERVICE_RUNTIME_ENV === 'string' ? env.DSH_SERVICE_RUNTIME_ENV.trim().toLowerCase() : ''
+  if (forced === 'manual') return { platform, supervisorKind: null, manualStartLikely: true }
+  if (forced === 'managed') return { platform, supervisorKind: 'declared', manualStartLikely: false }
+
+  for (const [kind, keys] of RUNTIME_SUPERVISOR_ENV) {
+    if (keys.some((key) => env[key] !== undefined && env[key] !== '')) {
+      return { platform, supervisorKind: kind, manualStartLikely: false }
+    }
+  }
+  // /.dockerenv 与 /proc 只在 POSIX 内核上存在；win32 原生进程不做这两个探测。
+  if (platform !== 'win32') {
+    if (dockerEnvExists === true) return { platform, supervisorKind: 'docker', manualStartLikely: false }
+    if (/docker/i.test(cgroupText)) return { platform, supervisorKind: 'docker', manualStartLikely: false }
+    if (/containerd|kubepods|lxc|podman/i.test(cgroupText)) return { platform, supervisorKind: 'container', manualStartLikely: false }
+  }
+  if (stdinIsTTY === true && stdoutIsTTY === true) return { platform, supervisorKind: null, manualStartLikely: true }
+  return { platform, supervisorKind: null, manualStartLikely: false }
+}
+
 function scheduleRestart(ctx) {
   const doExit = () => {
     try {
@@ -1143,6 +1194,8 @@ function scheduleRestart(ctx) {
 
 function apply(ctx) {
   const dshHome = resolveDshHome()
+  // 进程运行环境在生命周期内不变：挂载时探测一次，version RPC 与升级分支共用。
+  const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
   const downloadTokens = new Map()
   let usageIndexPromise = loadUsageIndex(dshHome)
@@ -1205,7 +1258,9 @@ function apply(ctx) {
   // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
   ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {
     if (endpoint === 'version') {
-      return { ok: true, value: { current: dshVersion, pluginVersion, instanceId } }
+      // runtimeEnv 随进程身份（instanceId）一起返回：概览展示、升级前置确认与重启警告共用，
+      // 客户端对缺字段的老宿主静默降级。
+      return { ok: true, value: { current: dshVersion, pluginVersion, instanceId, runtimeEnv } }
     }
 
     if (endpoint === 'check-update') {
@@ -1243,7 +1298,7 @@ function apply(ctx) {
 
     if (endpoint === 'upgrade') {
       try {
-        return { ok: true, value: await upgradePlugin(ctx, dshHome) }
+        return { ok: true, value: await upgradePlugin(ctx, dshHome, runtimeEnv) }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -1393,5 +1448,5 @@ function apply(ctx) {
   }, { authority: 'loopback' })
 }
 
-export { apply, inject, name }
-export default { apply, inject, name }
+export { apply, detectRuntimeEnv, inject, name }
+export default { apply, detectRuntimeEnv, inject, name }

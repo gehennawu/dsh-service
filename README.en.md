@@ -14,13 +14,14 @@ The Settings panel "Service Control" page has six top-level tabs: **Overview, No
 
 - Displays current DSH and plugin versions with links to GitHub Releases
 - Automatically checks npm registry for stable and preview releases; when a new version exists, the right-side status text (chevron + `New version`) is clickable to expand/collapse, showing the current/latest versions and both dist-tag versions inline, each with npmjs and npmmirror links (npmjs.com is blocked on some networks; npmmirror serves as the mirror entry)
-- One-click plugin upgrade with automatic restart after completion
+- One-click plugin upgrade with automatic restart after completion; when no process manager is detected (for example, a manual launch from a Windows terminal), the upgrade first confirms the consequences, then keeps the process running and shows manual-restart instructions
 
 ### Safe restart
 
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` command also available in conversations; automatically refuses when active work is detected
 - Automatically probes for the new process after restart and reloads the page; manual reload available after 60 seconds
+- Overview shows the runtime environment; when a manual terminal launch is suspected, the confirmation flow warns that nothing will bring the process back
 - Optional `Restart` entry at the bottom of the settings left navigation, enabled by a switch in the Restart tab (off by default), sharing the exact same confirmation flow as the Restart tab
 
 ### Health diagnostics
@@ -90,6 +91,8 @@ dsh plugin --profile web add link:/path/to/dsh-service
 
 The plugin only sends an exit signal; it does not start the process again. Without a process manager, selecting restart stops DSH Web.
 
+The plugin passively detects whether a process manager is present (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the environment as a likely manual launch, labels the runtime environment in the overview, and switches one-click upgrade to keep the process running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers like NSSM/WinSW; set `DSH_SERVICE_RUNTIME_ENV=managed|manual` to declare it explicitly.
+
 ### Docker Compose
 
 ```yaml
@@ -121,6 +124,8 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | Linux + systemd / pm2 | Expected to work | Managed externally | Not separately tested |
 | macOS / Windows + pm2 or similar | Not blocked by the code | Managed externally | Not tested |
 | Direct `dsh web` execution | Supported | Not supported | Expected behavior |
+
+When launched directly from a terminal (PowerShell/CMD/bash), the panel labels the environment as a likely manual launch and the one-click upgrade no longer exits the process automatically.
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 

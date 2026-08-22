@@ -14,13 +14,14 @@
 
 - 显示当前 DSH 和插件版本，版本号链接到 GitHub Releases
 - 自动检查 npm registry 的正式版和预览版；有新版本时右侧「小三角 + 有新版本」状态文本可点击展开/收起，行内展示当前/最新版本与正式版/预览版双 tag，版本号分别带 npmjs 与 npmmirror 链接（部分网络会被 npmjs.com 拦截，npmmirror 作为镜像入口）
-- 一键升级插件，升级后自动重启
+- 一键升级插件，升级后自动重启；未检测到进程管理器（如在 Windows 终端手动启动）时，升级前先确认后果，安装完成后保持运行并提示手动重启
 
 ### 安全重启
 
 - 重启前检测活跃 Agent、后台任务和终端，展示清单并要求显式确认
 - 对话中输入 `/restart` 也可触发，检测到运行中工作时自动拒绝
 - 重启后自动探测新进程并刷新页面，60 秒未恢复时提供手动刷新
+- 概览显示「运行环境」；疑似终端手动启动时，确认流程会提示「退出后不会自动拉起」
 - 可在「重启」标签开启「设置页左列显示入口」开关（默认关闭），开启后在设置页左侧标签列底部显示「重启」快捷入口，与「重启」标签共用同一套确认流程
 
 ### 健康诊断
@@ -90,6 +91,8 @@ dsh plugin --profile web add link:/path/to/dsh-service
 
 插件只发送退出信号，不负责重新启动进程。没有进程管理器时，点击重启会直接停止 DSH Web。
 
+插件会用被动信号（环境变量、`/.dockerenv`、`/proc/1/cgroup`、终端 TTY）判断当前是否由进程管理器拉起：检测到 Docker/systemd/pm2/supervisord/Kubernetes 时照常自动重启；都没有且 stdin/stdout 是交互终端时视为「疑似手动启动」，概览会标注运行环境，一键升级改为「不自动退出 + 提示手动重启」。启发式无法覆盖输出重定向、NSSM/WinSW 等场景，可用环境变量 `DSH_SERVICE_RUNTIME_ENV=managed|manual` 显式声明。
+
 ### Docker Compose
 
 ```yaml
@@ -121,6 +124,8 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | Linux + systemd / pm2 | 预期支持 | 由进程管理器负责 | 未单独验证 |
 | macOS / Windows + pm2 等 | 代码未限制 | 由进程管理器负责 | 未验证 |
 | 直接运行 `dsh web` | 支持 | 不支持 | 预期行为 |
+
+直接在终端运行（PowerShell/CMD/bash）时，面板会标注「疑似终端手动启动」，一键升级不再自动退出进程。
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 和 Client 两半插件。检查更新需要访问 `registry.npmjs.org`；网络失败不影响其他功能。
 

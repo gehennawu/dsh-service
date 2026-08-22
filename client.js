@@ -141,6 +141,21 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）',
       'update.failNotWorkspace': 'profile 不是 pnpm workspace 却传入了 -w',
       'update.failIgnoredBuilds': '依赖构建脚本被 pnpm 默认拦截，无法完成升级',
+      'env.label': '运行环境',
+      'env.kind.docker': 'Docker 容器',
+      'env.kind.container': '容器（containerd/Kubernetes）',
+      'env.kind.systemd': 'systemd 服务',
+      'env.kind.pm2': 'pm2',
+      'env.kind.supervisord': 'supervisord',
+      'env.kind.kubernetes': 'Kubernetes',
+      'env.kind.declared': '外部进程管理器（手动指定）',
+      'env.likelyManual': '疑似终端手动启动',
+      'env.unknown': '未检测到进程管理器',
+      'update.manualConfirmTitle': '升级前请确认：当前疑似手动启动环境',
+      'update.manualConfirm': '未检测到 Docker/systemd/pm2 等进程管理器。升级完成后 DSH 不会自动重启——新版本写入磁盘，但当前进程继续运行旧版本；你需要手动关闭并重新运行 dsh 才能启用新版本。',
+      'update.manualProceed': '仍要升级',
+      'update.manualRestartTitle': '升级完成，需要手动重启',
+      'update.manualRestartBody': '新版本已安装，但当前进程仍在运行旧版本。请在运行 dsh 的终端窗口按 Ctrl+C（或直接关闭窗口），然后重新启动 dsh。',
       'restart.title': '服务重启',
       'restart.description': '重启 dsh web 进程。运行中的工作会中断，持久化会话可恢复。也可在对话中输入 /restart。',
       'restart.button': '重启 dsh web',
@@ -151,6 +166,8 @@ window.__ModuleLoader__.load({
       'restart.sent': '重启指令已发出。',
       'restart.sentHint': '页面连接即将断开，服务恢复后将自动刷新。',
       'restart.idleHint': '当前没有检测到运行中的工作。确认后将断开连接，等待服务自动重启。',
+      'restart.manualWarn': '当前疑似终端手动启动环境：确认后进程将退出且不会自动拉起，需要你手动重新运行 dsh。',
+      'restart.sentManualHint': '当前为手动启动环境，服务不会自动拉起。请在原终端重新运行 dsh；服务起来后刷新此页面即可恢复。',
       'restart.navToggle': '设置页左列显示「重启」入口',
       'restart.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示快捷重启入口',
       'activity.agent': 'Agent',
@@ -349,6 +366,21 @@ window.__ModuleLoader__.load({
       'update.failAddingToRoot': 'pnpm refused to add at the workspace root (missing -w)',
       'update.failNotWorkspace': '-w was passed but the profile is not a pnpm workspace',
       'update.failIgnoredBuilds': 'Dependency build scripts are blocked by pnpm by default, so the upgrade could not finish',
+      'env.label': 'Runtime environment',
+      'env.kind.docker': 'Docker container',
+      'env.kind.container': 'Container (containerd/Kubernetes)',
+      'env.kind.systemd': 'systemd service',
+      'env.kind.pm2': 'pm2',
+      'env.kind.supervisord': 'supervisord',
+      'env.kind.kubernetes': 'Kubernetes',
+      'env.kind.declared': 'External process manager (declared manually)',
+      'env.likelyManual': 'Likely launched manually from a terminal',
+      'env.unknown': 'No process manager detected',
+      'update.manualConfirmTitle': 'Confirm before upgrading: manual launch suspected',
+      'update.manualConfirm': 'No process manager such as Docker/systemd/pm2 was detected. After the upgrade DSH will NOT restart automatically — the new version is written to disk while the current process keeps running the old one; close and rerun dsh manually to activate it.',
+      'update.manualProceed': 'Upgrade anyway',
+      'update.manualRestartTitle': 'Upgrade finished — manual restart required',
+      'update.manualRestartBody': 'The new version is installed, but the current process still runs the old one. Press Ctrl+C in the terminal running dsh (or simply close the window), then start dsh again.',
       'restart.title': 'Service restart',
       'restart.description': 'Restart the dsh web process. Active work will be interrupted; persisted sessions can be resumed. You can also type /restart in a conversation.',
       'restart.button': 'Restart dsh web',
@@ -359,6 +391,8 @@ window.__ModuleLoader__.load({
       'restart.sent': 'Restart request sent.',
       'restart.sentHint': 'The connection will close shortly. The page will reload automatically after recovery.',
       'restart.idleHint': 'No active work was detected. Confirm to disconnect and wait for the service to restart.',
+      'restart.manualWarn': 'This looks like a manual terminal launch: once confirmed the process exits and nothing restarts it — you must run dsh again yourself.',
+      'restart.sentManualHint': 'This is a manual-launch environment, so the service will not come back on its own. Run dsh again in the original terminal; refresh this page once the service is up.',
       'restart.navToggle': 'Show "Restart" entry in settings left nav',
       'restart.navToggleHint': 'Off by default; when enabled, a quick-restart entry appears at the bottom of the settings left navigation',
       'activity.agent': 'Agent',
@@ -607,6 +641,32 @@ window.__ModuleLoader__.load({
         }, [])
         return snapshot
       }
+
+      // 运行环境（version RPC 随 instanceId 返回）：概览展示、升级前置确认与重启警告共用。
+      // null = 宿主未返回该字段（旧版本）或尚未拉取，一切行为静默退回现状。
+      const runtimeEnvListeners = new Set()
+      let runtimeEnvState = null
+      // 每次页面加载只发一次带运行环境意图的 version 请求：ServicePanel 挂载即认领，
+      // 左列专属入口单独先挂载时才由这里兜底，避免同一面板重复打 version。
+      let runtimeEnvRequested = false
+      const setRuntimeEnvState = (next) => {
+        runtimeEnvState = next
+        for (const listener of runtimeEnvListeners) listener(next)
+      }
+      const useRuntimeEnv = () => {
+        const [snapshot, setSnapshot] = useState(runtimeEnvState)
+        useEffect(() => {
+          runtimeEnvListeners.add(setSnapshot)
+          setSnapshot(runtimeEnvState)
+          return () => runtimeEnvListeners.delete(setSnapshot)
+        }, [])
+        return snapshot
+      }
+      const applyVersionRuntimeEnv = (value) => {
+        if (value && value.runtimeEnv !== undefined && value.runtimeEnv !== null && typeof value.runtimeEnv === 'object') {
+          setRuntimeEnvState(value.runtimeEnv)
+        }
+      }
       const checkRestart = async () => {
         setRestartFlow({ ...restartFlow, busy: true, error: null })
         try {
@@ -692,6 +752,7 @@ window.__ModuleLoader__.load({
         recoveryGeneration += 1
         recoveryListeners.clear()
         restartFlowListeners.clear()
+        runtimeEnvListeners.clear()
         updateListeners.clear()
       }, 'dsh-service recovery')
 
@@ -797,6 +858,15 @@ window.__ModuleLoader__.load({
       function RestartSection({ showNavToggle }) {
         const translate = useTranslation()
         const flow = useRestartFlow()
+        const runtimeEnv = useRuntimeEnv()
+        // 左列专属入口可能先于「服务控制」面板挂载：这里兜底拉一次 version 取 runtimeEnv。
+        useEffect(() => {
+          if (runtimeEnvRequested) return
+          runtimeEnvRequested = true
+          ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
+            if (res && res.ok) applyVersionRuntimeEnv(res.value)
+          }).catch(() => {})
+        }, [])
         const [navEnabled, setNavEnabled] = useRestartNavEnabled()
         const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
         const danger = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
@@ -807,12 +877,12 @@ window.__ModuleLoader__.load({
         const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
-        // 重启后提示
+        // 重启后提示：手动启动环境不会自动拉起，等待文案换成手动指引。
         if (flow.stage === 2) {
           return React.createElement('div', { 'data-testid': 'restart-card', style: card },
             React.createElement('div', { style: sectionTitle }, translate('restart.title')),
             React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.sent')),
-            React.createElement('p', { style: hint }, translate('restart.sentHint')))
+            React.createElement('p', { style: hint }, translate(runtimeEnv !== null && runtimeEnv.manualStartLikely === true ? 'restart.sentManualHint' : 'restart.sentHint')))
         }
 
         const activityLabels = {
@@ -821,6 +891,10 @@ window.__ModuleLoader__.load({
           terminal: translate('activity.terminal'),
         }
         const activityItems = flow.activity && Array.isArray(flow.activity.items) ? flow.activity.items : []
+        // 疑似终端手动启动：确认前就把「退出后无人拉起」讲清楚，两段式确认的后果清单。
+        const manualWarn = runtimeEnv !== null && runtimeEnv.manualStartLikely === true
+          ? React.createElement('p', { 'data-testid': 'restart-manual-warn', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0 0' }) }, translate('restart.manualWarn'))
+          : null
         const activityWarning = flow.stage === 3
           ? React.createElement('div', { style: { marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.1)', border: '1px solid rgba(211,51,51,0.35)' } },
               React.createElement('p', { style: { margin: '0 0 8px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } },
@@ -840,6 +914,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: sectionTitle }, translate('restart.title')),
           React.createElement('div', { 'data-testid': 'restart-region', style: displaySurface },
             React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.description')),
+            manualWarn,
             activityWarning,
             React.createElement('div', { style: row },
               flow.stage === 0
@@ -906,6 +981,9 @@ window.__ModuleLoader__.load({
         const [usageError, setUsageError] = useState(null)
         const [upgradeBusy, setUpgradeBusy] = useState(false)
         const [upgradeError, setUpgradeError] = useState(null)
+        // 疑似手动启动环境的升级两段式：确认后果 → 仍要升级；成功后不自动退出，改示指引。
+        const [upgradeManualConfirm, setUpgradeManualConfirm] = useState(false)
+        const [upgradeManualPending, setUpgradeManualPending] = useState(false)
         const [hoveredUsageSegment, setHoveredUsageSegment] = useState(null)
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
@@ -916,14 +994,17 @@ window.__ModuleLoader__.load({
         const [channelOpen, setChannelOpen] = useState(false)
         // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
         const restartFlowState = useRestartFlow()
+        const runtimeEnv = useRuntimeEnv()
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
         useEffect(() => {
+          runtimeEnvRequested = true
           ctx.connection.rpc.call('/dsh-service', 'version', {}).then((res) => {
             if (res && res.ok) {
               setVersion(res.value.current)
               setPluginVersion(res.value.pluginVersion || null)
+              applyVersionRuntimeEnv(res.value)
             }
           }).catch(() => {})
         }, [])
@@ -1173,6 +1254,13 @@ window.__ModuleLoader__.load({
           'ignored-builds': 'update.failIgnoredBuilds',
         }
         const upgradePlugin = async () => {
+          // 疑似终端手动启动：升级成功不会自动重启，先两段式确认后果再动手（安全教义）。
+          if (!upgradeManualConfirm && runtimeEnv !== null && runtimeEnv.manualStartLikely === true) {
+            setUpgradeError(null)
+            setUpgradeManualConfirm(true)
+            return
+          }
+          setUpgradeManualConfirm(false)
           setUpgradeBusy(true)
           setUpgradeError(null)
           try {
@@ -1188,6 +1276,11 @@ window.__ModuleLoader__.load({
               } else {
                 setUpgradeError(translate('update.upgradeErrorDetail', { detail: code || 'upgrade failed' }))
               }
+              return
+            }
+            if (res.value && res.value.requiresManualRestart === true) {
+              // 宿主保持运行（没有 exit，就不会有新实例）：不启动恢复轮询，改示手动重启指引。
+              setUpgradeManualPending(true)
               return
             }
             if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
@@ -1602,9 +1695,19 @@ window.__ModuleLoader__.load({
         const dshUpdate = updateInfo?.dsh
         const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
-        const pluginAction = pluginUpdate
+        // 确认后果或已装好待手动重启期间收起升级按钮，避免重复触发或撞 no-newer-version 守卫。
+        const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
+        // 运行环境一行：managed 显示管理器标签；疑似手动启动用警示色；unknown 照实说未检测到。
+        const runtimeEnvKinds = ['docker', 'container', 'systemd', 'pm2', 'supervisord', 'kubernetes', 'declared']
+        const runtimeEnvLabelKey = runtimeEnv === null
+          ? null
+          : runtimeEnv.manualStartLikely === true
+            ? 'env.likelyManual'
+            : typeof runtimeEnv.supervisorKind === 'string' && runtimeEnvKinds.includes(runtimeEnv.supervisorKind)
+              ? `env.kind.${runtimeEnv.supervisorKind}`
+              : 'env.unknown'
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
@@ -1615,6 +1718,23 @@ window.__ModuleLoader__.load({
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
                   React.createElement('div', null, translate('update.details.latest', { version: dshUpdate?.latest || '—' })),
                   channelLines(translate, dshUpdate?.tags))
+              : null,
+            runtimeEnvLabelKey !== null
+              ? React.createElement('div', { 'data-testid': 'runtime-env-line', style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', color: runtimeEnv.manualStartLikely === true ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)' } },
+                  `${translate('env.label')}：${translate(runtimeEnvLabelKey)}`)
+              : null,
+            upgradeManualConfirm
+              ? React.createElement('div', { 'data-testid': 'upgrade-manual-confirm', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.08)', border: '1px solid rgba(211,51,51,0.3)' } },
+                  React.createElement('p', { style: { margin: '0 0 6px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } }, translate('update.manualConfirmTitle')),
+                  React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('update.manualConfirm')),
+                  React.createElement('div', { style: row },
+                    React.createElement('button', { style: dangerGhost, 'data-variant': 'danger', disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.manualProceed')),
+                    React.createElement('button', { style: ghost, disabled: upgradeBusy, onClick: () => setUpgradeManualConfirm(false) }, translate('restart.cancel'))))
+              : null,
+            upgradeManualPending
+              ? React.createElement('div', { 'data-testid': 'upgrade-manual-pending', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-layer-2)' } },
+                  React.createElement('p', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '13px', fontWeight: 650 } }, translate('update.manualRestartTitle')),
+                  React.createElement('p', { style: Object.assign({}, hint, { margin: 0 }) }, translate('update.manualRestartBody')))
               : null,
             upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 

@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, name } from '../index.js'
+import { apply, detectRuntimeEnv, name } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -53,7 +53,9 @@ function createHost(overrides = {}) {
   const registeredCommands = []
   const services = new Map(Object.entries(overrides.services || {}))
   const previousEnv = {}
-  for (const [key, value] of Object.entries(overrides.env || {})) {
+  // 运行环境探测默认强制 managed：真实探测分支由 detectRuntimeEnv 纯函数单测覆盖，
+  // 升级/重启既有用例在裸机终端（双 TTY）里跑也不会误入「手动启动不退出」分支。
+  for (const [key, value] of Object.entries({ DSH_SERVICE_RUNTIME_ENV: 'managed', ...(overrides.env || {}) })) {
     previousEnv[key] = process.env[key]
     process.env[key] = value
   }
@@ -1244,4 +1246,65 @@ test('upgrade wraps a resolved dsh.cmd through cmd.exe on Windows with a valid c
   assert.deepEqual(spawned[0].argv, ['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c', 'C:\\Program Files\\nodejs\\dsh.CMD', 'plugin', '--profile', 'web', 'add', '-w', '@gehennawu/dsh-service@9.9.9'])
   assert.equal(spawned[0].cwd, 'C:\\FakeWindows')
   assert.ok(scheduled.length >= 1, 'restart is scheduled after a successful upgrade')
+})
+
+// ---- 运行环境探测（v0.16）----
+
+test('runtime env classifies supervisors, manual terminals, and unknown contexts from passive signals', () => {
+  // 全原语注入，不碰真实 env/fs/TTY：任何环境跑结果都一致。
+  const base = { env: {}, platform: 'linux', stdinIsTTY: false, stdoutIsTTY: false, dockerEnvExists: false, cgroupText: '' }
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { pm_id: '0' } }), { platform: 'linux', supervisorKind: 'pm2', manualStartLikely: false })
+  assert.equal(detectRuntimeEnv({ ...base, env: { INVOCATION_ID: 'x' } }).supervisorKind, 'systemd')
+  assert.equal(detectRuntimeEnv({ ...base, env: { NOTIFY_SOCKET: '/run/systemd/notify' } }).supervisorKind, 'systemd')
+  assert.equal(detectRuntimeEnv({ ...base, env: { SUPERVISOR_ENABLED: '1' } }).supervisorKind, 'supervisord')
+  assert.equal(detectRuntimeEnv({ ...base, env: { KUBERNETES_SERVICE_HOST: '10.96.0.1' } }).supervisorKind, 'kubernetes')
+  assert.equal(detectRuntimeEnv({ ...base, dockerEnvExists: true }).supervisorKind, 'docker')
+  assert.equal(detectRuntimeEnv({ ...base, cgroupText: '12:pids:/docker/abc123' }).supervisorKind, 'docker')
+  assert.equal(detectRuntimeEnv({ ...base, cgroupText: '9:cpuset:/kubepods/burstable/podxyz' }).supervisorKind, 'container')
+
+  // 双 TTY 且无正向信号 → 疑似终端手动启动；缺任一 TTY（输出重定向、服务包装器）回落 unknown。
+  const manual = detectRuntimeEnv({ ...base, stdinIsTTY: true, stdoutIsTTY: true })
+  assert.deepEqual(manual, { platform: 'linux', supervisorKind: null, manualStartLikely: true })
+  assert.equal(detectRuntimeEnv({ ...base, stdinIsTTY: true, stdoutIsTTY: false }).manualStartLikely, false)
+  assert.equal(detectRuntimeEnv({ ...base, stdinIsTTY: false, stdoutIsTTY: true }).manualStartLikely, false)
+
+  // 正向信号优先于 TTY：docker run -it 开发场景不因交互终端误报手动启动。
+  assert.equal(detectRuntimeEnv({ ...base, dockerEnvExists: true, stdinIsTTY: true, stdoutIsTTY: true }).manualStartLikely, false)
+
+  // win32 原生进程不做 /.dockerenv 与 /proc 探测，双 TTY 判定不受影响。
+  const win32 = { ...base, platform: 'win32', dockerEnvExists: true, cgroupText: 'docker' }
+  assert.equal(detectRuntimeEnv(win32).supervisorKind, null)
+  assert.equal(detectRuntimeEnv({ ...win32, stdinIsTTY: true, stdoutIsTTY: true }).manualStartLikely, true)
+
+  // DSH_SERVICE_RUNTIME_ENV 显式声明压过一切探测；无法识别的取值被忽略。
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { DSH_SERVICE_RUNTIME_ENV: 'manual' } }), { platform: 'linux', supervisorKind: null, manualStartLikely: true })
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { DSH_SERVICE_RUNTIME_ENV: 'managed' } }), { platform: 'linux', supervisorKind: 'declared', manualStartLikely: false })
+  assert.equal(detectRuntimeEnv({ ...base, env: { DSH_SERVICE_RUNTIME_ENV: 'yes', pm_id: '1' } }).supervisorKind, 'pm2')
+
+  // 真实进程只断言形状：具体分类取决于运行容器，不属于用例契约。
+  const live = detectRuntimeEnv()
+  assert.equal(typeof live.platform, 'string')
+  assert.equal(typeof live.manualStartLikely, 'boolean')
+})
+
+test('upgrade in a declared manual environment installs without exiting and version carries the runtime env', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t)
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler, scheduled } = createHost({
+    env: { DSH_SERVICE_RUNTIME_ENV: 'manual', DSH_HOME: home },
+    services: { subprocess },
+  })
+
+  const version = await handler('version', {})
+  assert.equal(version.ok, true)
+  assert.equal(version.value.runtimeEnv.manualStartLikely, true)
+  assert.equal(version.value.runtimeEnv.supervisorKind, null)
+
+  const result = await handler('upgrade', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value, { result: 'upgraded', profile: 'web', previous: pluginVersion, installed: '9.9.9', requiresManualRestart: true })
+  assert.equal(spawned.length, 1)
+  assert.equal(scheduled.length, 0, 'no exit is scheduled when nothing would restart the process')
 })

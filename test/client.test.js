@@ -1362,3 +1362,108 @@ test('upgrade failure with a known guard code renders the localized message', as
   assert.doesNotMatch(renderer.text('settings.section'), /插件升级失败（/)
   assert.doesNotMatch(renderer.text('settings.section'), /升级中/)
 })
+
+// ---- 运行环境检测与手动启动提示（v0.16）----
+
+function stubPanelRpc(extra = {}) {
+  return async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') {
+      return { ok: true, value: Object.assign({ current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' }, extra.version || {}) }
+    }
+    if (endpoint === 'check-update') return { ok: true, value: {
+      dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', tags: { latest: '0.1.0-rc.7', next: null }, upToDate: true, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+      plugin: { current: '0.9.0', latest: '0.10.0', tags: { latest: '0.10.0', next: null }, upToDate: false, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+    } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (extra.endpoints && extra.endpoints[endpoint] !== undefined) return extra.endpoints[endpoint]()
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+}
+
+test('manual-launch environment confirms before upgrade and shows hand-restart guidance without recovery polling', async () => {
+  let upgradeCalls = 0
+  let webRestarts = 0
+  const renderer = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: true } },
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0', requiresManualRestart: true } }
+      },
+      web: () => {
+        webRestarts += 1
+        return { ok: true, value: { message: 'exiting', instanceId: 'old-instance' } }
+      },
+    },
+  }))
+
+  await renderer.load()
+  // 概览版本卡显示运行环境一行（疑似手动启动）。
+  assert.match(renderer.text('settings.section'), /运行环境：疑似终端手动启动/)
+  await renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 0, 'first click only opens the consequence confirmation')
+  assert.match(renderer.text('settings.section'), /升级前请确认/)
+  await renderer.findButton('仍要升级').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1)
+  assert.match(renderer.text('settings.section'), /升级完成，需要手动重启/)
+  assert.match(renderer.text('settings.section'), /重新启动 dsh/)
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, 'no recovery polling while the process keeps running')
+
+  // 重启标签：确认流程展示同源警告；发出后等待文案换成手动拉起说明。
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('restart-manual-warn')
+  await renderer.findButton('重启 dsh web').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('确认重启').props.onClick()
+  await renderer.flush()
+  assert.equal(webRestarts, 1)
+  assert.match(renderer.text('settings.section'), /服务不会自动拉起/)
+})
+
+test('managed environment upgrades immediately, keeps recovery polling, and labels the supervisor', async () => {
+  let upgradeCalls = 0
+  const renderer = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'linux', supervisorKind: 'pm2', manualStartLikely: false } },
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0' } }
+      },
+    },
+  }))
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /运行环境：pm2/)
+  assert.doesNotMatch(renderer.text('settings.section'), /疑似终端手动启动/)
+  await renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1, 'no confirmation gate when a process manager is detected')
+  assert.doesNotMatch(renderer.text('settings.section'), /需要手动重启/)
+  assert.ok(renderer.pendingTimerDelays().some((delay) => delay !== 5000), 'recovery polling is armed as before')
+})
+
+test('version responses without the runtime env field keep the legacy upgrade behavior', async () => {
+  let upgradeCalls = 0
+  const renderer = createRenderer(stubPanelRpc({
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '0.9.0', installed: '0.10.0' } }
+      },
+    },
+  }))
+
+  await renderer.load()
+  assert.doesNotMatch(renderer.text('settings.section'), /运行环境：/, 'no runtime env line for old hosts')
+  await renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1, 'legacy hosts skip the confirmation gate entirely')
+})
