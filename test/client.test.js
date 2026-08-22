@@ -773,7 +773,7 @@ test('health check button runs deep diagnostics and displays individual results'
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
     if (endpoint === 'diagnostics') {
       calls += 1
-      return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [{ id: 'session-storage', status: 'ok', detail: '2' }, { id: 'backup-storage', status: 'warning', detail: '0:0' }] } }
+      return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'session-storage', status: 'ok', detail: '2' }, { id: 'backup-storage', status: 'info', detail: '0:0' }] } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
@@ -781,7 +781,8 @@ test('health check button runs deep diagnostics and displays individual results'
   await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   assert.equal(calls, 1)
-  assert.match(renderer.text('settings.section'), /健康提醒.*检查结果存在警告/)
+  // 空备份是信息级提示：文案照常展示，但没有健康提醒横幅。
+  assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
   assert.match(renderer.text('settings.section'), /会话存储.*可用，共 2 个会话快照/)
   assert.match(renderer.text('settings.section'), /备份存储.*备份目录可用，当前暂无备份/)
   assert.doesNotMatch(renderer.text('settings.section'), /0:0|正常.*2|警告.*0/)
@@ -1601,5 +1602,31 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /运行环境.*由Docker 容器管理，重启后会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v22\.14\.0，满足 ≥22 要求/)
+  assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
+})
+
+test('an unknown runtime environment renders as informational without warning marks', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'linux', supervisorKind: null, manualStartLikely: false } } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'info', detail: 'unknown' },
+      { id: 'node-version', status: 'ok', detail: 'v22.14.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  // info 检查项：可读文案照常展示补救提示，但不产生健康提醒横幅、不点亮标签 ⚠。
+  assert.match(renderer.text('settings.section'), /运行环境.*未检测到进程管理器，无法确认重启后是否自动拉起/)
+  assert.match(renderer.text('settings.section'), /DSH_SERVICE_RUNTIME_ENV=managed/)
+  assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
   assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
 })

@@ -1013,6 +1013,19 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
   return permissionSnapshot(ctx, dshHome, plans)
 }
 
+// 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动 → warning（重启无保障）；
+// unknown → info（未检测到管理器也无终端特征：输出重定向、NSSM/WinSW 等包装器——维持现状
+// 行为本就是默认路径，不算异常，只提示可显式声明）。detail 是客户端映射词典的令牌。
+function runtimeEnvCheck(runtimeEnv) {
+  if (runtimeEnv === undefined || runtimeEnv === null) return null
+  if (runtimeEnv.manualStartLikely === true) return { id: 'runtime-env', status: 'warning', detail: 'manual' }
+  if (runtimeEnv.supervisorKind === 'declared') return { id: 'runtime-env', status: 'ok', detail: 'declared' }
+  if (typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0) {
+    return { id: 'runtime-env', status: 'ok', detail: runtimeEnv.supervisorKind }
+  }
+  return { id: 'runtime-env', status: 'info', detail: 'unknown' }
+}
+
 async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   const checks = []
   const add = (id, status, detail) => checks.push({ id, status, ...(detail === undefined ? {} : { detail: String(detail) }) })
@@ -1041,7 +1054,8 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
 
   try {
     const backups = await listBackups(dshHome)
-    add('backup-storage', backups.items.length === 0 ? 'warning' : 'ok', `${backups.items.length}:${backups.totalBytes}`)
+    // 没有备份不算警告（v0.14 口径的落地）：空列表是信息级提示，不点亮标签 ⚠、不影响 overall。
+    add('backup-storage', backups.items.length === 0 ? 'info' : 'ok', `${backups.items.length}:${backups.totalBytes}`)
   } catch (error) { add('backup-storage', 'error', error?.code || error?.message || error) }
 
   const subprocess = ctx.get('subprocess')
@@ -1058,14 +1072,8 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
     } catch (error) { add('permissions', 'warning', error?.message || error) }
   }
 
-  // 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动与 unknown → warning 并给出
-  // 可执行补救（unknown 场景提示 DSH_SERVICE_RUNTIME_ENV 声明）。detail 是客户端映射词典的令牌。
-  if (runtimeEnv !== undefined && runtimeEnv !== null) {
-    if (runtimeEnv.manualStartLikely === true) add('runtime-env', 'warning', 'manual')
-    else if (runtimeEnv.supervisorKind === 'declared') add('runtime-env', 'ok', 'declared')
-    else if (typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0) add('runtime-env', 'ok', runtimeEnv.supervisorKind)
-    else add('runtime-env', 'warning', 'unknown')
-  }
+  const runtimeCheck = runtimeEnvCheck(runtimeEnv)
+  if (runtimeCheck !== null) checks.push(runtimeCheck)
 
   // Node 运行时版本检查：低于 package.json engines 的最低 major 时告警。
   // detail 形如 "v22.14.0:22"（当前版本:要求 major），客户端按 backup-storage 同款分隔符解析。
@@ -1472,5 +1480,5 @@ function apply(ctx) {
   }, { authority: 'loopback' })
 }
 
-export { apply, detectRuntimeEnv, inject, name }
-export default { apply, detectRuntimeEnv, inject, name }
+export { apply, detectRuntimeEnv, inject, name, runtimeEnvCheck }
+export default { apply, detectRuntimeEnv, inject, name, runtimeEnvCheck }

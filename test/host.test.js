@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, detectRuntimeEnv, name } from '../index.js'
+import { apply, detectRuntimeEnv, name, runtimeEnvCheck } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -616,6 +616,10 @@ test('diagnostics RPC returns one overall report with storage, workspace, backup
   assert.equal(result.value.checks.find((check) => check.id === 'session-storage').detail, '1')
   assert.equal(result.value.checks.find((check) => check.id === 'workspace-registry').detail, '1')
   assert.equal(result.value.checks.find((check) => check.id === 'permissions').status, 'ok')
+  // 空备份是信息级提示（不算警告）：脚手架无其他告警源时 overall 应为 ok。
+  const backupCheck = result.value.checks.find((check) => check.id === 'backup-storage')
+  assert.deepEqual(backupCheck, { id: 'backup-storage', status: 'info', detail: '0:0' })
+  assert.equal(result.value.status, 'ok')
   // createHost 默认强制 DSH_SERVICE_RUNTIME_ENV=managed → runtime-env 为 ok/declared；
   // node-version 的 detail 是「当前版本:要求 major」，本机 Node 满足 engines 时为 ok。
   assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'ok', detail: 'declared' })
@@ -1333,4 +1337,17 @@ test('diagnostics flags a declared manual environment as a warning with remedy t
   assert.equal(result.ok, true)
   assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'warning', detail: 'manual' })
   assert.equal(result.value.status, 'warning')
+})
+
+test('runtime env check maps each environment to ok, warning, or a non-alarming info', () => {
+  // 疑似手动终端启动 → warning（重启无保障，需要用户行动）。
+  assert.deepEqual(runtimeEnvCheck({ platform: 'win32', supervisorKind: null, manualStartLikely: true }), { id: 'runtime-env', status: 'warning', detail: 'manual' })
+  // 已识别管理器与用户声明 → ok。
+  assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: 'docker', manualStartLikely: false }), { id: 'runtime-env', status: 'ok', detail: 'docker' })
+  assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: 'declared', manualStartLikely: false }), { id: 'runtime-env', status: 'ok', detail: 'declared' })
+  // unknown → info：维持现状本是默认路径，不算警告，不点亮标签 ⚠。
+  assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: null, manualStartLikely: false }), { id: 'runtime-env', status: 'info', detail: 'unknown' })
+  // 宿主未提供运行环境（老版本/异常）→ 不产生该检查项。
+  assert.equal(runtimeEnvCheck(undefined), null)
+  assert.equal(runtimeEnvCheck(null), null)
 })

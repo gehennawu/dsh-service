@@ -1631,7 +1631,7 @@ window.__ModuleLoader__.load({
             ? React.createElement('div', { 'data-testid': 'health-check-list', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '8px 10px' }) },
                 diagnostics.checks.map((check, index) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '14px', fontSize: '12px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
                   React.createElement('span', null, translate(`health.check.${check.id}`)),
-                  React.createElement('span', { style: { color: check.status === 'ok' ? 'var(--dsw-alias-state-success-primary)' : check.status === 'warning' ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-error-primary)', textAlign: 'right' } }, diagnosticDetail(check)))))
+                  React.createElement('span', { style: { color: check.status === 'ok' ? 'var(--dsw-alias-state-success-primary)' : check.status === 'warning' ? 'var(--dsw-alias-state-warn-primary)' : check.status === 'info' ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-state-error-primary)', textAlign: 'right' } }, diagnosticDetail(check)))))
             : null)
 
         const permissionAbnormal = permissions && permissions.supported === true
@@ -1847,7 +1847,7 @@ window.__ModuleLoader__.load({
         // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
         const notifyBlock = React.createElement('div', null, notificationBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
-        const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && !(check.id === 'backup-storage' && String(check.detail || '').startsWith('0:')))) === true
+        const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || check.status === 'warning') === true
         const tabWarnings = {
           overview: false,
           notify: false,
