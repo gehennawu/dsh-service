@@ -44,6 +44,13 @@ try {
   } catch (__) {}
 }
 
+// Node 最低要求只读 package.json engines 一处（与版本号同源），启动时解析一次。
+let requiredNodeMajor = 22
+try {
+  const enginesNode = require('./package.json').engines?.node || ''
+  requiredNodeMajor = parseInt(enginesNode.replace(/[^0-9].*$/, ''), 10) || 22
+} catch (_) {}
+
 function isSemverIdentifier(value) {
   if (value.length === 0) return false
   return [...value].every((char) => (char >= '0' && char <= '9') || (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || char === '-')
@@ -1006,7 +1013,7 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
   return permissionSnapshot(ctx, dshHome, plans)
 }
 
-async function collectDiagnostics(ctx, dshHome) {
+async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   const checks = []
   const add = (id, status, detail) => checks.push({ id, status, ...(detail === undefined ? {} : { detail: String(detail) }) })
 
@@ -1051,6 +1058,20 @@ async function collectDiagnostics(ctx, dshHome) {
     } catch (error) { add('permissions', 'warning', error?.message || error) }
   }
 
+  // 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动与 unknown → warning 并给出
+  // 可执行补救（unknown 场景提示 DSH_SERVICE_RUNTIME_ENV 声明）。detail 是客户端映射词典的令牌。
+  if (runtimeEnv !== undefined && runtimeEnv !== null) {
+    if (runtimeEnv.manualStartLikely === true) add('runtime-env', 'warning', 'manual')
+    else if (runtimeEnv.supervisorKind === 'declared') add('runtime-env', 'ok', 'declared')
+    else if (typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0) add('runtime-env', 'ok', runtimeEnv.supervisorKind)
+    else add('runtime-env', 'warning', 'unknown')
+  }
+
+  // Node 运行时版本检查：低于 package.json engines 的最低 major 时告警。
+  // detail 形如 "v22.14.0:22"（当前版本:要求 major），客户端按 backup-storage 同款分隔符解析。
+  const nodeMajor = parseInt(process.versions.node, 10)
+  add('node-version', Number.isFinite(nodeMajor) && nodeMajor >= requiredNodeMajor ? 'ok' : 'warning', `${process.version}:${requiredNodeMajor}`)
+
   let status = 'ok'
   if (checks.some((check) => check.status === 'error')) status = 'error'
   else if (checks.some((check) => check.status === 'warning')) status = 'warning'
@@ -1067,6 +1088,9 @@ async function collectHealth(ctx) {
   return {
     uptimeSeconds: process.uptime(),
     rssBytes: memory.rss,
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.version,
     liveSessions: sessionsService === undefined ? 0 : sessionsService.list().length,
     persistedSessions: sessionRecords.filter((record) => record.persisted === true).length,
     activeAgents: activity.items.filter((item) => item.type === 'agent').length,
@@ -1318,7 +1342,7 @@ function apply(ctx) {
 
     if (endpoint === 'diagnostics') {
       try {
-        return { ok: true, value: await collectDiagnostics(ctx, dshHome) }
+        return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

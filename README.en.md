@@ -27,7 +27,8 @@ The Settings panel "Service Control" page has six top-level tabs: **Overview, No
 ### Health diagnostics
 
 - Shows uptime, memory, session count, active agents, and background jobs
-- Full diagnostics check session storage, workspace registry, backup storage, tar availability, and file permissions
+- The "Process and runtime" card shows platform, architecture, and Node version
+- Full diagnostics check session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node runtime version; manual-launch or unrecognized environments get a restart-assurance note with the `DSH_SERVICE_RUNTIME_ENV` remedy
 - File-permission deep scan and repair: checks whether the Agent can read/write DSH_HOME and workspaces; repair requires two-step confirmation
 
 ### Model statistics

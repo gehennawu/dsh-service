@@ -20,6 +20,8 @@ window.__ModuleLoader__.load({
       'health.title': '运行状况',
       'health.uptime': '运行时间',
       'health.rss': '内存 RSS',
+      'health.platform': '平台',
+      'health.nodeVersion': 'Node 版本',
       'health.liveSessions': '存活会话',
       'health.persistedSessions': '持久化会话',
       'health.activeAgents': '活跃 Agent',
@@ -43,6 +45,14 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': '备份存储',
       'health.check.tar': 'tar',
       'health.check.permissions': '文件权限',
+      'health.check.runtime-env': '运行环境',
+      'health.check.node-version': 'Node 运行时',
+      'health.detail.runtime-env.managed': '由{kind}管理，重启后会自动拉起',
+      'health.detail.runtime-env.declared': '已通过 DSH_SERVICE_RUNTIME_ENV 声明由外部进程管理器管理',
+      'health.detail.runtime-env.manual': '疑似终端手动启动，重启后不会自动拉起；一键升级已改为不自动退出',
+      'health.detail.runtime-env.unknown': '未检测到进程管理器，无法确认重启后是否自动拉起；如实际有，可设置 DSH_SERVICE_RUNTIME_ENV=managed 声明',
+      'health.detail.node-version.ok': '{version}，满足 ≥{required} 要求',
+      'health.detail.node-version.warning': '{version} 低于插件要求的 {required}.x，建议升级 Node',
       'health.detail.session-storage.ok': '可用，共 {count} 个会话快照',
       'health.detail.workspace-registry.ok': '可用，共 {count} 个工作区',
       'health.detail.dsh-home.ok': '目录可访问，权限模式 {mode}',
@@ -56,7 +66,7 @@ window.__ModuleLoader__.load({
       'tabs.notify': '通知',
       'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
-      'overview.container': '容器信息',
+      'overview.container': '进程与运行环境',
       'overview.errors': '报错信息',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
@@ -246,6 +256,8 @@ window.__ModuleLoader__.load({
       'health.title': 'Health',
       'health.uptime': 'Uptime',
       'health.rss': 'Memory RSS',
+      'health.platform': 'Platform',
+      'health.nodeVersion': 'Node version',
       'health.liveSessions': 'Live sessions',
       'health.persistedSessions': 'Persisted sessions',
       'health.activeAgents': 'Active agents',
@@ -269,6 +281,14 @@ window.__ModuleLoader__.load({
       'health.check.backup-storage': 'Backup storage',
       'health.check.tar': 'tar',
       'health.check.permissions': 'File permissions',
+      'health.check.runtime-env': 'Runtime environment',
+      'health.check.node-version': 'Node runtime',
+      'health.detail.runtime-env.managed': 'Managed by {kind}; the process restarts automatically after exit',
+      'health.detail.runtime-env.declared': 'Declared externally managed via DSH_SERVICE_RUNTIME_ENV',
+      'health.detail.runtime-env.manual': 'Likely a manual terminal launch — nothing restarts the process after exit; one-click upgrade already keeps it running',
+      'health.detail.runtime-env.unknown': 'No process manager detected, so automatic restart cannot be confirmed; set DSH_SERVICE_RUNTIME_ENV=managed if one exists',
+      'health.detail.node-version.ok': '{version}, meets the >={required} requirement',
+      'health.detail.node-version.warning': '{version} is below the required {required}.x; upgrading Node is recommended',
       'health.detail.session-storage.ok': 'Available, with {count} session snapshots',
       'health.detail.workspace-registry.ok': 'Available, with {count} workspaces',
       'health.detail.dsh-home.ok': 'Directory is accessible with mode {mode}',
@@ -282,7 +302,7 @@ window.__ModuleLoader__.load({
       'tabs.notify': 'Notifications',
       'tabs.health': 'Health',
       'tabs.usage': 'Models',
-      'overview.container': 'Container info',
+      'overview.container': 'Process and runtime',
       'overview.errors': 'Errors',
       'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
@@ -1458,6 +1478,17 @@ window.__ModuleLoader__.load({
           }
           if (check.id === 'tar' && check.status === 'ok') return translate('health.detail.tar.ok')
           if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
+          if (check.id === 'runtime-env') {
+            if (detail === 'manual') return translate('health.detail.runtime-env.manual')
+            if (detail === 'declared') return translate('health.detail.runtime-env.declared')
+            if (detail === 'unknown') return translate('health.detail.runtime-env.unknown')
+            // 已识别的管理器 kind：复用概览运行环境的标签词典。
+            return translate('health.detail.runtime-env.managed', { kind: translate(`env.kind.${detail}`) })
+          }
+          if (check.id === 'node-version') {
+            const [version = '', required = ''] = detail.split(':')
+            return translate(check.status === 'ok' ? 'health.detail.node-version.ok' : 'health.detail.node-version.warning', { version, required })
+          }
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
         const summaryItems = (totals) => [
@@ -1560,10 +1591,17 @@ window.__ModuleLoader__.load({
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
 
+        // 平台标签：process.platform 映射为常见系统名，arch 跟在后面（均为专有名词，不走词典）。
+        const platformNames = { win32: 'Windows', darwin: 'macOS', linux: 'Linux', freebsd: 'FreeBSD', openbsd: 'OpenBSD' }
+        const platformLabel = (health && typeof health.platform === 'string' && health.platform)
+          ? `${platformNames[health.platform] || health.platform}${typeof health.arch === 'string' && health.arch ? ` · ${health.arch}` : ''}`
+          : '—'
         const containerInfoBlock = React.createElement('div', { key: 'container-info', style: { marginTop: '18px' } },
           React.createElement('div', { style: sectionTitle }, translate('overview.container')),
           health
             ? React.createElement('div', { 'data-testid': 'health-display', style: Object.assign({}, displaySurface, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }) },
+                metric('health.platform', platformLabel),
+                metric('health.nodeVersion', typeof health.nodeVersion === 'string' && health.nodeVersion ? health.nodeVersion : '—'),
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
                 metric('health.rss', formatBytes(health.rssBytes)),
                 metric('health.liveSessions', String(health.liveSessions)),

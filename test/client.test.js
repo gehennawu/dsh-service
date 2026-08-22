@@ -476,7 +476,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   const overviewText = renderer.text('settings.section')
   assert.match(overviewText, /概览.*健康诊断.*模型统计.*备份维护.*重启/)
   assert.doesNotMatch(overviewText, /⚠ 模型统计|服务控制提醒/)
-  assert.match(overviewText, /版本信息.*容器信息.*运行时间.*内存 RSS/)
+  assert.match(overviewText, /版本信息.*进程与运行环境.*平台.*Node 版本.*运行时间.*内存 RSS/)
   assert.match(overviewText, /报错信息.*最近 24 小时.*模型报错.*2 类.*工具报错.*2 类/)
   const overviewPanel = renderer.text(renderer.findByTestId('tab-panel'))
   assert.doesNotMatch(overviewPanel, /立即健康检查|文件权限|模型使用|备份管理|服务重启/)
@@ -499,7 +499,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.flush()
   const healthText = renderer.text('settings.section')
   assert.match(healthText, /健康诊断.*立即健康检查/)
-  assert.doesNotMatch(healthText, /版本信息|容器信息|模型使用/)
+  assert.doesNotMatch(healthText, /版本信息|进程与运行环境|模型使用/)
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   const text = renderer.text('settings.section')
@@ -1545,4 +1545,61 @@ test('malformed runtime env shapes degrade to legacy behavior and unknown kinds 
   await unrecognized.load()
   assert.match(unrecognized.text('settings.section'), /运行环境：检测到未识别的进程管理器/)
   assert.doesNotMatch(unrecognized.text('settings.section'), /未检测到进程管理器/)
+})
+
+test('overview shows platform and node version metrics and diagnostics renders the runtime-env and node checks', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: true } } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'win32', arch: 'x64', nodeVersion: 'v20.11.0', liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'warning', detail: 'manual' },
+      { id: 'node-version', status: 'warning', detail: 'v20.11.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  // 概览：进程与运行环境卡顶部出现平台与 Node 版本两个指标（win32 映射为 Windows）。
+  assert.match(renderer.text('settings.section'), /平台/)
+  assert.match(renderer.text('settings.section'), /Windows · x64/)
+  assert.match(renderer.text('settings.section'), /Node 版本/)
+  assert.match(renderer.text('settings.section'), /v20\.11\.0/)
+  assert.match(renderer.text('settings.section'), /进程与运行环境/)
+
+  // 健康诊断：两个新检查项的可读化文案；runtime-env 警告点亮标签 ⚠。
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
+  assert.match(renderer.text('settings.section'), /Node 运行时.*v20\.11\.0 低于插件要求的 22\.x/)
+  assert.match(renderer.text('settings.section'), /⚠ 健康诊断/)
+})
+
+test('diagnostics renders a recognized supervisor and a satisfied node version as ok', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'linux', supervisorKind: 'docker', manualStartLikely: false } } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'arm64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'ok', detail: 'docker' },
+      { id: 'node-version', status: 'ok', detail: 'v22.14.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /Linux · arm64/)
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /运行环境.*由Docker 容器管理，重启后会自动拉起/)
+  assert.match(renderer.text('settings.section'), /Node 运行时.*v22\.14\.0，满足 ≥22 要求/)
+  assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
 })

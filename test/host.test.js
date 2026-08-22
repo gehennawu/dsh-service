@@ -616,6 +616,12 @@ test('diagnostics RPC returns one overall report with storage, workspace, backup
   assert.equal(result.value.checks.find((check) => check.id === 'session-storage').detail, '1')
   assert.equal(result.value.checks.find((check) => check.id === 'workspace-registry').detail, '1')
   assert.equal(result.value.checks.find((check) => check.id === 'permissions').status, 'ok')
+  // createHost 默认强制 DSH_SERVICE_RUNTIME_ENV=managed → runtime-env 为 ok/declared；
+  // node-version 的 detail 是「当前版本:要求 major」，本机 Node 满足 engines 时为 ok。
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'ok', detail: 'declared' })
+  const nodeCheck = result.value.checks.find((check) => check.id === 'node-version')
+  assert.match(nodeCheck.detail, /^v\d+\.\d+\.\d+:\d+$/)
+  assert.equal(nodeCheck.status, 'ok')
 })
 
 test('health RPC reports process and service metrics with persisted-only session count', async () => {
@@ -663,6 +669,10 @@ test('health RPC reports process and service metrics with persisted-only session
   assert.ok(result.value.uptimeSeconds <= process.uptime())
   assert.ok(Number.isInteger(result.value.rssBytes))
   assert.ok(result.value.rssBytes > 0)
+  // v0.17 静态进程事实：平台/arch/Node 版本随每次 health 轮询返回。
+  assert.equal(result.value.platform, process.platform)
+  assert.equal(result.value.arch, process.arch)
+  assert.equal(result.value.nodeVersion, process.version)
 })
 
 test('health RPC uses zero for unavailable optional services', async () => {
@@ -1307,4 +1317,20 @@ test('upgrade in a declared manual environment installs without exiting and vers
   assert.deepEqual(result.value, { result: 'upgraded', profile: 'web', previous: pluginVersion, installed: '9.9.9', requiresManualRestart: true })
   assert.equal(spawned.length, 1)
   assert.equal(scheduled.length, 0, 'no exit is scheduled when nothing would restart the process')
+})
+
+test('diagnostics flags a declared manual environment as a warning with remedy tokens', async (t) => {
+  const home = await makeHome(t, 'dsh-service-diag-manual-')
+  const { handler } = createHost({
+    env: { DSH_SERVICE_RUNTIME_ENV: 'manual', DSH_HOME: home },
+    services: {
+      sessionPersistence: { listSnapshots: async () => [{ header: { id: 's1' }, revision: '1' }] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'warning', detail: 'manual' })
+  assert.equal(result.value.status, 'warning')
 })
