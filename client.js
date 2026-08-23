@@ -253,6 +253,7 @@ window.__ModuleLoader__.load({
       'quota.window.tokens-limit': 'Token 额度',
       'quota.window.time-limit-u5-n1': 'MCP 配额',
       'quota.window.time-limit': 'MCP 配额',
+      'quota.window.credit-limit': '点数额度',
       'quota.window.credits': '已用额度',
       'quota.window.balance': '余额',
       'quota.window.weekly': '本周',
@@ -261,7 +262,6 @@ window.__ModuleLoader__.load({
       'quota.panel.used': '已用',
       'quota.panel.remaining': '剩余',
       'quota.ring.label': '额度查询',
-      'quota.ring.aria': '额度查询 · {provider} · 已用 {percent}%',
       'quota.updated': '更新于 {time}',
       'quota.refreshing': '刷新中…',
       'quota.empty': '暂无数据',
@@ -297,9 +297,11 @@ window.__ModuleLoader__.load({
       'quota.error.credentials-unavailable': '凭据服务不可用',
       'quota.error.http-status': '上游返回错误状态',
       'quota.error.network': '网络错误',
+      'quota.error.network-transient': '网络不稳定（已自动重试）',
       'quota.error.timeout': '请求超时',
       'quota.error.bad-payload': '响应格式异常',
       'quota.error.unknown': '未知错误',
+      'quota.unadapted': '该供应商未适配，请先在下方选择类型',
       'quota.unit.day': '{count} 天',
       'quota.unit.hour': '{count} 小时',
       'quota.unit.minute': '{count} 分钟',
@@ -549,22 +551,15 @@ window.__ModuleLoader__.load({
       'quota.window.tokens-limit': 'Token quota',
       'quota.window.time-limit-u5-n1': 'MCP quota',
       'quota.window.time-limit': 'MCP quota',
+      'quota.window.credit-limit': 'Credit quota',
       'quota.window.credits': 'Credits used',
       'quota.window.balance': 'Balance',
       'quota.window.weekly': 'This week',
       'quota.window.monthly': 'This month',
-      'quota.window.tokens-limit-u3-n5': '5-hour tokens',
-      'quota.window.tokens-limit-u6-n1': 'Weekly tokens',
-      'quota.window.tokens-limit': 'Token quota',
-      'quota.window.time-limit-u5-n1': 'MCP quota',
-      'quota.window.time-limit': 'MCP quota',
-      'quota.window.credits': 'Credits used',
-      'quota.window.balance': 'Balance',
       'quota.panel.title': 'Quota usage',
       'quota.panel.used': 'Used',
       'quota.panel.remaining': 'Remaining',
       'quota.ring.label': 'Quota lookup',
-      'quota.ring.aria': 'Quota lookup · {provider} · {percent}% used',
       'quota.updated': 'Updated {time}',
       'quota.refreshing': 'Refreshing…',
       'quota.empty': 'No data yet',
@@ -600,9 +595,11 @@ window.__ModuleLoader__.load({
       'quota.error.credentials-unavailable': 'Credential service unavailable',
       'quota.error.http-status': 'Upstream returned an error status',
       'quota.error.network': 'Network error',
+      'quota.error.network-transient': 'Unstable network (auto-retried)',
       'quota.error.timeout': 'Request timed out',
       'quota.error.bad-payload': 'Unexpected response format',
       'quota.error.unknown': 'Unknown error',
+      'quota.unadapted': 'Not adapted: pick a provider kind below first',
       'quota.unit.day': '{count} d',
       'quota.unit.hour': '{count} h',
       'quota.unit.minute': '{count} min',
@@ -627,6 +624,10 @@ window.__ModuleLoader__.load({
       let disposed = false
       const sync = () => {
         if (disposed) return
+        // 设置页没开（无 dialog）就没有可标记的行：一次 querySelector 早退。
+        // observer 盯的是整个 body（语言切换重挂要靠它），没有这道闸聊天流式输出期间
+        // 每批文本突变都会触发一次全文档 querySelectorAll 扫描。
+        if (typeof document.querySelector === 'function' && document.querySelector('[role="dialog"]') === null) return
         for (const button of document.querySelectorAll('[role="dialog"] nav button')) {
           const text = (button.textContent || '').trim()
           for (const row of rows) {
@@ -637,11 +638,26 @@ window.__ModuleLoader__.load({
         }
       }
       sync()
-      const observer = new MutationObserver(sync)
+      // rAF 合并：突变风暴（流式输出/列表重排）下每帧至多跑一次 sync；无 rAF 环境退化为直跑。
+      let frame = null
+      const scheduleSync = () => {
+        if (disposed || frame !== null) return
+        if (typeof requestAnimationFrame !== 'function') {
+          sync()
+          return
+        }
+        frame = requestAnimationFrame(() => {
+          frame = null
+          sync()
+        })
+      }
+      const observer = new MutationObserver(scheduleSync)
       observer.observe(document.body, { childList: true, subtree: true, characterData: true })
       return () => {
         disposed = true
         observer.disconnect()
+        if (frame !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+        frame = null
         for (const row of rows) {
           for (const el of document.querySelectorAll('[' + row.attr + ']')) el.removeAttribute(row.attr)
         }
@@ -1242,13 +1258,39 @@ window.__ModuleLoader__.load({
           const res = await ctx.connection.rpc.call('/dsh-service', 'quota', {})
           if (res?.ok === true && res.value && typeof res.value === 'object' && Array.isArray(res.value.providers)) {
             quotaStore.publish(res.value)
+            scheduleQuotaSettlePull(res.value)
             return true
           }
         } catch (_) {}
         return false
       }
+      // 落定接续：快照里仍有「刷新中」的已适配行时，客户端按拉长的间隔自动补拉，
+      // 直到上游落定或用尽轮次——否则首次打开只会看到「刷新中…」，要等下一个轮询周期
+      // （默认 5 分钟）或再次点开才能看到更新时间。补拉仍是普通 quota RPC，宿主节流闸
+      // （单飞/TTL/退避）照常兜底，不会产生额外上游调用。
+      const quotaSettle = { pulls: 0, dispose: null }
+      const QUOTA_SETTLE_DELAYS_MS = [800, 2400, 4800, 8000, 12000]
+      function scheduleQuotaSettlePull(snapshot) {
+        const pending = Array.isArray(snapshot?.providers)
+          && snapshot.providers.some((row) => row.adapted === true && row.refreshing === true)
+        if (!pending) {
+          quotaSettle.pulls = 0
+          return
+        }
+        // 表面都已卸载（refs=0）或用尽轮次：不再追问；refs 归零时轮次计数同步复位，重挂载从 800ms 重新起算。
+        if (quotaLoop.refs === 0) {
+          quotaSettle.pulls = 0
+          return
+        }
+        if (quotaSettle.dispose !== null || quotaSettle.pulls >= QUOTA_SETTLE_DELAYS_MS.length) return
+        quotaSettle.dispose = ctx.timer.timeout(() => {
+          quotaSettle.dispose = null
+          fetchQuotaSnapshot()
+        }, QUOTA_SETTLE_DELAYS_MS[quotaSettle.pulls])
+        quotaSettle.pulls += 1
+      }
       const quotaLoop = { refs: 0, nextDispose: null, running: false, onVisible: undefined }
-      const isQuotaPageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      const isTabHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
       function scheduleQuotaCycle() {
         if (quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
         const minutes = readQuotaPollMinutes()
@@ -1258,7 +1300,7 @@ window.__ModuleLoader__.load({
         }, minutes * 60000)
       }
       function runQuotaCycle() {
-        if (quotaLoop.refs === 0 || quotaLoop.running || isQuotaPageHidden()) return
+        if (quotaLoop.refs === 0 || quotaLoop.running || isTabHidden()) return
         quotaLoop.running = true
         Promise.resolve(fetchQuotaSnapshot()).catch(() => false).then(() => {
           quotaLoop.running = false
@@ -1271,9 +1313,11 @@ window.__ModuleLoader__.load({
         // 即使轮询已在跑（refs>1）也补查一次，保证「打开即最新」。
         runQuotaCycle()
         scheduleQuotaCycle()
-        if (typeof document !== 'undefined') {
+        // visibilitychange 只在首个表面挂载时挂一次、最后一个卸载时摘掉——
+        // 之前每次挂载都 addEventListener 且只留最后一个引用，先挂的监听器会泄漏到 Fiber 之外。
+        if (quotaLoop.refs === 1 && quotaLoop.onVisible === undefined && typeof document !== 'undefined') {
           quotaLoop.onVisible = () => {
-            if (!isQuotaPageHidden()) runQuotaCycle()
+            if (!isTabHidden()) runQuotaCycle()
           }
           document.addEventListener('visibilitychange', quotaLoop.onVisible)
         }
@@ -1284,6 +1328,10 @@ window.__ModuleLoader__.load({
         if (quotaLoop.nextDispose !== null) {
           quotaLoop.nextDispose()
           quotaLoop.nextDispose = null
+        }
+        if (quotaSettle.dispose !== null) {
+          quotaSettle.dispose()
+          quotaSettle.dispose = null
         }
         if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') {
           document.removeEventListener('visibilitychange', quotaLoop.onVisible)
@@ -1299,14 +1347,16 @@ window.__ModuleLoader__.load({
       }
       ctx.effect(() => () => {
         if (quotaLoop.nextDispose !== null) quotaLoop.nextDispose()
+        if (quotaSettle.dispose !== null) quotaSettle.dispose()
         if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') document.removeEventListener('visibilitychange', quotaLoop.onVisible)
       }, 'dsh-service quota poller disposal')
 
       function quotaWindowLabel(id, translate) {
-        // 解析链：完整 id（rolling / tokens-limit-u3-n5…）→ 类型前缀（tokens/time）→ 原始 id。
+        // 解析链：完整 id（rolling / tokens-limit-u3-n5…）→ 类型前缀（tokens-limit/time-limit/credit-limit）→ 原始 id。
         const exact = translate(`quota.window.${id}`)
         if (exact !== `quota.window.${id}`) return exact
-        const prefix = String(id).split('-')[0]
+        const parts = String(id).split('-')
+        const prefix = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : parts[0]
         const byType = translate(`quota.window.${prefix}`)
         return byType === `quota.window.${prefix}` ? id : byType
       }
@@ -1373,6 +1423,43 @@ window.__ModuleLoader__.load({
         React.createElement('div', {
           style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, borderRadius: 999, background: warning ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
         }))
+      }
+      /** 窗口行的统一渲染，圆环面板与额度卡共用（此前两处各写一份，配色/倒计时格式容易漂移）：
+       * 百分比窗口三段式（标签+百分比 / 独立进度条 / 重置倒计时单独一行）；文本窗口（余额类）单行。
+       * testid 约定：面板 quota-text|quota-window-bar|quota-reset-<id>；卡片 quota-card-window|bar|text|reset-<provider>-<id>。 */
+      function renderQuotaWindowRow(window, translate, provider) {
+        const inCard = provider !== null && provider !== undefined
+        if (typeof window.text === 'string') {
+          return React.createElement('div', {
+            key: window.id,
+            ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
+            style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' },
+          },
+          React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
+          React.createElement('span', {
+            'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
+            style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' },
+          }, window.text))
+        }
+        let resetNode = null
+        if (typeof window.resetsAt === 'string') {
+          const at = Date.parse(window.resetsAt)
+          if (Number.isFinite(at) && at > Date.now()) {
+            resetNode = React.createElement('div', {
+              'data-testid': inCard ? `quota-card-reset-${provider}-${window.id}` : `quota-reset-${window.id}`,
+              style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
+            }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
+          }
+        }
+        return React.createElement('div', {
+          key: window.id,
+          ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
+        },
+        React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
+          React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
+          React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
+        quotaBar(inCard ? `quota-card-bar-${provider}-${window.id}` : `quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
+        resetNode)
       }
 
       function QuotaRing(props) {
@@ -1461,8 +1548,10 @@ window.__ModuleLoader__.load({
             'aria-expanded': open,
             title: ariaText,
             onClick: () => {
-              setOpen(!open)
-              fetchQuotaSnapshot()
+              // 只在打开时补拉快照；关闭面板的那次请求没有意义（宿主闸门本就会兜住）。
+              const next = !open
+              setOpen(next)
+              if (next) fetchQuotaSnapshot()
             },
             style: { width: '28px', height: '28px', border: 'none', borderRadius: '999px', background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
           },
@@ -1483,31 +1572,7 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
-            windows.map((window) => {
-              // 文本窗口（余额等）：标签+数值一行，无进度条与重置。
-              if (typeof window.text === 'string') {
-                return React.createElement('div', { key: window.id, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
-                  React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
-                  React.createElement('span', { 'data-testid': `quota-text-${window.id}`, style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, window.text))
-              }
-              // 每个窗口：标签+百分比一行 → 独立进度条一行 → 重置倒计时单独一行。
-              let resetNode = null
-              if (typeof window.resetsAt === 'string') {
-                const at = Date.parse(window.resetsAt)
-                if (Number.isFinite(at) && at > Date.now()) {
-                  resetNode = React.createElement('div', {
-                    'data-testid': `quota-reset-${window.id}`,
-                    style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
-                  }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
-                }
-              }
-              return React.createElement('div', { key: window.id },
-                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' } },
-                  React.createElement('span', null, quotaWindowLabel(window.id, translate)),
-                  React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
-                quotaBar(`quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
-                resetNode)
-            })),
+            windows.map((window) => renderQuotaWindowRow(window, translate, null))),
           ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
             ? [React.createElement('div', { key: 'panel-reset-cards', style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
                 row.resetCards.map((card, cardIndex) => {
@@ -1580,7 +1645,8 @@ window.__ModuleLoader__.load({
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
         }
-        // 手动刷新：宿主清闸后立即 kick（单飞仍生效）；快照立刻拉一次，再短延时补拉两次接住上游落定结果。
+        // 手动刷新：宿主清闸后立即 kick（单飞仍生效）；立刻拉一次快照，之后的落定接续
+        // （fetchQuotaSnapshot 的 settle 补拉）统一接管，这里不再自建补拉定时器。
         const refreshProvider = async (providerName) => {
           setConfigError('')
           try {
@@ -1590,9 +1656,6 @@ window.__ModuleLoader__.load({
               return
             }
             await fetchQuotaSnapshot()
-            // 短延时补拉两次接住上游落定结果；走 timer 服务保证随 Fiber 销毁、可被测试驱动。
-            ctx.timer.timeout(() => { fetchQuotaSnapshot() }, 800)
-            ctx.timer.timeout(() => { fetchQuotaSnapshot() }, 2400)
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
@@ -1669,30 +1732,8 @@ window.__ModuleLoader__.load({
                         }, translate('quota.kindAuto'))
                       : null)
                   const windows = Array.isArray(row.windows) ? row.windows : []
-                  // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行。
-                  const windowBlocks = windows.map((window) => {
-                    if (typeof window.text === 'string') {
-                      return React.createElement('div', { key: window.id, 'data-testid': `quota-card-window-${row.provider}-${window.id}`, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
-                        React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
-                        React.createElement('span', { 'data-testid': `quota-card-text-${row.provider}-${window.id}`, style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, window.text))
-                    }
-                    let resetNode = null
-                    if (typeof window.resetsAt === 'string') {
-                      const at = Date.parse(window.resetsAt)
-                      if (Number.isFinite(at) && at > Date.now()) {
-                        resetNode = React.createElement('div', {
-                          'data-testid': `quota-card-reset-${row.provider}-${window.id}`,
-                          style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
-                        }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
-                      }
-                    }
-                    return React.createElement('div', { key: window.id, 'data-testid': `quota-card-window-${row.provider}-${window.id}` },
-                      React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
-                        React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
-                        React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
-                      quotaBar(`quota-card-bar-${row.provider}-${window.id}`, window.percent, '4px', window.remaining === true),
-                      resetNode)
-                  })
+                  // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行（renderQuotaWindowRow 统一渲染）。
+                  const windowBlocks = windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
                   let body
                   if (row.refreshing === true && windows.length === 0) {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))

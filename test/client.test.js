@@ -1821,6 +1821,7 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   }
   // 前两笔（挂载拉取 + provider 补拉）返回「刷新中、无窗口」的行，之后返回完整窗口。
   let refreshed = false
+  let quotaCalls = 0
   const refreshingPayload = {
     ok: true,
     value: {
@@ -1846,7 +1847,10 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   }
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
-    if (endpoint === 'quota') return refreshed ? fullPayload : refreshingPayload
+    if (endpoint === 'quota') {
+      quotaCalls += 1
+      return refreshed ? fullPayload : refreshingPayload
+    }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { modelDirectories })
 
@@ -1860,9 +1864,9 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-ring-panel'), true)
   assert.match(renderer.text(), /刷新中/)
-  // 数据落地（触发一次轮询周期）：同一面板原地更新，重置时间无需二次点击。
+  // 数据落地（落定接续补拉，不再等下一个轮询周期）：同一面板原地更新，重置时间无需二次点击。
   refreshed = true
-  await renderer.advanceTimer(300000)
+  await renderer.advanceTimer(800)
   let landed = false
   for (let i = 0; i < 20 && !landed; i++) {
     await renderer.flush()
@@ -1872,6 +1876,13 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   assert.equal(renderer.hasTest('quota-ring-panel'), true)
   assert.match(renderer.text(), /本周.*40%/)
   assert.match(renderer.text(), /重置于 2 小时 5 分钟/)
+
+  // 关闭面板不再补发 quota RPC（此前开/关 toggle 都无条件拉一次）。
+  const callsBeforeClose = quotaCalls
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-panel'), false)
+  assert.equal(quotaCalls, callsBeforeClose)
 })
 
 test('remaining-basis windows switch the panel word and invert the warn threshold', async () => {
@@ -2260,13 +2271,146 @@ test('quota card header has a refresh icon that forces per-provider refresh', as
   assert.ok(quotaCalls > initialQuotaCalls)
   assert.equal(renderer.findByTestId('quota-refresh-zai-coding-cn').props.disabled, true)
 
-  // 延时补拉接住落定结果：窗口数值更新、图标恢复可点。
+  // 落定接续（fetchQuotaSnapshot 的 settle 补拉）接住上游结果：窗口数值更新、图标恢复可点；
+  // 上游落定后 settle 链自动终止，不再有悬空定时器。
   await renderer.advanceTimer(800)
   assert.match(renderer.text('settings.section'), /滚动 5 小时.*9%/)
   assert.equal(renderer.findByTestId('quota-refresh-zai-coding-cn').props.disabled, false)
+})
 
-  // 收尾：清掉剩余的延时补拉定时器，避免悬空。
-  await renderer.advanceTimer(2400)
+test('quota surfaces share one visibilitychange listener instead of one per mount', async () => {
+  const listenerCount = { visibilitychange: 0 }
+  class FakeMutationObserver {
+    constructor() {}
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    head: { appendChild() {} },
+    createElement: () => ({}),
+    visibilityState: 'visible',
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener(type) { listenerCount[type] = (listenerCount[type] || 0) + 1 },
+    removeEventListener(type) { listenerCount[type] = (listenerCount[type] || 0) - 1 },
+  }
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const quotaOk = async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return { ok: true, value: { serverTime: Date.now(), providers: [{ provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [], fetchedAt: Date.now() }] } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+  try {
+    // 场景一：只有设置页额度卡。开到额度标签 → 1 个监听；整槽卸载（真实 Fiber 销毁路径）→ 0。
+    const renderer = createRenderer(quotaOk)
+    await renderer.load()
+    assert.equal(listenerCount.visibilitychange, 0)
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    assert.equal(listenerCount.visibilitychange, 1)
+    renderer.unmount('settings.section')
+    await renderer.flush()
+    assert.equal(listenerCount.visibilitychange, 0)
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    assert.equal(listenerCount.visibilitychange, 1)
+    renderer.unmount('settings.section')
+    await renderer.flush()
+    assert.equal(listenerCount.visibilitychange, 0)
+
+    // 场景二：圆环 + 额度卡两个表面并存 → 仍然只有 1 个监听（此前每次挂载都 add 且只摘最后一个）。
+    const storeListeners = new Set()
+    const store = {
+      snapshot: { current: { provider: 'opencode-go' } },
+      subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+      getSnapshot() { return this.snapshot },
+    }
+    const modelDirectories = {
+      directoryFor: () => ({ store, load: () => Promise.resolve() }),
+    }
+    const renderer2 = createRenderer(quotaOk, { modelDirectories })
+    await renderer2.load()
+    await renderer2.flush()
+    await renderer2.flush()
+    // 圆环已挂载（refs=1）：1 个监听。
+    assert.equal(listenerCount.visibilitychange, 1)
+    await renderer2.findButton('额度查询').props.onClick()
+    await renderer2.flush()
+    // 第二个表面挂载（refs=2）不叠加监听。
+    assert.equal(listenerCount.visibilitychange, 1)
+    renderer2.unmount('settings.section')
+    await renderer2.flush()
+    // 圆环仍挂载（refs 回到 1）：监听保留，最后一个表面卸载才摘。
+    assert.equal(listenerCount.visibilitychange, 1)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('quota card falls back to type-level window labels and localizes stable error codes', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            {
+              // 未登记的窗口形状：完整 id 未命中词典 → 类型前缀（tokens-limit/credit-limit）兜底，绝不直出原始 id。
+              provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok',
+              windows: [
+                { id: 'tokens-limit-u9-n2', percent: 30 },
+                { id: 'credit-limit-u2-n1', percent: 10, resetsAt: new Date(Date.now() + 3600_000).toISOString() },
+              ],
+              fetchedAt: Date.now(),
+            },
+            {
+              // 重试耗尽的瞬时网络错误：错误码必须有本地化文案，不再落进「未知错误」。
+              provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'openrouter', refreshing: false, status: 'error', errorCode: 'network-transient',
+            },
+          ],
+        },
+      }
+    }
+    if (endpoint === 'quota-refresh') return { ok: false, error: 'not-adapted' }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  assert.match(text, /Token 额度.*30%/)
+  assert.match(text, /点数额度.*10%/)
+  assert.doesNotMatch(text, /tokens-limit-u9-n2/)
+  assert.doesNotMatch(text, /credit-limit-u2-n1/)
+  assert.match(text, /网络不稳定（已自动重试）/)
+
+  // quota-refresh 拒绝（not-adapted）也走词典，不再直出原始键名 quota.unadapted。
+  renderer.findByTestId('quota-refresh-zai-coding-cn').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /未适配/)
+  assert.doesNotMatch(renderer.text('settings.section'), /quota\.unadapted/)
 })
 
 test('settings nav rows get icon markers by localized label and follow text changes', async () => {
