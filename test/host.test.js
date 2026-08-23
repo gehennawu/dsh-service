@@ -1397,7 +1397,7 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
   assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [] })
   // null = 显式停用，必须原样保留。
   assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [] })
-  // resetCards：provider+数字 remaining 必填；label/expiresAt 可选；非法条目整条丢弃。
+  // resetCards（v0.20 免次数）：provider 必填，label/expiresAt 可选，remaining 不再保留；id 缺失按原始位置合成。
   const withCards = parseQuotaConfigText(JSON.stringify({
     version: 1,
     kinds: {},
@@ -1411,8 +1411,9 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
     ],
   }))
   assert.deepEqual(withCards.resetCards, [
-    { provider: 'zai-coding-cn', remaining: 2, label: '周额度重置卡', expiresAt: '2026-09-01' },
-    { provider: 'zai-coding-cn', remaining: 0 },
+    { id: 'legacy-0', provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2026-09-01' },
+    { id: 'legacy-1', provider: 'zai-coding-cn' },
+    { id: 'legacy-3', provider: 'x' },
   ])
 })
 
@@ -1588,7 +1589,7 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
     version: 1,
     kinds: { 'opencode-go': 'opencode-go', 'zai-coding-cn': 'zai-coding-cn' },
-    resetCards: [{ provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 2, expiresAt: '2099-01-01' }],
+    resetCards: [{ id: 'card-1', provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2099-01-01' }],
   }))
   const originalGet = https.get
   const requests = []
@@ -1637,7 +1638,7 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   assert.equal(requests[0].auth, 'Bearer k-123')
   // 手录重置卡挂到对应 provider 行；zai 窗口来自智谱方言解析器。
   const zaiRow = second.value.providers.find((entry) => entry.provider === 'zai-coding-cn')
-  assert.deepEqual(zaiRow.resetCards, [{ provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 2, expiresAt: '2099-01-01' }])
+  assert.deepEqual(zaiRow.resetCards, [{ id: 'card-1', provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2099-01-01' }])
   assert.deepEqual(zaiRow.windows.map((window) => window.id), ['time-limit-u5-n1', 'tokens-limit-u3-n5', 'tokens-limit-u6-n1'])
   assert.equal(row.resetCards, undefined)
 })
@@ -1690,9 +1691,9 @@ test('quota-config validates provider and kind against host-side whitelists befo
     const storedPath = join(dshHome, 'dsh-service-quota.json')
   assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'opencode-go')
   // quota-config 保存不得丢掉手录重置卡。
-  await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }] }))
+  await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }] }))
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
-  assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }])
+  assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }])
   // kind:null 现在存「显式停用」（baseURL 可推断也不外呼）；clear:true 才删键回退自动推断。
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
   assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, null)
@@ -1928,30 +1929,34 @@ test('quota RPC tries the zai dual-domain candidate chain and surfaces the serve
   assert.equal(okRowAfter.windows.length, 3)
   assert.equal(okRowAfter.errorDetail, undefined)
 })
-test('quota-reset-card validates provider and fields, replaces per provider, and removes', async (t) => {
+test('quota-reset-card validates provider, appends multiple cards, and removes by host id', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
-  // 未知 provider 拒绝。
-  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'nope', remaining: 1 }), { ok: false, error: 'unknown-provider' })
-  // 非法 remaining 拒绝。
-  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'openrouter', remaining: -1 }), { ok: false, error: 'invalid-remaining' })
-  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'openrouter' }), { ok: false, error: 'invalid-remaining' })
-  // 合法保存：label/expiresAt 截断可选，remaining 取整。
-  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remaining: 2.7, label: '周额度重置卡', expiresAt: '2026-09-30' })).ok, true)
   const storedPath = join(dshHome, 'dsh-service-quota.json')
+  // 未知 provider 拒绝。
+  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'nope', label: 'x' }), { ok: false, error: 'unknown-provider' })
+  // 免次数追加：id 宿主生成，label/expiresAt 截断可选，同 provider 可连续多条。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2026-09-30T08:00' })).ok, true)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn' })).ok, true)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'opencode-go', label: '5小时重置卡' })).ok, true)
   let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
-  assert.deepEqual(config.resetCards, [{ provider: 'zai-coding-cn', remaining: 3, label: '周额度重置卡', expiresAt: '2026-09-30' }])
-  // 同 provider 再次保存 = 替换；其他 provider 的卡互不影响。
-  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remaining: 1 })).ok, true)
-  assert.equal((await host.handler('quota-reset-card', { provider: 'opencode-go', remaining: 5, label: '5小时重置卡' })).ok, true)
+  const zaiCards = config.resetCards.filter((card) => card.provider === 'zai-coding-cn')
+  assert.equal(zaiCards.length, 2)
+  assert.match(zaiCards[0].id, /^rc-/)
+  assert.deepEqual(zaiCards[0], { id: zaiCards[0].id, provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2026-09-30T08:00' })
+  assert.deepEqual(zaiCards[1], { id: zaiCards[1].id, provider: 'zai-coding-cn' })
+  // remove:true + id 只删那一条，其他 provider 的卡互不影响。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remove: true, id: zaiCards[0].id })).ok, true)
   config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
-  assert.equal(config.resetCards.length, 2)
-  assert.deepEqual(config.resetCards.find((card) => card.provider === 'zai-coding-cn'), { provider: 'zai-coding-cn', remaining: 1 })
-  // remove:true 只删该 provider。
-  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remove: true })).ok, true)
+  assert.deepEqual(config.resetCards.map((card) => card.id), [zaiCards[1].id, ...config.resetCards.filter((card) => card.provider === 'opencode-go').map((card) => card.id)])
+  // 单 provider 上限 10 条，超出拒绝 too-many-cards。
+  for (let i = 0; i < 9; i += 1) {
+    assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', label: `卡${i}` })).ok, true)
+  }
+  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'zai-coding-cn', label: '第11张' }), { ok: false, error: 'too-many-cards' })
   config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
-  assert.deepEqual(config.resetCards, [{ provider: 'opencode-go', remaining: 5, label: '5小时重置卡' }])
+  assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
 })
 
 test('quota endpoint resolver returns candidate chains, overriding the {baseURL}/usage convention', () => {

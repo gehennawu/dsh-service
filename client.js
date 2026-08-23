@@ -267,16 +267,14 @@ window.__ModuleLoader__.load({
       'quota.empty': '暂无数据',
       'quota.resetIn': '重置于 {time}',
       'quota.resetCard.title': '重置卡',
-      'quota.resetCard.remaining': '剩余 {count} 次',
       'quota.resetCard.expires': '{date} 到期',
       'quota.resetCard.expired': '已过期',
-      'quota.resetCard.edit': '重置卡…',
-      'quota.resetCard.countLabel': '剩余次数',
+      'quota.resetCard.edit': '添加重置卡',
       'quota.resetCard.dateLabel': '到期日期',
       'quota.resetCard.nameLabel': '名称（可选）',
-      'quota.resetCard.save': '保存',
+      'quota.resetCard.add': '添加',
+      'quota.resetCard.cancel': '取消',
       'quota.resetCard.remove': '移除',
-      'quota.resetCard.invalidCount': '请输入有效的剩余次数',
       'quota.retryAt': '{time} 后可重试',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
@@ -571,16 +569,14 @@ window.__ModuleLoader__.load({
       'quota.empty': 'No data yet',
       'quota.resetIn': 'Resets in {time}',
       'quota.resetCard.title': 'Reset card',
-      'quota.resetCard.remaining': '{count} left',
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
-      'quota.resetCard.edit': 'Reset card…',
-      'quota.resetCard.countLabel': 'Remaining',
+      'quota.resetCard.edit': 'Add reset card',
       'quota.resetCard.dateLabel': 'Expiry date',
       'quota.resetCard.nameLabel': 'Name (optional)',
-      'quota.resetCard.save': 'Save',
+      'quota.resetCard.add': 'Add',
+      'quota.resetCard.cancel': 'Cancel',
       'quota.resetCard.remove': 'Remove',
-      'quota.resetCard.invalidCount': 'Enter a valid remaining count',
       'quota.retryAt': 'Retry allowed after {time}',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
@@ -1337,12 +1333,11 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
-      /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。 */
+      /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。v0.20 起免次数。 */
       function resetCardContent(card, translate) {
         const rawExpiry = typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '' ? card.expiresAt.trim() : ''
         const at = rawExpiry !== '' ? Date.parse(rawExpiry) : NaN
         const expired = Number.isFinite(at) && at < Date.now()
-        const remainingPart = translate('quota.resetCard.remaining', { count: card.remaining })
         let expiryPart = ''
         if (rawExpiry !== '') {
           let shown = rawExpiry
@@ -1357,7 +1352,7 @@ window.__ModuleLoader__.load({
         const labelSuffix = typeof card.label === 'string' && card.label !== '' ? ` · ${card.label}` : ''
         return {
           expired,
-          title: `${translate('quota.resetCard.title')}${labelSuffix} · ${remainingPart}`,
+          title: `${translate('quota.resetCard.title')}${labelSuffix}`,
           expiry: expiryPart,
         }
       }
@@ -1547,32 +1542,17 @@ window.__ModuleLoader__.load({
         const [configError, setConfigError] = useState('')
         const providers = quota.providers || []
         const [cardEditor, setCardEditor] = useState(null)
-        const [cardDraft, setCardDraft] = useState({ remaining: '', expiresAt: '', label: '' })
+        // v0.20 免次数：草稿只有到期时间与名称；添加成功后清空并保持打开，方便连续追加多条。
+        const [cardDraft, setCardDraft] = useState({ expiresAt: '', label: '' })
         const openCardEditor = (row) => {
-          const existing = Array.isArray(row.resetCards) && row.resetCards.length > 0 ? row.resetCards[0] : null
           setCardEditor({ provider: row.provider })
-          setCardDraft({
-            remaining: existing ? String(existing.remaining) : '',
-            expiresAt: existing && typeof existing.expiresAt === 'string' ? existing.expiresAt : '',
-            label: existing && typeof existing.label === 'string' ? existing.label : '',
-          })
+          setCardDraft({ expiresAt: '', label: '' })
         }
         const saveResetCard = async () => {
           if (cardEditor === null) return
           setConfigError('')
-          // 空串会被 Number() 静默当 0：必须先显式拦截空白输入。
-          const rawCount = typeof cardDraft.remaining === 'string' ? cardDraft.remaining.trim() : cardDraft.remaining
-          if (rawCount === '') {
-            setConfigError(translate('quota.resetCard.invalidCount'))
-            return
-          }
-          const remaining = Number(rawCount)
-          if (!Number.isFinite(remaining) || remaining < 0) {
-            setConfigError(translate('quota.resetCard.invalidCount'))
-            return
-          }
           try {
-            const payload = { provider: cardEditor.provider, remaining }
+            const payload = { provider: cardEditor.provider }
             if (cardDraft.expiresAt !== '') payload.expiresAt = cardDraft.expiresAt
             if (cardDraft.label !== '') payload.label = cardDraft.label
             const res = await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', payload)
@@ -1580,7 +1560,7 @@ window.__ModuleLoader__.load({
               setConfigError(translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
             }
-            setCardEditor(null)
+            setCardDraft({ expiresAt: '', label: '' })
             await fetchQuotaSnapshot()
           } catch (error) {
             // 不再一律吞成 Network：透出真实错误（unknown endpoint 等），network 仅作兜底。
@@ -1588,12 +1568,11 @@ window.__ModuleLoader__.load({
             setConfigError(translate('quota.saveFailed', { error: detail }))
           }
         }
-        const removeResetCard = async () => {
-          if (cardEditor === null) return
+        // 逐条移除：provider + 宿主下发的卡片 id 定位，不再依赖「每 provider 一张」的旧约束。
+        const removeResetCard = async (providerName, cardId) => {
           setConfigError('')
           try {
-            await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', { provider: cardEditor.provider, remove: true })
-            setCardEditor(null)
+            await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', { provider: providerName, remove: true, id: cardId })
             await fetchQuotaSnapshot()
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
@@ -1707,17 +1686,25 @@ window.__ModuleLoader__.load({
                   } else {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }
-                                    // 手录重置卡（v0.19 过渡方案）：窗口明细下方只读展示剩余次数与到期时间。
+                                    // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，行尾自带「移除」。
                   const resetCardNodes = Array.isArray(row.resetCards)
                     ? row.resetCards.map((card, cardIndex) => {
                         const content = resetCardContent(card, translate)
+                        const cardId = typeof card.id === 'string' && card.id !== '' ? card.id : `idx-${cardIndex}`
                         return React.createElement('div', {
-                          key: cardIndex,
-                          'data-testid': `quota-reset-card-${row.provider}-${cardIndex}`,
-                          style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
+                          key: cardId,
+                          'data-testid': `quota-reset-card-${row.provider}-${cardId}`,
+                          style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
                         },
-                        React.createElement('span', null, content.title),
-                        content.expiry !== '' ? React.createElement('span', null, content.expiry) : null)
+                        React.createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                          React.createElement('span', null, content.title),
+                          content.expiry !== '' ? React.createElement('span', null, content.expiry) : null),
+                        React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-remove-${row.provider}-${cardId}`,
+                          onClick: () => removeResetCard(row.provider, cardId),
+                          style: { fontSize: '11px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+                        }, translate('quota.resetCard.remove')))
                       })
                     : []
                   const editingThis = cardEditor !== null && cardEditor.provider === row.provider
@@ -1740,13 +1727,12 @@ window.__ModuleLoader__.load({
                     body,
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
-                      resetField(translate('quota.resetCard.countLabel'), 'quota-reset-input-count', 'number', 'remaining'),
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
-                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.save')),
-                      ...(Array.isArray(row.resetCards) && row.resetCards.length > 0 ? [React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-remove', onClick: removeResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.remove'))] : []),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
                     )] : []),
-                    // 卡片脚部：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡入口。
+                    // 卡片脚部：类型下拉（当前选中 / 跟随自动识别 / 停用查询）；重置卡入口独占一行，避免被挤压截断。
                     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
                       React.createElement('select', {
                         'data-testid': `quota-kind-select-${row.provider}`,
@@ -1761,14 +1747,15 @@ window.__ModuleLoader__.load({
                       },
                       QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`))),
                       React.createElement('option', { value: '__auto__' }, translate('quota.followAuto')),
-                      React.createElement('option', { value: '' }, translate('quota.disable'))),
-                      // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
-                      ...(row.kind === 'zai-coding-cn' ? [React.createElement('button', {
+                      React.createElement('option', { value: '' }, translate('quota.disable')))),
+                    // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
+                    ...(row.kind === 'zai-coding-cn' ? [React.createElement('div', { key: 'reset-add-row', style: { display: 'flex' } },
+                      React.createElement('button', {
                         type: 'button',
                         'data-testid': `quota-card-edit-${row.provider}`,
                         onClick: () => openCardEditor(row),
-                        style: { fontSize: '12px', padding: '4px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
-                      }, translate('quota.resetCard.edit'))] : [])))
+                        style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                      }, translate('quota.resetCard.edit')))] : []))
                 })),
           ...(candidateRows.length > 0 ? [React.createElement('div', { key: 'quota-add-adapt', 'data-testid': 'quota-add-adapt', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginTop: adaptedRows.length > 0 ? '2px' : '4px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } },
             React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.addAdapt')),

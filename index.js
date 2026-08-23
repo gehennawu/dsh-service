@@ -492,17 +492,18 @@ function createEmptyQuotaConfig() {
 
 /**
  * 校验手录的重置卡条目（v0.19 过渡方案：官方无 API Key 可查的端点，用户手填）。
- * provider 与数字 remaining 为必填；label/expiresAt 可选；不合格条目整条丢弃。
+ * v0.20 起免次数、每 provider 可多条：provider 必填，label/expiresAt 可选；id 缺失时按
+ * 原始位置合成稳定 id（老数据兼容），写入口生成的 id 原样保留。
  */
 function normalizeResetCards(raw) {
   if (!Array.isArray(raw)) return []
   const cards = []
-  for (const card of raw) {
+  for (let index = 0; index < raw.length; index += 1) {
+    const card = raw[index]
     if (card === null || typeof card !== 'object') continue
     const provider = typeof card.provider === 'string' && card.provider.trim() !== '' ? card.provider.trim() : ''
-    const remaining = Number(card.remaining)
-    if (provider === '' || !Number.isFinite(remaining)) continue
-    const normalized = { provider, remaining: Math.max(0, Math.round(remaining)) }
+    if (provider === '') continue
+    const normalized = { id: typeof card.id === 'string' && card.id.trim() !== '' ? card.id.trim().slice(0, 64) : `legacy-${index}`, provider }
     if (typeof card.label === 'string' && card.label.trim() !== '') normalized.label = card.label.trim()
     if (typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '') normalized.expiresAt = card.expiresAt.trim()
     cards.push(normalized)
@@ -2032,23 +2033,24 @@ function apply(ctx) {
 
     if (endpoint === 'quota-reset-card') {
       try {
-        // 手录重置卡（v0.19 过渡方案）的面板写入口：provider 过宿主清单白名单，
-        // remaining 数字必填、label/expiresAt 截断限长；每个 provider 仅保留一张卡。
+        // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
+        // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，
+        // 其余载荷为追加一条（label/expiresAt 截断限长），单 provider 上限 10 条防配置膨胀。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
         const config = await loadQuotaConfig(dshHome)
-        const others = (Array.isArray(config.resetCards) ? config.resetCards : []).filter((card) => card.provider !== providerName)
+        const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
         if (payload?.remove === true) {
-          config.resetCards = others
+          const cardId = typeof payload?.id === 'string' ? payload.id : ''
+          config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
         } else {
-          const remaining = Number(payload?.remaining)
-          if (!Number.isFinite(remaining) || remaining < 0) return { ok: false, error: 'invalid-remaining' }
-          const card = { provider: providerName, remaining: Math.max(0, Math.round(remaining)) }
+          if (allCards.filter((card) => card.provider === providerName).length >= 10) return { ok: false, error: 'too-many-cards' }
+          const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
           if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
           if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
-          config.resetCards = [...others, card]
+          config.resetCards = [...allCards, card]
         }
         await saveQuotaConfig(dshHome, config)
         return { ok: true }
