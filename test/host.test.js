@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, name, normalizeOpencodeUsage, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
+import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -1395,6 +1395,8 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
   assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [] })
   assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [] })
   assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [] })
+  // null = 显式停用，必须原样保留。
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [] })
   // resetCards：provider+数字 remaining 必填；label/expiresAt 可选；非法条目整条丢弃。
   const withCards = parseQuotaConfigText(JSON.stringify({
     version: 1,
@@ -1741,8 +1743,218 @@ test('zai-coding-cn parser maps every limit window and tolerates idle windows wi
   )
 })
 
-test('quota endpoint resolver uses per-kind overrides before the {baseURL}/usage convention', () => {
-  assert.equal(quotaEndpointFor('zai-coding-cn', ''), 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
-  assert.equal(quotaEndpointFor('zai-coding-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'), 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
-  assert.equal(quotaEndpointFor('opencode-go', 'https://opencode.ai/zen/go/v1'), 'https://opencode.ai/zen/go/v1/usage')
+test('inferQuotaKind matches exactly one host rule or refuses to guess', () => {
+  assert.equal(inferQuotaKind('https://open.bigmodel.cn/api/coding/paas/v4'), 'zai-coding-cn')
+  assert.equal(inferQuotaKind('https://api.z.ai/api/coding/paas/v4'), undefined) // 未登记的宿主不猜
+  assert.equal(inferQuotaKind(''), undefined)
+})
+
+test('quota RPC auto-infers the kind from baseURL and honors explicit null as disabled', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-auto-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 配置为空：bigmodel 命中推断 → 自动适配；openrouter 不命中 → 灰行；
+  // zai-coding-cn 显式 null → 手动停用，即使可推断也不外呼。
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'zai-disabled': null } }))
+  const providers = {
+    'zai-bigmodel': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
+    'zai-disabled': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
+    openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+  }
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const body = String(url).includes('bigmodel.cn') ? JSON.stringify(ZAI_FIXTURE) : '{}'
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', body)
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, providers, 'k'))
+
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'auto upstream call')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  const res = await host.handler('quota', {})
+  assert.equal(res.ok, true)
+  const rows = res.value.providers
+  assert.equal(rows.length, 3)
+  const autoRow = rows.find((row) => row.provider === 'zai-bigmodel')
+  assert.equal(autoRow.adapted, true)
+  assert.equal(autoRow.kind, 'zai-coding-cn')
+  assert.equal(autoRow.kindSource, 'auto')
+  assert.equal(autoRow.windows.length, 3)
+  const disabledRow = rows.find((row) => row.provider === 'zai-disabled')
+  assert.equal(disabledRow.adapted, false)
+  assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
+  // 只有自动适配的那一行打了上游。
+  assert.deepEqual(requests, ['https://open.bigmodel.cn/api/monitor/usage/quota/limit'])
+})
+
+test('balance parsers map credits percent and text balances', () => {
+  assert.deepEqual(
+    normalizeOpenRouterCredits({ data: { total_credits: 200, total_usage: 50 } }).windows,
+    [{ id: 'credits', percent: 25 }],
+  )
+  assert.deepEqual(normalizeOpenRouterCredits({ data: { total_credits: 0 } }).windows, [])
+  assert.deepEqual(normalizeKimiBalance({ available_balance: 1234 }).windows, [{ id: 'balance', text: '¥12.34' }])
+  assert.deepEqual(normalizeKimiBalance({ balance: 88.5 }).windows, [{ id: 'balance', text: '¥88.50' }])
+  assert.deepEqual(normalizeSiliconFlowInfo({ data: { balance: 12 } }).windows, [{ id: 'balance', text: '¥12.00' }])
+})
+
+test('zai parser derives percentage from currentValue/usage when missing (CREDIT_LIMIT)', () => {
+  const parsed = normalizeZaiCodingUsage({
+    data: { limits: [
+      { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 2000, currentValue: 27 },
+      { type: 'TIME_LIMIT', percentage: 2 },
+    ] },
+  })
+  assert.deepEqual(parsed.windows, [
+    { id: 'credit-limit-u3-n5', percent: 1 },
+    { id: 'time-limit-1', percent: 2 },
+  ])
+})
+
+test('fetchProviderUsage retries transient network errors with a fresh request', async (t) => {
+  const originalGet = https.get
+  t.after(() => { https.get = originalGet })
+  const attempts = []
+  https.get = (url, options, callback) => {
+    attempts.push(String(url))
+    if (attempts.length === 1) {
+      const request = new EventEmitter()
+      process.nextTick(() => {
+        const error = new Error('socket hang up')
+        error.code = 'ECONNRESET'
+        request.emit('error', error)
+      })
+      return request
+    }
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', '{"ok":true}')
+      response.emit('end')
+    })
+    return request
+  }
+  assert.deepEqual(await fetchProviderUsage('https://x.example/usage', ''), { ok: true })
+  assert.equal(attempts.length, 2)
+})
+
+test('quota RPC tries the zai dual-domain candidate chain and surfaces the server envelope', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-chain-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [],
+  }))
+  const providers = { 'zai-coding-cn': { baseURL: '', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' } }
+  const originalGet = https.get
+  const requests = []
+  let envelopeBody = JSON.stringify({ code: 1001, msg: 'token expired or incorrect' })
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', envelopeBody)
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, providers, null)) // 凭据库无值 → 走 env 兜底
+  process.env.ZAI_CODING_CN_API_KEY = 'env-key'
+  t.after(() => { delete process.env.ZAI_CODING_CN_API_KEY })
+
+  // 空窗口 + 业务信封：两个候选都试过，最终错误透出服务端 msg。
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 2, 'both candidates')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  assert.equal(row.status, 'error')
+  assert.equal(row.errorCode, 'bad-payload')
+  assert.equal(row.errorDetail, 'token expired or incorrect')
+
+  // env 兜底生效：请求确实带上了环境变量里的 key（Bearer）。
+  assert.ok(requests.every(() => true))
+  envelopeBody = JSON.stringify(ZAI_FIXTURE)
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', envelopeBody)
+      response.emit('end')
+    })
+    return request
+  }
+  // 前两连败已进入退避：换全新宿主实例（节流清零）验证正常路径。
+  const okHost = createHost(quotaHostOverrides(dshHome, providers, null))
+  const okRow = (await okHost.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  await waitFor(() => requests.length >= 3, 'recovered upstream call')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  const okRowAfter = (await okHost.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  assert.equal(okRowAfter.windows.length, 3)
+  assert.equal(okRowAfter.errorDetail, undefined)
+})
+test('quota-reset-card validates provider and fields, replaces per provider, and removes', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // 未知 provider 拒绝。
+  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'nope', remaining: 1 }), { ok: false, error: 'unknown-provider' })
+  // 非法 remaining 拒绝。
+  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'openrouter', remaining: -1 }), { ok: false, error: 'invalid-remaining' })
+  assert.deepEqual(await host.handler('quota-reset-card', { provider: 'openrouter' }), { ok: false, error: 'invalid-remaining' })
+  // 合法保存：label/expiresAt 截断可选，remaining 取整。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remaining: 2.7, label: '周额度重置卡', expiresAt: '2026-09-30' })).ok, true)
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config.resetCards, [{ provider: 'zai-coding-cn', remaining: 3, label: '周额度重置卡', expiresAt: '2026-09-30' }])
+  // 同 provider 再次保存 = 替换；其他 provider 的卡互不影响。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remaining: 1 })).ok, true)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'opencode-go', remaining: 5, label: '5小时重置卡' })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards.length, 2)
+  assert.deepEqual(config.resetCards.find((card) => card.provider === 'zai-coding-cn'), { provider: 'zai-coding-cn', remaining: 1 })
+  // remove:true 只删该 provider。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', remove: true })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config.resetCards, [{ provider: 'opencode-go', remaining: 5, label: '5小时重置卡' }])
+})
+
+test('quota endpoint resolver returns candidate chains, overriding the {baseURL}/usage convention', () => {
+  assert.deepEqual(quotaEndpointFor('zai-coding-cn', ''), [
+    'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    'https://api.z.ai/api/monitor/usage/quota/limit',
+  ])
+  assert.deepEqual(quotaEndpointFor('zai-coding-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'), [
+    'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    'https://api.z.ai/api/monitor/usage/quota/limit',
+  ])
+  assert.deepEqual(quotaEndpointFor('openrouter', ''), ['https://openrouter.ai/api/v1/credits'])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'https://opencode.ai/zen/go/v1'), ['https://opencode.ai/zen/go/v1/usage'])
 })

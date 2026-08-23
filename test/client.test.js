@@ -244,9 +244,15 @@ function createRenderer(rpcCall, options = {}) {
             slotComponents.set(slotOptions.name, entries)
             if (!(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
             return () => {
-              unmountSlot(slotOptions.name)
-              const live = slotComponents.get(slotOptions.name)
-              if (live) live.delete(slotOptions.id ?? 'entry')
+              // 与真实 cordis 一致：disposer 只摘除本条目，整槽无占用时才取消挂载。
+              // 此前误杀整个槽名——「关闭左列入口」会把整个设置面板从渲染树里炸掉。
+              const name = slotOptions.name
+              const live = slotComponents.get(name)
+              if (live) {
+                live.delete(slotOptions.id ?? 'entry')
+                if (live.size === 0) mountedSlots.delete(name)
+              }
+              renderAll()
             }
           },
         },
@@ -1678,7 +1684,7 @@ test('an unknown runtime environment renders as informational without warning ma
   assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
 })
 
-// ── v0.18 远端额度 ──────────────────────────────────────────────────────────────
+// ── v0.19 额度查询 ──────────────────────────────────────────────────────────────
 
 function quotaRingRenderer(rpcCall, modelDirectories, options = {}) {
   return createRenderer(rpcCall, { modelDirectories, ...options })
@@ -1781,9 +1787,9 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(renderer.hasTest('quota-reset-weekly'), false)
   assert.ok(quotaCalls.length > callsBeforeClick)
 
-  // 环的轮询已在跑（refs>1）时打开「远端额度」标签：挂载即立即再查一次，不沿用旧快照。
+  // 环的轮询已在跑（refs>1）时打开「额度查询」标签：挂载即立即再查一次，不沿用旧快照。
   const callsBeforeTab = quotaCalls.length
-  await renderer.findButton('远端额度').props.onClick()
+  await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   assert.ok(quotaCalls.length > callsBeforeTab)
   assert.ok(renderer.hasTest('remote-quota-card'))
@@ -1808,6 +1814,7 @@ test('quota ring renders nothing when the modelDirectories service is absent', a
 test('remote quota card lists providers, saves kind via whitelist RPC, and persists the poll choice', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const configCalls = []
+  const cardCalls = []
   let quotaResponse = {
     ok: true,
     value: {
@@ -1815,7 +1822,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
       providers: [
         { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false },
         { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
-        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
+        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
       ],
     },
   }
@@ -1827,6 +1834,10 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: usageFixture }
     if (endpoint === 'quota') return quotaResponse
+    if (endpoint === 'quota-reset-card') {
+      cardCalls.push(payload)
+      return { ok: true }
+    }
     if (endpoint === 'quota-config') {
       configCalls.push(payload)
       if (payload.provider !== 'opencode-go') return { ok: false, error: 'unknown-provider' }
@@ -1837,7 +1848,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
           providers: [
             { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: payload.kind, refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }], fetchedAt: Date.now() },
             { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
-            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
+            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
           ],
         },
       }
@@ -1847,13 +1858,21 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   })
 
   await renderer.load()
-  await renderer.findButton('远端额度').props.onClick()
+  await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const text = renderer.text('settings.section')
-  assert.match(text, /远端额度/)
+  assert.match(text, /额度查询/)
   assert.match(text, /未适配/)
+  // 每个灰行的适配下拉都包含全部内置 kind（zai-coding-cn 可选且带本地化标签）。
+  assert.match(text, /智谱 GLM Coding Plan/)
+  const zaiKindSelect = renderer.findByTestId('quota-kind-select-zai-coding-cn')
+  const kindValues = zaiKindSelect.children.flat(Infinity).map((option) => option.props.value)
+  assert.deepEqual(kindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow'])
   // 已适配行展示窗口与更新时间；每个窗口带独立进度条（无「已用」头条）。
   assert.match(text, /本周.*14%/)
+  // 自动推断的行带「自动识别」标签。
+  assert.match(text, /自动识别/)
+  assert.ok(renderer.hasTest('quota-auto-tag-openrouter'))
   assert.equal(renderer.findByTestId('quota-card-bar-openrouter-weekly').children[0].props.style.width, '14%')
   assert.equal(renderer.hasTest('quota-card-reset-openrouter-weekly'), false) // fixture 无 resetsAt → 不显示重置行
   // 手录重置卡行：剩余次数 + 到期时间（未过期不标已过期）。
@@ -1894,11 +1913,11 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   assert.ok(renderer.pendingTimerDelays().includes(60000))
 
-  // 「远端额度」是独立标签：切回「模型统计」不再出现额度卡。
+  // 「额度查询」是独立标签：切回「模型统计」不再出现额度卡。
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('remote-quota-card'), false)
-  await renderer.findButton('远端额度').props.onClick()
+  await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
 
   // 左列入口开关：默认关；开启注册 settings.section 条目（order 498），再关即注销。
@@ -1917,4 +1936,25 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   renderer.findByTestId('quota-nav-switch').props.onClick()
   await renderer.flush()
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
+
+  // 重置卡内联表单：预填现有卡 → 修改次数保存 → RPC 载荷正确且编辑器关闭。
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-card-edit-openrouter').props.onClick()
+  await renderer.flush()
+  const countInput = renderer.findByTestId('quota-reset-input-count')
+  assert.equal(countInput.props.value, '2')
+  assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '2099-06-01')
+  assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '周额度重置卡')
+  countInput.props.onChange({ target: { value: '5' } })
+  renderer.findByTestId('quota-reset-card-save').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(cardCalls, [{ provider: 'openrouter', remaining: 5, expiresAt: '2099-06-01', label: '周额度重置卡' }])
+  assert.equal(renderer.hasTest('quota-reset-editor-openrouter'), false)
+  // 移除分支：RPC 收到 remove:true。
+  renderer.findByTestId('quota-card-edit-openrouter').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-reset-card-remove').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(cardCalls[1], { provider: 'openrouter', remove: true })
 })

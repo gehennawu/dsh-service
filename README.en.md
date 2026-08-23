@@ -8,7 +8,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ## Features
 
-The Settings panel "Service Control" page has seven top-level tabs: **Overview, Notifications, Health, Model stats, Remote quota, Backups, Restart**; the Restart and Remote quota tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
+The Settings panel "Service Control" page has seven top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Restart**; the Restart and Quota lookup tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
 ### Version and updates
 
@@ -40,12 +40,12 @@ The Settings panel "Service Control" page has seven top-level tabs: **Overview, 
 - Steps whose provider reports no token usage are excluded from the statistics
 - Last-24-hour model/tool error statistics, collapsed by default
 
-### Remote quota
+### Quota lookup
 
-- A dedicated "Remote quota" tab lists every configured provider; adapted ones show each window as a percentage with its own bar and a reset countdown on its own line, and unadapted gray rows offer an inline selector to enable adaptation instantly
+- A dedicated "Quota lookup" tab lists every configured provider; adapted ones show each window as a percentage with its own bar and a reset countdown on its own line, and unadapted gray rows offer an inline selector to enable adaptation instantly
 - A quota ring inside the conversation composer follows the provider selected by the current session and shows the tightest budget window as a percentage (green below 80%, amber at or above); clicking opens a panel with a "Used" headline and total bar, per-window bars, and reset times on their own lines
-- A "Show a remote quota entry in the settings left navigation" switch lives in the Remote quota tab (off by default), mirroring the Restart entry
-- Built-in adaptations: **OpenCode Go** (`{baseURL}/usage`) and **Zhipu GLM Coding Plan / zai-coding-cn** (the official monitor `quota/limit` endpoint, with three windows — 5-hour rolling tokens, weekly tokens, monthly MCP quota; an idle 5-hour window hides its reset time, matching the official console); the provider-to-kind mapping lives in `DSH_HOME/dsh-service-quota.json`, and no upstream request is ever made for unadapted providers. Zhipu reset cards have no API-key-queryable endpoint yet — you can hand-edit `resetCards[]` (count/expiry) in the same file for a read-only panel display
+- A "Show a remote quota entry in the settings left navigation" switch lives in the Quota lookup tab (off by default), mirroring the Restart entry
+- Built-in adaptations: **OpenCode Go** (`{baseURL}/usage`), **Zhipu GLM Coding Plan / zai-coding-cn** (official monitor `quota/limit` endpoint with three windows — 5-hour rolling tokens, weekly tokens, monthly MCP quota; an idle 5-hour window hides its reset time, matching the official console), **OpenRouter** (credits used %), **Kimi/Moonshot** and **SiliconFlow** (CNY balance text); transient network errors retry automatically and the Zhipu dual-domain candidate chain switches automatically; the provider-to-kind mapping lives in `DSH_HOME/dsh-service-quota.json`, and known services are auto-detected from their baseURL (e.g. opencode.ai, bigmodel.cn) with no manual picking; no upstream request is ever made for unadapted providers, and `"<provider>": null` in the config file disables one explicitly. Zhipu reset cards have no API-key-queryable endpoint yet — you can fill in the count and expiry via each provider row's "Reset card…" button on the tab (stored in the same config file); expired cards are flagged automatically
 - Anti-rate-limit pacing is enforced by the host: successful results are cached for 60 seconds (shared across tabs), failures back off exponentially (30 s doubling, capped at 15 minutes), upstream timeout is 15 s; the panel can set auto query to manual only / 1 / 2 / 5 / 10 minutes (5 by default), paused automatically while the page is hidden
 - API keys are resolved and used only inside the host process — the browser receives normalized percentages only; data flows through the plugin's own loopback RPC with no webServer routes exposed
 
