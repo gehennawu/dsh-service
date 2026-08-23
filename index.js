@@ -27,26 +27,49 @@ const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 // 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
 const QUOTA_CONFIG_VERSION = 1
 const QUOTA_CONFIG_FILE = 'dsh-service-quota.json'
-const QUOTA_KINDS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow']
-// 非 {baseURL}/usage 约定的 kind 在此登记查询端点候选链（宿主常量白名单，浏览器零输入）：
-// 按序尝试；401/403 换下一候选（智谱国内/国际双域 Key 不互通），其余错误终止。
-const QUOTA_ENDPOINT_OVERRIDES = {
-  'zai-coding-cn': [
-    'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
-    'https://api.z.ai/api/monitor/usage/quota/limit',
-  ],
-  openrouter: ['https://openrouter.ai/api/v1/credits'],
-  kimi: ['https://api.moonshot.cn/v1/users/me/balance'],
-  siliconflow: ['https://api.siliconflow.cn/v1/user/info'],
+// kind 注册表：新增供应商方言只改这一处（此前散在 5 张表里，加 kind 要改 5 处）。
+// parser 是归一化函数（函数声明有提升，可在定义之前引用）；
+// 归一化窗口可选字段 remaining:true 表示 percentage 原生就是「剩余百分比」（如 MiniMax 的
+// remaining_percent）——客户端据此把「已用」切换为「剩余」，进度条预警阈值反向；缺省按已用口径。
+// endpoints 是宿主常量候选链——按序尝试，401/403 换下一候选（智谱双域 Key 不互通），
+// 其余错误终止；缺省走 {baseURL}/usage 约定（baseURL 为空时链为空 → 稳定错误码 no-base-url）。
+// keyHints 是 Key 发现线索名（settings 声明 → DSH 凭据库 → 环境变量，含旧名兼容）；
+// hosts 供 baseURL 唯一命中自动推断（0 条或歧义都不猜）。
+const KIND_REGISTRY = {
+  'opencode-go': {
+    parser: normalizeOpencodeUsage,
+    keyHints: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
+    hosts: ['opencode.ai'],
+  },
+  'zai-coding-cn': {
+    parser: normalizeZaiCodingUsage,
+    endpoints: [
+      'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+      'https://api.z.ai/api/monitor/usage/quota/limit',
+    ],
+    keyHints: ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'BIGMODEL_API_KEY'],
+    hosts: ['open.bigmodel.cn', 'bigmodel.cn'],
+  },
+  openrouter: {
+    parser: normalizeOpenRouterCredits,
+    endpoints: ['https://openrouter.ai/api/v1/credits'],
+    keyHints: ['OPENROUTER_API_KEY'],
+    hosts: ['openrouter.ai'],
+  },
+  kimi: {
+    parser: normalizeKimiBalance,
+    endpoints: ['https://api.moonshot.cn/v1/users/me/balance'],
+    keyHints: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
+    hosts: ['moonshot.cn', 'kimi.com'],
+  },
+  siliconflow: {
+    parser: normalizeSiliconFlowInfo,
+    endpoints: ['https://api.siliconflow.cn/v1/user/info'],
+    keyHints: ['SILICONFLOW_API_KEY'],
+    hosts: ['siliconflow.cn'],
+  },
 }
-// Key 发现线索（每 kind 有序候选名）：settings 声明 → DSH 凭据库 → 环境变量（含旧名兼容）。
-const QUOTA_KEY_HINTS = {
-  'opencode-go': ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
-  'zai-coding-cn': ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'BIGMODEL_API_KEY'],
-  openrouter: ['OPENROUTER_API_KEY'],
-  kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
-  siliconflow: ['SILICONFLOW_API_KEY'],
-}
+const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
 const QUOTA_SUCCESS_TTL_MS = 60000
 const QUOTA_MIN_INTERVAL_MS = 15000
@@ -588,40 +611,20 @@ function normalizeOpencodeUsage(payload) {
   return { windows }
 }
 
-/** kind → 解析器分发表；新增供应商方言时在此登记并同步 QUOTA_KINDS 白名单。
- * 窗口可选字段 remaining:true 表示 percentage 原生就是「剩余百分比」（如 MiniMax 的
- * remaining_percent）——客户端据此把头部「已用」切换为「剩余」，进度条预警阈值反向；
- * 缺省一律按已用口径处理。
- */
-const QUOTA_PARSERS = {
-  'opencode-go': normalizeOpencodeUsage,
-  'zai-coding-cn': (payload) => normalizeZaiCodingUsage(payload),
-  openrouter: normalizeOpenRouterCredits,
-  kimi: normalizeKimiBalance,
-  siliconflow: normalizeSiliconFlowInfo,
-}
-
-/** kind → 上游查询端点候选数组：默认 [{baseURL}/usage]，覆盖表登记的 kind 用宿主常量链。 */
+/** kind → 上游查询端点候选数组：注册表登记的 kind 用宿主常量链；缺省 [{baseURL}/usage]（baseURL 为空 → 空链）。 */
 function quotaEndpointFor(kind, baseURL) {
-  const override = QUOTA_ENDPOINT_OVERRIDES[kind]
-  return override !== undefined ? [...override] : [`${baseURL}/usage`]
+  const registered = KIND_REGISTRY[kind]
+  if (registered !== undefined && Array.isArray(registered.endpoints)) return [...registered.endpoints]
+  const base = String(baseURL ?? '').trim()
+  return base === '' ? [] : [`${base}/usage`]
 }
 
-// 自动推断规则（宿主常量）：baseURL 命中且唯一才自动适配——视为供应商自证兼容，
-// 用户仍可在配置文件对该 provider 显式写 kind:null 停用。
-const QUOTA_KIND_INFERENCE = [
-  { kind: 'opencode-go', hosts: ['opencode.ai'] },
-  { kind: 'zai-coding-cn', hosts: ['open.bigmodel.cn', 'bigmodel.cn'] },
-  { kind: 'openrouter', hosts: ['openrouter.ai'] },
-  { kind: 'kimi', hosts: ['moonshot.cn', 'kimi.com'] },
-  { kind: 'siliconflow', hosts: ['siliconflow.cn'] },
-]
-
-/** 由 baseURL 推断 kind：恰好命中一条规则返回该 kind，否则 undefined（0 条或歧义都不猜）。 */
+/** 由 baseURL 推断 kind：恰好命中一个注册项的 hosts 返回该 kind，否则 undefined（0 条或歧义都不猜）。 */
 function inferQuotaKind(baseURL) {
   const url = String(baseURL || '').toLowerCase()
-  const hits = QUOTA_KIND_INFERENCE.filter((rule) => rule.hosts.some((host) => url.includes(host)))
-  return hits.length === 1 ? hits[0].kind : undefined
+  const hits = Object.entries(KIND_REGISTRY).filter(([, registered]) =>
+    (registered.hosts ?? []).some((host) => url.includes(host)))
+  return hits.length === 1 ? hits[0][0] : undefined
 }
 
 /**
@@ -632,19 +635,20 @@ function resolveQuotaKind(config, profile) {
   if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
     const configured = config.kinds[profile.name]
     if (configured === null) return {}
-    if (QUOTA_PARSERS[configured] !== undefined) return { kind: configured, kindSource: 'config' }
+    if (KIND_REGISTRY[configured] !== undefined) return { kind: configured, kindSource: 'config' }
     return {}
   }
   const inferred = inferQuotaKind(profile.baseURL)
-  if (inferred !== undefined && QUOTA_PARSERS[inferred] !== undefined) return { kind: inferred, kindSource: 'auto' }
+  if (inferred !== undefined && KIND_REGISTRY[inferred] !== undefined) return { kind: inferred, kindSource: 'auto' }
   return {}
 }
 
-/** 百分比归一：0-1 视为小数比例，>=1 视为已是百分数；非法 → null。 */
+/** 百分比归一：调用方（zai 等）的 percentage 与反推值都是 0-100 口径，只做截断取整；非法 → null。
+ * 注意不做「≤1 视为小数比例」启发式——zai 原生 percentage:1 就是 1%，放大会得到 100%。 */
 function normalizePercentValue(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return null
-  return Math.min(100, Math.round((n <= 1 ? n * 100 : n)))
+  return Math.min(100, Math.round(n))
 }
 
 /** 重置时刻归一：ISO 字符串 / unix 秒 / unix 毫秒 → ISO 字符串；非法 → undefined。 */
@@ -660,16 +664,19 @@ function normalizeResetTimestamp(value) {
 
 /**
  * Key 发现链：settings 声明的 apiKeyEnv → DSH 凭据库按 kind 线索名 → 环境变量（含旧名兼容）。
- * 全部落空返回 undefined（调用方转为 credential-missing）。
+ * 全部落空返回 undefined（调用方转为 credential-missing）；settings 显式声明了 apiKeyEnv
+ * 但凭据服务缺席且环境变量也兜不住时抛 credentials-unavailable——有明确意图却无处取 key，
+ * 与「从未配置」的 credential-missing 区分。
  */
 async function discoverQuotaCredential(ctx, kind, profile) {
-  const hints = QUOTA_KEY_HINTS[kind] ?? []
+  const hints = KIND_REGISTRY[kind]?.keyHints ?? []
   const attempted = []
   if (profile.apiKeyEnv !== '') attempted.push(profile.apiKeyEnv)
   for (const name of hints) {
     if (attempted.includes(name)) continue
     attempted.push(name)
   }
+  const envHas = (name) => typeof process.env[name] === 'string' && process.env[name].trim() !== ''
   const credentials = ctx.get('credentials')
   if (credentials !== undefined && typeof credentials.resolve === 'function') {
     for (const name of attempted) {
@@ -678,6 +685,8 @@ async function discoverQuotaCredential(ctx, kind, profile) {
         if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') return `Bearer ${hit.value}`
       } catch (_) {}
     }
+  } else if (profile.apiKeyEnv !== '' && !attempted.some(envHas)) {
+    throw new Error('credentials-unavailable')
   }
   for (const name of attempted) {
     const value = process.env[name]
@@ -838,7 +847,8 @@ async function fetchProviderUsage(endpoint, authorization) {
 
 /**
  * 每 provider 节流状态机（内存态，重启清零）。一切来源共用同一判定，优先序：
- * 单飞去重 > 失败指数退避（30s ×2 封顶 15min）> 最小上游间隔 15s > 成功 TTL 60s。
+ * 单飞去重 > 失败指数退避（30s ×2 封顶 15min）> 成功 TTL 60s > 最小上游间隔 15s——
+ * 与 attempt() 的实际判定序一致（inflight > backoff > fresh > interval）。
  * now 由调用方注入，测试可推进假时钟。
  */
 function createQuotaThrottle(options = {}) {
@@ -1697,20 +1707,31 @@ function apply(ctx) {
   let updateCache
   let updatePromise
   const quotaThrottle = createQuotaThrottle()
+  // 配置写串行化：quota-config / quota-reset-card 都是 load→改→save，无串行化时并发的后写者
+  // 会整体覆盖先写者（原子 rename 只保证文件不损坏，不保证不丢更新）。排队执行；失败不阻塞后来者。
+  let quotaConfigWrites = Promise.resolve()
+  const serializeQuotaConfigWrite = (work) => {
+    const result = quotaConfigWrites.then(work)
+    quotaConfigWrites = result.then(() => undefined, () => undefined)
+    return result
+  }
   // 远端额度：后台补拉一次。是否真的发上游由节流器判定；fire-and-forget，落定写回状态机。
   const kickQuotaRefresh = (profile, kind) => {
     const decision = quotaThrottle.attempt(profile.name)
     if (!decision.ok) return
-    const parser = QUOTA_PARSERS[kind]
+    const parser = KIND_REGISTRY[kind]?.parser
     Promise.resolve()
       .then(async () => {
         if (parser === undefined) throw new Error('bad-payload:kind')
-        // Key 发现链：settings 声明 → 凭据库线索名 → 环境变量 → CLI 登录态；全落空即凭据缺失。
+        // 端点候选链先于凭据解析：baseURL 缺失是更明确的配置错误（也省一次凭据查找）。
+        // 401/403 换下一候选（智谱双域 Key 不互通），其余 4xx/5xx 直接终止——
+        // 429 换域会打到另一账号的域，400/404 说明端点本身不对，重试别的域没有意义；
+        // 解析成功立即返回；200 但业务信封失败的 detail 单独保留并最终优先抛出，避免被后续候选的传输错误盖住。
+        const candidates = quotaEndpointFor(kind, profile.baseURL)
+        if (candidates.length === 0) throw new Error('no-base-url')
+        // Key 发现链：settings 声明 → 凭据库线索名 → 环境变量；全落空即凭据缺失。
         const authorization = await discoverQuotaCredential(ctx, kind, profile)
         if (authorization === undefined) throw new Error('credential-missing')
-        // 端点候选链：401/403 换下一候选（智谱双域 Key 不互通）；解析成功立即返回；
-        // 200 但业务信封失败的 detail 单独保留并最终优先抛出，避免被后续候选的传输错误盖住。
-        const candidates = quotaEndpointFor(kind, profile.baseURL)
         let lastError = null
         let parseFailure = null
         for (const endpoint of candidates) {
@@ -1719,7 +1740,7 @@ function apply(ctx) {
             payload = await fetchProviderUsage(endpoint, authorization)
           } catch (error) {
             lastError = error
-            if (error.message.startsWith('http-status:40') && candidates.length > 1) continue
+            if ((error.message === 'http-status:401' || error.message === 'http-status:403') && candidates.length > 1) continue
             throw error
           }
           const parsed = parser(payload)
@@ -1985,7 +2006,7 @@ function apply(ctx) {
         for (const profile of providers) {
           // kind 解析优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断。
           const { kind, kindSource } = resolveQuotaKind(config, profile)
-          if (kind === undefined || QUOTA_PARSERS[kind] === undefined) {
+          if (kind === undefined || KIND_REGISTRY[kind] === undefined) {
             // 未适配（无 kind/已停用/白名单外且不可推断）：灰色行，宿主绝不主动外呼。
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
             continue
@@ -2042,16 +2063,18 @@ function apply(ctx) {
         if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
-        const config = await loadQuotaConfig(dshHome)
-        if (payload?.clear === true) {
-          delete config.kinds[providerName]
-        } else {
-          const kind = payload?.kind
-          if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
-          config.kinds[providerName] = kind
-        }
-        await saveQuotaConfig(dshHome, config)
-        return { ok: true }
+        return await serializeQuotaConfigWrite(async () => {
+          const config = await loadQuotaConfig(dshHome)
+          if (payload?.clear === true) {
+            delete config.kinds[providerName]
+          } else {
+            const kind = payload?.kind
+            if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
+            config.kinds[providerName] = kind
+          }
+          await saveQuotaConfig(dshHome, config)
+          return { ok: true }
+        })
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -2066,20 +2089,22 @@ function apply(ctx) {
         if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
-        const config = await loadQuotaConfig(dshHome)
-        const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
-        if (payload?.remove === true) {
-          const cardId = typeof payload?.id === 'string' ? payload.id : ''
-          config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
-        } else {
-          if (allCards.filter((card) => card.provider === providerName).length >= 10) return { ok: false, error: 'too-many-cards' }
-          const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
-          if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
-          if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
-          config.resetCards = [...allCards, card]
-        }
-        await saveQuotaConfig(dshHome, config)
-        return { ok: true }
+        return await serializeQuotaConfigWrite(async () => {
+          const config = await loadQuotaConfig(dshHome)
+          const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
+          if (payload?.remove === true) {
+            const cardId = typeof payload?.id === 'string' ? payload.id : ''
+            config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
+          } else {
+            if (allCards.filter((card) => card.provider === providerName).length >= 10) return { ok: false, error: 'too-many-cards' }
+            const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
+            if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
+            if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
+            config.resetCards = [...allCards, card]
+          }
+          await saveQuotaConfig(dshHome, config)
+          return { ok: true }
+        })
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

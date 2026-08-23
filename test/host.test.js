@@ -1750,6 +1750,15 @@ test('zai-coding-cn parser maps every limit window and tolerates idle windows wi
     normalizeZaiCodingUsage({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 7 }] } }).windows,
     [{ id: 'tokens-limit-0', percent: 7 }],
   )
+  // 回归：percentage 与反推值都是 0-100 口径，绝不做「≤1 视为小数比例」放大——
+  // 1% 必须是 1（曾被放大成 100），反推 50/5000=1% 同理（曾被二次放大成 100）。
+  assert.deepEqual(
+    normalizeZaiCodingUsage({ data: { limits: [
+      { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 1 },
+      { type: 'CREDIT_LIMIT', unit: 2, number: 1, usage: 5000, currentValue: 50 },
+    ] } }).windows,
+    [{ id: 'tokens-limit-u3-n5', percent: 1 }, { id: 'credit-limit-u2-n1', percent: 1 }],
+  )
 })
 
 test('inferQuotaKind matches exactly one host rule or refuses to guess', () => {
@@ -1929,7 +1938,105 @@ test('quota RPC tries the zai dual-domain candidate chain and surfaces the serve
   assert.equal(okRowAfter.windows.length, 3)
   assert.equal(okRowAfter.errorDetail, undefined)
 })
+
+test('quota candidate chain switches domains only on 401/403, not on other 4xx', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-chain404-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+  }))
+  const providers = { 'zai-coding-cn': { baseURL: '', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' } }
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 404 // 端点不存在：不属于 Key 不互通，换域没有意义
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => callback(response))
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, providers, 'k'))
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'first candidate')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  // 只有第一个候选被请求过；错误码原样透出 http-status:404。
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0], 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
+  assert.equal(row.errorCode, 'http-status')
+  // 401/403 才换域：同一链上给 403 应该打到第二个候选。
+  requests.length = 0
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 403
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => callback(response))
+    return request
+  }
+  const host2 = createHost(quotaHostOverrides(dshHome, providers, 'k'))
+  await host2.handler('quota-refresh', { provider: 'zai-coding-cn' })
+  await waitFor(() => requests.length >= 2, 'both candidates on 403')
+  assert.equal(requests[1], 'https://api.z.ai/api/monitor/usage/quota/limit')
+})
+
+test('quota RPC reports no-base-url and credentials-unavailable as stable codes', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-codes-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'opencode-no-base': 'opencode-go', 'opencode-no-cred': 'opencode-go' },
+  }))
+  // opencode-go 走 {baseURL}/usage 约定：baseURL 为空 → 端点链为空 → no-base-url（不再落到 ERR_INVALID_URL）。
+  const providers = {
+    'opencode-no-base': { baseURL: '', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+    'opencode-no-cred': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_DECLARED_KEY' },
+  }
+  const originalGet = https.get
+  let upstreamCalls = 0
+  https.get = (...args) => {
+    upstreamCalls += 1
+    return originalGet(...args)
+  }
+  t.after(() => { https.get = originalGet })
+  // 无凭据服务覆盖 + 声明的 apiKeyEnv 环境变量也不存在 → credentials-unavailable（而非笼统 credential-missing）。
+  const host = createHost(quotaHostOverrides(dshHome, providers, undefined))
+  await host.handler('quota', {})
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+  const rows = (await host.handler('quota', {})).value.providers
+  const noBaseRow = rows.find((entry) => entry.provider === 'opencode-no-base')
+  const noCredRow = rows.find((entry) => entry.provider === 'opencode-no-cred')
+  assert.equal(noBaseRow.errorCode, 'no-base-url')
+  assert.equal(noBaseRow.status, 'unconfigured')
+  assert.equal(noCredRow.errorCode, 'credentials-unavailable')
+  assert.equal(noCredRow.status, 'unconfigured')
+  assert.equal(upstreamCalls, 0) // 两个稳定码都在外呼之前短路
+})
+
+test('concurrent quota-config writes are serialized without losing updates', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-race-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // 不等待第一笔完成就发第二笔：无串行化时两笔各自 load 旧配置、后 save 者覆盖先 save 者。
+  const [first, second] = await Promise.all([
+    host.handler('quota-config', { provider: 'opencode-go', kind: 'opencode-go' }),
+    host.handler('quota-config', { provider: 'zai-coding-cn', kind: 'zai-coding-cn' }),
+  ])
+  assert.equal(first.ok, true)
+  assert.equal(second.ok, true)
+  const config = parseQuotaConfigText(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.equal(config.kinds['opencode-go'], 'opencode-go')
+  assert.equal(config.kinds['zai-coding-cn'], 'zai-coding-cn')
+})
 test('quota-reset-card validates provider, appends multiple cards, and removes by host id', async (t) => {
+
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
