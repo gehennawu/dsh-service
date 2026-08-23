@@ -2413,6 +2413,65 @@ test('quota card falls back to type-level window labels and localizes stable err
   assert.doesNotMatch(renderer.text('settings.section'), /quota\.unadapted/)
 })
 
+test('quota polling continues on a hidden page while a session is running and re-arms when one starts', async () => {
+  class FakeMutationObserver {
+    constructor() {}
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  let quotaCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      quotaCalls += 1
+      return { ok: true, value: { serverTime: Date.now(), providers: [{ provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [], fetchedAt: Date.now() }] } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  try {
+    await renderer.load()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    // 挂载即排程（默认 5 分钟档）；隐藏页无会话：周期触发但被暂停规则拦下，链条死亡。
+    assert.ok(renderer.pendingTimerDelays().includes(300000))
+    await renderer.advanceTimer(300000)
+    assert.equal(quotaCalls, 0)
+    assert.equal(renderer.pendingTimerDelays().includes(300000), false)
+
+    // agent 在隐藏期间启动：会话订阅边沿重新拉起轮询链。
+    renderer.setSessions({ s1: { id: 's1', displayTitle: '后台 agent', running: true } })
+    await renderer.flush()
+    assert.ok(renderer.pendingTimerDelays().includes(300000))
+    // 隐藏页 + 活跃会话：豁免暂停，周期照常打 quota RPC，且链条继续排下一轮。
+    await renderer.advanceTimer(300000)
+    assert.ok(quotaCalls >= 1)
+    assert.ok(renderer.pendingTimerDelays().includes(300000))
+
+    // 会话结束回到隐藏：下一周期恢复暂停语义（不再外呼，链条死亡等回可见）。
+    renderer.setSessions({ s1: { id: 's1', displayTitle: '后台 agent', running: false } })
+    await renderer.flush()
+    const callsBeforeIdle = quotaCalls
+    await renderer.advanceTimer(300000)
+    assert.equal(quotaCalls, callsBeforeIdle)
+    assert.equal(renderer.pendingTimerDelays().includes(300000), false)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
 test('settings nav rows get icon markers by localized label and follow text changes', async () => {
   function navButton(text) {
     return {

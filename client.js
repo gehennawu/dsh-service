@@ -805,12 +805,16 @@ window.__ModuleLoader__.load({
           }
         } catch (_) {}
       }
+      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：额度轮询的「页面不可见暂停」豁免依据——
+      // 有 agent 在跑（正在烧 token）时隐藏页也继续按档轮询，额度数据保持新鲜。
+      const sessionActivity = { anyRunning: false }
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()
         let baselined = false
         const observeSessions = () => {
           const snapshot = ctx.sessions.list.getSnapshot()
           if (!snapshot || !snapshot.byId) return
+          sessionActivity.anyRunning = Object.values(snapshot.byId).some((summary) => summary.running === true)
           if (!baselined) {
             baselined = true
             for (const [id, summary] of Object.entries(snapshot.byId)) {
@@ -836,6 +840,10 @@ window.__ModuleLoader__.load({
           for (const id of [...observed.keys()]) {
             if (!(id in snapshot.byId)) observed.delete(id)
           }
+          // agent 启动时轮询链可能已因「隐藏页跳过周期」而死（runQuotaCycle 跳过即不再排下一轮）：
+          // 有活跃会话就重新拉起排程（幂等：已有挂起定时器/refs=0/仅手动时 no-op）。
+          // 放在 baselined 早退之后——首次同步调用发生在工厂初始化期（quotaLoop 尚未定义），订阅事件只会在初始化完成后到。
+          if (sessionActivity.anyRunning) scheduleQuotaCycle()
         }
         ctx.effect(() => ctx.sessions.list.subscribe(() => observeSessions()), 'dsh-service: session notification observation')
         ctx.effect(() => ctx.on('connection/reset', () => { observed.clear(); baselined = false }), 'dsh-service: notification rebaseline on reconnect')
@@ -1300,7 +1308,9 @@ window.__ModuleLoader__.load({
         }, minutes * 60000)
       }
       function runQuotaCycle() {
-        if (quotaLoop.refs === 0 || quotaLoop.running || isTabHidden()) return
+        if (quotaLoop.refs === 0 || quotaLoop.running) return
+        // 页面不可见时暂停轮询；豁免：仍有会话在跑（agent 在烧 token，隐藏期间额度照常刷新）。
+        if (isTabHidden() && !sessionActivity.anyRunning) return
         quotaLoop.running = true
         Promise.resolve(fetchQuotaSnapshot()).catch(() => false).then(() => {
           quotaLoop.running = false
