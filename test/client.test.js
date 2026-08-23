@@ -2125,3 +2125,76 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', remove: true })
   assert.equal(renderer.hasTest('quota-reset-card-zai-coding-cn-0'), false)
 })
+
+test('settings nav rows get icon markers by localized label and follow text changes', async () => {
+  function navButton(text) {
+    return {
+      textContent: text,
+      attrs: new Set(),
+      setAttribute(name) { this.attrs.add(name) },
+      removeAttribute(name) { this.attrs.delete(name) },
+    }
+  }
+  const navButtons = [
+    navButton('服务控制'),
+    navButton('额度查询'),
+    navButton('重启'),
+    navButton('通用设置'),
+  ]
+  const observers = []
+  const injectedStyles = []
+  class FakeMutationObserver {
+    constructor(callback) { this.callback = callback; observers.push(this) }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    head: { appendChild(el) { injectedStyles.push(el.textContent) } },
+    createElement() { return {} },
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"] nav button') return navButtons
+      const name = selector.slice(1, -1)
+      return navButtons.filter((button) => button.attrs.has(name))
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+
+    // 首次同步：三行按本地化文案命中并打标；无关行不打。
+    assert.ok(observers.length >= 1, 'expected a MutationObserver for settings nav marking')
+    assert.equal(navButtons[0].attrs.has('data-dsh-service-nav'), true)
+    assert.equal(navButtons[1].attrs.has('data-dsh-service-quota-nav'), true)
+    assert.equal(navButtons[2].attrs.has('data-dsh-service-restart-nav'), true)
+    assert.equal(navButtons[3].attrs.size, 0)
+
+    // 外壳重渲染（观察器重跑 sync）：文案未变则标记幂等保留。
+    for (const observer of observers) observer.callback([], undefined)
+    assert.equal(navButtons[0].attrs.has('data-dsh-service-nav'), true)
+    assert.equal(navButtons[1].attrs.has('data-dsh-service-quota-nav'), true)
+
+    // 文案不再匹配（行消失/换名）：标记被摘除，不会残留到别的行。
+    navButtons[2].textContent = '别人的同名行'
+    for (const observer of observers) observer.callback([], undefined)
+    assert.equal(navButtons[2].attrs.size, 0)
+
+    // CSS 已随 load 注入：齿轮隐藏规则 + 三条 data 标记的 mask 规则齐全。
+    const sheet = injectedStyles.join('')
+    assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'gear-hiding rule missing')
+    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav']) {
+      assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
+      assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
+    }
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})

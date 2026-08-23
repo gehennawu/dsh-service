@@ -600,6 +600,46 @@ window.__ModuleLoader__.load({
       'quota.unit.minute': '{count} min',
     }
 
+    // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
+    // models/agent-presets/plugins 三个官方 id，其余一律兜底齿轮。手法学 DSH-better-sidebar：
+    // 运行时在设置弹窗 nav 里按本地化文案全文匹配自己的行、打自有 data 属性（不猜 DOM 位置，
+    // 切语言靠 characterData 观察自动重挂），CSS 再藏齿轮、mask SVG 画自家图标。
+    // disposer 断 observer 并摘光自家标记，随 Fiber 销毁。残余脆弱点：依赖外壳 dialog>nav>button
+    // 结构；与其他条目同文案会误标（本插件三个文案足够独特）。
+    const NAV_ICON_SVG_OPEN = '%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27black%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E'
+    const NAV_ICON_SVG_CLOSE = '%3C/svg%3E'
+    const navIconMask = (body) => '-webkit-mask:url("data:image/svg+xml,' + NAV_ICON_SVG_OPEN + body + NAV_ICON_SVG_CLOSE + '") center/contain no-repeat;mask:url("data:image/svg+xml,' + NAV_ICON_SVG_OPEN + body + NAV_ICON_SVG_CLOSE + '") center/contain no-repeat'
+    // 三枚图标（16px 下可读）：服务控制=滑杆组、远端额度=仪表弧+指针、重启=电源符号
+    const NAV_ICON_BODY_SERVICE = '%3Cpath d=%27M4 8h16%27/%3E%3Cpath d=%27M4 16h16%27/%3E%3Ccircle cx=%279%27 cy=%278%27 r=%272.5%27 fill=%27black%27/%3E%3Ccircle cx=%2715%27 cy=%2716%27 r=%272.5%27 fill=%27black%27/%3E'
+    const NAV_ICON_BODY_QUOTA = '%3Cpath d=%27m12 14 4-4%27/%3E%3Cpath d=%27M3.34 19a10 10 0 1 1 17.32 0%27/%3E'
+    const NAV_ICON_BODY_RESTART = '%3Cpath d=%27M12 2v10%27/%3E%3Cpath d=%27M18.4 6.6a9 9 0 1 1-12.77.04%27/%3E'
+
+    function markSettingsNavRows(rows) {
+      if (typeof document === 'undefined' || !document.body) return () => {}
+      let disposed = false
+      const sync = () => {
+        if (disposed) return
+        for (const button of document.querySelectorAll('[role="dialog"] nav button')) {
+          const text = (button.textContent || '').trim()
+          for (const row of rows) {
+            const label = String(row.label() || '').trim()
+            if (label && text === label) button.setAttribute(row.attr, '')
+            else button.removeAttribute(row.attr)
+          }
+        }
+      }
+      sync()
+      const observer = new MutationObserver(sync)
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+      return () => {
+        disposed = true
+        observer.disconnect()
+        for (const row of rows) {
+          for (const el of document.querySelectorAll('[' + row.attr + ']')) el.removeAttribute(row.attr)
+        }
+      }
+    }
+
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions']
 
     function apply(ctx) {
@@ -607,12 +647,31 @@ window.__ModuleLoader__.load({
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
-        svcStyle.textContent = ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}'
+        svcStyle.textContent = [
+          ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}',
+          // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
+          // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
+          // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
+          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child{display:none}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
+          '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
+          '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
+        ].join('')
         document.head.appendChild(svcStyle)
       }
       ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
+      // 设置页左列三行打标记，配合上方样式换成各自图标；label 走 locale 绑定值。
+      ctx.effect(
+        () => markSettingsNavRows([
+          { attr: 'data-dsh-service-nav', label: () => t('nav.label') },
+          { attr: 'data-dsh-service-quota-nav', label: () => t('tabs.quota') },
+          { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
+        ]),
+        'dsh-service settings nav icons',
+      )
       const useTranslation = () => {
         const [, setSnapshot] = useState(ctx.locale.getSnapshot())
         useEffect(() => ctx.locale.subscribe(() => setSnapshot(ctx.locale.getSnapshot())), [])
