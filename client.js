@@ -242,11 +242,17 @@ window.__ModuleLoader__.load({
       'notification.bellOff': '通知关闭',
       'quota.cardTitle': '远端额度',
       'quota.navToggle': '设置页左列显示「远端额度」入口',
+      'quota.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示「远端额度」快捷入口',
       'quota.hint': '圆环跟随当前会话所选模型的供应商；查询由宿主统一节流，不会频繁请求上游。',
       'quota.poll': '自动查询',
       'quota.poll.manual': '仅手动',
       'quota.poll.minute': '{count} 分钟',
       'quota.window.rolling': '滚动 5 小时',
+      'quota.window.tokens-limit-u3-n5': '5 小时 Token',
+      'quota.window.tokens-limit-u6-n1': '本周 Token',
+      'quota.window.tokens-limit': 'Token 额度',
+      'quota.window.time-limit-u5-n1': 'MCP 配额',
+      'quota.window.time-limit': 'MCP 配额',
       'quota.window.weekly': '本周',
       'quota.window.monthly': '本月',
       'quota.panel.title': '额度用量',
@@ -257,6 +263,10 @@ window.__ModuleLoader__.load({
       'quota.refreshing': '刷新中…',
       'quota.empty': '暂无数据',
       'quota.resetIn': '重置于 {time}',
+      'quota.resetCard.title': '重置卡',
+      'quota.resetCard.remaining': '剩余 {count} 次',
+      'quota.resetCard.expires': '{date} 到期',
+      'quota.resetCard.expired': '已过期',
       'quota.retryAt': '{time} 后可重试',
       'quota.unadapted': '未适配',
       'quota.adapt': '适配',
@@ -508,14 +518,25 @@ window.__ModuleLoader__.load({
       'notification.bellOn': 'Notifications on',
       'notification.bellOff': 'Notifications off',
       'quota.cardTitle': 'Remote quota',
-      'quota.navToggle': 'Show a "Remote quota" entry in the settings left navigation',
+      'quota.navToggle': 'Show "Remote quota" entry in settings left nav',
+      'quota.navToggleHint': 'Off by default; when enabled, a "Remote quota" entry appears at the bottom of the settings left navigation',
       'quota.hint': 'The ring follows the provider selected by the current session; queries are throttled by the host and never hammer the upstream.',
       'quota.poll': 'Auto query',
       'quota.poll.manual': 'Manual only',
       'quota.poll.minute': '{count} min',
       'quota.window.rolling': '5h rolling',
+      'quota.window.tokens-limit-u3-n5': '5-hour tokens',
+      'quota.window.tokens-limit-u6-n1': 'Weekly tokens',
+      'quota.window.tokens-limit': 'Token quota',
+      'quota.window.time-limit-u5-n1': 'MCP quota',
+      'quota.window.time-limit': 'MCP quota',
       'quota.window.weekly': 'This week',
       'quota.window.monthly': 'This month',
+      'quota.window.tokens-limit-u3-n5': '5-hour tokens',
+      'quota.window.tokens-limit-u6-n1': 'Weekly tokens',
+      'quota.window.tokens-limit': 'Token quota',
+      'quota.window.time-limit-u5-n1': 'MCP quota',
+      'quota.window.time-limit': 'MCP quota',
       'quota.panel.title': 'Quota usage',
       'quota.panel.used': 'Used',
       'quota.ring.label': 'Remote quota',
@@ -524,6 +545,10 @@ window.__ModuleLoader__.load({
       'quota.refreshing': 'Refreshing…',
       'quota.empty': 'No data yet',
       'quota.resetIn': 'Resets in {time}',
+      'quota.resetCard.title': 'Reset card',
+      'quota.resetCard.remaining': '{count} left',
+      'quota.resetCard.expires': 'expires {date}',
+      'quota.resetCard.expired': 'expired',
       'quota.retryAt': 'Retry allowed after {time}',
       'quota.unadapted': 'Not adapted',
       'quota.adapt': 'Adapt',
@@ -1177,9 +1202,12 @@ window.__ModuleLoader__.load({
       }, 'dsh-service quota poller disposal')
 
       function quotaWindowLabel(id, translate) {
-        const key = `quota.window.${id}`
-        const label = translate(key)
-        return label === key ? id : label
+        // 解析链：完整 id（rolling / tokens-limit-u3-n5…）→ 类型前缀（tokens/time）→ 原始 id。
+        const exact = translate(`quota.window.${id}`)
+        if (exact !== `quota.window.${id}`) return exact
+        const prefix = String(id).split('-')[0]
+        const byType = translate(`quota.window.${prefix}`)
+        return byType === `quota.window.${prefix}` ? id : byType
       }
       function humanizeDuration(ms, translate) {
         // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
@@ -1200,6 +1228,11 @@ window.__ModuleLoader__.load({
         } catch (_) {
           return ''
         }
+      }
+      function formatShortDate(timestamp) {
+        const date = new Date(timestamp)
+        const digits = (value) => String(value).padStart(2, '0')
+        return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
       function quotaErrorMessage(code, translate) {
         const key = `quota.error.${code}`
@@ -1385,9 +1418,19 @@ window.__ModuleLoader__.load({
             },
             [{ value: 0, label: translate('quota.poll.manual') }].concat(QUOTA_POLL_CHOICES.filter((choice) => choice > 0).map((choice) => ({ value: choice, label: translate('quota.poll.minute', { count: choice }) }))).map((option) =>
               React.createElement('option', { key: option.value, value: String(option.value) }, option.label)))),
-          React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' } },
-            React.createElement('input', { type: 'checkbox', 'data-testid': 'quota-nav-toggle', checked: quotaNav, onChange: (event) => setQuotaNav(event.target.checked) }),
-            translate('quota.navToggle')),
+          // 左列入口开关：样式沿用「重启」标签的同款 switch（34×20 胶囊 + 圆点滑块）。
+          React.createElement('div', { style: { marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+              React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('quota.navToggle')),
+              React.createElement('span', { style: hint }, translate('quota.navToggleHint'))),
+            React.createElement('button', {
+              type: 'button',
+              role: 'switch',
+              'data-testid': 'quota-nav-switch',
+              'aria-checked': String(quotaNav),
+              onClick: () => setQuotaNav(!quotaNav),
+              style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
           providers.length === 0
             ? React.createElement('p', { style: hint }, translate('quota.empty'))
@@ -1444,13 +1487,33 @@ window.__ModuleLoader__.load({
                   } else {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }
+                                    // 手录重置卡（v0.19 过渡方案）：窗口明细下方只读展示剩余次数与到期时间。
+                  const resetCardNodes = Array.isArray(row.resetCards)
+                    ? row.resetCards.map((card, cardIndex) => {
+                        const at = typeof card.expiresAt === 'string' ? Date.parse(card.expiresAt) : NaN
+                        const expired = Number.isFinite(at) && at < Date.now()
+                        const parts = [translate('quota.resetCard.remaining', { count: card.remaining })]
+                        if (typeof card.expiresAt === 'string' && card.expiresAt !== '') {
+                          parts.push(Number.isFinite(at)
+                            ? (expired ? `${formatShortDate(at)} ${translate('quota.resetCard.expired')}` : translate('quota.resetCard.expires', { date: formatShortDate(at) }))
+                            : card.expiresAt)
+                        }
+                        return React.createElement('div', {
+                          key: cardIndex,
+                          'data-testid': `quota-reset-card-${row.provider}-${cardIndex}`,
+                          style: { fontSize: '11px', lineHeight: '16px', color: expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
+                        },
+                        `${translate('quota.resetCard.title')}${card.label ? ` · ${card.label}` : ''} · ${parts.join(' · ')}`)
+                      })
+                    : []
                   return React.createElement('div', { key: row.provider, 'data-testid': `quota-row-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 2px 12px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
                       typeof row.fetchedAt === 'number'
                         ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
                         : null),
-                    body)
+                    body,
+                    ...resetCardNodes)
                 })))
       }
 

@@ -1722,7 +1722,7 @@ test('quota ring follows the session provider, renders the tightest window, and 
               refreshing: false,
               status: 'ok',
               windows: [
-                { id: 'rolling', percent: 12, resetsAt: new Date(Date.now() + 5460_000).toISOString() },
+                { id: 'rolling', percent: 12, resetsAt: new Date(Date.now() + 6030_000).toISOString() },
                 { id: 'weekly', percent: 40 },
                 { id: 'monthly', percent: 85 },
               ],
@@ -1776,8 +1776,8 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(renderer.findByTestId('quota-window-bar-weekly').children[0].props.style.width, '40%')
   const rollingReset = renderer.findByTestId('quota-reset-rolling')
   // 官网口径：两个非零单位带分钟数（1 小时 31 分钟），措辞「重置于」。
-  assert.equal(String(rollingReset.children[0]), '重置于 1 小时 31 分钟')
-  assert.match(panelText, /1 小时 31 分钟/)
+  assert.equal(String(rollingReset.children[0]), '重置于 1 小时 40 分钟')
+  assert.match(panelText, /1 小时 40 分钟/)
   assert.equal(renderer.hasTest('quota-reset-weekly'), false)
   assert.ok(quotaCalls.length > callsBeforeClick)
 
@@ -1815,7 +1815,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
       providers: [
         { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false },
         { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
-        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now() },
+        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
       ],
     },
   }
@@ -1835,9 +1835,9 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
         value: {
           serverTime: Date.now(),
           providers: [
-            { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: payload.kind, refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7500_000).toISOString() }], fetchedAt: Date.now() },
+            { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: payload.kind, refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }], fetchedAt: Date.now() },
             { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
-            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now() },
+            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
           ],
         },
       }
@@ -1856,6 +1856,9 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.match(text, /本周.*14%/)
   assert.equal(renderer.findByTestId('quota-card-bar-openrouter-weekly').children[0].props.style.width, '14%')
   assert.equal(renderer.hasTest('quota-card-reset-openrouter-weekly'), false) // fixture 无 resetsAt → 不显示重置行
+  // 手录重置卡行：剩余次数 + 到期时间（未过期不标已过期）。
+  const cardLine = renderer.findByTestId('quota-reset-card-openrouter-0')
+  assert.equal(String(cardLine.children[0]), '重置卡 · 周额度重置卡 · 剩余 2 次 · 2099-06-01 到期')
 
   // 灰行选择 opencode-go → quota-config 双白名单校验后保存并刷新该行。
   const kindSelect = renderer.findByTestId('quota-kind-select-opencode-go')
@@ -1899,16 +1902,19 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
 
   // 左列入口开关：默认关；开启注册 settings.section 条目（order 498），再关即注销。
-  const navToggle = renderer.findByTestId('quota-nav-toggle')
-  assert.equal(navToggle.props.checked, false)
+  // 左列入口开关（与重启同款 role=switch）：默认关；开启注册 settings.section 条目（order 498），再关即注销。
+  const navSwitch = renderer.findByTestId('quota-nav-switch')
+  assert.equal(navSwitch.props['aria-checked'], 'false')
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
-  navToggle.props.onChange({ target: { checked: true } })
+  navSwitch.props.onClick()
   await renderer.flush()
   assert.equal(localStorage.getItem('dsh-service-quota-nav'), 'true')
+  assert.equal(renderer.findByTestId('quota-nav-switch').props['aria-checked'], 'true')
   const navEntry = renderer.registrations()['settings.section'].find((entry) => entry.id === 'dsh-service-quota')
   assert.ok(navEntry)
   assert.equal(navEntry.order, 498)
-  navToggle.props.onChange({ target: { checked: false } })
+  // 重渲染后旧节点闭包失效：二次关闭前重新取当前 switch 节点。
+  renderer.findByTestId('quota-nav-switch').props.onClick()
   await renderer.flush()
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
 })

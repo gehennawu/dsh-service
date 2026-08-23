@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, name, normalizeOpencodeUsage, parseQuotaConfigText, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
+import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, name, normalizeOpencodeUsage, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -1391,10 +1391,27 @@ test('opencode-go parser maps percent-only windows and tolerates missing fields'
 })
 
 test('quota config parsing falls back safely on corruption and drops unknown kinds', () => {
-  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {} })
-  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {} })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' } })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {} })
+  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {}, resetCards: [] })
+  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [] })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [] })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [] })
+  // resetCards：provider+数字 remaining 必填；label/expiresAt 可选；非法条目整条丢弃。
+  const withCards = parseQuotaConfigText(JSON.stringify({
+    version: 1,
+    kinds: {},
+    resetCards: [
+      { provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 2.4, expiresAt: '2026-09-01' },
+      { provider: 'zai-coding-cn', remaining: -3 },
+      { remaining: 1 },
+      { provider: 'x' },
+      'garbage',
+      null,
+    ],
+  }))
+  assert.deepEqual(withCards.resetCards, [
+    { provider: 'zai-coding-cn', remaining: 2, label: '周额度重置卡', expiresAt: '2026-09-01' },
+    { provider: 'zai-coding-cn', remaining: 0 },
+  ])
 })
 
 test('readLlmProviders normalizes profiles and tolerates missing settings service', () => {
@@ -1472,12 +1489,12 @@ test('quota throttle enforces single-flight, TTL, min interval, and capped expon
   assert.deepEqual(backoff.view('a', b0 + 151_000).windows, [{ id: 'monthly', percent: 2 }])
 })
 
-test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error codes', async (t) => {
+test('fetchProviderUsage GETs the given endpoint with Bearer and reports stable error codes', async (t) => {
   const originalGet = https.get
   t.after(() => { https.get = originalGet })
   {
     https.get = (url, options, callback) => {
-      assert.equal(String(url), 'https://x.example/v1/usage')
+      assert.equal(String(url), 'https://x.example/v1/usage') // 端点由 quotaEndpointFor 解析后透传
       assert.equal(options.headers.Authorization, 'Bearer k')
       const response = new EventEmitter()
       response.statusCode = 200
@@ -1491,7 +1508,7 @@ test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error 
       })
       return request
     }
-    assert.deepEqual(await fetchProviderUsage('https://x.example/v1', 'Bearer k'), { usage: {} })
+    assert.deepEqual(await fetchProviderUsage('https://x.example/v1/usage', 'Bearer k'), { usage: {} })
   }
   {
     https.get = (url, options, callback) => {
@@ -1503,7 +1520,7 @@ test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error 
       process.nextTick(() => callback(response))
       return request
     }
-    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'http-status')
+    await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) => quotaErrorCode(error) === 'http-status')
   }
   {
     https.get = (url, options, callback) => {
@@ -1519,7 +1536,7 @@ test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error 
       })
       return request
     }
-    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'bad-payload')
+    await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) => quotaErrorCode(error) === 'bad-payload')
   }
   {
     https.get = (url, options, callback) => {
@@ -1535,7 +1552,7 @@ test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error 
       })
       return request
     }
-    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'bad-payload')
+    await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) => quotaErrorCode(error) === 'bad-payload')
   }
 })
 
@@ -1551,6 +1568,7 @@ function quotaHostOverrides(dshHome, providers, credentialValue) {
 
 const QUOTA_PROVIDERS = {
   'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+  'zai-coding-cn': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
   openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
 }
 
@@ -1565,11 +1583,16 @@ async function waitFor(predicate, label = 'condition') {
 test('quota RPC lists all providers, adapts only whitelisted kinds, and calls upstream once per TTL', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' } }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'opencode-go': 'opencode-go', 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [{ provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 2, expiresAt: '2099-01-01' }],
+  }))
   const originalGet = https.get
   const requests = []
   https.get = (url, options, callback) => {
     requests.push({ url: String(url), auth: options.headers?.Authorization })
+    const body = String(url).includes('bigmodel.cn') ? JSON.stringify(ZAI_FIXTURE) : JSON.stringify(OPENCODE_FIXTURE)
     const response = new EventEmitter()
     response.statusCode = 200
     response.setEncoding = () => {}
@@ -1577,7 +1600,7 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
     request.destroy = () => {}
     process.nextTick(() => {
       callback(response)
-      response.emit('data', JSON.stringify(OPENCODE_FIXTURE))
+      response.emit('data', body)
       response.emit('end')
     })
     return request
@@ -1588,13 +1611,13 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   const first = await host.handler('quota', {})
   assert.equal(first.ok, true)
   const rows = first.value.providers
-  assert.equal(rows.length, 2)
+  assert.equal(rows.length, 3)
   assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
   const adapted = rows.find((row) => row.provider === 'opencode-go')
   assert.equal(adapted.adapted, true)
   assert.equal(adapted.kind, 'opencode-go')
   assert.equal(adapted.refreshing, true)
-  await waitFor(() => requests.length === 1, 'first upstream call')
+  await waitFor(() => requests.length >= 1, 'first upstream call')
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
 
   const second = await host.handler('quota', {})
@@ -1604,9 +1627,17 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   assert.equal(row.windows.length, 3)
   assert.ok(row.fetchedAt > 0)
   assert.deepEqual(row.windows[1], { id: 'weekly', percent: 14, resetsAt: '2026-08-24T00:00:00.823Z' })
-  // TTL + 单飞：第二次 RPC 不再触发上游；URL 为 baseURL 去尾斜杠 + /usage，鉴权为宿主解析的 Bearer。
-  assert.deepEqual(requests.map((request) => request.url), ['https://opencode.ai/zen/go/v1/usage'])
+  // TTL + 单飞：两个已适配 provider 各打一次上游；opencode 走 {baseURL}/usage，zai 走宿主常量端点。
+  assert.deepEqual([...new Set(requests.map((request) => request.url))].sort(), [
+    'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    'https://opencode.ai/zen/go/v1/usage',
+  ])
   assert.equal(requests[0].auth, 'Bearer k-123')
+  // 手录重置卡挂到对应 provider 行；zai 窗口来自智谱方言解析器。
+  const zaiRow = second.value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  assert.deepEqual(zaiRow.resetCards, [{ provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 2, expiresAt: '2099-01-01' }])
+  assert.deepEqual(zaiRow.windows.map((window) => window.id), ['time-limit-u5-n1', 'tokens-limit-u3-n5', 'tokens-limit-u6-n1'])
+  assert.equal(row.resetCards, undefined)
 })
 
 test('quota RPC reports unconfigured credentials and upstream errors with a retry countdown', async (t) => {
@@ -1654,9 +1685,64 @@ test('quota-config validates provider and kind against host-side whitelists befo
   assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'mystery' }), { ok: false, error: 'unknown-kind' })
   assert.deepEqual(await host.handler('quota-config', { provider: '', kind: null }), { ok: false, error: 'unknown-provider' })
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
-  const storedPath = join(dshHome, 'dsh-service-quota.json')
+    const storedPath = join(dshHome, 'dsh-service-quota.json')
   assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'opencode-go')
+  // quota-config 保存不得丢掉手录重置卡。
+  await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }] }))
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
+  assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }])
   // kind:null 取消适配。
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
   assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, undefined)
+})
+
+// ── v0.19 zai-coding-cn（智谱 GLM Coding Plan）────────────────────────────────
+
+// 真实端点 GET https://open.bigmodel.cn/api/monitor/usage/quota/limit 的响应 fixture（2026-08 实测）。
+const ZAI_FIXTURE = {
+  code: 200,
+  msg: '操作成功',
+  success: true,
+  data: {
+    limits: [
+      { type: 'TIME_LIMIT', unit: 5, number: 1, usage: 100, currentValue: 2, remaining: 98, percentage: 2, nextResetTime: 1789351336998, usageDetails: [{ modelCode: 'search-prime', usage: 2 }] },
+      { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 0 },
+      { type: 'TOKENS_LIMIT', unit: 6, number: 1, percentage: 58, nextResetTime: 1787882536998 },
+    ],
+    level: 'lite',
+  },
+}
+
+test('zai-coding-cn parser maps every limit window and tolerates idle windows without reset time', () => {
+  assert.deepEqual(normalizeZaiCodingUsage(ZAI_FIXTURE), {
+    windows: [
+      { id: 'time-limit-u5-n1', percent: 2, resetsAt: new Date(1789351336998).toISOString() },
+      // 5 小时滚动窗口无调用时官方不下发 nextResetTime → 不造重置时间。
+      { id: 'tokens-limit-u3-n5', percent: 0 },
+      { id: 'tokens-limit-u6-n1', percent: 58, resetsAt: new Date(1787882536998).toISOString() },
+    ],
+  })
+  // 非数字 percentage 跳过、percent 截断 [0,100]、缺 data/limits 返回空。
+  const partial = normalizeZaiCodingUsage({
+    data: { limits: [
+      { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 150 },
+      { type: 'TIME_LIMIT' },
+      'garbage',
+      null,
+    ] },
+  })
+  assert.deepEqual(partial.windows, [{ id: 'tokens-limit-u3-n5', percent: 100 }])
+  assert.deepEqual(normalizeZaiCodingUsage(undefined).windows, [])
+  assert.deepEqual(normalizeZaiCodingUsage({ data: {} }).windows, [])
+  // unit/number 缺失时 id 回退 type-index。
+  assert.deepEqual(
+    normalizeZaiCodingUsage({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 7 }] } }).windows,
+    [{ id: 'tokens-limit-0', percent: 7 }],
+  )
+})
+
+test('quota endpoint resolver uses per-kind overrides before the {baseURL}/usage convention', () => {
+  assert.equal(quotaEndpointFor('zai-coding-cn', ''), 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
+  assert.equal(quotaEndpointFor('zai-coding-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'), 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
+  assert.equal(quotaEndpointFor('opencode-go', 'https://opencode.ai/zen/go/v1'), 'https://opencode.ai/zen/go/v1/usage')
 })

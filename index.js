@@ -27,7 +27,11 @@ const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 // 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
 const QUOTA_CONFIG_VERSION = 1
 const QUOTA_CONFIG_FILE = 'dsh-service-quota.json'
-const QUOTA_KINDS = ['opencode-go']
+const QUOTA_KINDS = ['opencode-go', 'zai-coding-cn']
+// 非 {baseURL}/usage 约定的 kind 在此登记查询端点（宿主常量白名单，浏览器零输入）。
+const QUOTA_ENDPOINT_OVERRIDES = {
+  'zai-coding-cn': 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+}
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
 const QUOTA_SUCCESS_TTL_MS = 60000
 const QUOTA_MIN_INTERVAL_MS = 15000
@@ -468,7 +472,27 @@ async function saveUsageIndex(dshHome, index) {
 // ── 远端额度（v0.18）：kind 映射存取、方言解析、节流状态机 ─────────────
 
 function createEmptyQuotaConfig() {
-  return { version: QUOTA_CONFIG_VERSION, kinds: {} }
+  return { version: QUOTA_CONFIG_VERSION, kinds: {}, resetCards: [] }
+}
+
+/**
+ * 校验手录的重置卡条目（v0.19 过渡方案：官方无 API Key 可查的端点，用户手填）。
+ * provider 与数字 remaining 为必填；label/expiresAt 可选；不合格条目整条丢弃。
+ */
+function normalizeResetCards(raw) {
+  if (!Array.isArray(raw)) return []
+  const cards = []
+  for (const card of raw) {
+    if (card === null || typeof card !== 'object') continue
+    const provider = typeof card.provider === 'string' && card.provider.trim() !== '' ? card.provider.trim() : ''
+    const remaining = Number(card.remaining)
+    if (provider === '' || !Number.isFinite(remaining)) continue
+    const normalized = { provider, remaining: Math.max(0, Math.round(remaining)) }
+    if (typeof card.label === 'string' && card.label.trim() !== '') normalized.label = card.label.trim()
+    if (typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '') normalized.expiresAt = card.expiresAt.trim()
+    cards.push(normalized)
+  }
+  return cards
 }
 
 /** 解析磁盘上的 kind 映射：损坏/版本不符回退空映射，未知 kind 条目丢弃（白名单外不认）。 */
@@ -485,7 +509,7 @@ function parseQuotaConfigText(text) {
   for (const [provider, kind] of Object.entries(parsed.kinds)) {
     if (typeof provider === 'string' && provider.length > 0 && QUOTA_KINDS.includes(kind)) kinds[provider] = kind
   }
-  return { version: QUOTA_CONFIG_VERSION, kinds }
+  return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards) }
 }
 
 async function loadQuotaConfig(dshHome) {
@@ -550,6 +574,40 @@ function normalizeOpencodeUsage(payload) {
 /** kind → 解析器分发表；新增供应商方言时在此登记并同步 QUOTA_KINDS 白名单。 */
 const QUOTA_PARSERS = {
   'opencode-go': normalizeOpencodeUsage,
+  'zai-coding-cn': (payload) => normalizeZaiCodingUsage(payload),
+}
+
+/** kind → 上游查询端点：默认 {baseURL}/usage 约定，覆盖表登记的 kind 用宿主常量。 */
+function quotaEndpointFor(kind, baseURL) {
+  const override = QUOTA_ENDPOINT_OVERRIDES[kind]
+  return override !== undefined ? override : `${baseURL}/usage`
+}
+
+/**
+ * zai-coding-cn（智谱 GLM Coding Plan）方言 → 统一窗口形状。
+ * 端点返回 data.limits[]，每项一个额度窗口：
+ * - TOKENS_LIMIT unit:3 number:5 = 5 小时滚动 Token 窗口——无调用时官方不返回 nextResetTime；
+ * - TOKENS_LIMIT unit:6 number:1 = 每周 Token 额度；TIME_LIMIT = MCP 月度配额。
+ * id 用 type+unit+number 组合保证稳定；unit/number 缺失时回退 type-index。
+ * percentage 是一等公民；currentValue/usage 等绝对值字段可选且多数窗口不下发，不造数。
+ */
+function normalizeZaiCodingUsage(payload) {
+  const windows = []
+  const limits = payload?.data?.limits
+  if (!Array.isArray(limits)) return { windows }
+  for (const [index, limit] of limits.entries()) {
+    if (limit === null || typeof limit !== 'object') continue
+    if (typeof limit.percentage !== 'number' || !Number.isFinite(limit.percentage)) continue
+    const type = typeof limit.type === 'string' && limit.type.length > 0 ? limit.type.toLowerCase().replace(/[^a-z0-9]+/g, '-') : `limit-${index}`
+    const hasShape = Number.isFinite(limit.unit) && Number.isFinite(limit.number)
+    const id = hasShape ? `${type}-u${limit.unit}-n${limit.number}` : `${type}-${index}`
+    windows.push({
+      id,
+      percent: Math.max(0, Math.min(100, Math.round(limit.percentage))),
+      ...(Number.isFinite(limit.nextResetTime) ? { resetsAt: new Date(limit.nextResetTime).toISOString() } : {}),
+    })
+  }
+  return { windows }
 }
 
 /** 稳定错误码提取：fetchProviderUsage 抛错时 message 即错误码（可带 :detail）。 */
@@ -560,10 +618,10 @@ function quotaErrorCode(error) {
 }
 
 /**
- * 单次上游 GET {baseURL}/usage：15s 超时、64KB 上限、Bearer 可选。
+ * 单次上游 GET：15s 超时、64KB 上限、Bearer 可选（智谱裸 token 亦可，统一用 Bearer）。
  * 失败抛 Error，message 为稳定错误码（http-status/network/timeout/bad-payload），客户端词典据此映射文案。
  */
-function fetchProviderUsage(baseURL, authorization) {
+function fetchProviderUsage(endpoint, authorization) {
   return new Promise((resolve, reject) => {
     let settled = false
     const fail = (code) => {
@@ -571,7 +629,7 @@ function fetchProviderUsage(baseURL, authorization) {
       settled = true
       reject(new Error(code))
     }
-    const request = https.get(`${baseURL}/usage`, {
+    const request = https.get(endpoint, {
       timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
       headers: { Accept: 'application/json', ...(authorization === '' ? {} : { Authorization: authorization }) },
     }, (response) => {
@@ -1468,7 +1526,7 @@ function apply(ctx) {
     const parser = QUOTA_PARSERS[kind]
     Promise.resolve()
       .then(() => {
-        if (profile.baseURL === '') throw new Error('no-base-url')
+        if (profile.baseURL === '' && QUOTA_ENDPOINT_OVERRIDES[kind] === undefined) throw new Error('no-base-url')
         if (parser === undefined) throw new Error('bad-payload:kind')
         let authorization = ''
         if (profile.apiKeyEnv !== '') {
@@ -1483,7 +1541,7 @@ function apply(ctx) {
         }
         return ''
       })
-      .then((authorization) => fetchProviderUsage(profile.baseURL, authorization))
+      .then((authorization) => fetchProviderUsage(quotaEndpointFor(kind, profile.baseURL), authorization))
       .then((payload) => {
         const parsed = parser(payload)
         if (!Array.isArray(parsed?.windows)) throw new Error('bad-payload:shape')
@@ -1723,6 +1781,7 @@ function apply(ctx) {
       try {
         const providers = readLlmProviders(ctx.get('settings'))
         const config = await loadQuotaConfig(dshHome)
+        const allResetCards = Array.isArray(config.resetCards) ? config.resetCards : []
         const rows = []
         for (const profile of providers) {
           const kind = config.kinds[profile.name]
@@ -1735,6 +1794,7 @@ function apply(ctx) {
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
           const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable'
+          const providerResetCards = allResetCards.filter((card) => card.provider === profile.name)
           rows.push({
             provider: profile.name,
             displayName: profile.displayName,
@@ -1745,6 +1805,7 @@ function apply(ctx) {
             ...(windows.length > 0 ? { windows, fetchedAt: view.fetchedAt } : {}),
             ...(view.lastError !== undefined ? { errorCode: view.lastError } : {}),
             nextAllowedAt: view.nextAllowedAt,
+            ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
@@ -1800,7 +1861,9 @@ export {
   inject,
   name,
   normalizeOpencodeUsage,
+  normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   runtimeEnvCheck,
@@ -1813,7 +1876,9 @@ export default {
   inject,
   name,
   normalizeOpencodeUsage,
+  normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   runtimeEnvCheck,
