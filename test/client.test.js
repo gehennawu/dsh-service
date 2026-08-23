@@ -1954,7 +1954,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
           provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok',
           windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
           fetchedAt: Date.now(),
-          ...(zaiCard ? { resetCards: [{ provider: 'zai-coding-cn', ...zaiCard }] } : {}),
+          ...(zaiCard === false ? {} : { resetCards: [zaiCard !== null && typeof zaiCard === 'object' ? { provider: 'zai-coding-cn', ...zaiCard } : { provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 3, expiresAt: '2026-09-30T08:00' }] }),
         }] : [{ provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false }]),
         { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
       ],
@@ -1971,7 +1971,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
     if (endpoint === 'quota') return quotaResponse
     if (endpoint === 'quota-reset-card') {
       cardCalls.push(payload)
-      if (payload.remove === true) zaiCard = null
+      if (payload.remove === true) zaiCard = false
       else zaiCard = { remaining: payload.remaining, ...(payload.expiresAt !== undefined ? { expiresAt: payload.expiresAt } : {}), ...(payload.label !== undefined ? { label: payload.label } : {}) }
       quotaResponse = buildQuotaResponse()
       return { ok: true }
@@ -2073,24 +2073,55 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
 
-  // 重置卡内联表单：预填现有卡 → 修改次数保存 → RPC 载荷正确且编辑器关闭。
+  // 重置卡内联表单仅 zai-coding-cn 行提供；openrouter（kind 非 zai）无入口。
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  renderer.findByTestId('quota-card-edit-openrouter').props.onClick()
+  assert.equal(renderer.hasTest('quota-card-edit-openrouter'), false)
+
+  // 放行后经灰行适配 zai-coding-cn：编辑按钮出现，fake 预置卡立即成行。
+  allowZaiConfig = true
+  const zaiKindSelectForCard = renderer.findByTestId('quota-kind-select-zai-coding-cn')
+  await zaiKindSelectForCard.props.onChange({ target: { value: 'zai-coding-cn' } })
   await renderer.flush()
-  const countInput = renderer.findByTestId('quota-reset-input-count')
-  assert.equal(countInput.props.value, '2')
-  assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '2099-06-01')
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-card-edit-zai-coding-cn'), true)
+  const presetLine = renderer.findByTestId('quota-reset-card-zai-coding-cn-0')
+  const presetTexts = presetLine.children.filter((child) => child != null).map((child) => String(child.children[0]))
+  assert.deepEqual(presetTexts, ['重置卡 · 周额度重置卡 · 剩余 3 次', '2026-09-30 08:00 到期'])
+
+  // 打开编辑器：从现有卡预填三字段（datetime-local 类型在列）。
+  renderer.findByTestId('quota-card-edit-zai-coding-cn').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-reset-input-count').props.value, '3')
+  assert.equal(renderer.findByTestId('quota-reset-input-date').props.type, 'datetime-local')
+  assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '2026-09-30T08:00')
   assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '周额度重置卡')
-  countInput.props.onChange({ target: { value: '5' } })
+
+  // 清空次数后保存：前置拦截，不发起 RPC（回归 Number('')===0 的静默零）。
+  renderer.findByTestId('quota-reset-input-count').props.onChange({ target: { value: '' } })
+  await renderer.flush()
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls, [{ provider: 'openrouter', remaining: 5, expiresAt: '2099-06-01', label: '周额度重置卡' }])
-  assert.equal(renderer.hasTest('quota-reset-editor-openrouter'), false)
-  // 移除分支：RPC 收到 remove:true。
-  renderer.findByTestId('quota-card-edit-openrouter').props.onClick()
+  assert.deepEqual(cardCalls, [])
+  assert.match(renderer.text(), /请输入有效的剩余次数/)
+
+  // 填回有效次数保存：幂等载荷正确、编辑器收起、行保持。
+  renderer.findByTestId('quota-reset-input-count').props.onChange({ target: { value: '3' } })
   await renderer.flush()
+  renderer.findByTestId('quota-reset-card-save').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', remaining: 3, expiresAt: '2026-09-30T08:00', label: '周额度重置卡' }])
+  assert.equal(renderer.hasTest('quota-reset-editor-zai-coding-cn'), false)
+  assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-0'))
+
+  // 重开编辑器：仍从现有卡预填。
+  renderer.findByTestId('quota-card-edit-zai-coding-cn').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-reset-input-count').props.value, '3')
+
+  // 移除分支：RPC 收到 remove:true 后行消失。
   renderer.findByTestId('quota-reset-card-remove').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls[1], { provider: 'openrouter', remove: true })
+  assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', remove: true })
+  assert.equal(renderer.hasTest('quota-reset-card-zai-coding-cn-0'), false)
 })

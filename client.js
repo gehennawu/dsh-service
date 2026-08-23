@@ -1258,7 +1258,7 @@ window.__ModuleLoader__.load({
       }
       function formatClockTime(timestamp) {
         try {
-          return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
         } catch (_) {
           return ''
         }
@@ -1491,7 +1491,13 @@ window.__ModuleLoader__.load({
         const saveResetCard = async () => {
           if (cardEditor === null) return
           setConfigError('')
-          const remaining = Number(cardDraft.remaining)
+          // 空串会被 Number() 静默当 0：必须先显式拦截空白输入。
+          const rawCount = typeof cardDraft.remaining === 'string' ? cardDraft.remaining.trim() : cardDraft.remaining
+          if (rawCount === '') {
+            setConfigError(translate('quota.resetCard.invalidCount'))
+            return
+          }
+          const remaining = Number(rawCount)
           if (!Number.isFinite(remaining) || remaining < 0) {
             setConfigError(translate('quota.resetCard.invalidCount'))
             return
@@ -1668,12 +1674,13 @@ window.__ModuleLoader__.load({
                         typeof row.fetchedAt === 'number'
                           ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
                           : null,
-                        React.createElement('button', {
+                        // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
+                        ...(row.kind === 'zai-coding-cn' ? [React.createElement('button', {
                           type: 'button',
                           'data-testid': `quota-card-edit-${row.provider}`,
                           onClick: () => openCardEditor(row),
-                          style: { fontSize: '11px', padding: '2px 8px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
-                        }, translate('quota.resetCard.edit')))),
+                          style: { fontSize: '12px', padding: '4px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+                        }, translate('quota.resetCard.edit'))] : []))),
                     body,
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
