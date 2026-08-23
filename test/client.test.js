@@ -68,6 +68,14 @@ function createRenderer(rpcCall, options = {}) {
         cleanups.set(index, cleanup)
       })
     },
+    useRef(initial) {
+      assert.ok(currentComponent, 'useRef called outside a component')
+      const hooks = hookState.get(currentComponent) || []
+      hookState.set(currentComponent, hooks)
+      const index = hookCursor++
+      if (!(index in hooks)) hooks[index] = { current: initial }
+      return hooks[index]
+    },
   }
 
   globalThis.window = {
@@ -108,8 +116,12 @@ function createRenderer(rpcCall, options = {}) {
       if (!mountedSlots.has(slot)) continue
       currentSlot = slot
       const rendered = []
-      for (const { component } of entries.values()) {
-        rendered.push(evaluate(React.createElement(component, null)))
+      for (const { component, options: entryOptions } of entries.values()) {
+        // 与真实外壳一致：条目 meta 的 inject(sessionId) 产物作为组件 props。
+        const occupantProps = entryOptions && typeof entryOptions.inject === 'function'
+          ? entryOptions.inject(entryOptions.testSessionId === undefined ? 'session-1' : entryOptions.testSessionId)
+          : null
+        rendered.push(evaluate(React.createElement(component, occupantProps)))
       }
       currentSlot = undefined
       renderedComponents.set(slot, entries)
@@ -238,6 +250,18 @@ function createRenderer(rpcCall, options = {}) {
             }
           },
         },
+        // 圆环路径专用：提供 modelDirectories 时模拟 cordis 的嵌套 inject 等待语义 +
+        // ctx.get 惰性取值（插件 apply 时已挂载则立即注册）；
+        // 不提供时两者都不存在，插件应保持无圆环（老版本 DSH 兼容分支）。
+        ...(options.modelDirectories ? {
+          inject(deps, callback) {
+            callback({ modelDirectories: options.modelDirectories })
+            return () => {}
+          },
+          get(service) {
+            return service === 'modelDirectories' ? options.modelDirectories : undefined
+          },
+        } : {}),
         effect(callback) {
           const dispose = callback()
           return typeof dispose === 'function' ? dispose : () => {}
@@ -340,6 +364,14 @@ function createRenderer(rpcCall, options = {}) {
     },
     hasSlot(name) {
       return slotComponents.has(name)
+    },
+    roots() {
+      return [...roots.values()]
+    },
+    hasTest(testId) {
+      let found = false
+      for (const tree of roots.values()) visit(tree, (node) => { if (node.props && node.props['data-testid'] === testId) found = true })
+      return found
     },
     registrations() {
       const out = {}
@@ -1644,4 +1676,239 @@ test('an unknown runtime environment renders as informational without warning ma
   assert.match(renderer.text('settings.section'), /DSH_SERVICE_RUNTIME_ENV=managed/)
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
   assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
+})
+
+// ── v0.18 远端额度 ──────────────────────────────────────────────────────────────
+
+function quotaRingRenderer(rpcCall, modelDirectories, options = {}) {
+  return createRenderer(rpcCall, { modelDirectories, ...options })
+}
+
+test('quota ring follows the session provider, renders the tightest window, and opens the panel on click', async (t) => {
+  const quotaCalls = []
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: null },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor(sessionId) {
+      assert.equal(sessionId, 'session-1')
+      return {
+        store,
+        load() {
+          store.snapshot = { current: { provider: 'opencode-go', model: 'deepseek-v4-flash' } }
+          for (const fn of [...storeListeners]) fn()
+          return Promise.resolve()
+        },
+      }
+    },
+  }
+  const renderer = quotaRingRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      quotaCalls.push(Date.now())
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            {
+              provider: 'opencode-go',
+              displayName: 'opencode-go',
+              adapted: true,
+              kind: 'opencode-go',
+              refreshing: false,
+              status: 'ok',
+              windows: [
+                { id: 'rolling', percent: 12, resetsAt: new Date(Date.now() + 5460_000).toISOString() },
+                { id: 'weekly', percent: 40 },
+                { id: 'monthly', percent: 85 },
+              ],
+              fetchedAt: Date.now(),
+            },
+            { provider: 'openrouter', displayName: 'openrouter', adapted: false },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, modelDirectories)
+
+  await renderer.load()
+  // 目录尚未加载：环静默隐藏，但挂载即触发一次目录加载。
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(store.snapshot.current?.provider, 'opencode-go')
+  // 快照到达后：最紧窗口是月度 85%，环出现且 dasharray 反映百分比。
+  const trigger = renderer.findByTestId('quota-ring-trigger')
+  const circles = []
+  ;(function walk(node) {
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (node === null || node === undefined || typeof node !== 'object') return
+    if (node.type === 'circle') circles.push(node)
+    for (const child of node.children || []) walk(child)
+  })(trigger)
+  assert.equal(circles.length, 2)
+  const circumference = 2 * Math.PI * 5.5
+  assert.ok(String(circles[1].props.strokeDasharray).startsWith(String((circumference * 85) / 100)))
+  assert.ok(quotaCalls.length >= 1)
+
+  // 点击：开面板 + 再发一次 quota RPC（宿主决定缓存还是上游）。
+  const callsBeforeClick = quotaCalls.length
+  trigger.props.onClick()
+  await renderer.flush()
+  const panel = renderer.findByTestId('quota-ring-panel')
+  assert.ok(panel)
+  const panelText = renderer.text()
+  assert.match(panelText, /滚动 5 小时.*12%/)
+  assert.match(panelText, /本周.*40%/)
+  assert.match(panelText, /本月.*85%/)
+  assert.match(panelText, /重置/) // rolling 的 resetsAt 在未来 → 出现重置倒计时
+  // 头部表明「已用」，总进度条填充等于最紧窗口（月度 85%）。
+  assert.match(panelText, /已用/) // 头部表明「已用」
+  // 头部同时标明总进度条代表的最紧窗口（本月），并与总条填充一致。
+  assert.equal(renderer.findByTestId('quota-panel-tightest-label').children[0], '已用 · 本月')
+  assert.equal(renderer.findByTestId('quota-panel-used-bar').children[0].props.style.width, '85%')
+  // 每个窗口有独立进度条；重置时间是单独一行（独立节点），不与标签同行拼接。
+  assert.equal(renderer.findByTestId('quota-window-bar-rolling').children[0].props.style.width, '12%')
+  assert.equal(renderer.findByTestId('quota-window-bar-weekly').children[0].props.style.width, '40%')
+  const rollingReset = renderer.findByTestId('quota-reset-rolling')
+  // 官网口径：两个非零单位带分钟数（1 小时 31 分钟），措辞「重置于」。
+  assert.equal(String(rollingReset.children[0]), '重置于 1 小时 31 分钟')
+  assert.match(panelText, /1 小时 31 分钟/)
+  assert.equal(renderer.hasTest('quota-reset-weekly'), false)
+  assert.ok(quotaCalls.length > callsBeforeClick)
+
+  // 环的轮询已在跑（refs>1）时打开「远端额度」标签：挂载即立即再查一次，不沿用旧快照。
+  const callsBeforeTab = quotaCalls.length
+  await renderer.findButton('远端额度').props.onClick()
+  await renderer.flush()
+  assert.ok(quotaCalls.length > callsBeforeTab)
+  assert.ok(renderer.hasTest('remote-quota-card'))
+
+  // 切到未适配供应商：环整体消失（不占位）。
+  store.snapshot = { current: { provider: 'openrouter' } }
+  for (const fn of [...storeListeners]) fn()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+})
+
+test('quota ring renders nothing when the modelDirectories service is absent', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: 0 } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+})
+
+test('remote quota card lists providers, saves kind via whitelist RPC, and persists the poll choice', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const configCalls = []
+  let quotaResponse = {
+    ok: true,
+    value: {
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false },
+        { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
+        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now() },
+      ],
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return quotaResponse
+    if (endpoint === 'quota-config') {
+      configCalls.push(payload)
+      if (payload.provider !== 'opencode-go') return { ok: false, error: 'unknown-provider' }
+      quotaResponse = {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: payload.kind, refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7500_000).toISOString() }], fetchedAt: Date.now() },
+            { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
+            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now() },
+          ],
+        },
+      }
+      return { ok: true }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('远端额度').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  assert.match(text, /远端额度/)
+  assert.match(text, /未适配/)
+  // 已适配行展示窗口与更新时间；每个窗口带独立进度条（无「已用」头条）。
+  assert.match(text, /本周.*14%/)
+  assert.equal(renderer.findByTestId('quota-card-bar-openrouter-weekly').children[0].props.style.width, '14%')
+  assert.equal(renderer.hasTest('quota-card-reset-openrouter-weekly'), false) // fixture 无 resetsAt → 不显示重置行
+
+  // 灰行选择 opencode-go → quota-config 双白名单校验后保存并刷新该行。
+  const kindSelect = renderer.findByTestId('quota-kind-select-opencode-go')
+  await kindSelect.props.onChange({ target: { value: 'opencode-go' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(configCalls, [{ provider: 'opencode-go', kind: 'opencode-go' }])
+  assert.match(renderer.text('settings.section'), /滚动 5 小时.*3%/)
+  // 卡片窗口行同样三段式：进度条 + 重置时间单独一行。
+  assert.equal(renderer.findByTestId('quota-card-bar-opencode-go-rolling').children[0].props.style.width, '3%')
+  assert.equal(String(renderer.findByTestId('quota-card-reset-opencode-go-rolling').children[0]), '重置于 2 小时 5 分钟')
+
+  // 拒绝分支透出稳定错误文案。
+  const badSelect = renderer.findByTestId('quota-kind-select-zai-coding-cn')
+  await badSelect.props.onChange({ target: { value: 'opencode-go' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /未知供应商/)
+
+  // 轮询档位：默认 5 分钟写进 localStorage；改仅手动立即清掉挂起的循环定时器；改回 1 分钟重新排程。
+  assert.equal(localStorage.getItem('dsh-service-quota-poll'), null) // 从未改过 → 不写入，读侧回落默认
+  const pollSelect = renderer.findByTestId('quota-poll-select')
+  assert.equal(pollSelect.props.value, '5')
+  pollSelect.props.onChange({ target: { value: '2' } })
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-quota-poll'), '2')
+  assert.ok(renderer.pendingTimerDelays().includes(120000))
+  pollSelect.props.onChange({ target: { value: '0' } })
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-quota-poll'), '0')
+  assert.equal(renderer.pendingTimerDelays().includes(120000), false)
+  pollSelect.props.onChange({ target: { value: '1' } })
+  await renderer.flush()
+  assert.ok(renderer.pendingTimerDelays().includes(60000))
+
+  // 「远端额度」是独立标签：切回「模型统计」不再出现额度卡。
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('remote-quota-card'), false)
+  await renderer.findButton('远端额度').props.onClick()
+  await renderer.flush()
+
+  // 左列入口开关：默认关；开启注册 settings.section 条目（order 498），再关即注销。
+  const navToggle = renderer.findByTestId('quota-nav-toggle')
+  assert.equal(navToggle.props.checked, false)
+  assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
+  navToggle.props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-quota-nav'), 'true')
+  const navEntry = renderer.registrations()['settings.section'].find((entry) => entry.id === 'dsh-service-quota')
+  assert.ok(navEntry)
+  assert.equal(navEntry.order, 498)
+  navToggle.props.onChange({ target: { checked: false } })
+  await renderer.flush()
+  assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
 })

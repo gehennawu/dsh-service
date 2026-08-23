@@ -24,6 +24,17 @@ const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 const USAGE_INDEX_VERSION = 5
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 
+// 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
+const QUOTA_CONFIG_VERSION = 1
+const QUOTA_CONFIG_FILE = 'dsh-service-quota.json'
+const QUOTA_KINDS = ['opencode-go']
+const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
+const QUOTA_SUCCESS_TTL_MS = 60000
+const QUOTA_MIN_INTERVAL_MS = 15000
+const QUOTA_BACKOFF_BASE_MS = 30000
+const QUOTA_BACKOFF_MAX_MS = 15 * 60 * 1000
+const MAX_QUOTA_RESPONSE_BYTES = 64 * 1024
+
 // 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
 // TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
 const TARGET_RE = /^[A-Za-z0-9@:./_#+~^=-]+$/
@@ -451,6 +462,220 @@ async function saveUsageIndex(dshHome, index) {
     await rename(temporary, target)
   } finally {
     await rm(temporary, { force: true })
+  }
+}
+
+// ── 远端额度（v0.18）：kind 映射存取、方言解析、节流状态机 ─────────────
+
+function createEmptyQuotaConfig() {
+  return { version: QUOTA_CONFIG_VERSION, kinds: {} }
+}
+
+/** 解析磁盘上的 kind 映射：损坏/版本不符回退空映射，未知 kind 条目丢弃（白名单外不认）。 */
+function parseQuotaConfigText(text) {
+  const fallback = createEmptyQuotaConfig()
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (_) {
+    return fallback
+  }
+  if (parsed?.version !== QUOTA_CONFIG_VERSION || typeof parsed.kinds !== 'object' || parsed.kinds === null) return fallback
+  const kinds = {}
+  for (const [provider, kind] of Object.entries(parsed.kinds)) {
+    if (typeof provider === 'string' && provider.length > 0 && QUOTA_KINDS.includes(kind)) kinds[provider] = kind
+  }
+  return { version: QUOTA_CONFIG_VERSION, kinds }
+}
+
+async function loadQuotaConfig(dshHome) {
+  try {
+    return parseQuotaConfigText(await readFile(join(dshHome, QUOTA_CONFIG_FILE), 'utf8'))
+  } catch (_) {
+    return createEmptyQuotaConfig()
+  }
+}
+
+async function saveQuotaConfig(dshHome, config) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, QUOTA_CONFIG_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(config), { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+/** settings llm-pi-ai 段 → provider 行；无 settings 服务、段落缺失或形状不符返回空表。 */
+function readLlmProviders(settings) {
+  let section
+  try {
+    section = typeof settings?.get === 'function' ? settings.get('llm-pi-ai') : undefined
+  } catch (_) {
+    return []
+  }
+  const providers = section?.providers
+  if (typeof providers !== 'object' || providers === null) return []
+  return Object.entries(providers).map(([providerName, profile]) => ({
+    name: providerName,
+    displayName: typeof profile?.displayName === 'string' && profile.displayName.length > 0 ? profile.displayName : providerName,
+    baseURL: typeof profile?.baseURL === 'string' ? profile.baseURL.replace(/\/+$/, '') : '',
+    apiKeyEnv: typeof profile?.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0 ? profile.apiKeyEnv : '',
+  }))
+}
+
+/**
+ * opencode-go 方言 → 统一窗口形状。真实端点只有 percent 与 resetsAt（ISO），
+ * 没有金额字段：percent 是一等公民，缺字段/非数字跳过该窗口，percent 截到 [0,100]。
+ */
+function normalizeOpencodeUsage(payload) {
+  const windows = []
+  const usage = payload?.usage
+  if (typeof usage !== 'object' || usage === null) return { windows }
+  for (const id of ['rolling', 'weekly', 'monthly']) {
+    const window = usage[id]
+    if (typeof window !== 'object' || window === null) continue
+    if (typeof window.percent !== 'number' || !Number.isFinite(window.percent)) continue
+    windows.push({
+      id,
+      percent: Math.max(0, Math.min(100, Math.round(window.percent))),
+      ...(typeof window.resetsAt === 'string' && window.resetsAt.length > 0 ? { resetsAt: window.resetsAt } : {}),
+    })
+  }
+  return { windows }
+}
+
+/** kind → 解析器分发表；新增供应商方言时在此登记并同步 QUOTA_KINDS 白名单。 */
+const QUOTA_PARSERS = {
+  'opencode-go': normalizeOpencodeUsage,
+}
+
+/** 稳定错误码提取：fetchProviderUsage 抛错时 message 即错误码（可带 :detail）。 */
+function quotaErrorCode(error) {
+  const raw = typeof error?.message === 'string' && error.message.length > 0 ? error.message : String(error ?? '')
+  const colon = raw.indexOf(':')
+  return colon === -1 ? raw : raw.slice(0, colon)
+}
+
+/**
+ * 单次上游 GET {baseURL}/usage：15s 超时、64KB 上限、Bearer 可选。
+ * 失败抛 Error，message 为稳定错误码（http-status/network/timeout/bad-payload），客户端词典据此映射文案。
+ */
+function fetchProviderUsage(baseURL, authorization) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (code) => {
+      if (settled) return
+      settled = true
+      reject(new Error(code))
+    }
+    const request = https.get(`${baseURL}/usage`, {
+      timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
+      headers: { Accept: 'application/json', ...(authorization === '' ? {} : { Authorization: authorization }) },
+    }, (response) => {
+      const status = response.statusCode || 0
+      if (status < 200 || status >= 300) {
+        response.resume()
+        fail(`http-status:${status}`)
+        return
+      }
+      let body = ''
+      let bytes = 0
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > MAX_QUOTA_RESPONSE_BYTES) {
+          fail('bad-payload:oversize')
+          request.destroy()
+          return
+        }
+        body += chunk
+      })
+      response.on('error', () => fail('network'))
+      response.on('end', () => {
+        try {
+          resolve(JSON.parse(body))
+        } catch (_) {
+          fail('bad-payload:json')
+        }
+      })
+    })
+    request.on('error', () => fail('network'))
+    request.on('timeout', () => {
+      request.destroy()
+      fail('timeout')
+    })
+  })
+}
+
+/**
+ * 每 provider 节流状态机（内存态，重启清零）。一切来源共用同一判定，优先序：
+ * 单飞去重 > 失败指数退避（30s ×2 封顶 15min）> 最小上游间隔 15s > 成功 TTL 60s。
+ * now 由调用方注入，测试可推进假时钟。
+ */
+function createQuotaThrottle(options = {}) {
+  const successTtlMs = options.successTtlMs ?? QUOTA_SUCCESS_TTL_MS
+  const minIntervalMs = options.minIntervalMs ?? QUOTA_MIN_INTERVAL_MS
+  const backoffBaseMs = options.backoffBaseMs ?? QUOTA_BACKOFF_BASE_MS
+  const backoffMaxMs = options.backoffMaxMs ?? QUOTA_BACKOFF_MAX_MS
+  const entries = new Map()
+  const entryOf = (provider) => {
+    let entry = entries.get(provider)
+    if (entry === undefined) {
+      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined }
+      entries.set(provider, entry)
+    }
+    return entry
+  }
+  return {
+    /** 只读快照：缓存窗口、是否刷新中、下次允许发起上游的时间（null=进行中未知）。 */
+    view(provider, now = Date.now()) {
+      const entry = entryOf(provider)
+      return {
+        refreshing: entry.inflight,
+        windows: entry.windows,
+        fetchedAt: entry.fetchedAt > 0 ? entry.fetchedAt : undefined,
+        lastError: entry.lastError,
+        nextAllowedAt: entry.inflight
+          ? null
+          : Math.max(entry.backoffUntil, entry.lastUpstreamAt + minIntervalMs, entry.lastSuccessAt + successTtlMs),
+      }
+    },
+    /** 申请一次上游调用。允许则置单飞并返回 ok；拒绝时给出稳定原因与 nextAllowedAt（优先序：单飞 > 退避 > 成功 TTL > 最小间隔）。 */
+    attempt(provider, now = Date.now()) {
+      const entry = entryOf(provider)
+      if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
+      if (now < entry.backoffUntil) return { ok: false, reason: 'backoff', nextAllowedAt: entry.backoffUntil }
+      if (now - entry.lastSuccessAt < successTtlMs) {
+        return { ok: false, reason: 'fresh', nextAllowedAt: entry.lastSuccessAt + successTtlMs }
+      }
+      if (entry.lastUpstreamAt > 0 && now - entry.lastUpstreamAt < minIntervalMs) {
+        return { ok: false, reason: 'interval', nextAllowedAt: entry.lastUpstreamAt + minIntervalMs }
+      }
+      entry.inflight = true
+      entry.lastUpstreamAt = now
+      return { ok: true }
+    },
+    /** 上游落定：成功清退避并缓存窗口；失败按失败次数指数退避（封顶 15min）。 */
+    settle(provider, outcome, now = Date.now()) {
+      const entry = entryOf(provider)
+      entry.inflight = false
+      if (outcome.ok === true) {
+        entry.lastSuccessAt = now
+        entry.failures = 0
+        entry.backoffUntil = 0
+        entry.windows = outcome.windows ?? []
+        entry.fetchedAt = now
+        entry.lastError = undefined
+        return
+      }
+      entry.failures += 1
+      const delay = Math.min(backoffBaseMs * 2 ** (entry.failures - 1), backoffMaxMs)
+      entry.backoffUntil = now + delay
+      entry.lastError = typeof outcome.code === 'string' ? outcome.code : 'unknown'
+    },
   }
 }
 
@@ -1235,6 +1460,39 @@ function apply(ctx) {
   let usageRefreshPromise
   let updateCache
   let updatePromise
+  const quotaThrottle = createQuotaThrottle()
+  // 远端额度：后台补拉一次。是否真的发上游由节流器判定；fire-and-forget，落定写回状态机。
+  const kickQuotaRefresh = (profile, kind) => {
+    const decision = quotaThrottle.attempt(profile.name)
+    if (!decision.ok) return
+    const parser = QUOTA_PARSERS[kind]
+    Promise.resolve()
+      .then(() => {
+        if (profile.baseURL === '') throw new Error('no-base-url')
+        if (parser === undefined) throw new Error('bad-payload:kind')
+        let authorization = ''
+        if (profile.apiKeyEnv !== '') {
+          const credentials = ctx.get('credentials')
+          if (credentials === undefined || typeof credentials.resolve !== 'function') throw new Error('credentials-unavailable')
+          return Promise.resolve(credentials.resolve(profile.apiKeyEnv)).then((credential) => {
+            if (credential === undefined || typeof credential.value !== 'string' || credential.value === '') {
+              throw new Error('credential-missing')
+            }
+            return `Bearer ${credential.value}`
+          })
+        }
+        return ''
+      })
+      .then((authorization) => fetchProviderUsage(profile.baseURL, authorization))
+      .then((payload) => {
+        const parsed = parser(payload)
+        if (!Array.isArray(parsed?.windows)) throw new Error('bad-payload:shape')
+        quotaThrottle.settle(profile.name, { ok: true, windows: parsed.windows })
+      })
+      .catch((error) => {
+        quotaThrottle.settle(profile.name, { ok: false, code: quotaErrorCode(error) })
+      })
+  }
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
   const commands = ctx.get('commands')
   if (commands !== undefined) {
@@ -1461,6 +1719,59 @@ function apply(ctx) {
       }
     }
 
+    if (endpoint === 'quota') {
+      try {
+        const providers = readLlmProviders(ctx.get('settings'))
+        const config = await loadQuotaConfig(dshHome)
+        const rows = []
+        for (const profile of providers) {
+          const kind = config.kinds[profile.name]
+          if (QUOTA_PARSERS[kind] === undefined) {
+            // 未适配（无 kind 或白名单外）：灰色行，宿主绝不主动外呼。
+            rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
+            continue
+          }
+          kickQuotaRefresh(profile, kind)
+          const view = quotaThrottle.view(profile.name)
+          const windows = Array.isArray(view.windows) ? view.windows : []
+          const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable'
+          rows.push({
+            provider: profile.name,
+            displayName: profile.displayName,
+            adapted: true,
+            kind,
+            refreshing: view.refreshing,
+            status: credentialClass && !view.refreshing ? 'unconfigured' : view.lastError !== undefined && windows.length === 0 ? 'error' : 'ok',
+            ...(windows.length > 0 ? { windows, fetchedAt: view.fetchedAt } : {}),
+            ...(view.lastError !== undefined ? { errorCode: view.lastError } : {}),
+            nextAllowedAt: view.nextAllowedAt,
+          })
+        }
+        return { ok: true, value: { providers: rows, serverTime: Date.now() } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'quota-config') {
+      try {
+        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+        const kind = payload?.kind
+        // 双白名单：provider 必须命中 settings 现有键，kind 过内置枚举；null 表示取消适配。
+        if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
+          return { ok: false, error: 'unknown-provider' }
+        }
+        if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
+        const config = await loadQuotaConfig(dshHome)
+        if (kind === null) delete config.kinds[providerName]
+        else config.kinds[providerName] = kind
+        await saveQuotaConfig(dshHome, config)
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
     if (endpoint === 'web') {
       const activity = collectActiveWork(ctx)
       if (activity.hasActive && payload?.force !== true) {
@@ -1481,5 +1792,29 @@ function apply(ctx) {
   }, { authority: 'loopback' })
 }
 
-export { apply, detectRuntimeEnv, inject, name, runtimeEnvCheck }
-export default { apply, detectRuntimeEnv, inject, name, runtimeEnvCheck }
+export {
+  apply,
+  createQuotaThrottle,
+  detectRuntimeEnv,
+  fetchProviderUsage,
+  inject,
+  name,
+  normalizeOpencodeUsage,
+  parseQuotaConfigText,
+  quotaErrorCode,
+  readLlmProviders,
+  runtimeEnvCheck,
+}
+export default {
+  apply,
+  createQuotaThrottle,
+  detectRuntimeEnv,
+  fetchProviderUsage,
+  inject,
+  name,
+  normalizeOpencodeUsage,
+  parseQuotaConfigText,
+  quotaErrorCode,
+  readLlmProviders,
+  runtimeEnvCheck,
+}

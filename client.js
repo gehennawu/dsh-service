@@ -66,6 +66,7 @@ window.__ModuleLoader__.load({
       'tabs.notify': '通知',
       'tabs.health': '健康诊断',
       'tabs.usage': '模型统计',
+      'tabs.quota': '远端额度',
       'overview.container': '进程与运行环境',
       'overview.errors': '报错信息',
       'tabs.backup': '备份维护',
@@ -239,6 +240,40 @@ window.__ModuleLoader__.load({
       'notification.kind.question': '等待选择答案',
       'notification.bellOn': '通知开启',
       'notification.bellOff': '通知关闭',
+      'quota.cardTitle': '远端额度',
+      'quota.navToggle': '设置页左列显示「远端额度」入口',
+      'quota.hint': '圆环跟随当前会话所选模型的供应商；查询由宿主统一节流，不会频繁请求上游。',
+      'quota.poll': '自动查询',
+      'quota.poll.manual': '仅手动',
+      'quota.poll.minute': '{count} 分钟',
+      'quota.window.rolling': '滚动 5 小时',
+      'quota.window.weekly': '本周',
+      'quota.window.monthly': '本月',
+      'quota.panel.title': '额度用量',
+      'quota.panel.used': '已用',
+      'quota.ring.label': '远端额度',
+      'quota.ring.aria': '远端额度 · {provider} · 已用 {percent}%',
+      'quota.updated': '更新于 {time}',
+      'quota.refreshing': '刷新中…',
+      'quota.empty': '暂无数据',
+      'quota.resetIn': '重置于 {time}',
+      'quota.retryAt': '{time} 后可重试',
+      'quota.unadapted': '未适配',
+      'quota.adapt': '适配',
+      'quota.kind.opencode-go': 'OpenCode Go',
+      'quota.saveFailed': '保存失败：{error}',
+      'quota.unknownProvider': '未知供应商',
+      'quota.error.credential-missing': '凭据未配置（请在 DSH 凭据中设置对应 API key）',
+      'quota.error.no-base-url': '该供应商未配置 baseURL',
+      'quota.error.credentials-unavailable': '凭据服务不可用',
+      'quota.error.http-status': '上游返回错误状态',
+      'quota.error.network': '网络错误',
+      'quota.error.timeout': '请求超时',
+      'quota.error.bad-payload': '响应格式异常',
+      'quota.error.unknown': '未知错误',
+      'quota.unit.day': '{count} 天',
+      'quota.unit.hour': '{count} 小时',
+      'quota.unit.minute': '{count} 分钟',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -298,6 +333,7 @@ window.__ModuleLoader__.load({
       'tabs.notify': 'Notifications',
       'tabs.health': 'Health',
       'tabs.usage': 'Models',
+      'tabs.quota': 'Remote quota',
       'overview.container': 'Process and runtime',
       'overview.errors': 'Errors',
       'tabs.backup': 'Backup',
@@ -471,12 +507,46 @@ window.__ModuleLoader__.load({
       'notification.kind.question': 'answer requested',
       'notification.bellOn': 'Notifications on',
       'notification.bellOff': 'Notifications off',
+      'quota.cardTitle': 'Remote quota',
+      'quota.navToggle': 'Show a "Remote quota" entry in the settings left navigation',
+      'quota.hint': 'The ring follows the provider selected by the current session; queries are throttled by the host and never hammer the upstream.',
+      'quota.poll': 'Auto query',
+      'quota.poll.manual': 'Manual only',
+      'quota.poll.minute': '{count} min',
+      'quota.window.rolling': '5h rolling',
+      'quota.window.weekly': 'This week',
+      'quota.window.monthly': 'This month',
+      'quota.panel.title': 'Quota usage',
+      'quota.panel.used': 'Used',
+      'quota.ring.label': 'Remote quota',
+      'quota.ring.aria': 'Remote quota · {provider} · {percent}% used',
+      'quota.updated': 'Updated {time}',
+      'quota.refreshing': 'Refreshing…',
+      'quota.empty': 'No data yet',
+      'quota.resetIn': 'Resets in {time}',
+      'quota.retryAt': 'Retry allowed after {time}',
+      'quota.unadapted': 'Not adapted',
+      'quota.adapt': 'Adapt',
+      'quota.kind.opencode-go': 'OpenCode Go',
+      'quota.saveFailed': 'Save failed: {error}',
+      'quota.unknownProvider': 'Unknown provider',
+      'quota.error.credential-missing': 'Credential missing (set the API key in DSH credentials)',
+      'quota.error.no-base-url': 'This provider has no baseURL configured',
+      'quota.error.credentials-unavailable': 'Credential service unavailable',
+      'quota.error.http-status': 'Upstream returned an error status',
+      'quota.error.network': 'Network error',
+      'quota.error.timeout': 'Request timed out',
+      'quota.error.bad-payload': 'Unexpected response format',
+      'quota.error.unknown': 'Unknown error',
+      'quota.unit.day': '{count} d',
+      'quota.unit.hour': '{count} h',
+      'quota.unit.minute': '{count} min',
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions']
 
     function apply(ctx) {
-      const { useState, useEffect } = React
+      const { useState, useEffect, useRef } = React
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
@@ -545,6 +615,35 @@ window.__ModuleLoader__.load({
           return () => restartNavListeners.delete(update)
         }, [])
         return [enabled, setRestartNavEnabled]
+      }
+      // 设置页左列「远端额度」入口显示开关：默认关闭，localStorage 持久化；与重启入口同模式。
+      let quotaNavEnabled = false
+      try { quotaNavEnabled = localStorage.getItem('dsh-service-quota-nav') === 'true' } catch (_) {}
+      let quotaNavDispose = null
+      const syncQuotaNavEntry = () => {
+        if (quotaNavDispose) { quotaNavDispose(); quotaNavDispose = null }
+        if (!quotaNavEnabled) return
+        quotaNavDispose = ctx.slots.register(
+          { name: 'settings.section', id: 'dsh-service-quota', order: 498, label: () => t('tabs.quota') },
+          () => React.createElement(QuotaSection, null),
+        )
+      }
+      const quotaNavListeners = new Set()
+      const setQuotaNavEnabled = (value) => {
+        quotaNavEnabled = value === true
+        try { localStorage.setItem('dsh-service-quota-nav', quotaNavEnabled ? 'true' : 'false') } catch (_) {}
+        syncQuotaNavEntry()
+        for (const listener of quotaNavListeners) listener()
+      }
+      const useQuotaNavEnabled = () => {
+        const [enabled, setEnabled] = useState(quotaNavEnabled)
+        useEffect(() => {
+          const update = () => setEnabled(quotaNavEnabled)
+          quotaNavListeners.add(update)
+          setEnabled(quotaNavEnabled)
+          return () => quotaNavListeners.delete(update)
+        }, [])
+        return [enabled, setQuotaNavEnabled]
       }
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
@@ -979,6 +1078,380 @@ window.__ModuleLoader__.load({
                   }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
               : null)
         )
+      }
+
+      // ── 远端额度（v0.18）：环与统计卡共用一份快照、一个轮询器；上游节流全部收敛在宿主。 ──
+      const quotaStore = {
+        snapshot: { providers: [], serverTime: 0 },
+        listeners: new Set(),
+        subscribe(listener) {
+          this.listeners.add(listener)
+          return () => this.listeners.delete(listener)
+        },
+        getSnapshot() {
+          return this.snapshot
+        },
+        publish(next) {
+          this.snapshot = next
+          for (const listener of [...this.listeners]) {
+            try { listener() } catch (_) {}
+          }
+        },
+      }
+      const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
+      const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
+      function readQuotaPollMinutes() {
+        try {
+          const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
+          return QUOTA_POLL_CHOICES.includes(raw) ? raw : 5
+        } catch (_) {
+          return 5
+        }
+      }
+      function writeQuotaPollMinutes(minutes) {
+        try { localStorage.setItem(QUOTA_POLL_KEY, String(minutes)) } catch (_) {}
+      }
+      async function fetchQuotaSnapshot() {
+        try {
+          const res = await ctx.connection.rpc.call('/dsh-service', 'quota', {})
+          if (res?.ok === true && res.value && typeof res.value === 'object' && Array.isArray(res.value.providers)) {
+            quotaStore.publish(res.value)
+            return true
+          }
+        } catch (_) {}
+        return false
+      }
+      const quotaLoop = { refs: 0, nextDispose: null, running: false, onVisible: undefined }
+      const isQuotaPageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      function scheduleQuotaCycle() {
+        if (quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
+        const minutes = readQuotaPollMinutes()
+        quotaLoop.nextDispose = ctx.timer.timeout(() => {
+          quotaLoop.nextDispose = null
+          runQuotaCycle()
+        }, minutes * 60000)
+      }
+      function runQuotaCycle() {
+        if (quotaLoop.refs === 0 || quotaLoop.running || isQuotaPageHidden()) return
+        quotaLoop.running = true
+        Promise.resolve(fetchQuotaSnapshot()).catch(() => false).then(() => {
+          quotaLoop.running = false
+          scheduleQuotaCycle()
+        })
+      }
+      function acquireQuotaLoop() {
+        quotaLoop.refs += 1
+        // 每个表面（圆环/统计卡）挂载都立即向宿主要一次快照：宿主自行决定回缓存还是打上游，
+        // 即使轮询已在跑（refs>1）也补查一次，保证「打开即最新」。
+        runQuotaCycle()
+        scheduleQuotaCycle()
+        if (typeof document !== 'undefined') {
+          quotaLoop.onVisible = () => {
+            if (!isQuotaPageHidden()) runQuotaCycle()
+          }
+          document.addEventListener('visibilitychange', quotaLoop.onVisible)
+        }
+      }
+      function releaseQuotaLoop() {
+        quotaLoop.refs = Math.max(0, quotaLoop.refs - 1)
+        if (quotaLoop.refs > 0) return
+        if (quotaLoop.nextDispose !== null) {
+          quotaLoop.nextDispose()
+          quotaLoop.nextDispose = null
+        }
+        if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') {
+          document.removeEventListener('visibilitychange', quotaLoop.onVisible)
+          quotaLoop.onVisible = undefined
+        }
+      }
+      function notifyQuotaPollChanged() {
+        if (quotaLoop.nextDispose !== null) {
+          quotaLoop.nextDispose()
+          quotaLoop.nextDispose = null
+        }
+        scheduleQuotaCycle()
+      }
+      ctx.effect(() => () => {
+        if (quotaLoop.nextDispose !== null) quotaLoop.nextDispose()
+        if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') document.removeEventListener('visibilitychange', quotaLoop.onVisible)
+      }, 'dsh-service quota poller disposal')
+
+      function quotaWindowLabel(id, translate) {
+        const key = `quota.window.${id}`
+        const label = translate(key)
+        return label === key ? id : label
+      }
+      function humanizeDuration(ms, translate) {
+        // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
+        const totalMinutes = Math.max(0, Math.floor(ms / 60000))
+        const days = Math.floor(totalMinutes / 1440)
+        const hours = Math.floor((totalMinutes % 1440) / 60)
+        const minutes = totalMinutes % 60
+        const parts = []
+        if (days > 0) parts.push(translate('quota.unit.day', { count: days }))
+        if (hours > 0) parts.push(translate('quota.unit.hour', { count: hours }))
+        if (minutes > 0) parts.push(translate('quota.unit.minute', { count: minutes }))
+        if (parts.length === 0) parts.push(translate('quota.unit.minute', { count: 0 }))
+        return parts.slice(0, 2).join(' ')
+      }
+      function formatClockTime(timestamp) {
+        try {
+          return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        } catch (_) {
+          return ''
+        }
+      }
+      function quotaErrorMessage(code, translate) {
+        const key = `quota.error.${code}`
+        const text = translate(key)
+        return text === key ? translate('quota.error.unknown') : text
+      }
+      /** 弹窗/卡片共用的横向进度条：轨道 + 按百分比着色的填充（<80% 绿、≥80% 黄）。 */
+      function quotaBar(testId, percent, height) {
+        return React.createElement('div', {
+          'data-testid': testId,
+          style: { height, borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover)', overflow: 'hidden' },
+        },
+        React.createElement('div', {
+          style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, borderRadius: 999, background: percent >= 80 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
+        }))
+      }
+
+      function QuotaRing(props) {
+        const translate = useTranslation()
+        const [quota, setQuota] = useState(quotaStore.getSnapshot())
+        useEffect(() => quotaStore.subscribe(() => setQuota(quotaStore.getSnapshot())), [])
+        const store = props && props.directoryStore
+        useEffect(() => {
+          // 无 modelDirectories 服务（或条目 props 为空）：不启动轮询、不发 RPC、不渲染内容。
+          if (!store) return undefined
+          acquireQuotaLoop()
+          return releaseQuotaLoop
+        }, [store])
+        const [directoryState, setDirectoryState] = useState(store ? store.getSnapshot() : null)
+        useEffect(() => {
+          if (!store) return undefined
+          setDirectoryState(store.getSnapshot())
+          return store.subscribe(() => setDirectoryState(store.getSnapshot()))
+        }, [store])
+        useEffect(() => {
+          if (store && (directoryState === null || directoryState?.current == null) && props && typeof props.loadDirectory === 'function') props.loadDirectory()
+        }, [store, directoryState, props && props.loadDirectory])
+        const [open, setOpen] = useState(false)
+        const rootRef = useRef(null)
+        const provider = directoryState?.current?.provider ?? null
+        const row = provider !== null ? (quota.providers || []).find((entry) => entry.provider === provider && entry.adapted === true) : null
+        const windows = Array.isArray(row?.windows) ? row.windows : []
+        const tightest = windows.length > 0 ? windows.reduce((best, current) => (current.percent > best.percent ? current : best), windows[0]) : null
+        useEffect(() => {
+          if (!open || typeof document === 'undefined') return undefined
+          const onPointerDown = (event) => {
+            if (rootRef.current && event.target instanceof Node && rootRef.current.contains(event.target)) return
+            setOpen(false)
+          }
+          const onKeyDown = (event) => {
+            if (event.key === 'Escape') setOpen(false)
+          }
+          document.addEventListener('pointerdown', onPointerDown)
+          document.addEventListener('keydown', onKeyDown)
+          return () => {
+            document.removeEventListener('pointerdown', onPointerDown)
+            document.removeEventListener('keydown', onKeyDown)
+          }
+        }, [open])
+        if (row === null || tightest === null) return null
+        const percent = tightest.percent
+        const color = percent >= 80 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
+        const radius = 5.5
+        const circumference = 2 * Math.PI * radius
+        const ariaText = translate('quota.ring.aria', { provider, percent })
+        const retrySuffix = typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
+          ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
+          : ''
+        const errorNode = row.errorCode !== undefined
+          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' } },
+              `${quotaErrorMessage(row.errorCode, translate)}${retrySuffix}`)
+          : null
+        const updatedNode = row.refreshing === true || typeof row.fetchedAt === 'number'
+          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
+              row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
+          : null
+        return React.createElement('span', { ref: rootRef, style: { position: 'relative', display: 'inline-flex' } },
+          React.createElement('button', {
+            type: 'button',
+            'data-testid': 'quota-ring-trigger',
+            'aria-label': ariaText,
+            'aria-haspopup': 'dialog',
+            'aria-expanded': open,
+            title: ariaText,
+            onClick: () => {
+              setOpen(!open)
+              fetchQuotaSnapshot()
+            },
+            style: { width: '28px', height: '28px', border: 'none', borderRadius: '999px', background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
+          },
+          React.createElement('svg', { viewBox: '0 0 14 14', width: '14', height: '14', 'aria-hidden': true },
+            React.createElement('circle', { cx: '7', cy: '7', r: radius, fill: 'none', stroke: 'var(--dsw-alias-border-l3)', strokeWidth: '2' }),
+            React.createElement('circle', {
+              cx: '7', cy: '7', r: radius, fill: 'none', stroke: color, strokeWidth: '2', strokeLinecap: 'round',
+              strokeDasharray: `${(circumference * percent) / 100} ${circumference}`,
+              transform: 'rotate(-90 7 7)',
+            }))),
+          open ? React.createElement('div', {
+            role: 'dialog',
+            'aria-label': translate('quota.panel.title'),
+            'data-testid': 'quota-ring-panel',
+            style: { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
+          },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
+            React.createElement('span', { 'data-testid': 'quota-panel-tightest-label', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } },
+              `${translate('quota.panel.used')} · ${quotaWindowLabel(tightest.id, translate)}`),
+            React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, `${percent}%`),
+            React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
+          quotaBar('quota-panel-used-bar', percent, '6px'),
+          React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
+            windows.map((window) => {
+              // 每个窗口：标签+百分比一行 → 独立进度条一行 → 重置倒计时单独一行。
+              let resetNode = null
+              if (typeof window.resetsAt === 'string') {
+                const at = Date.parse(window.resetsAt)
+                if (Number.isFinite(at) && at > Date.now()) {
+                  resetNode = React.createElement('div', {
+                    'data-testid': `quota-reset-${window.id}`,
+                    style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
+                  }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
+                }
+              }
+              return React.createElement('div', { key: window.id },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' } },
+                  React.createElement('span', null, quotaWindowLabel(window.id, translate)),
+                  React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
+                quotaBar(`quota-window-bar-${window.id}`, window.percent, '4px'),
+                resetNode)
+            })),
+          errorNode,
+          updatedNode) : null)
+      }
+
+      function QuotaSection() {
+        return React.createElement(RemoteQuotaCard, null)
+      }
+
+      function RemoteQuotaCard() {
+        const translate = useTranslation()
+        const [quotaNav, setQuotaNav] = useQuotaNavEnabled()
+        const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
+        const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
+        const [quota, setQuota] = useState(quotaStore.getSnapshot())
+        useEffect(() => quotaStore.subscribe(() => setQuota(quotaStore.getSnapshot())), [])
+        useEffect(() => {
+          acquireQuotaLoop()
+          return releaseQuotaLoop
+        }, [])
+        const [pollMinutes, setPollMinutes] = useState(readQuotaPollMinutes())
+        const [configError, setConfigError] = useState('')
+        const providers = quota.providers || []
+        const adaptProvider = async (providerName, kind) => {
+          setConfigError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-config', { provider: providerName, kind })
+            if (res?.ok !== true) {
+              setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
+              return
+            }
+            await fetchQuotaSnapshot()
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          }
+        }
+        return React.createElement('div', { 'data-testid': 'remote-quota-card', style: { marginTop: '18px' } },
+          React.createElement('div', { style: sectionTitle }, translate('quota.cardTitle')),
+          React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('quota.hint')),
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' } },
+            React.createElement('label', { htmlFor: 'dsh-service-quota-poll-select', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('quota.poll')),
+            React.createElement('select', {
+              id: 'dsh-service-quota-poll-select',
+              'data-testid': 'quota-poll-select',
+              value: String(pollMinutes),
+              onChange: (event) => {
+                const value = Number.parseInt(event.target.value, 10)
+                if (QUOTA_POLL_CHOICES.includes(value)) {
+                  setPollMinutes(value)
+                  writeQuotaPollMinutes(value)
+                  notifyQuotaPollChanged()
+                }
+              },
+              style: { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
+            },
+            [{ value: 0, label: translate('quota.poll.manual') }].concat(QUOTA_POLL_CHOICES.filter((choice) => choice > 0).map((choice) => ({ value: choice, label: translate('quota.poll.minute', { count: choice }) }))).map((option) =>
+              React.createElement('option', { key: option.value, value: String(option.value) }, option.label)))),
+          React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' } },
+            React.createElement('input', { type: 'checkbox', 'data-testid': 'quota-nav-toggle', checked: quotaNav, onChange: (event) => setQuotaNav(event.target.checked) }),
+            translate('quota.navToggle')),
+          configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
+          providers.length === 0
+            ? React.createElement('p', { style: hint }, translate('quota.empty'))
+            : React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+                providers.map((row, index) => {
+                  const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } }, row.displayName || row.provider)
+                  if (row.adapted !== true) {
+                    return React.createElement('div', { key: row.provider, 'data-testid': `quota-row-${row.provider}`, style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)', opacity: 0.62 } },
+                      nameNode,
+                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginRight: 'auto' } }, translate('quota.unadapted')),
+                      React.createElement('select', {
+                        'data-testid': `quota-kind-select-${row.provider}`,
+                        value: '',
+                        'aria-label': `${translate('quota.adapt')} · ${row.displayName || row.provider}`,
+                        onChange: (event) => {
+                          if (event.target.value !== '') adaptProvider(row.provider, event.target.value)
+                        },
+                        style: { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
+                      },
+                      React.createElement('option', { value: '' }, translate('quota.unadapted')),
+                      React.createElement('option', { value: 'opencode-go' }, translate('quota.kind.opencode-go'))))
+                  }
+                  const windows = Array.isArray(row.windows) ? row.windows : []
+                  // 已适配行：供应商名 + 更新时间一行，下面每个窗口三段式（标签+百分比 / 进度条 / 重置单独一行）。
+                  const windowBlocks = windows.map((window) => {
+                    let resetNode = null
+                    if (typeof window.resetsAt === 'string') {
+                      const at = Date.parse(window.resetsAt)
+                      if (Number.isFinite(at) && at > Date.now()) {
+                        resetNode = React.createElement('div', {
+                          'data-testid': `quota-card-reset-${row.provider}-${window.id}`,
+                          style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
+                        }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
+                      }
+                    }
+                    return React.createElement('div', { key: window.id, 'data-testid': `quota-card-window-${row.provider}-${window.id}` },
+                      React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
+                        React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
+                        React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
+                      quotaBar(`quota-card-bar-${row.provider}-${window.id}`, window.percent, '4px'),
+                      resetNode)
+                  })
+                  let body
+                  if (row.refreshing === true && windows.length === 0) {
+                    body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
+                  } else if (row.errorCode !== undefined && windows.length === 0) {
+                    body = React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
+                      typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
+                        ? `${quotaErrorMessage(row.errorCode, translate)} · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
+                        : quotaErrorMessage(row.errorCode, translate))
+                  } else if (windows.length > 0) {
+                    // 窗口块之间的留白由列容器统一控制（14px），进度条吃满整行宽度。
+                    body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, windowBlocks)
+                  } else {
+                    body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
+                  }
+                  return React.createElement('div', { key: row.provider, 'data-testid': `quota-row-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 2px 12px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+                    React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
+                      nameNode,
+                      typeof row.fetchedAt === 'number'
+                        ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
+                        : null),
+                    body)
+                })))
       }
 
       function ServicePanel() {
@@ -1839,6 +2312,7 @@ window.__ModuleLoader__.load({
           ['notify', 'tabs.notify'],
           ['health', 'tabs.health'],
           ['usage', 'tabs.usage'],
+          ['quota', 'tabs.quota'],
           ['backup', 'tabs.backup'],
           ['restart', 'tabs.restart'],
         ]
@@ -1851,6 +2325,8 @@ window.__ModuleLoader__.load({
               ? healthBlock
               : activeTab === 'usage'
                 ? usageBlock
+                : activeTab === 'quota'
+                  ? React.createElement(RemoteQuotaCard, null)
                 : activeTab === 'backup'
                   ? maintenanceBlock
                   : restartBlock
@@ -1901,13 +2377,18 @@ window.__ModuleLoader__.load({
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」入口由「重启」标签内的开关控制，默认不注册
+        // 左列「重启」「远端额度」入口由各自标签内的开关控制，默认不注册
         syncRestartNavEntry()
+        syncQuotaNavEntry()
         return () => {
           disposePanel()
           if (restartNavDispose) {
             restartNavDispose()
             restartNavDispose = null
+          }
+          if (quotaNavDispose) {
+            quotaNavDispose()
+            quotaNavDispose = null
           }
         }
       })
@@ -1915,6 +2396,42 @@ window.__ModuleLoader__.load({
         { name: 'shell.overlay', id: 'dsh-service-restart', order: 100, label: () => t('overlay.label') },
         () => React.createElement(RestartOverlay, null),
       ))
+
+      // 远端额度圆环：跟随当前会话所选模型的供应商。modelDirectories 是可选服务
+      // （老版本 DSH 没有）。槽位条目无条件注册，服务在条目渲染时（inject(sessionId)）
+      // 经 ctx.get 惰性解析——此时会话已渲染、model-selection 必然已挂载，不受注入时序影响；
+      // 拿不到服务时 props 为空，QuotaRing 渲染 null 且不启动轮询，其他功能零影响。
+      const getModelDirectories = () => {
+        try {
+          if (typeof ctx.get === 'function') return ctx.get('modelDirectories')
+        } catch (_) {}
+        return undefined
+      }
+      ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+        name: 'conversation.input.right',
+        id: 'dsh-service-quota-ring',
+        order: 95,
+        label: () => t('quota.ring.label'),
+        inject: (sessionId) => {
+          if (sessionId === undefined || sessionId === null) return {}
+          try {
+            const models = getModelDirectories()
+            if (models === undefined || typeof models.directoryFor !== 'function') return {}
+            const directory = models.directoryFor(sessionId)
+            return {
+              directoryStore: directory.store,
+              loadDirectory: () => {
+                try {
+                  const pending = directory.load()
+                  if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+                } catch (_) {}
+              },
+            }
+          } catch (_) {
+            return {}
+          }
+        },
+      }, (props) => React.createElement(QuotaRing, props)))
     }
 
     exports.inject = inject

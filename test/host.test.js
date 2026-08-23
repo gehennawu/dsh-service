@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, detectRuntimeEnv, name, runtimeEnvCheck } from '../index.js'
+import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, name, normalizeOpencodeUsage, parseQuotaConfigText, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -1351,4 +1351,312 @@ test('runtime env check maps each environment to ok, advisory warning, or a non-
   // 宿主未提供运行环境（老版本/异常）→ 不产生该检查项。
   assert.equal(runtimeEnvCheck(undefined), null)
   assert.equal(runtimeEnvCheck(null), null)
+})
+
+// ── v0.18 远端额度 ──────────────────────────────────────────────────────────────
+
+const OPENCODE_FIXTURE = {
+  usage: {
+    rolling: { status: 'ok', percent: 0, resetsAt: '2026-08-23T11:16:13.823Z' },
+    weekly: { status: 'ok', percent: 14, resetsAt: '2026-08-24T00:00:00.823Z' },
+    monthly: { status: 'ok', percent: 7, resetsAt: '2026-09-21T06:16:35.823Z' },
+  },
+}
+
+test('opencode-go parser maps percent-only windows and tolerates missing fields', () => {
+  assert.deepEqual(normalizeOpencodeUsage(OPENCODE_FIXTURE), {
+    windows: [
+      { id: 'rolling', percent: 0, resetsAt: '2026-08-23T11:16:13.823Z' },
+      { id: 'weekly', percent: 14, resetsAt: '2026-08-24T00:00:00.823Z' },
+      { id: 'monthly', percent: 7, resetsAt: '2026-09-21T06:16:35.823Z' },
+    ],
+  })
+  // 非数字 percent 逐窗口跳过、截断到 [0,100]、未知窗口 id 忽略、resetsAt 缺失不造数。
+  assert.deepEqual(
+    normalizeOpencodeUsage({
+      usage: {
+        rolling: { percent: 150 },
+        weekly: { percent: -5 },
+        monthly: { percent: 'x', resetsAt: 'ignored' },
+        extra: { percent: 3 },
+      },
+    }).windows,
+    [
+      { id: 'rolling', percent: 100 },
+      { id: 'weekly', percent: 0 },
+    ],
+  )
+  assert.deepEqual(normalizeOpencodeUsage(undefined).windows, [])
+  assert.deepEqual(normalizeOpencodeUsage({ usage: null }).windows, [])
+})
+
+test('quota config parsing falls back safely on corruption and drops unknown kinds', () => {
+  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' } })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {} })
+})
+
+test('readLlmProviders normalizes profiles and tolerates missing settings service', () => {
+  assert.deepEqual(readLlmProviders(undefined), [])
+  assert.deepEqual(readLlmProviders({ get: () => undefined }), [])
+  assert.deepEqual(readLlmProviders({ get: () => { throw new Error('boom') } }), [])
+  assert.deepEqual(
+    readLlmProviders({
+      get: (ns) => (ns === 'llm-pi-ai'
+        ? {
+            providers: {
+              a: { displayName: 'A 供应商', baseURL: 'https://a.example///', apiKeyEnv: 'A_KEY' },
+              b: { models: [] },
+            },
+          }
+        : undefined),
+    }),
+    [
+      { name: 'a', displayName: 'A 供应商', baseURL: 'https://a.example', apiKeyEnv: 'A_KEY' },
+      { name: 'b', displayName: 'b', baseURL: '', apiKeyEnv: '' },
+    ],
+  )
+})
+
+test('quota throttle enforces single-flight, TTL, min interval, and capped exponential backoff', () => {
+  const throttle = createQuotaThrottle({ successTtlMs: 60_000, minIntervalMs: 15_000, backoffBaseMs: 30_000, backoffMaxMs: 15 * 60_000 })
+  let now = 1_000_000
+  // 单飞：进行中一律拒绝且 nextAllowedAt 未知。
+  assert.equal(throttle.attempt('p', now).ok, true)
+  const busy = throttle.attempt('p', now + 1)
+  assert.equal(busy.ok, false)
+  assert.equal(busy.reason, 'inflight')
+  assert.equal(busy.nextAllowedAt, null)
+  throttle.settle('p', { ok: true, windows: [{ id: 'weekly', percent: 14 }] }, now + 2)
+  const view = throttle.view('p', now + 2)
+  assert.equal(view.refreshing, false)
+  assert.deepEqual(view.windows, [{ id: 'weekly', percent: 14 }])
+  assert.equal(view.fetchedAt, now + 2)
+  assert.equal(view.lastError, undefined)
+  // 成功 TTL 内拒绝（fresh），TTL 恰好过期后放行。
+  assert.equal(throttle.attempt('p', now + 3).reason, 'fresh')
+  assert.equal(throttle.attempt('p', now + 2 + 60_000).ok, true)
+  throttle.settle('p', { ok: true, windows: [] }, now + 2 + 60_000)
+
+  // 最小上游间隔：TTL 置 0 单独验证 15s 间隔规则。
+  const tight = createQuotaThrottle({ successTtlMs: 0, minIntervalMs: 15_000, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
+  const t0 = 500_000
+  assert.equal(tight.attempt('p', t0).ok, true)
+  tight.settle('p', { ok: true, windows: [{ id: 'rolling', percent: 1 }] }, t0 + 1)
+  const intervalDenial = tight.attempt('p', t0 + 10_000)
+  assert.equal(intervalDenial.reason, 'interval')
+  assert.equal(intervalDenial.nextAllowedAt, t0 + 15_000)
+  assert.equal(tight.attempt('p', t0 + 15_000).ok, true)
+
+  // 失败指数退避：30s 起步 ×2、封顶 60s（此实例配置），成功后清零。
+  const backoff = createQuotaThrottle({ successTtlMs: 0, minIntervalMs: 0, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
+  const b0 = 900_000
+  assert.equal(backoff.attempt('a', b0).ok, true)
+  backoff.settle('a', { ok: false, code: 'network' }, b0)
+  let denial = backoff.attempt('a', b0 + 1)
+  assert.equal(denial.reason, 'backoff')
+  assert.equal(denial.nextAllowedAt, b0 + 30_000)
+  assert.equal(backoff.attempt('a', b0 + 30_000).ok, true)
+  backoff.settle('a', { ok: false, code: 'timeout' }, b0 + 30_000)
+  denial = backoff.attempt('a', b0 + 31_000)
+  assert.equal(denial.nextAllowedAt, b0 + 90_000)
+  assert.equal(backoff.attempt('a', b0 + 90_000).ok, true)
+  backoff.settle('a', { ok: false, code: 'http-status:403' }, b0 + 90_000)
+  denial = backoff.attempt('a', b0 + 91_000)
+  assert.equal(denial.nextAllowedAt, b0 + 150_000)
+  assert.equal(backoff.view('a', b0 + 91_000).lastError, 'http-status:403')
+  assert.equal(backoff.attempt('a', b0 + 150_000).ok, true)
+  backoff.settle('a', { ok: true, windows: [{ id: 'monthly', percent: 2 }] }, b0 + 150_000)
+  assert.equal(backoff.view('a', b0 + 151_000).lastError, undefined)
+  assert.deepEqual(backoff.view('a', b0 + 151_000).windows, [{ id: 'monthly', percent: 2 }])
+})
+
+test('fetchProviderUsage hits {base}/usage with Bearer and reports stable error codes', async (t) => {
+  const originalGet = https.get
+  t.after(() => { https.get = originalGet })
+  {
+    https.get = (url, options, callback) => {
+      assert.equal(String(url), 'https://x.example/v1/usage')
+      assert.equal(options.headers.Authorization, 'Bearer k')
+      const response = new EventEmitter()
+      response.statusCode = 200
+      response.setEncoding = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => {
+        callback(response)
+        response.emit('data', '{"usage":{}}')
+        response.emit('end')
+      })
+      return request
+    }
+    assert.deepEqual(await fetchProviderUsage('https://x.example/v1', 'Bearer k'), { usage: {} })
+  }
+  {
+    https.get = (url, options, callback) => {
+      const response = new EventEmitter()
+      response.statusCode = 403
+      response.resume = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => callback(response))
+      return request
+    }
+    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'http-status')
+  }
+  {
+    https.get = (url, options, callback) => {
+      const response = new EventEmitter()
+      response.statusCode = 200
+      response.setEncoding = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => {
+        callback(response)
+        response.emit('data', 'oops')
+        response.emit('end')
+      })
+      return request
+    }
+    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'bad-payload')
+  }
+  {
+    https.get = (url, options, callback) => {
+      const response = new EventEmitter()
+      response.statusCode = 200
+      response.setEncoding = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => {
+        callback(response)
+        response.emit('data', 'x'.repeat(80 * 1024))
+        response.emit('end')
+      })
+      return request
+    }
+    await assert.rejects(fetchProviderUsage('https://x.example', ''), (error) => quotaErrorCode(error) === 'bad-payload')
+  }
+})
+
+function quotaHostOverrides(dshHome, providers, credentialValue) {
+  return {
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers } : undefined) },
+      ...(credentialValue === undefined ? {} : { credentials: { resolve: async () => (credentialValue === null ? undefined : { value: credentialValue }) } }),
+    },
+  }
+}
+
+const QUOTA_PROVIDERS = {
+  'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+  openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+}
+
+async function waitFor(predicate, label = 'condition') {
+  const start = Date.now()
+  while (!predicate()) {
+    if (Date.now() - start > 2000) throw new Error(`timeout waiting for ${label}`)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+test('quota RPC lists all providers, adapts only whitelisted kinds, and calls upstream once per TTL', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' } }))
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push({ url: String(url), auth: options.headers?.Authorization })
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify(OPENCODE_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k-123'))
+
+  const first = await host.handler('quota', {})
+  assert.equal(first.ok, true)
+  const rows = first.value.providers
+  assert.equal(rows.length, 2)
+  assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
+  const adapted = rows.find((row) => row.provider === 'opencode-go')
+  assert.equal(adapted.adapted, true)
+  assert.equal(adapted.kind, 'opencode-go')
+  assert.equal(adapted.refreshing, true)
+  await waitFor(() => requests.length === 1, 'first upstream call')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const second = await host.handler('quota', {})
+  const row = second.value.providers.find((entry) => entry.provider === 'opencode-go')
+  assert.equal(row.refreshing, false)
+  assert.equal(row.status, 'ok')
+  assert.equal(row.windows.length, 3)
+  assert.ok(row.fetchedAt > 0)
+  assert.deepEqual(row.windows[1], { id: 'weekly', percent: 14, resetsAt: '2026-08-24T00:00:00.823Z' })
+  // TTL + 单飞：第二次 RPC 不再触发上游；URL 为 baseURL 去尾斜杠 + /usage，鉴权为宿主解析的 Bearer。
+  assert.deepEqual(requests.map((request) => request.url), ['https://opencode.ai/zen/go/v1/usage'])
+  assert.equal(requests[0].auth, 'Bearer k-123')
+})
+
+test('quota RPC reports unconfigured credentials and upstream errors with a retry countdown', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-err-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' } }))
+  const originalGet = https.get
+  let upstreamStatus = 0
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter()
+    response.statusCode = upstreamStatus
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => callback(response))
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+
+  // 凭据缺失：不打上游，状态 unconfigured + 稳定错误码。
+  const missingCred = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, null))
+  await missingCred.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const missingRow = (await missingCred.handler('quota', {})).value.providers.find((row) => row.provider === 'opencode-go')
+  assert.equal(missingRow.status, 'unconfigured')
+  assert.equal(missingRow.errorCode, 'credential-missing')
+  assert.equal(typeof missingRow.nextAllowedAt, 'number')
+
+  // 上游 503：状态 error，退避给出未来重试时间。
+  upstreamStatus = 503
+  const failing = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  await failing.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const errorRow = (await failing.handler('quota', {})).value.providers.find((row) => row.provider === 'opencode-go')
+  assert.equal(errorRow.status, 'error')
+  assert.equal(errorRow.errorCode, 'http-status')
+  assert.ok(errorRow.nextAllowedAt > Date.now() - 1000)
+})
+
+test('quota-config validates provider and kind against host-side whitelists before writing', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cfg-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  assert.deepEqual(await host.handler('quota-config', { provider: 'nope', kind: 'opencode-go' }), { ok: false, error: 'unknown-provider' })
+  assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'mystery' }), { ok: false, error: 'unknown-kind' })
+  assert.deepEqual(await host.handler('quota-config', { provider: '', kind: null }), { ok: false, error: 'unknown-provider' })
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'opencode-go')
+  // kind:null 取消适配。
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, undefined)
 })
