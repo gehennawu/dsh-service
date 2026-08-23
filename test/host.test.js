@@ -1639,7 +1639,7 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   // 手录重置卡挂到对应 provider 行；zai 窗口来自智谱方言解析器。
   const zaiRow = second.value.providers.find((entry) => entry.provider === 'zai-coding-cn')
   assert.deepEqual(zaiRow.resetCards, [{ id: 'card-1', provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2099-01-01' }])
-  assert.deepEqual(zaiRow.windows.map((window) => window.id), ['time-limit-u5-n1', 'tokens-limit-u3-n5', 'tokens-limit-u6-n1'])
+  assert.deepEqual(zaiRow.windows.map((window) => window.id), ['tokens-limit-u3-n5', 'tokens-limit-u6-n1', 'time-limit-u5-n1'])
   assert.equal(row.resetCards, undefined)
 })
 
@@ -1727,10 +1727,11 @@ const ZAI_FIXTURE = {
 test('zai-coding-cn parser maps every limit window and tolerates idle windows without reset time', () => {
   assert.deepEqual(normalizeZaiCodingUsage(ZAI_FIXTURE), {
     windows: [
-      { id: 'time-limit-u5-n1', percent: 2, resetsAt: new Date(1789351336998).toISOString() },
+      // 展示序：Token 窗在前（上游 TIME_LIMIT 首位被排到最后，GUI 点名 MCP 放第三排）。
       // 5 小时滚动窗口无调用时官方不下发 nextResetTime → 不造重置时间。
       { id: 'tokens-limit-u3-n5', percent: 0 },
       { id: 'tokens-limit-u6-n1', percent: 58, resetsAt: new Date(1787882536998).toISOString() },
+      { id: 'time-limit-u5-n1', percent: 2, resetsAt: new Date(1789351336998).toISOString() },
     ],
   })
   // 非数字 percentage 跳过、percent 截断 [0,100]、缺 data/limits 返回空。

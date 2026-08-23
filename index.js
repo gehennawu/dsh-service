@@ -703,6 +703,9 @@ async function discoverQuotaCredential(ctx, kind, profile) {
  * id 用 type+unit+number 组合保证稳定；unit/number 缺失时回退 type-index。
  * percentage 是一等公民；currentValue/usage 等绝对值字段可选且多数窗口不下发，不造数。
  */
+// zai 窗口展示序：Token 窗（5 小时/本周）在前、点数窗次之、MCP 月度垫底。
+// 上游固定把 TIME_LIMIT 放首个，而用户最关心编码 Token 窗（GUI 反馈点名 MCP 放第三排）。
+const ZAI_WINDOW_TYPE_ORDER = { 'tokens-limit': 0, 'credit-limit': 1, 'time-limit': 2 }
 function normalizeZaiCodingUsage(payload) {
   const windows = []
   const limits = payload?.data?.limits
@@ -726,6 +729,9 @@ function normalizeZaiCodingUsage(payload) {
       ...(normalizeResetTimestamp(limit.nextResetTime) !== undefined ? { resetsAt: normalizeResetTimestamp(limit.nextResetTime) } : {}),
     })
   }
+  // stable sort：同类型内保持上游相对顺序（5 小时窗仍在本周窗前），未知类型排最后。
+  const orderOf = (id) => ZAI_WINDOW_TYPE_ORDER[String(id).split('-').slice(0, 2).join('-')] ?? 3
+  windows.sort((a, b) => orderOf(a.id) - orderOf(b.id))
   return { windows }
 }
 
