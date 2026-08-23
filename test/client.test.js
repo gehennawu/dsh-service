@@ -2191,6 +2191,84 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.ok(backCandidates.includes('zai-coding-cn'))
 })
 
+test('quota card header has a refresh icon that forces per-provider refresh', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const refreshCalls = []
+  let quotaCalls = 0
+  let refreshing = false
+  let pendingSettle = false
+  let percent = 5
+  const buildQuotaResponse = () => ({
+    ok: true,
+    value: {
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: 'zai-coding-cn', refreshing, status: 'ok',
+          windows: [{ id: 'rolling', percent }], fetchedAt: Date.now() },
+      ],
+    },
+  })
+  let quotaResponse = buildQuotaResponse()
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      quotaCalls += 1
+      // 手动刷新后的第一次快照仍在途；下一次快照视为上游落定（窗口数值变化可断言）。
+      if (pendingSettle) {
+        pendingSettle = false
+      } else if (refreshing) {
+        refreshing = false
+        percent = 9
+      }
+      quotaResponse = buildQuotaResponse()
+      return quotaResponse
+    }
+    if (endpoint === 'quota-refresh') {
+      refreshCalls.push(payload)
+      refreshing = true
+      pendingSettle = true
+      quotaResponse = buildQuotaResponse()
+      return { ok: true }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /滚动 5 小时.*5%/)
+
+  // 图标在更新时间之前，aria 标记为「刷新」，默认可点。
+  const cardRoot = renderer.findByTestId('quota-provider-card-zai-coding-cn')
+  const rightCluster = cardRoot.children[0].children[1]
+  assert.equal(rightCluster.children[0].props['data-testid'], 'quota-refresh-zai-coding-cn')
+  assert.equal(rightCluster.children[0].props['aria-label'], '刷新')
+  assert.equal(rightCluster.children[0].props.disabled, false)
+  assert.match(String(rightCluster.children[1].children), /更新于/)
+
+  // 点击：发起 quota-refresh 并立即补拉快照；在途期间图标置灰防重入。
+  const initialQuotaCalls = quotaCalls
+  renderer.findByTestId('quota-refresh-zai-coding-cn').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(refreshCalls, [{ provider: 'zai-coding-cn' }])
+  assert.ok(quotaCalls > initialQuotaCalls)
+  assert.equal(renderer.findByTestId('quota-refresh-zai-coding-cn').props.disabled, true)
+
+  // 延时补拉接住落定结果：窗口数值更新、图标恢复可点。
+  await renderer.advanceTimer(800)
+  assert.match(renderer.text('settings.section'), /滚动 5 小时.*9%/)
+  assert.equal(renderer.findByTestId('quota-refresh-zai-coding-cn').props.disabled, false)
+
+  // 收尾：清掉剩余的延时补拉定时器，避免悬空。
+  await renderer.advanceTimer(2400)
+})
+
 test('settings nav rows get icon markers by localized label and follow text changes', async () => {
   function navButton(text) {
     return {

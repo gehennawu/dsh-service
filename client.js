@@ -276,6 +276,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.cancel': '取消',
       'quota.resetCard.remove': '移除',
       'quota.retryAt': '{time} 后可重试',
+      'quota.refresh': '刷新',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': '智谱 GLM Coding Plan',
@@ -578,6 +579,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.cancel': 'Cancel',
       'quota.resetCard.remove': 'Remove',
       'quota.retryAt': 'Retry allowed after {time}',
+      'quota.refresh': 'Refresh',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': 'Zhipu GLM Coding Plan',
@@ -1578,6 +1580,23 @@ window.__ModuleLoader__.load({
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
         }
+        // 手动刷新：宿主清闸后立即 kick（单飞仍生效）；快照立刻拉一次，再短延时补拉两次接住上游落定结果。
+        const refreshProvider = async (providerName) => {
+          setConfigError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-refresh', { provider: providerName })
+            if (res?.ok !== true) {
+              setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : res?.error === 'not-adapted' ? translate('quota.unadapted') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
+              return
+            }
+            await fetchQuotaSnapshot()
+            // 短延时补拉两次接住上游落定结果；走 timer 服务保证随 Fiber 销毁、可被测试驱动。
+            ctx.timer.timeout(() => { fetchQuotaSnapshot() }, 800)
+            ctx.timer.timeout(() => { fetchQuotaSnapshot() }, 2400)
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          }
+        }
         const requestQuotaConfig = async (payload) => {
           setConfigError('')
           try {
@@ -1721,9 +1740,20 @@ window.__ModuleLoader__.load({
                   return React.createElement('div', { key: row.provider, 'data-testid': `quota-provider-card-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
-                      typeof row.fetchedAt === 'number'
-                        ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
-                        : null),
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
+                        // 手动刷新：SVG 图标按钮，点击强制该 provider 重拉上游；在途时置灰防重入。
+                        React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-refresh-${row.provider}`,
+                          'aria-label': translate('quota.refresh'),
+                          title: translate('quota.refresh'),
+                          disabled: row.refreshing === true,
+                          onClick: () => refreshProvider(row.provider),
+                          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'transparent', color: row.refreshing === true ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: row.refreshing === true ? 'default' : 'pointer', opacity: row.refreshing === true ? 0.45 : 1 },
+                        }, React.createElement('svg', { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true }, React.createElement('path', { d: 'M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.77L13 11h7V4l-2.35 2.35z' }))),
+                        typeof row.fetchedAt === 'number'
+                          ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
+                          : null)),
                     body,
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },

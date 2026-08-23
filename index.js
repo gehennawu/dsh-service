@@ -624,6 +624,22 @@ function inferQuotaKind(baseURL) {
   return hits.length === 1 ? hits[0].kind : undefined
 }
 
+/**
+ * 单个 provider 的 kind 解析（quota 与 quota-refresh 共用）。
+ * 优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断；未命中返回空对象。
+ */
+function resolveQuotaKind(config, profile) {
+  if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
+    const configured = config.kinds[profile.name]
+    if (configured === null) return {}
+    if (QUOTA_PARSERS[configured] !== undefined) return { kind: configured, kindSource: 'config' }
+    return {}
+  }
+  const inferred = inferQuotaKind(profile.baseURL)
+  if (inferred !== undefined && QUOTA_PARSERS[inferred] !== undefined) return { kind: inferred, kindSource: 'auto' }
+  return {}
+}
+
 /** 百分比归一：0-1 视为小数比例，>=1 视为已是百分数；非法 → null。 */
 function normalizePercentValue(value) {
   const n = Number(value)
@@ -887,6 +903,14 @@ function createQuotaThrottle(options = {}) {
       entry.backoffUntil = now + delay
       entry.lastError = typeof outcome.code === 'string' ? outcome.code : 'unknown'
       entry.lastErrorDetail = typeof outcome.detail === 'string' && outcome.detail !== '' ? outcome.detail : undefined
+    },
+    /** 手动强制刷新：清掉退避/成功 TTL/最小间隔三道闸（单飞仍生效），下一次 attempt 必然放行。 */
+    force(provider) {
+      const entry = entryOf(provider)
+      entry.backoffUntil = 0
+      entry.lastSuccessAt = 0
+      entry.lastUpstreamAt = 0
+      return entry.inflight === false
     },
   }
 }
@@ -1960,23 +1984,7 @@ function apply(ctx) {
         const rows = []
         for (const profile of providers) {
           // kind 解析优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断。
-          let kind
-          let kindSource
-          if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
-            const configured = config.kinds[profile.name]
-            if (configured === null) {
-              kind = undefined
-            } else if (QUOTA_PARSERS[configured] !== undefined) {
-              kind = configured
-              kindSource = 'config'
-            }
-          } else {
-            const inferred = inferQuotaKind(profile.baseURL)
-            if (inferred !== undefined && QUOTA_PARSERS[inferred] !== undefined) {
-              kind = inferred
-              kindSource = 'auto'
-            }
-          }
+          const { kind, kindSource } = resolveQuotaKind(config, profile)
           if (kind === undefined || QUOTA_PARSERS[kind] === undefined) {
             // 未适配（无 kind/已停用/白名单外且不可推断）：灰色行，宿主绝不主动外呼。
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
@@ -2003,6 +2011,24 @@ function apply(ctx) {
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'quota-refresh') {
+      try {
+        // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
+        // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
+        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+        const profile = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        if (profile === undefined) return { ok: false, error: 'unknown-provider' }
+        const config = await loadQuotaConfig(dshHome)
+        const { kind } = resolveQuotaKind(config, profile)
+        if (kind === undefined) return { ok: false, error: 'not-adapted' }
+        quotaThrottle.force(providerName)
+        kickQuotaRefresh(profile, kind)
+        return { ok: true }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }

@@ -1959,6 +1959,55 @@ test('quota-reset-card validates provider, appends multiple cards, and removes b
   assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
 })
 
+test('quota-refresh clears throttle gates and forces an upstream call within TTL', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-refresh-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 只让 opencode-go 可适配（zai 的 bigmodel baseURL 会被自动推断接入，干扰请求数断言）。
+  const refreshProviders = {
+    'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+    openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+  }
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' }, resetCards: [] }))
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push({ url: String(url), auth: options.headers?.Authorization })
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify(OPENCODE_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, refreshProviders, 'k-123'))
+
+  // 双白名单：未登记 provider 与未适配 provider 都拒绝。
+  assert.deepEqual(await host.handler('quota-refresh', { provider: 'nope' }), { ok: false, error: 'unknown-provider' })
+  assert.deepEqual(await host.handler('quota-refresh', { provider: 'openrouter' }), { ok: false, error: 'not-adapted' })
+
+  // 首次快照触发常规拉取；随后立即手动刷新——虽在成功 TTL/最小间隔内，也必须再打一次上游。
+  assert.equal((await host.handler('quota', {})).ok, true)
+  await waitFor(() => requests.length >= 1, 'first upstream call')
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve))
+  assert.equal((await host.handler('quota-refresh', { provider: 'opencode-go' })).ok, true)
+  await waitFor(() => requests.length >= 2, 'forced upstream call')
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(requests.length, 2)
+  assert.equal(new URL(requests[1].url).pathname, '/zen/go/v1/usage')
+
+  // 强刷结果经后续快照带出：行回到 ok 且窗口齐全。
+  const view = await host.handler('quota', {})
+  const row = view.value.providers.find((entry) => entry.provider === 'opencode-go')
+  assert.equal(row.status, 'ok')
+  assert.equal(row.windows.length, 3)
+})
+
 test('quota endpoint resolver returns candidate chains, overriding the {baseURL}/usage convention', () => {
   assert.deepEqual(quotaEndpointFor('zai-coding-cn', ''), [
     'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
