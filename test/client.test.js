@@ -1773,10 +1773,9 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.match(panelText, /本月.*85%/)
   assert.match(panelText, /重置/) // rolling 的 resetsAt 在未来 → 出现重置倒计时
   // 头部表明「已用」，总进度条填充等于最紧窗口（月度 85%）。
-  assert.match(panelText, /已用/) // 头部表明「已用」
-  // 头部同时标明总进度条代表的最紧窗口（本月），并与总条填充一致。
-  assert.equal(renderer.findByTestId('quota-panel-tightest-label').children[0], '已用 · 本月')
-  assert.equal(renderer.findByTestId('quota-panel-used-bar').children[0].props.style.width, '85%')
+  assert.match(panelText, /已用/)
+  assert.equal(renderer.hasTest('quota-panel-used-bar'), false)
+  assert.equal(renderer.hasTest('quota-panel-tightest-label'), false)
   // 每个窗口有独立进度条；重置时间是单独一行（独立节点），不与标签同行拼接。
   assert.equal(renderer.findByTestId('quota-window-bar-rolling').children[0].props.style.width, '12%')
   assert.equal(renderer.findByTestId('quota-window-bar-weekly').children[0].props.style.width, '40%')
@@ -1801,6 +1800,128 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(renderer.hasTest('quota-ring-trigger'), false)
 })
 
+test('ring keeps its panel open while refreshing and shows reset times once data lands', async () => {
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: null },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() {
+      return {
+        store,
+        load() {
+          store.snapshot = { current: { provider: 'opencode-go', model: 'deepseek-v4-flash' } }
+          for (const fn of [...storeListeners]) fn()
+          return Promise.resolve()
+        },
+      }
+    },
+  }
+  // 前两笔（挂载拉取 + provider 补拉）返回「刷新中、无窗口」的行，之后返回完整窗口。
+  let refreshed = false
+  const refreshingPayload = {
+    ok: true,
+    value: {
+      serverTime: Date.now(),
+      providers: [{ provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go', refreshing: true, status: 'ok' }],
+    },
+  }
+  const fullPayload = {
+    ok: true,
+    value: {
+      serverTime: Date.now(),
+      providers: [{
+        provider: 'opencode-go',
+        displayName: 'opencode-go',
+        adapted: true,
+        kind: 'opencode-go',
+        refreshing: false,
+        status: 'ok',
+        windows: [{ id: 'weekly', percent: 40, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
+        fetchedAt: Date.now(),
+      }],
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') return refreshed ? fullPayload : refreshingPayload
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  // 有适配行但数据未到的刷新期：触发钮仍然可见（不再整环消失）。
+  assert.equal(renderer.hasTest('quota-ring-trigger'), true)
+  // 点击：面板保持打开（不再因无窗口数据整环卸载），显示「刷新中」。
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-panel'), true)
+  assert.match(renderer.text(), /刷新中/)
+  // 数据落地（触发一次轮询周期）：同一面板原地更新，重置时间无需二次点击。
+  refreshed = true
+  await renderer.advanceTimer(300000)
+  let landed = false
+  for (let i = 0; i < 20 && !landed; i++) {
+    await renderer.flush()
+    landed = renderer.text().includes('本周')
+  }
+  assert.ok(landed)
+  assert.equal(renderer.hasTest('quota-ring-panel'), true)
+  assert.match(renderer.text(), /本周.*40%/)
+  assert.match(renderer.text(), /重置于 2 小时 5 分钟/)
+})
+
+test('remaining-basis windows switch the panel word and invert the warn threshold', async () => {
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'minimax-cn' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() {
+      return { store, load() { return Promise.resolve() } }
+    },
+  }
+  // 剩余口径：percent=95 表示「剩余 95%」——头部应显「剩余」，且 95 不触发 ≥80 警黄。
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'minimax-cn',
+            displayName: 'MiniMax Token Plan',
+            adapted: true,
+            kind: 'minimax',
+            refreshing: false,
+            status: 'ok',
+            windows: [{ id: '5h', percent: 95, remaining: true, resetsAt: new Date(Date.now() + 3600_000).toISOString() }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text(), /剩余/)
+  assert.doesNotMatch(renderer.text(), /已用 · /)
+  const bar = renderer.findByTestId('quota-window-bar-5h').children[0]
+  assert.equal(bar.props.style.width, '95%')
+  assert.equal(bar.props.style.background, 'var(--dsw-alias-state-success-primary)')
+})
+
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
@@ -1815,17 +1936,31 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const configCalls = []
   const cardCalls = []
-  let quotaResponse = {
+  let zaiAdapted = false
+  let opencodeAdapted = false
+  let allowZaiConfig = false
+  let zaiCard = null
+  const buildQuotaResponse = () => ({
     ok: true,
     value: {
       serverTime: Date.now(),
       providers: [
-        { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false },
-        { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
+        ...(opencodeAdapted ? [{
+          provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok',
+          windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
+          fetchedAt: Date.now(),
+        }] : [{ provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false }]),
+        ...(zaiAdapted ? [{
+          provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok',
+          windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
+          fetchedAt: Date.now(),
+          ...(zaiCard ? { resetCards: [{ provider: 'zai-coding-cn', ...zaiCard }] } : {}),
+        }] : [{ provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false }]),
         { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
       ],
     },
-  }
+  })
+  let quotaResponse = buildQuotaResponse()
   const renderer = createRenderer(async (channel, endpoint, payload) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
     if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
@@ -1836,22 +1971,22 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
     if (endpoint === 'quota') return quotaResponse
     if (endpoint === 'quota-reset-card') {
       cardCalls.push(payload)
+      if (payload.remove === true) zaiCard = null
+      else zaiCard = { remaining: payload.remaining, ...(payload.expiresAt !== undefined ? { expiresAt: payload.expiresAt } : {}), ...(payload.label !== undefined ? { label: payload.label } : {}) }
+      quotaResponse = buildQuotaResponse()
       return { ok: true }
     }
     if (endpoint === 'quota-config') {
       configCalls.push(payload)
-      if (payload.provider !== 'opencode-go') return { ok: false, error: 'unknown-provider' }
-      quotaResponse = {
-        ok: true,
-        value: {
-          serverTime: Date.now(),
-          providers: [
-            { provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: payload.kind, refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }], fetchedAt: Date.now() },
-            { provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false },
-            { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ provider: 'openrouter', label: '周额度重置卡', remaining: 2, expiresAt: '2099-06-01' }] },
-          ],
-        },
+      if (payload.provider === 'zai-coding-cn') {
+        // 仅在测试显式放行后接受（用于驱动「未知供应商」负路径断言）。
+        if (!allowZaiConfig) return { ok: false, error: 'unknown-provider' }
+        zaiAdapted = true
+      } else if (payload.provider !== 'opencode-go') {
+        return { ok: false, error: 'unknown-provider' }
       }
+      if (payload.provider === 'opencode-go') opencodeAdapted = true
+      quotaResponse = buildQuotaResponse()
       return { ok: true }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
@@ -1877,7 +2012,8 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.equal(renderer.hasTest('quota-card-reset-openrouter-weekly'), false) // fixture 无 resetsAt → 不显示重置行
   // 手录重置卡行：剩余次数 + 到期时间（未过期不标已过期）。
   const cardLine = renderer.findByTestId('quota-reset-card-openrouter-0')
-  assert.equal(String(cardLine.children[0]), '重置卡 · 周额度重置卡 · 剩余 2 次 · 2099-06-01 到期')
+  assert.equal(String(cardLine.children[0].children[0]), '重置卡 · 周额度重置卡 · 剩余 2 次')
+  assert.equal(String(cardLine.children[1].children[0]), '2099-06-01 到期')
 
   // 灰行选择 opencode-go → quota-config 双白名单校验后保存并刷新该行。
   const kindSelect = renderer.findByTestId('quota-kind-select-opencode-go')

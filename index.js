@@ -587,7 +587,11 @@ function normalizeOpencodeUsage(payload) {
   return { windows }
 }
 
-/** kind → 解析器分发表；新增供应商方言时在此登记并同步 QUOTA_KINDS 白名单。 */
+/** kind → 解析器分发表；新增供应商方言时在此登记并同步 QUOTA_KINDS 白名单。
+ * 窗口可选字段 remaining:true 表示 percentage 原生就是「剩余百分比」（如 MiniMax 的
+ * remaining_percent）——客户端据此把头部「已用」切换为「剩余」，进度条预警阈值反向；
+ * 缺省一律按已用口径处理。
+ */
 const QUOTA_PARSERS = {
   'opencode-go': normalizeOpencodeUsage,
   'zai-coding-cn': (payload) => normalizeZaiCodingUsage(payload),

@@ -259,6 +259,7 @@ window.__ModuleLoader__.load({
       'quota.window.monthly': '本月',
       'quota.panel.title': '额度用量',
       'quota.panel.used': '已用',
+      'quota.panel.remaining': '剩余',
       'quota.ring.label': '额度查询',
       'quota.ring.aria': '额度查询 · {provider} · 已用 {percent}%',
       'quota.updated': '更新于 {time}',
@@ -275,6 +276,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.nameLabel': '名称（可选）',
       'quota.resetCard.save': '保存',
       'quota.resetCard.remove': '移除',
+      'quota.resetCard.invalidCount': '请输入有效的剩余次数',
       'quota.retryAt': '{time} 后可重试',
       'quota.unadapted': '未适配',
       'quota.adapt': '适配',
@@ -556,6 +558,7 @@ window.__ModuleLoader__.load({
       'quota.window.balance': 'Balance',
       'quota.panel.title': 'Quota usage',
       'quota.panel.used': 'Used',
+      'quota.panel.remaining': 'Remaining',
       'quota.ring.label': 'Quota lookup',
       'quota.ring.aria': 'Quota lookup · {provider} · {percent}% used',
       'quota.updated': 'Updated {time}',
@@ -572,6 +575,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.nameLabel': 'Name (optional)',
       'quota.resetCard.save': 'Save',
       'quota.resetCard.remove': 'Remove',
+      'quota.resetCard.invalidCount': 'Enter a valid remaining count',
       'quota.retryAt': 'Retry allowed after {time}',
       'quota.unadapted': 'Not adapted',
       'quota.adapt': 'Adapt',
@@ -1264,19 +1268,44 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
+      /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。 */
+      function resetCardContent(card, translate) {
+        const rawExpiry = typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '' ? card.expiresAt.trim() : ''
+        const at = rawExpiry !== '' ? Date.parse(rawExpiry) : NaN
+        const expired = Number.isFinite(at) && at < Date.now()
+        const remainingPart = translate('quota.resetCard.remaining', { count: card.remaining })
+        let expiryPart = ''
+        if (rawExpiry !== '') {
+          let shown = rawExpiry
+          if (Number.isFinite(at)) {
+            shown = rawExpiry.length > 10 ? `${formatShortDate(at)} ${formatClockTime(at)}` : formatShortDate(at)
+            shown = expired
+              ? `${shown} ${translate('quota.resetCard.expired')}`
+              : translate('quota.resetCard.expires', { date: shown })
+          }
+          expiryPart = shown
+        }
+        const labelSuffix = typeof card.label === 'string' && card.label !== '' ? ` · ${card.label}` : ''
+        return {
+          expired,
+          title: `${translate('quota.resetCard.title')}${labelSuffix} · ${remainingPart}`,
+          expiry: expiryPart,
+        }
+      }
       function quotaErrorMessage(code, translate) {
         const key = `quota.error.${code}`
         const text = translate(key)
         return text === key ? translate('quota.error.unknown') : text
       }
-      /** 弹窗/卡片共用的横向进度条：轨道 + 按百分比着色的填充（<80% 绿、≥80% 黄）。 */
-      function quotaBar(testId, percent, height) {
+      /** 弹窗/卡片共用的横向进度条。默认已用口径（≥80% 警黄）；remaining 口径数值即剩余%，≤20% 才警黄。 */
+      function quotaBar(testId, percent, height, remainingBasis) {
+        const warning = remainingBasis === true ? percent <= 20 : percent >= 80
         return React.createElement('div', {
           'data-testid': testId,
           style: { height, borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover)', overflow: 'hidden' },
         },
         React.createElement('div', {
-          style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, borderRadius: 999, background: percent >= 80 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
+          style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, borderRadius: 999, background: warning ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
         }))
       }
 
@@ -1306,7 +1335,22 @@ window.__ModuleLoader__.load({
         const row = provider !== null ? (quota.providers || []).find((entry) => entry.provider === provider && entry.adapted === true) : null
         const windows = Array.isArray(row?.windows) ? row.windows : []
         const percentWindows = windows.filter((window) => typeof window.percent === 'number')
-        const tightest = percentWindows.length > 0 ? percentWindows.reduce((best, current) => (current.percent > best.percent ? current : best), percentWindows[0]) : null
+        // 最紧约束：已用口径取最高占用；剩余口径取最低余量。两种口径并存时按压力值（贴近耗尽程度）比较。
+        const pressureOf = (window) => (window.remaining === true ? 100 - window.percent : window.percent)
+        const tightest = percentWindows.length > 0 ? percentWindows.reduce((best, current) => (pressureOf(current) > pressureOf(best) ? current : best), percentWindows[0]) : null
+
+        // 切换会话/模型后，若目标 provider 有适配行但尚无数据（重启后首拉缺失等），
+        // 主动补一次快照请求（宿主节流兜底）；Set 防抖避免发布→重渲染死循环。
+        const quotaRefetchRequested = useRef(new Set())
+        useEffect(() => {
+          if (provider === null) return
+          const matchedRow = (quota.providers || []).find((entry) => entry.provider === provider && entry.adapted === true)
+          const needsData = matchedRow === undefined || (Array.isArray(matchedRow.windows) === false && matchedRow.refreshing !== true && matchedRow.errorCode === undefined)
+          if (needsData && !quotaRefetchRequested.current.has(provider)) {
+            quotaRefetchRequested.current.add(provider)
+            fetchQuotaSnapshot()
+          }
+        }, [provider, quota])
         useEffect(() => {
           if (!open || typeof document === 'undefined') return undefined
           const onPointerDown = (event) => {
@@ -1323,12 +1367,14 @@ window.__ModuleLoader__.load({
             document.removeEventListener('keydown', onKeyDown)
           }
         }, [open])
-        if (row === null || tightest === null) return null
-        const percent = tightest.percent
-        const color = percent >= 80 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
+        if (row === undefined || row === null) return null
+        const percent = tightest === null ? 0 : tightest.percent
+        const remainingBasis = tightest !== null && tightest.remaining === true
+        const usedWord = remainingBasis ? translate('quota.panel.remaining') : translate('quota.panel.used')
+        const color = (remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
         const radius = 5.5
         const circumference = 2 * Math.PI * radius
-        const ariaText = translate('quota.ring.aria', { provider, percent })
+        const ariaText = `${translate('quota.ring.label')} · ${provider} · ${usedWord} ${percent}%`
         const retrySuffix = typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
           ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
           : ''
@@ -1368,11 +1414,8 @@ window.__ModuleLoader__.load({
             style: { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
           },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
-            React.createElement('span', { 'data-testid': 'quota-panel-tightest-label', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } },
-              `${translate('quota.panel.used')} · ${quotaWindowLabel(tightest.id, translate)}`),
-            React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, `${percent}%`),
+            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
-          quotaBar('quota-panel-used-bar', percent, '6px'),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             windows.map((window) => {
               // 文本窗口（余额等）：标签+数值一行，无进度条与重置。
@@ -1396,9 +1439,22 @@ window.__ModuleLoader__.load({
                 React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' } },
                   React.createElement('span', null, quotaWindowLabel(window.id, translate)),
                   React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
-                quotaBar(`quota-window-bar-${window.id}`, window.percent, '4px'),
+                quotaBar(`quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
                 resetNode)
             })),
+          ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
+            ? [React.createElement('div', { key: 'panel-reset-cards', style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
+                row.resetCards.map((card, cardIndex) => {
+                  const content = resetCardContent(card, translate)
+                  return React.createElement('div', {
+                    key: cardIndex,
+                    'data-testid': `quota-panel-reset-card-${cardIndex}`,
+                    style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
+                  },
+                  React.createElement('span', null, content.title),
+                  content.expiry !== '' ? React.createElement('span', null, content.expiry) : null)
+                }))]
+            : []),
           errorNode,
           updatedNode) : null)
       }
@@ -1435,8 +1491,13 @@ window.__ModuleLoader__.load({
         const saveResetCard = async () => {
           if (cardEditor === null) return
           setConfigError('')
+          const remaining = Number(cardDraft.remaining)
+          if (!Number.isFinite(remaining) || remaining < 0) {
+            setConfigError(translate('quota.resetCard.invalidCount'))
+            return
+          }
           try {
-            const payload = { provider: cardEditor.provider, remaining: Number(cardDraft.remaining) }
+            const payload = { provider: cardEditor.provider, remaining }
             if (cardDraft.expiresAt !== '') payload.expiresAt = cardDraft.expiresAt
             if (cardDraft.label !== '') payload.label = cardDraft.label
             const res = await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', payload)
@@ -1446,8 +1507,10 @@ window.__ModuleLoader__.load({
             }
             setCardEditor(null)
             await fetchQuotaSnapshot()
-          } catch (_) {
-            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          } catch (error) {
+            // 不再一律吞成 Network：透出真实错误（unknown endpoint 等），network 仅作兜底。
+            const detail = error instanceof Error && typeof error.message === 'string' && error.message.trim() !== '' ? error.message.trim() : 'network'
+            setConfigError(translate('quota.saveFailed', { error: detail }))
           }
         }
         const removeResetCard = async () => {
@@ -1559,7 +1622,7 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
                         React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
                         React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
-                      quotaBar(`quota-card-bar-${row.provider}-${window.id}`, window.percent, '4px'),
+                      quotaBar(`quota-card-bar-${row.provider}-${window.id}`, window.percent, '4px', window.remaining === true),
                       resetNode)
                   })
                   let body
@@ -1577,20 +1640,14 @@ window.__ModuleLoader__.load({
                                     // 手录重置卡（v0.19 过渡方案）：窗口明细下方只读展示剩余次数与到期时间。
                   const resetCardNodes = Array.isArray(row.resetCards)
                     ? row.resetCards.map((card, cardIndex) => {
-                        const at = typeof card.expiresAt === 'string' ? Date.parse(card.expiresAt) : NaN
-                        const expired = Number.isFinite(at) && at < Date.now()
-                        const parts = [translate('quota.resetCard.remaining', { count: card.remaining })]
-                        if (typeof card.expiresAt === 'string' && card.expiresAt !== '') {
-                          parts.push(Number.isFinite(at)
-                            ? (expired ? `${formatShortDate(at)} ${translate('quota.resetCard.expired')}` : translate('quota.resetCard.expires', { date: formatShortDate(at) }))
-                            : card.expiresAt)
-                        }
+                        const content = resetCardContent(card, translate)
                         return React.createElement('div', {
                           key: cardIndex,
                           'data-testid': `quota-reset-card-${row.provider}-${cardIndex}`,
-                          style: { fontSize: '11px', lineHeight: '16px', color: expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
+                          style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
                         },
-                        `${translate('quota.resetCard.title')}${card.label ? ` · ${card.label}` : ''} · ${parts.join(' · ')}`)
+                        React.createElement('span', null, content.title),
+                        content.expiry !== '' ? React.createElement('span', null, content.expiry) : null)
                       })
                     : []
                   const editingThis = cardEditor !== null && cardEditor.provider === row.provider
@@ -1621,7 +1678,7 @@ window.__ModuleLoader__.load({
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
                       resetField(translate('quota.resetCard.countLabel'), 'quota-reset-input-count', 'number', 'remaining'),
-                      resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'date', 'expiresAt'),
+                      resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.save')),
                       ...(Array.isArray(row.resetCards) && row.resetCards.length > 0 ? [React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-remove', onClick: removeResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.remove'))] : []),
