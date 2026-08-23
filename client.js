@@ -805,16 +805,22 @@ window.__ModuleLoader__.load({
           }
         } catch (_) {}
       }
-      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：额度轮询的「页面不可见暂停」豁免依据——
-      // 有 agent 在跑（正在烧 token）时隐藏页也继续按档轮询，额度数据保持新鲜。
-      const sessionActivity = { anyRunning: false }
+      const getModelDirectories = () => {
+        try {
+          if (typeof ctx.get === 'function') return ctx.get('modelDirectories')
+        } catch (_) {}
+        return undefined
+      }
+      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：后台额度轮询只刷新 running 会话使用的供应商。
+      const sessionActivity = { anyRunning: false, runningSessionIds: new Set() }
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()
         let baselined = false
         const observeSessions = () => {
           const snapshot = ctx.sessions.list.getSnapshot()
           if (!snapshot || !snapshot.byId) return
-          sessionActivity.anyRunning = Object.values(snapshot.byId).some((summary) => summary.running === true)
+          sessionActivity.runningSessionIds = new Set(Object.entries(snapshot.byId).filter(([, summary]) => summary.running === true).map(([id]) => id))
+          sessionActivity.anyRunning = sessionActivity.runningSessionIds.size > 0
           if (!baselined) {
             baselined = true
             for (const [id, summary] of Object.entries(snapshot.byId)) {
@@ -1253,32 +1259,68 @@ window.__ModuleLoader__.load({
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
-          return QUOTA_POLL_CHOICES.includes(raw) ? raw : 5
+          return QUOTA_POLL_CHOICES.includes(raw) ? raw : 0
         } catch (_) {
-          return 5
+          return 0
         }
       }
       function writeQuotaPollMinutes(minutes) {
         try { localStorage.setItem(QUOTA_POLL_KEY, String(minutes)) } catch (_) {}
       }
-      async function fetchQuotaSnapshot() {
-        try {
-          const res = await ctx.connection.rpc.call('/dsh-service', 'quota', {})
-          if (res?.ok === true && res.value && typeof res.value === 'object' && Array.isArray(res.value.providers)) {
-            quotaStore.publish(res.value)
-            scheduleQuotaSettlePull(res.value)
-            return true
-          }
-        } catch (_) {}
-        return false
+      let quotaSnapshotPromise = null
+      let quotaSnapshotQueuedPayload = null
+      function normalizedQuotaPayload(payload) {
+        if (payload?.scope === 'all') return { scope: 'all' }
+        const providers = Array.isArray(payload?.providers) ? [...new Set(payload.providers.filter((provider) => typeof provider === 'string' && provider !== ''))].sort() : []
+        return { providers }
+      }
+      function mergeQuotaPayload(current, next) {
+        if (current?.scope === 'all' || next?.scope === 'all') return { scope: 'all' }
+        return normalizedQuotaPayload({ providers: [...(current?.providers ?? []), ...(next?.providers ?? [])] })
+      }
+      async function fetchQuotaSnapshot(payload = { providers: [] }) {
+        const requested = normalizedQuotaPayload(payload)
+        if (quotaSnapshotPromise !== null) {
+          quotaSnapshotQueuedPayload = mergeQuotaPayload(quotaSnapshotQueuedPayload, requested)
+          return quotaSnapshotPromise
+        }
+        quotaSnapshotPromise = Promise.resolve().then(async () => {
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota', requested)
+            if (res?.ok === true && res.value && typeof res.value === 'object' && Array.isArray(res.value.providers)) {
+              quotaStore.publish(res.value)
+              scheduleQuotaSettlePull(res.value, requested)
+              return true
+            }
+          } catch (_) {}
+          return false
+        }).finally(() => {
+          quotaSnapshotPromise = null
+          const queued = quotaSnapshotQueuedPayload
+          quotaSnapshotQueuedPayload = null
+          if (queued !== null) fetchQuotaSnapshot(queued)
+        })
+        return quotaSnapshotPromise
+      }
+      function runningQuotaProviders() {
+        const models = getModelDirectories()
+        if (models === undefined || typeof models.directoryFor !== 'function') return []
+        const providers = []
+        for (const sessionId of sessionActivity.runningSessionIds) {
+          try {
+            const current = models.directoryFor(sessionId)?.store?.getSnapshot?.()?.current
+            if (typeof current?.provider === 'string' && current.provider !== '') providers.push(current.provider)
+          } catch (_) {}
+        }
+        return [...new Set(providers)]
       }
       // 落定接续：快照里仍有「刷新中」的已适配行时，客户端按拉长的间隔自动补拉，
       // 直到上游落定或用尽轮次——否则首次打开只会看到「刷新中…」，要等下一个轮询周期
-      // （默认 5 分钟）或再次点开才能看到更新时间。补拉仍是普通 quota RPC，宿主节流闸
+      // 或再次点开才能看到更新时间。补拉仍是普通 quota RPC，宿主节流闸
       // （单飞/TTL/退避）照常兜底，不会产生额外上游调用。
       const quotaSettle = { pulls: 0, dispose: null }
       const QUOTA_SETTLE_DELAYS_MS = [800, 2400, 4800, 8000, 12000]
-      function scheduleQuotaSettlePull(snapshot) {
+      function scheduleQuotaSettlePull(snapshot, payload = { providers: [] }) {
         const pending = Array.isArray(snapshot?.providers)
           && snapshot.providers.some((row) => row.adapted === true && row.refreshing === true)
         if (!pending) {
@@ -1293,11 +1335,11 @@ window.__ModuleLoader__.load({
         if (quotaSettle.dispose !== null || quotaSettle.pulls >= QUOTA_SETTLE_DELAYS_MS.length) return
         quotaSettle.dispose = ctx.timer.timeout(() => {
           quotaSettle.dispose = null
-          fetchQuotaSnapshot()
+          fetchQuotaSnapshot(payload)
         }, QUOTA_SETTLE_DELAYS_MS[quotaSettle.pulls])
         quotaSettle.pulls += 1
       }
-      const quotaLoop = { refs: 0, nextDispose: null, running: false, onVisible: undefined }
+      const quotaLoop = { refs: 0, allRefs: 0, nextDispose: null, running: false, onVisible: undefined }
       const isTabHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
       function scheduleQuotaCycle() {
         if (quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
@@ -1309,19 +1351,21 @@ window.__ModuleLoader__.load({
       }
       function runQuotaCycle() {
         if (quotaLoop.refs === 0 || quotaLoop.running) return
-        // 页面不可见时暂停轮询；豁免：仍有会话在跑（agent 在烧 token，隐藏期间额度照常刷新）。
-        if (isTabHidden() && !sessionActivity.anyRunning) return
+        // 额度页打开时全量；其余自动/后台轮询只刷新 running 会话供应商。
+        const payload = quotaLoop.allRefs > 0 ? { scope: 'all' } : { providers: runningQuotaProviders() }
+        if (payload.scope !== 'all' && payload.providers.length === 0) return
         quotaLoop.running = true
-        Promise.resolve(fetchQuotaSnapshot()).catch(() => false).then(() => {
+        Promise.resolve(fetchQuotaSnapshot(payload)).catch(() => false).then(() => {
           quotaLoop.running = false
           scheduleQuotaCycle()
         })
       }
-      function acquireQuotaLoop() {
+      function acquireQuotaLoop(options = {}) {
         quotaLoop.refs += 1
-        // 每个表面（圆环/统计卡）挂载都立即向宿主要一次快照：宿主自行决定回缓存还是打上游，
-        // 即使轮询已在跑（refs>1）也补查一次，保证「打开即最新」。
-        runQuotaCycle()
+        if (options.all === true) quotaLoop.allRefs += 1
+        // 额度页显式全量；圆环等其他表面由当前交互/后台活跃集合决定目标。
+        if (options.all === true) fetchQuotaSnapshot({ scope: 'all' })
+        else runQuotaCycle()
         scheduleQuotaCycle()
         // visibilitychange 只在首个表面挂载时挂一次、最后一个卸载时摘掉——
         // 之前每次挂载都 addEventListener 且只留最后一个引用，先挂的监听器会泄漏到 Fiber 之外。
@@ -1332,8 +1376,9 @@ window.__ModuleLoader__.load({
           document.addEventListener('visibilitychange', quotaLoop.onVisible)
         }
       }
-      function releaseQuotaLoop() {
+      function releaseQuotaLoop(options = {}) {
         quotaLoop.refs = Math.max(0, quotaLoop.refs - 1)
+        if (options.all === true) quotaLoop.allRefs = Math.max(0, quotaLoop.allRefs - 1)
         if (quotaLoop.refs > 0) return
         if (quotaLoop.nextDispose !== null) {
           quotaLoop.nextDispose()
@@ -1481,6 +1526,7 @@ window.__ModuleLoader__.load({
           // 无 modelDirectories 服务（或条目 props 为空）：不启动轮询、不发 RPC、不渲染内容。
           if (!store) return undefined
           acquireQuotaLoop()
+          fetchQuotaSnapshot({ providers: [] })
           return releaseQuotaLoop
         }, [store])
         const [directoryState, setDirectoryState] = useState(store ? store.getSnapshot() : null)
@@ -1511,7 +1557,7 @@ window.__ModuleLoader__.load({
           const needsData = matchedRow === undefined || (Array.isArray(matchedRow.windows) === false && matchedRow.refreshing !== true && matchedRow.errorCode === undefined)
           if (needsData && !quotaRefetchRequested.current.has(provider)) {
             quotaRefetchRequested.current.add(provider)
-            fetchQuotaSnapshot()
+            fetchQuotaSnapshot({ providers: [provider] })
           }
         }, [provider, quota])
         useEffect(() => {
@@ -1561,7 +1607,7 @@ window.__ModuleLoader__.load({
               // 只在打开时补拉快照；关闭面板的那次请求没有意义（宿主闸门本就会兜住）。
               const next = !open
               setOpen(next)
-              if (next) fetchQuotaSnapshot()
+              if (next) fetchQuotaSnapshot({ providers: provider === null ? [] : [provider] })
             },
             style: { width: '28px', height: '28px', border: 'none', borderRadius: '999px', background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
           },
@@ -1612,8 +1658,8 @@ window.__ModuleLoader__.load({
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
         useEffect(() => quotaStore.subscribe(() => setQuota(quotaStore.getSnapshot())), [])
         useEffect(() => {
-          acquireQuotaLoop()
-          return releaseQuotaLoop
+          acquireQuotaLoop({ all: true })
+          return () => releaseQuotaLoop({ all: true })
         }, [])
         const [pollMinutes, setPollMinutes] = useState(readQuotaPollMinutes())
         const [configError, setConfigError] = useState('')
@@ -1638,7 +1684,7 @@ window.__ModuleLoader__.load({
               return
             }
             setCardDraft({ expiresAt: '', label: '' })
-            await fetchQuotaSnapshot()
+            await fetchQuotaSnapshot({ scope: 'all' })
           } catch (error) {
             // 不再一律吞成 Network：透出真实错误（unknown endpoint 等），network 仅作兜底。
             const detail = error instanceof Error && typeof error.message === 'string' && error.message.trim() !== '' ? error.message.trim() : 'network'
@@ -1650,7 +1696,7 @@ window.__ModuleLoader__.load({
           setConfigError('')
           try {
             await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', { provider: providerName, remove: true, id: cardId })
-            await fetchQuotaSnapshot()
+            await fetchQuotaSnapshot({ scope: 'all' })
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
@@ -1665,7 +1711,7 @@ window.__ModuleLoader__.load({
               setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : res?.error === 'not-adapted' ? translate('quota.unadapted') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
             }
-            await fetchQuotaSnapshot()
+            await fetchQuotaSnapshot({ scope: 'all' })
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
@@ -1678,7 +1724,7 @@ window.__ModuleLoader__.load({
               setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
             }
-            await fetchQuotaSnapshot()
+            await fetchQuotaSnapshot({ scope: 'all' })
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
@@ -2806,12 +2852,6 @@ window.__ModuleLoader__.load({
       // （老版本 DSH 没有）。槽位条目无条件注册，服务在条目渲染时（inject(sessionId)）
       // 经 ctx.get 惰性解析——此时会话已渲染、model-selection 必然已挂载，不受注入时序影响；
       // 拿不到服务时 props 为空，QuotaRing 渲染 null 且不启动轮询，其他功能零影响。
-      const getModelDirectories = () => {
-        try {
-          if (typeof ctx.get === 'function') return ctx.get('modelDirectories')
-        } catch (_) {}
-        return undefined
-      }
       ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
         name: 'conversation.input.right',
         id: 'dsh-service-quota-ring',

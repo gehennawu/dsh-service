@@ -2081,10 +2081,10 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.match(renderer.text('settings.section'), /未知供应商/)
   assert.ok(renderer.hasTest('quota-add-adapt')) // 失败后 zai 仍是候选
 
-  // 轮询档位：默认 5 分钟写进 localStorage；改仅手动立即清掉挂起的循环定时器；改回 1 分钟重新排程。
-  assert.equal(localStorage.getItem('dsh-service-quota-poll'), null) // 从未改过 → 不写入，读侧回落默认
+  // 轮询档位：默认仅手动且不写 localStorage；改 2 分钟开始排程，切回仅手动立即清表。
+  assert.equal(localStorage.getItem('dsh-service-quota-poll'), null) // 从未改过 → 不写入，读侧回落仅手动
   const pollSelect = renderer.findByTestId('quota-poll-select')
-  assert.equal(pollSelect.props.value, '5')
+  assert.equal(pollSelect.props.value, '0')
   pollSelect.props.onChange({ target: { value: '2' } })
   await renderer.flush()
   assert.equal(localStorage.getItem('dsh-service-quota-poll'), '2')
@@ -2413,7 +2413,50 @@ test('quota card falls back to type-level window labels and localizes stable err
   assert.doesNotMatch(renderer.text('settings.section'), /quota\.unadapted/)
 })
 
-test('quota polling continues on a hidden page while a session is running and re-arms when one starts', async () => {
+test('quota auto and hidden polling request only running-session providers while the quota page requests all providers', async () => {
+  const storeA = {
+    getSnapshot: () => ({ current: { provider: 'opencode-go' } }),
+    subscribe: () => () => {},
+  }
+  const storeB = {
+    getSnapshot: () => ({ current: { provider: 'openrouter' } }),
+    subscribe: () => () => {},
+  }
+  const modelDirectories = {
+    directoryFor(sessionId) {
+      return { store: sessionId === 'running-b' ? storeB : storeA, load: () => Promise.resolve() }
+    },
+  }
+  const quotaPayloads = []
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      quotaPayloads.push(payload)
+      return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+  renderer.setSessions({
+    'running-a': { id: 'running-a', running: true },
+    'running-b': { id: 'running-b', running: true },
+    idle: { id: 'idle', running: false },
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.ok(quotaPayloads.some((payload) => Array.isArray(payload.providers) && payload.providers.includes('opencode-go')))
+  assert.ok(quotaPayloads.some((payload) => Array.isArray(payload.providers) && payload.providers.includes('openrouter')))
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  assert.ok(quotaPayloads.some((payload) => payload.scope === 'all'))
+})
+
+test('quota polling continues on a hidden page while a session is running and re-arms when one starts after auto polling is enabled', async () => {
   class FakeMutationObserver {
     constructor() {}
     observe() {}
@@ -2426,6 +2469,7 @@ test('quota polling continues on a hidden page while a session is running and re
     removeEventListener() {},
   }
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const directoryStore = { getSnapshot: () => ({ current: { provider: 'opencode-go' } }), subscribe: () => () => {} }
   let quotaCalls = 0
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
@@ -2439,15 +2483,22 @@ test('quota polling continues on a hidden page while a session is running and re
       return { ok: true, value: { serverTime: Date.now(), providers: [{ provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [], fetchedAt: Date.now() }] } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
-  })
+  }, { modelDirectories: { directoryFor: () => ({ store: directoryStore, load: () => Promise.resolve() }) } })
   try {
     await renderer.load()
+    await renderer.flush()
+    // 默认仅手动：先打开额度页并显式启用 5 分钟自动查询，再验证隐藏页活跃豁免。
     await renderer.findButton('额度查询').props.onClick()
     await renderer.flush()
-    // 挂载即排程（默认 5 分钟档）；隐藏页无会话：周期触发但被暂停规则拦下，链条死亡。
+    renderer.findByTestId('quota-poll-select').props.onChange({ target: { value: '5' } })
+    await renderer.flush()
+    // 关闭设置页，只留下会话圆环表面，进入“非额度页”的后台查询策略。
+    renderer.unmount('settings.section')
+    await renderer.flush()
+    const callsBeforeHiddenIdle = quotaCalls
     assert.ok(renderer.pendingTimerDelays().includes(300000))
     await renderer.advanceTimer(300000)
-    assert.equal(quotaCalls, 0)
+    assert.equal(quotaCalls, callsBeforeHiddenIdle)
     assert.equal(renderer.pendingTimerDelays().includes(300000), false)
 
     // agent 在隐藏期间启动：会话订阅边沿重新拉起轮询链。

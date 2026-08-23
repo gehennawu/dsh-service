@@ -71,11 +71,21 @@ const KIND_REGISTRY = {
 }
 const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
+const QUOTA_PROVIDER_DEADLINE_MS = 50 * 1000
 const QUOTA_SUCCESS_TTL_MS = 60000
 const QUOTA_MIN_INTERVAL_MS = 15000
+const QUOTA_MANUAL_COOLDOWN_MS = 5000
 const QUOTA_BACKOFF_BASE_MS = 30000
 const QUOTA_BACKOFF_MAX_MS = 15 * 60 * 1000
+const QUOTA_CONFIG_STAT_TTL_MS = 5000
+const QUOTA_MAX_CONCURRENCY = 4
 const MAX_QUOTA_RESPONSE_BYTES = 64 * 1024
+const MAX_QUOTA_CONFIG_BYTES = 256 * 1024
+const MAX_QUOTA_PROVIDERS = 256
+const MAX_QUOTA_PROVIDER_NAME = 128
+const MAX_QUOTA_RESET_CARDS = 500
+const MAX_QUOTA_RESET_CARDS_PER_PROVIDER = 10
+const MAX_QUOTA_ERROR_DETAIL = 256
 
 // 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
 // TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
@@ -521,15 +531,19 @@ function createEmptyQuotaConfig() {
 function normalizeResetCards(raw) {
   if (!Array.isArray(raw)) return []
   const cards = []
-  for (let index = 0; index < raw.length; index += 1) {
+  const perProvider = new Map()
+  for (let index = 0; index < raw.length && cards.length < MAX_QUOTA_RESET_CARDS; index += 1) {
     const card = raw[index]
     if (card === null || typeof card !== 'object') continue
-    const provider = typeof card.provider === 'string' && card.provider.trim() !== '' ? card.provider.trim() : ''
+    const provider = typeof card.provider === 'string' && card.provider.trim() !== '' ? card.provider.trim().slice(0, MAX_QUOTA_PROVIDER_NAME) : ''
     if (provider === '') continue
+    const providerCount = perProvider.get(provider) ?? 0
+    if (providerCount >= MAX_QUOTA_RESET_CARDS_PER_PROVIDER) continue
     const normalized = { id: typeof card.id === 'string' && card.id.trim() !== '' ? card.id.trim().slice(0, 64) : `legacy-${index}`, provider }
-    if (typeof card.label === 'string' && card.label.trim() !== '') normalized.label = card.label.trim()
-    if (typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '') normalized.expiresAt = card.expiresAt.trim()
+    if (typeof card.label === 'string' && card.label.trim() !== '') normalized.label = card.label.trim().slice(0, 40)
+    if (typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '') normalized.expiresAt = card.expiresAt.trim().slice(0, 32)
     cards.push(normalized)
+    perProvider.set(provider, providerCount + 1)
   }
   return cards
 }
@@ -545,16 +559,24 @@ function parseQuotaConfigText(text) {
   }
   if (parsed?.version !== QUOTA_CONFIG_VERSION || typeof parsed.kinds !== 'object' || parsed.kinds === null) return fallback
   const kinds = {}
+  let kindCount = 0
   for (const [provider, kind] of Object.entries(parsed.kinds)) {
+    if (kindCount >= MAX_QUOTA_PROVIDERS) break
     // null = 显式停用（即使 baseURL 可自动推断也不外呼），必须保留。
-    if (typeof provider === 'string' && provider.length > 0 && (kind === null || QUOTA_KINDS.includes(kind))) kinds[provider] = kind
+    if (typeof provider === 'string' && provider.length > 0 && provider.length <= MAX_QUOTA_PROVIDER_NAME && (kind === null || QUOTA_KINDS.includes(kind))) {
+      kinds[provider] = kind
+      kindCount += 1
+    }
   }
   return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards) }
 }
 
 async function loadQuotaConfig(dshHome) {
   try {
-    return parseQuotaConfigText(await readFile(join(dshHome, QUOTA_CONFIG_FILE), 'utf8'))
+    const target = join(dshHome, QUOTA_CONFIG_FILE)
+    const info = await stat(target)
+    if (info.size > MAX_QUOTA_CONFIG_BYTES) return createEmptyQuotaConfig()
+    return parseQuotaConfigText(await readFile(target, 'utf8'))
   } catch (_) {
     return createEmptyQuotaConfig()
   }
@@ -572,6 +594,14 @@ async function saveQuotaConfig(dshHome, config) {
   }
 }
 
+function copyQuotaConfig(config) {
+  return {
+    version: QUOTA_CONFIG_VERSION,
+    kinds: { ...(config?.kinds ?? {}) },
+    resetCards: Array.isArray(config?.resetCards) ? config.resetCards.map((card) => ({ ...card })) : [],
+  }
+}
+
 /** settings llm-pi-ai 段 → provider 行；无 settings 服务、段落缺失或形状不符返回空表。 */
 function readLlmProviders(settings) {
   let section
@@ -582,12 +612,15 @@ function readLlmProviders(settings) {
   }
   const providers = section?.providers
   if (typeof providers !== 'object' || providers === null) return []
-  return Object.entries(providers).map(([providerName, profile]) => ({
-    name: providerName,
-    displayName: typeof profile?.displayName === 'string' && profile.displayName.length > 0 ? profile.displayName : providerName,
-    baseURL: typeof profile?.baseURL === 'string' ? profile.baseURL.replace(/\/+$/, '') : '',
-    apiKeyEnv: typeof profile?.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0 ? profile.apiKeyEnv : '',
-  }))
+  return Object.entries(providers)
+    .filter(([providerName]) => typeof providerName === 'string' && providerName.length > 0 && providerName.length <= MAX_QUOTA_PROVIDER_NAME)
+    .slice(0, MAX_QUOTA_PROVIDERS)
+    .map(([providerName, profile]) => ({
+      name: providerName,
+      displayName: typeof profile?.displayName === 'string' && profile.displayName.length > 0 ? profile.displayName.slice(0, 128) : providerName,
+      baseURL: typeof profile?.baseURL === 'string' ? profile.baseURL.trim().replace(/\/+$/, '') : '',
+      apiKeyEnv: typeof profile?.apiKeyEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.apiKeyEnv) ? profile.apiKeyEnv : '',
+    }))
 }
 
 /**
@@ -611,19 +644,43 @@ function normalizeOpencodeUsage(payload) {
   return { windows }
 }
 
-/** kind → 上游查询端点候选数组：注册表登记的 kind 用宿主常量链；缺省 [{baseURL}/usage]（baseURL 为空 → 空链）。 */
+function quotaHostnameMatches(hostname, registeredHost) {
+  const actual = String(hostname || '').toLowerCase().replace(/\.$/, '')
+  const expected = String(registeredHost || '').toLowerCase().replace(/\.$/, '')
+  return actual === expected || actual.endsWith(`.${expected}`)
+}
+
+function safeQuotaBaseUrl(kind, baseURL) {
+  const registered = KIND_REGISTRY[kind]
+  if (registered === undefined || !Array.isArray(registered.hosts) || registered.hosts.length === 0) return undefined
+  let parsed
+  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
+  if (parsed.port !== '' && parsed.port !== '443') return undefined
+  if (!registered.hosts.some((host) => quotaHostnameMatches(parsed.hostname, host))) return undefined
+  parsed.hash = ''
+  parsed.search = ''
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+  return parsed
+}
+
+/** kind → 上游查询端点候选数组：注册表登记的 kind 用宿主常量链；动态端点仅接受 HTTPS + 注册 host。 */
 function quotaEndpointFor(kind, baseURL) {
   const registered = KIND_REGISTRY[kind]
   if (registered !== undefined && Array.isArray(registered.endpoints)) return [...registered.endpoints]
-  const base = String(baseURL ?? '').trim()
-  return base === '' ? [] : [`${base}/usage`]
+  const base = safeQuotaBaseUrl(kind, baseURL)
+  if (base === undefined) return []
+  base.pathname = `${base.pathname}/usage`.replace(/\/{2,}/g, '/')
+  return [base.toString()]
 }
 
-/** 由 baseURL 推断 kind：恰好命中一个注册项的 hosts 返回该 kind，否则 undefined（0 条或歧义都不猜）。 */
+/** 由 baseURL 推断 kind：按 URL hostname 精确/子域匹配；0 条或歧义都不猜。 */
 function inferQuotaKind(baseURL) {
-  const url = String(baseURL || '').toLowerCase()
+  let parsed
+  try { parsed = new URL(String(baseURL || '').trim()) } catch (_) { return undefined }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
   const hits = Object.entries(KIND_REGISTRY).filter(([, registered]) =>
-    (registered.hosts ?? []).some((host) => url.includes(host)))
+    (registered.hosts ?? []).some((host) => quotaHostnameMatches(parsed.hostname, host)))
   return hits.length === 1 ? hits[0][0] : undefined
 }
 
@@ -770,6 +827,12 @@ function quotaErrorCode(error) {
   return colon === -1 ? raw : raw.slice(0, colon)
 }
 
+function sanitizeQuotaErrorDetail(value) {
+  if (typeof value !== 'string') return undefined
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return cleaned === '' ? undefined : cleaned.slice(0, MAX_QUOTA_ERROR_DETAIL)
+}
+
 // 瞬时网络错误码白名单（Cloudflare/CDN 间歇断连等）：值得自动重试。
 const QUOTA_TRANSIENT_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH',
@@ -778,8 +841,8 @@ const QUOTA_TRANSIENT_CODES = new Set([
   'UND_ERR_BODY_TIMEOUT', 'UND_ERR_READ_ERROR',
 ])
 
-/** 单次上游 GET：15s 超时、64KB 上限、Bearer 可选。失败抛 Error（message=稳定错误码），瞬时错误带 quotaTransient 标记。 */
-function fetchProviderUsageOnce(endpoint, authorization) {
+/** 单次上游 GET：15s 超时、64KB 上限、Bearer 可选；支持 Fiber 销毁时 abort。 */
+function fetchProviderUsageOnce(endpoint, authorization, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
     const fail = (code, transient = false) => {
@@ -789,8 +852,10 @@ function fetchProviderUsageOnce(endpoint, authorization) {
       error.quotaTransient = transient
       reject(error)
     }
+    if (options.signal?.aborted === true) { fail('cancelled'); return }
     const request = https.get(endpoint, {
       timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
+      signal: options.signal,
       headers: {
         Accept: 'application/json',
         'user-agent': `dsh-service/${pluginVersion} (DeepSeek Harness plugin)`,
@@ -826,6 +891,7 @@ function fetchProviderUsageOnce(endpoint, authorization) {
     })
     request.on('error', (error) => {
       const code = error?.cause?.code ?? error?.code
+      if (options.signal?.aborted === true || code === 'ABORT_ERR') { fail('cancelled'); return }
       fail(typeof code === 'string' && QUOTA_TRANSIENT_CODES.has(code) ? 'network-transient' : 'network',
         typeof code === 'string' && QUOTA_TRANSIENT_CODES.has(code))
     })
@@ -836,13 +902,30 @@ function fetchProviderUsageOnce(endpoint, authorization) {
   })
 }
 
-/** 带重试的上游 GET：仅瞬时网络错误退避重试（共 3 次尝试，300/600ms），每次尝试新建请求与超时。 */
-async function fetchProviderUsage(endpoint, authorization) {
+function abortableDelay(delay, signal) {
+  if (signal?.aborted === true) return Promise.reject(new Error('cancelled'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, delay)
+    function done() {
+      signal?.removeEventListener?.('abort', aborted)
+      resolve()
+    }
+    function aborted() {
+      clearTimeout(timer)
+      signal?.removeEventListener?.('abort', aborted)
+      reject(new Error('cancelled'))
+    }
+    signal?.addEventListener?.('abort', aborted, { once: true })
+  })
+}
+
+/** 带重试的上游 GET：仅瞬时网络错误退避重试（共 3 次尝试，300/600ms），支持整体取消。 */
+async function fetchProviderUsage(endpoint, authorization, options = {}) {
   let lastError
   for (let attempt = 1; attempt <= 3; attempt++) {
-    if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt - 1)))
+    if (attempt > 1) await abortableDelay(300 * (attempt - 1), options.signal)
     try {
-      return await fetchProviderUsageOnce(endpoint, authorization)
+      return await fetchProviderUsageOnce(endpoint, authorization, options)
     } catch (error) {
       lastError = error
       if (error?.quotaTransient !== true) break
@@ -860,13 +943,14 @@ async function fetchProviderUsage(endpoint, authorization) {
 function createQuotaThrottle(options = {}) {
   const successTtlMs = options.successTtlMs ?? QUOTA_SUCCESS_TTL_MS
   const minIntervalMs = options.minIntervalMs ?? QUOTA_MIN_INTERVAL_MS
+  const manualCooldownMs = options.manualCooldownMs ?? QUOTA_MANUAL_COOLDOWN_MS
   const backoffBaseMs = options.backoffBaseMs ?? QUOTA_BACKOFF_BASE_MS
   const backoffMaxMs = options.backoffMaxMs ?? QUOTA_BACKOFF_MAX_MS
   const entries = new Map()
   const entryOf = (provider) => {
     let entry = entries.get(provider)
     if (entry === undefined) {
-      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined }
+      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, lastManualAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined }
       entries.set(provider, entry)
     }
     return entry
@@ -912,6 +996,7 @@ function createQuotaThrottle(options = {}) {
         entry.windows = outcome.windows ?? []
         entry.fetchedAt = now
         entry.lastError = undefined
+        entry.lastErrorDetail = undefined
         return
       }
       entry.failures += 1
@@ -920,13 +1005,24 @@ function createQuotaThrottle(options = {}) {
       entry.lastError = typeof outcome.code === 'string' ? outcome.code : 'unknown'
       entry.lastErrorDetail = typeof outcome.detail === 'string' && outcome.detail !== '' ? outcome.detail : undefined
     },
-    /** 手动强制刷新：清掉退避/成功 TTL/最小间隔三道闸（单飞仍生效），下一次 attempt 必然放行。 */
-    force(provider) {
+    /** 手动刷新：允许绕过成功 TTL，但保留失败退避，并有不可绕过的硬冷却；单飞仍优先。 */
+    force(provider, now = Date.now()) {
       const entry = entryOf(provider)
-      entry.backoffUntil = 0
+      if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
+      if (now < entry.backoffUntil) return { ok: false, reason: 'backoff', nextAllowedAt: entry.backoffUntil }
+      if (entry.lastManualAt > 0 && now - entry.lastManualAt < manualCooldownMs) {
+        return { ok: false, reason: 'cooldown', nextAllowedAt: entry.lastManualAt + manualCooldownMs }
+      }
+      entry.lastManualAt = now
       entry.lastSuccessAt = 0
       entry.lastUpstreamAt = 0
-      return entry.inflight === false
+      return { ok: true }
+    },
+    prune(activeProviders) {
+      const active = activeProviders instanceof Set ? activeProviders : new Set(activeProviders ?? [])
+      for (const [provider, entry] of entries) {
+        if (!active.has(provider) && entry.inflight !== true) entries.delete(provider)
+      }
     },
   }
 }
@@ -1713,71 +1809,146 @@ function apply(ctx) {
   let updateCache
   let updatePromise
   const quotaThrottle = createQuotaThrottle()
-  // 配置写串行化：quota-config / quota-reset-card 都是 load→改→save，无串行化时并发的后写者
-  // 会整体覆盖先写者（原子 rename 只保证文件不损坏，不保证不丢更新）。排队执行；失败不阻塞后来者。
+  let quotaConfig = createEmptyQuotaConfig()
+  let quotaConfigLoaded = false
+  let quotaConfigLoadPromise
+  let quotaConfigLastCheckedAt = 0
+  let quotaConfigMtimeMs = 0
+  const quotaConfigPath = join(dshHome, QUOTA_CONFIG_FILE)
+  const refreshQuotaConfigCache = async (force = false) => {
+    const now = Date.now()
+    if (!force && quotaConfigLoaded && now - quotaConfigLastCheckedAt < QUOTA_CONFIG_STAT_TTL_MS) return quotaConfig
+    if (quotaConfigLoadPromise !== undefined) return quotaConfigLoadPromise
+    quotaConfigLoadPromise = Promise.resolve().then(async () => {
+      quotaConfigLastCheckedAt = now
+      let mtimeMs = 0
+      try {
+        const info = await stat(quotaConfigPath)
+        if (info.size > MAX_QUOTA_CONFIG_BYTES) {
+          quotaConfig = createEmptyQuotaConfig()
+          quotaConfigLoaded = true
+          quotaConfigMtimeMs = info.mtimeMs
+          return quotaConfig
+        }
+        mtimeMs = info.mtimeMs
+      } catch (_) {}
+      if (force || !quotaConfigLoaded || mtimeMs !== quotaConfigMtimeMs) {
+        quotaConfig = await loadQuotaConfig(dshHome)
+        quotaConfigLoaded = true
+        quotaConfigMtimeMs = mtimeMs
+      }
+      return quotaConfig
+    }).finally(() => { quotaConfigLoadPromise = undefined })
+    return quotaConfigLoadPromise
+  }
+  // 配置写串行化：所有写都从同一内存快照复制，保存成功后再替换快照，避免并发覆盖和热路径重复读盘。
   let quotaConfigWrites = Promise.resolve()
   const serializeQuotaConfigWrite = (work) => {
-    const result = quotaConfigWrites.then(work)
+    const result = quotaConfigWrites.then(async () => {
+      const current = copyQuotaConfig(await refreshQuotaConfigCache(true))
+      const outcome = await work(current)
+      if (outcome?.save === false) return outcome.value
+      await saveQuotaConfig(dshHome, current)
+      quotaConfig = current
+      quotaConfigLoaded = true
+      quotaConfigLastCheckedAt = Date.now()
+      try { quotaConfigMtimeMs = (await stat(quotaConfigPath)).mtimeMs } catch (_) {}
+      return outcome?.value
+    })
     quotaConfigWrites = result.then(() => undefined, () => undefined)
     return result
   }
-  // 远端额度：后台补拉一次。是否真的发上游由节流器判定；fire-and-forget，落定写回状态机。
+  const quotaAbortControllers = new Set()
+  let quotaDisposed = false
+  let quotaActiveCount = 0
+  const quotaPending = []
+  const runNextQuotaWork = () => {
+    while (!quotaDisposed && quotaActiveCount < QUOTA_MAX_CONCURRENCY && quotaPending.length > 0) {
+      const work = quotaPending.shift()
+      quotaActiveCount += 1
+      Promise.resolve().then(work).finally(() => {
+        quotaActiveCount = Math.max(0, quotaActiveCount - 1)
+        runNextQuotaWork()
+      })
+    }
+  }
+  const enqueueQuotaWork = (work) => {
+    if (quotaDisposed) return false
+    quotaPending.push(work)
+    runNextQuotaWork()
+    return true
+  }
+  // 远端额度：后台补拉一次。是否真的发上游由节流器判定；跨 provider 经小型并发池调度。
   const kickQuotaRefresh = (profile, kind) => {
     const decision = quotaThrottle.attempt(profile.name)
     if (!decision.ok) return
     const parser = KIND_REGISTRY[kind]?.parser
-    Promise.resolve()
-      .then(async () => {
+    const queued = enqueueQuotaWork(async () => {
+      try {
         if (parser === undefined) throw new Error('bad-payload:kind')
         // 端点候选链先于凭据解析：baseURL 缺失是更明确的配置错误（也省一次凭据查找）。
-        // 401/403 换下一候选（智谱双域 Key 不互通），其余 4xx/5xx 直接终止——
-        // 429 换域会打到另一账号的域，400/404 说明端点本身不对，重试别的域没有意义；
-        // 解析成功立即返回；200 但业务信封失败的 detail 单独保留并最终优先抛出，避免被后续候选的传输错误盖住。
         const candidates = quotaEndpointFor(kind, profile.baseURL)
         if (candidates.length === 0) throw new Error('no-base-url')
-        // Key 发现链：settings 声明 → 凭据库线索名 → 环境变量；全落空即凭据缺失。
         const authorization = await discoverQuotaCredential(ctx, kind, profile)
         if (authorization === undefined) throw new Error('credential-missing')
-        let lastError = null
-        let parseFailure = null
-        for (const endpoint of candidates) {
-          let payload
-          try {
-            payload = await fetchProviderUsage(endpoint, authorization)
-          } catch (error) {
-            lastError = error
-            if ((error.message === 'http-status:401' || error.message === 'http-status:403') && candidates.length > 1) continue
-            throw error
+        const controller = new AbortController()
+        quotaAbortControllers.add(controller)
+        const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
+        let windows
+        try {
+          let lastError = null
+          let parseFailure = null
+          for (const endpoint of candidates) {
+            let payload
+            try {
+              payload = await fetchProviderUsage(endpoint, authorization, { signal: controller.signal })
+            } catch (error) {
+              lastError = error
+              if ((error.message === 'http-status:401' || error.message === 'http-status:403') && candidates.length > 1) continue
+              throw error
+            }
+            const parsed = parser(payload)
+            if (!Array.isArray(parsed?.windows)) {
+              parseFailure ??= new Error('bad-payload:shape')
+              lastError = parseFailure
+              continue
+            }
+            if (parsed.windows.length === 0) {
+              const envelope = payload !== null && typeof payload === 'object'
+                && Number(payload.code) !== 0 && typeof payload.msg === 'string' ? sanitizeQuotaErrorDetail(payload.msg) : undefined
+              parseFailure ??= Object.assign(new Error('bad-payload'), { detail: envelope })
+              lastError = parseFailure
+              continue
+            }
+            windows = parsed.windows
+            break
           }
-          const parsed = parser(payload)
-          if (!Array.isArray(parsed?.windows)) {
-            parseFailure ??= new Error('bad-payload:shape')
-            lastError = parseFailure
-            continue
-          }
-          if (parsed.windows.length === 0) {
-            const envelope = payload !== null && typeof payload === 'object'
-              && Number(payload.code) !== 0 && typeof payload.msg === 'string' ? payload.msg : null
-            parseFailure ??= Object.assign(new Error('bad-payload'), { detail: envelope ?? undefined })
-            lastError = parseFailure
-            continue
-          }
-          return parsed.windows
+          if (windows === undefined) throw parseFailure ?? lastError ?? new Error('bad-payload')
+        } finally {
+          clearTimeout(deadline)
+          quotaAbortControllers.delete(controller)
         }
-        throw parseFailure ?? lastError ?? new Error('bad-payload')
-      })
-      .then((windows) => {
-        quotaThrottle.settle(profile.name, { ok: true, windows })
-      })
-      .catch((error) => {
-        quotaThrottle.settle(profile.name, {
-          ok: false,
-          code: quotaErrorCode(error),
-          ...(typeof error?.detail === 'string' && error.detail !== '' ? { detail: error.detail } : {}),
-        })
-      })
+        if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows })
+      } catch (error) {
+        if (!quotaDisposed) {
+          const detail = sanitizeQuotaErrorDetail(error?.detail)
+          quotaThrottle.settle(profile.name, {
+            ok: false,
+            code: quotaErrorCode(error),
+            ...(detail !== undefined ? { detail } : {}),
+          })
+        }
+      }
+    })
+    if (!queued && !quotaDisposed) quotaThrottle.settle(profile.name, { ok: false, code: 'cancelled' })
   }
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
+  ctx.effect(() => () => {
+    quotaDisposed = true
+    quotaPending.length = 0
+    for (const controller of quotaAbortControllers) controller.abort()
+    quotaAbortControllers.clear()
+  }, 'dsh-service quota upstream disposal')
   const commands = ctx.get('commands')
   if (commands !== undefined) {
     ctx.effect(() => commands.register({
@@ -2006,8 +2177,19 @@ function apply(ctx) {
     if (endpoint === 'quota') {
       try {
         const providers = readLlmProviders(ctx.get('settings'))
-        const config = await loadQuotaConfig(dshHome)
+        quotaThrottle.prune(new Set(providers.map((profile) => profile.name)))
+        const config = await refreshQuotaConfigCache()
         const allResetCards = Array.isArray(config.resetCards) ? config.resetCards : []
+        const resetCardsByProvider = new Map()
+        for (const card of allResetCards) {
+          const bucket = resetCardsByProvider.get(card.provider) ?? []
+          bucket.push(card)
+          resetCardsByProvider.set(card.provider, bucket)
+        }
+        const requestedProviders = Array.isArray(payload?.providers)
+          ? new Set(payload.providers.filter((provider) => typeof provider === 'string' && provider.length <= MAX_QUOTA_PROVIDER_NAME))
+          : null
+        const refreshAll = payload?.scope === 'all' || requestedProviders === null
         const rows = []
         for (const profile of providers) {
           // kind 解析优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断。
@@ -2017,11 +2199,11 @@ function apply(ctx) {
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
             continue
           }
-          kickQuotaRefresh(profile, kind)
+          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind)
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
           const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable'
-          const providerResetCards = allResetCards.filter((card) => card.provider === profile.name)
+          const providerResetCards = resetCardsByProvider.get(profile.name) ?? []
           rows.push({
             provider: profile.name,
             displayName: profile.displayName,
@@ -2050,10 +2232,14 @@ function apply(ctx) {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         const profile = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
         if (profile === undefined) return { ok: false, error: 'unknown-provider' }
-        const config = await loadQuotaConfig(dshHome)
+        const config = await refreshQuotaConfigCache()
         const { kind } = resolveQuotaKind(config, profile)
         if (kind === undefined) return { ok: false, error: 'not-adapted' }
-        quotaThrottle.force(providerName)
+        const forced = quotaThrottle.force(providerName)
+        if (!forced.ok) {
+          if (forced.reason === 'inflight') return { ok: true }
+          return { ok: false, error: forced.reason === 'cooldown' ? 'refresh-cooldown' : 'refresh-backoff', nextAllowedAt: forced.nextAllowedAt }
+        }
         kickQuotaRefresh(profile, kind)
         return { ok: true }
       } catch (error) {
@@ -2066,20 +2252,20 @@ function apply(ctx) {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
         // {clear:true} 删掉覆盖键回退自动推断；{kind:null} 存显式停用（baseURL 可推断也不外呼）；{kind:<name>} 指定适配。
-        if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
-          return { ok: false, error: 'unknown-provider' }
-        }
-        return await serializeQuotaConfigWrite(async () => {
-          const config = await loadQuotaConfig(dshHome)
+        const profileForProvider = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
+        return await serializeQuotaConfigWrite(async (config) => {
           if (payload?.clear === true) {
             delete config.kinds[providerName]
           } else {
             const kind = payload?.kind
-            if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
+            if (kind !== null && !QUOTA_KINDS.includes(kind)) return { save: false, value: { ok: false, error: 'unknown-kind' } }
+            if (kind !== null && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
+              return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
+            }
             config.kinds[providerName] = kind
           }
-          await saveQuotaConfig(dshHome, config)
-          return { ok: true }
+          return { value: { ok: true } }
         })
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -2095,21 +2281,21 @@ function apply(ctx) {
         if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
-        return await serializeQuotaConfigWrite(async () => {
-          const config = await loadQuotaConfig(dshHome)
+        return await serializeQuotaConfigWrite(async (config) => {
           const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
           if (payload?.remove === true) {
             const cardId = typeof payload?.id === 'string' ? payload.id : ''
             config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
           } else {
-            if (allCards.filter((card) => card.provider === providerName).length >= 10) return { ok: false, error: 'too-many-cards' }
+            if (allCards.length >= MAX_QUOTA_RESET_CARDS || allCards.filter((card) => card.provider === providerName).length >= MAX_QUOTA_RESET_CARDS_PER_PROVIDER) {
+              return { save: false, value: { ok: false, error: 'too-many-cards' } }
+            }
             const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
             if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
             if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
             config.resetCards = [...allCards, card]
           }
-          await saveQuotaConfig(dshHome, config)
-          return { ok: true }
+          return { value: { ok: true } }
         })
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }

@@ -1643,6 +1643,39 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   assert.equal(row.resetCards, undefined)
 })
 
+test('quota RPC can refresh only an explicit host-known provider subset while still returning the full snapshot', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-scope-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'opencode-go': 'opencode-go', 'zai-coding-cn': 'zai-coding-cn' },
+  }))
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', String(url).includes('bigmodel.cn') ? JSON.stringify(ZAI_FIXTURE) : JSON.stringify(OPENCODE_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  const first = await host.handler('quota', { providers: ['opencode-go', 'unknown', 'opencode-go'] })
+  assert.equal(first.ok, true)
+  assert.equal(first.value.providers.length, 3)
+  await waitFor(() => requests.length >= 1, 'scoped upstream call')
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(requests, ['https://opencode.ai/zen/go/v1/usage'])
+})
+
 test('quota RPC reports unconfigured credentials and upstream errors with a retry countdown', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-err-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -1687,12 +1720,14 @@ test('quota-config validates provider and kind against host-side whitelists befo
   assert.deepEqual(await host.handler('quota-config', { provider: 'nope', kind: 'opencode-go' }), { ok: false, error: 'unknown-provider' })
   assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'mystery' }), { ok: false, error: 'unknown-kind' })
   assert.deepEqual(await host.handler('quota-config', { provider: '', kind: null }), { ok: false, error: 'unknown-provider' })
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
-    const storedPath = join(dshHome, 'dsh-service-quota.json')
-  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'opencode-go')
+  // 动态端点 kind 只能绑定到该 kind 注册 host；openrouter 没有 opencode host，拒绝凭据外发组合。
+  assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' }), { ok: false, error: 'unsafe-provider-endpoint' })
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'openrouter' })).ok, true)
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'openrouter')
   // quota-config 保存不得丢掉手录重置卡。
   await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }] }))
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'openrouter' })).ok, true)
   assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }])
   // kind:null 现在存「显式停用」（baseURL 可推断也不外呼）；clear:true 才删键回退自动推断。
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
@@ -1762,9 +1797,12 @@ test('zai-coding-cn parser maps every limit window and tolerates idle windows wi
   )
 })
 
-test('inferQuotaKind matches exactly one host rule or refuses to guess', () => {
+test('inferQuotaKind matches an exact registered hostname or subdomain and refuses deceptive URLs', () => {
   assert.equal(inferQuotaKind('https://open.bigmodel.cn/api/coding/paas/v4'), 'zai-coding-cn')
+  assert.equal(inferQuotaKind('https://api.open.bigmodel.cn/v1'), 'zai-coding-cn')
   assert.equal(inferQuotaKind('https://api.z.ai/api/coding/paas/v4'), undefined) // 未登记的宿主不猜
+  assert.equal(inferQuotaKind('https://open.bigmodel.cn.attacker.example/steal'), undefined)
+  assert.equal(inferQuotaKind('https://attacker.example/path/open.bigmodel.cn'), undefined)
   assert.equal(inferQuotaKind(''), undefined)
 })
 
@@ -2067,7 +2105,7 @@ test('quota-reset-card validates provider, appends multiple cards, and removes b
   assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
 })
 
-test('quota-refresh clears throttle gates and forces an upstream call within TTL', async (t) => {
+test('quota-refresh bypasses success TTL once but retains a hard manual cooldown', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-refresh-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   // 只让 opencode-go 可适配（zai 的 bigmodel baseURL 会被自动推断接入，干扰请求数断言）。
@@ -2108,6 +2146,13 @@ test('quota-refresh clears throttle gates and forces an upstream call within TTL
   for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve))
   assert.equal(requests.length, 2)
   assert.equal(new URL(requests[1].url).pathname, '/zen/go/v1/usage')
+  // 紧接着再次强刷命中不可绕过的硬冷却，不产生第三次上游请求。
+  const cooled = await host.handler('quota-refresh', { provider: 'opencode-go' })
+  assert.equal(cooled.ok, false)
+  assert.equal(cooled.error, 'refresh-cooldown')
+  assert.equal(typeof cooled.nextAllowedAt, 'number')
+  for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(requests.length, 2)
 
   // 强刷结果经后续快照带出：行回到 ok 且窗口齐全。
   const view = await host.handler('quota', {})
@@ -2116,7 +2161,7 @@ test('quota-refresh clears throttle gates and forces an upstream call within TTL
   assert.equal(row.windows.length, 3)
 })
 
-test('quota endpoint resolver returns candidate chains, overriding the {baseURL}/usage convention', () => {
+test('quota endpoint resolver returns fixed chains and accepts only safe registered dynamic hosts', () => {
   assert.deepEqual(quotaEndpointFor('zai-coding-cn', ''), [
     'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
     'https://api.z.ai/api/monitor/usage/quota/limit',
@@ -2127,4 +2172,9 @@ test('quota endpoint resolver returns candidate chains, overriding the {baseURL}
   ])
   assert.deepEqual(quotaEndpointFor('openrouter', ''), ['https://openrouter.ai/api/v1/credits'])
   assert.deepEqual(quotaEndpointFor('opencode-go', 'https://opencode.ai/zen/go/v1'), ['https://opencode.ai/zen/go/v1/usage'])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'https://api.opencode.ai/custom'), ['https://api.opencode.ai/custom/usage'])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'http://opencode.ai/zen/go/v1'), [])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'https://opencode.ai.attacker.example/steal'), [])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'https://user:pass@opencode.ai/steal'), [])
+  assert.deepEqual(quotaEndpointFor('opencode-go', 'https://127.0.0.1/steal'), [])
 })
