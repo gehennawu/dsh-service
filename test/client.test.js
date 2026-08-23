@@ -1937,6 +1937,8 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const configCalls = []
   const cardCalls = []
   let zaiAdapted = false
+  let zaiKind = null
+  let zaiAutoSource = false
   let opencodeAdapted = false
   let allowZaiConfig = false
   let zaiCard = null
@@ -1951,7 +1953,8 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
           fetchedAt: Date.now(),
         }] : [{ provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false }]),
         ...(zaiAdapted ? [{
-          provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok',
+          provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: zaiKind === null ? 'zai-coding-cn' : zaiKind,
+          ...(zaiAutoSource ? { kindSource: 'auto' } : {}), refreshing: false, status: 'ok',
           windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
           fetchedAt: Date.now(),
           ...(zaiCard === false ? {} : { resetCards: [zaiCard !== null && typeof zaiCard === 'object' ? { provider: 'zai-coding-cn', ...zaiCard } : { provider: 'zai-coding-cn', label: '周额度重置卡', remaining: 3, expiresAt: '2026-09-30T08:00' }] }),
@@ -1981,11 +1984,25 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
       if (payload.provider === 'zai-coding-cn') {
         // 仅在测试显式放行后接受（用于驱动「未知供应商」负路径断言）。
         if (!allowZaiConfig) return { ok: false, error: 'unknown-provider' }
-        zaiAdapted = true
       } else if (payload.provider !== 'opencode-go') {
         return { ok: false, error: 'unknown-provider' }
       }
-      if (payload.provider === 'opencode-go') opencodeAdapted = true
+      // 三种写法对齐宿主语义：clear 回退自动（fake 里保持适配、来源变 auto）；kind:null 显式停用；其余指定 kind。
+      if (payload.provider === 'zai-coding-cn') {
+        if (payload.clear === true) {
+          zaiAdapted = true
+          zaiAutoSource = true
+        } else if (payload.kind === null) {
+          zaiAdapted = false
+          zaiAutoSource = false
+        } else {
+          zaiAdapted = true
+          zaiAutoSource = false
+          zaiKind = payload.kind
+        }
+      } else if (payload.provider === 'opencode-go') {
+        opencodeAdapted = !(payload.clear === true || payload.kind === null)
+      }
       quotaResponse = buildQuotaResponse()
       return { ok: true }
     }
@@ -1997,12 +2014,19 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   const text = renderer.text('settings.section')
   assert.match(text, /额度查询/)
-  assert.match(text, /未适配/)
-  // 每个灰行的适配下拉都包含全部内置 kind（zai-coding-cn 可选且带本地化标签）。
+  // 卡片分区：只有已适配的 openrouter 成卡；未适配供应商不渲染灰行，只进底部「手动适配」候选。
+  assert.ok(renderer.hasTest('quota-provider-card-openrouter'))
+  assert.equal(renderer.hasTest('quota-provider-card-zai-coding-cn'), false)
+  assert.equal(renderer.hasTest('quota-provider-card-opencode-go'), false)
+  // 手动适配行：供应商候选 = 未适配集合，类型下拉 = 全部内置 kind（zai 带本地化标签）。
+  const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
+  assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
+  const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow'])
   assert.match(text, /智谱 GLM Coding Plan/)
-  const zaiKindSelect = renderer.findByTestId('quota-kind-select-zai-coding-cn')
-  const kindValues = zaiKindSelect.children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(kindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow'])
+  assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
+  // 已适配卡片脚部下拉预选当前 kind。
+  assert.equal(renderer.findByTestId('quota-kind-select-openrouter').props.value, 'opencode-go')
   // 已适配行展示窗口与更新时间；每个窗口带独立进度条（无「已用」头条）。
   assert.match(text, /本周.*14%/)
   // 自动推断的行带「自动识别」标签。
@@ -2015,23 +2039,35 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.equal(String(cardLine.children[0].children[0]), '重置卡 · 周额度重置卡 · 剩余 2 次')
   assert.equal(String(cardLine.children[1].children[0]), '2099-06-01 到期')
 
-  // 灰行选择 opencode-go → quota-config 双白名单校验后保存并刷新该行。
-  const kindSelect = renderer.findByTestId('quota-kind-select-opencode-go')
-  await kindSelect.props.onChange({ target: { value: 'opencode-go' } })
+  // 手动适配行选 opencode-go → quota-config 双白名单校验后保存并刷新成卡。
+  renderer.findByTestId('quota-add-provider').props.onChange({ target: { value: 'opencode-go' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-add-kind').props.onChange({ target: { value: 'opencode-go' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, false)
+  renderer.findByTestId('quota-add-submit').props.onClick()
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(configCalls, [{ provider: 'opencode-go', kind: 'opencode-go' }])
+  assert.ok(renderer.hasTest('quota-provider-card-opencode-go'))
+  assert.ok(renderer.hasTest('quota-add-adapt')) // zai 仍未适配，手动适配行保留
+  const restCandidates = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
+  assert.deepEqual(restCandidates, ['', 'zai-coding-cn']) // 已适配的 opencode-go 从候选中移除
   assert.match(renderer.text('settings.section'), /滚动 5 小时.*3%/)
   // 卡片窗口行同样三段式：进度条 + 重置时间单独一行。
   assert.equal(renderer.findByTestId('quota-card-bar-opencode-go-rolling').children[0].props.style.width, '3%')
   assert.equal(String(renderer.findByTestId('quota-card-reset-opencode-go-rolling').children[0]), '重置于 2 小时 5 分钟')
 
-  // 拒绝分支透出稳定错误文案。
-  const badSelect = renderer.findByTestId('quota-kind-select-zai-coding-cn')
-  await badSelect.props.onChange({ target: { value: 'opencode-go' } })
+  // 拒绝分支透出稳定错误文案（zai 未放行时经手动适配行提交）。
+  renderer.findByTestId('quota-add-provider').props.onChange({ target: { value: 'zai-coding-cn' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-add-kind').props.onChange({ target: { value: 'opencode-go' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-add-submit').props.onClick()
   await renderer.flush()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /未知供应商/)
+  assert.ok(renderer.hasTest('quota-add-adapt')) // 失败后 zai 仍是候选
 
   // 轮询档位：默认 5 分钟写进 localStorage；改仅手动立即清掉挂起的循环定时器；改回 1 分钟重新排程。
   assert.equal(localStorage.getItem('dsh-service-quota-poll'), null) // 从未改过 → 不写入，读侧回落默认
@@ -2078,12 +2114,16 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-card-edit-openrouter'), false)
 
-  // 放行后经灰行适配 zai-coding-cn：编辑按钮出现，fake 预置卡立即成行。
+  // 放行后经手动适配行选择 zai-coding-cn：编辑按钮出现，fake 预置卡立即成行。
   allowZaiConfig = true
-  const zaiKindSelectForCard = renderer.findByTestId('quota-kind-select-zai-coding-cn')
-  await zaiKindSelectForCard.props.onChange({ target: { value: 'zai-coding-cn' } })
+  renderer.findByTestId('quota-add-provider').props.onChange({ target: { value: 'zai-coding-cn' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-add-kind').props.onChange({ target: { value: 'zai-coding-cn' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-add-submit').props.onClick()
   await renderer.flush()
   await renderer.flush()
+  assert.ok(renderer.hasTest('quota-provider-card-zai-coding-cn'))
   assert.equal(renderer.hasTest('quota-card-edit-zai-coding-cn'), true)
   const presetLine = renderer.findByTestId('quota-reset-card-zai-coding-cn-0')
   const presetTexts = presetLine.children.filter((child) => child != null).map((child) => String(child.children[0]))
@@ -2124,6 +2164,23 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', remove: true })
   assert.equal(renderer.hasTest('quota-reset-card-zai-coding-cn-0'), false)
+
+  // 卡片脚部「跟随自动识别」：发 clear:true，卡片保留且自动识别标签点亮。
+  renderer.findByTestId('quota-kind-select-zai-coding-cn').props.onChange({ target: { value: '__auto__' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(configCalls[configCalls.length - 1], { provider: 'zai-coding-cn', clear: true })
+  assert.ok(renderer.hasTest('quota-provider-card-zai-coding-cn'))
+  assert.ok(renderer.hasTest('quota-auto-tag-zai-coding-cn'))
+
+  // 「停用查询」：发 kind:null，卡片消失且回到手动适配候选（解决「选错了怎么改回」）。
+  renderer.findByTestId('quota-kind-select-zai-coding-cn').props.onChange({ target: { value: '' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(configCalls[configCalls.length - 1], { provider: 'zai-coding-cn', kind: null })
+  assert.equal(renderer.hasTest('quota-provider-card-zai-coding-cn'), false)
+  const backCandidates = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
+  assert.ok(backCandidates.includes('zai-coding-cn'))
 })
 
 test('settings nav rows get icon markers by localized label and follow text changes', async () => {

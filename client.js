@@ -278,7 +278,6 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': '移除',
       'quota.resetCard.invalidCount': '请输入有效的剩余次数',
       'quota.retryAt': '{time} 后可重试',
-      'quota.unadapted': '未适配',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': '智谱 GLM Coding Plan',
@@ -286,6 +285,12 @@ window.__ModuleLoader__.load({
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': '硅基流动',
       'quota.kindAuto': '自动识别',
+      'quota.noAdapted': '暂无已适配的供应商，可在下方手动适配',
+      'quota.disable': '停用查询',
+      'quota.followAuto': '跟随自动识别',
+      'quota.addAdapt': '手动适配：',
+      'quota.addPickProvider': '选择供应商',
+      'quota.addPickKind': '选择类型',
       'quota.saveFailed': '保存失败：{error}',
       'quota.unknownProvider': '未知供应商',
       'quota.error.credential-missing': '凭据未配置（请在 DSH 凭据中设置对应 API key）',
@@ -577,7 +582,6 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': 'Remove',
       'quota.resetCard.invalidCount': 'Enter a valid remaining count',
       'quota.retryAt': 'Retry allowed after {time}',
-      'quota.unadapted': 'Not adapted',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': 'Zhipu GLM Coding Plan',
@@ -585,6 +589,12 @@ window.__ModuleLoader__.load({
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': 'SiliconFlow',
       'quota.kindAuto': 'Auto-detected',
+      'quota.noAdapted': 'No adapted providers yet — adapt manually below',
+      'quota.disable': 'Disable',
+      'quota.followAuto': 'Follow auto-detect',
+      'quota.addAdapt': 'Manual adapt:',
+      'quota.addPickProvider': 'Pick provider',
+      'quota.addPickKind': 'Pick type',
       'quota.saveFailed': 'Save failed: {error}',
       'quota.unknownProvider': 'Unknown provider',
       'quota.error.credential-missing': 'Credential missing (set the API key in DSH credentials)',
@@ -1589,10 +1599,10 @@ window.__ModuleLoader__.load({
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
         }
-        const adaptProvider = async (providerName, kind) => {
+        const requestQuotaConfig = async (payload) => {
           setConfigError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-config', { provider: providerName, kind })
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-config', payload)
             if (res?.ok !== true) {
               setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
@@ -1602,6 +1612,17 @@ window.__ModuleLoader__.load({
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
         }
+        // kind 传 null = 显式停用（宿主存 null，baseURL 可推断也不外呼）。
+        const adaptProvider = (providerName, kind) => requestQuotaConfig({ provider: providerName, kind })
+        // 删掉手动覆盖键，回退 baseURL 自动推断。
+        const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
+        // 卡片分区（v0.20）：只展示已适配供应商；未适配/已停用的不渲染灰行，统一收进底部「手动适配」行。
+        const adaptedRows = providers.filter((row) => row.adapted === true)
+        const candidateRows = providers.filter((row) => row.adapted !== true)
+        const quotaSelectStyle = { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' }
+        // 手动适配行（未适配/已停用的候选供应商）的选择状态；拆成两个独立 state 避免对象草稿接力更新。
+        const [addProvider, setAddProvider] = useState('')
+        const [addKind, setAddKind] = useState('')
         return React.createElement('div', { 'data-testid': 'remote-quota-card', style: { marginTop: '18px' } },
           React.createElement('div', { style: sectionTitle }, translate('quota.cardTitle')),
           React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('quota.hint')),
@@ -1637,10 +1658,10 @@ window.__ModuleLoader__.load({
               style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
             }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
-          providers.length === 0
-            ? React.createElement('p', { style: hint }, translate('quota.empty'))
-            : React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
-                providers.map((row, index) => {
+          adaptedRows.length === 0
+            ? React.createElement('p', { style: hint }, translate('quota.noAdapted'))
+            : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                adaptedRows.map((row) => {
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
                     row.displayName || row.provider,
                     row.kindSource === 'auto'
@@ -1649,24 +1670,8 @@ window.__ModuleLoader__.load({
                           style: { marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-tertiary)', verticalAlign: 'middle' },
                         }, translate('quota.kindAuto'))
                       : null)
-                  if (row.adapted !== true) {
-                    return React.createElement('div', { key: row.provider, 'data-testid': `quota-row-${row.provider}`, style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)', opacity: 0.62 } },
-                      nameNode,
-                      React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginRight: 'auto' } }, translate('quota.unadapted')),
-                      React.createElement('select', {
-                        'data-testid': `quota-kind-select-${row.provider}`,
-                        value: '',
-                        'aria-label': `${translate('quota.adapt')} · ${row.displayName || row.provider}`,
-                        onChange: (event) => {
-                          if (event.target.value !== '') adaptProvider(row.provider, event.target.value)
-                        },
-                        style: { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
-                      },
-                      React.createElement('option', { value: '' }, translate('quota.unadapted')),
-                      QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`)))))
-                  }
                   const windows = Array.isArray(row.windows) ? row.windows : []
-                  // 已适配行：供应商名 + 更新时间一行，下面每个窗口三段式（标签+百分比 / 进度条 / 重置单独一行）。
+                  // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行。
                   const windowBlocks = windows.map((window) => {
                     if (typeof window.text === 'string') {
                       return React.createElement('div', { key: window.id, 'data-testid': `quota-card-window-${row.provider}-${window.id}`, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
@@ -1695,7 +1700,7 @@ window.__ModuleLoader__.load({
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
                   } else if (row.errorCode !== undefined && windows.length === 0) {
                     body = React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
-                      `${quotaErrorMessage(row.errorCode, translate)}${row.errorDetail !== undefined ? ` (${row.errorDetail})` : ''}${typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now() ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}` : ''}`)
+                      `${quotaErrorMessage(row.errorCode, translate)}${row.errorDetail !== undefined ? ` (${row.errorDetail})` : ''}${typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now() ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) }) }` : ''}`)
                   } else if (windows.length > 0) {
                     // 窗口块之间的留白由列容器统一控制（14px），进度条吃满整行宽度。
                     body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, windowBlocks)
@@ -1726,20 +1731,12 @@ window.__ModuleLoader__.load({
                       onChange: (event) => setCardDraft({ ...cardDraft, [keyName]: event.target.value }),
                       style: inputStyle,
                     }))
-                  return React.createElement('div', { key: row.provider, 'data-testid': `quota-row-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 2px 12px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
+                  return React.createElement('div', { key: row.provider, 'data-testid': `quota-provider-card-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
-                      React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px' } },
-                        typeof row.fetchedAt === 'number'
-                          ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
-                          : null,
-                        // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
-                        ...(row.kind === 'zai-coding-cn' ? [React.createElement('button', {
-                          type: 'button',
-                          'data-testid': `quota-card-edit-${row.provider}`,
-                          onClick: () => openCardEditor(row),
-                          style: { fontSize: '12px', padding: '4px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
-                        }, translate('quota.resetCard.edit'))] : []))),
+                      typeof row.fetchedAt === 'number'
+                        ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
+                        : null),
                     body,
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
@@ -1748,8 +1745,50 @@ window.__ModuleLoader__.load({
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.save')),
                       ...(Array.isArray(row.resetCards) && row.resetCards.length > 0 ? [React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-remove', onClick: removeResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.remove'))] : []),
-                    )] : []))
-                })))
+                    )] : []),
+                    // 卡片脚部：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡入口。
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+                      React.createElement('select', {
+                        'data-testid': `quota-kind-select-${row.provider}`,
+                        value: row.kind,
+                        'aria-label': `${translate('quota.adapt')} · ${row.displayName || row.provider}`,
+                        onChange: (event) => {
+                          if (event.target.value === '') adaptProvider(row.provider, null)
+                          else if (event.target.value === '__auto__') clearAdaptedKind(row.provider)
+                          else adaptProvider(row.provider, event.target.value)
+                        },
+                        style: quotaSelectStyle,
+                      },
+                      QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`))),
+                      React.createElement('option', { value: '__auto__' }, translate('quota.followAuto')),
+                      React.createElement('option', { value: '' }, translate('quota.disable'))),
+                      // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
+                      ...(row.kind === 'zai-coding-cn' ? [React.createElement('button', {
+                        type: 'button',
+                        'data-testid': `quota-card-edit-${row.provider}`,
+                        onClick: () => openCardEditor(row),
+                        style: { fontSize: '12px', padding: '4px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+                      }, translate('quota.resetCard.edit'))] : [])))
+                })),
+          ...(candidateRows.length > 0 ? [React.createElement('div', { key: 'quota-add-adapt', 'data-testid': 'quota-add-adapt', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginTop: adaptedRows.length > 0 ? '2px' : '4px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } },
+            React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.addAdapt')),
+            React.createElement('select', { 'data-testid': 'quota-add-provider', value: addProvider, onChange: (event) => setAddProvider(event.target.value), style: quotaSelectStyle },
+              React.createElement('option', { value: '' }, translate('quota.addPickProvider')),
+              candidateRows.map((row) => React.createElement('option', { key: row.provider, value: row.provider }, row.displayName || row.provider))),
+            React.createElement('select', { 'data-testid': 'quota-add-kind', value: addKind, onChange: (event) => setAddKind(event.target.value), style: quotaSelectStyle },
+              React.createElement('option', { value: '' }, translate('quota.addPickKind')),
+              QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`)))),
+            React.createElement('button', {
+              type: 'button',
+              'data-testid': 'quota-add-submit',
+              disabled: addProvider === '' || addKind === '',
+              onClick: () => {
+                adaptProvider(addProvider, addKind)
+                setAddProvider('')
+                setAddKind('')
+              },
+              style: { fontSize: '12px', padding: '3px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: addProvider === '' || addKind === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: addProvider === '' || addKind === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: addProvider === '' || addKind === '' ? 'default' : 'pointer' },
+            }, translate('quota.adapt')))] : []))
       }
 
       function ServicePanel() {

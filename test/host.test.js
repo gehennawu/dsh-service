@@ -1693,8 +1693,16 @@ test('quota-config validates provider and kind against host-side whitelists befo
   await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }] }))
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' })).ok, true)
   assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ provider: 'zai-coding-cn', remaining: 1, expiresAt: '2099-01-01' }])
-  // kind:null 取消适配。
+  // kind:null 现在存「显式停用」（baseURL 可推断也不外呼）；clear:true 才删键回退自动推断。
   assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, null)
+  // 显式停用后，即使 baseURL 命中推断白名单也保持未适配灰行。
+  const disabledView = await host.handler('quota', {})
+  assert.equal(disabledView.ok, true)
+  const disabledRow = disabledView.value.providers.find((row) => row.provider === 'openrouter')
+  assert.equal(disabledRow.adapted, false)
+  assert.equal(disabledRow.kindSource, undefined)
+  assert.equal((await host.handler('quota-config', { provider: 'openrouter', clear: true })).ok, true)
   assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, undefined)
 })
 

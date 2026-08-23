@@ -2010,15 +2010,19 @@ function apply(ctx) {
     if (endpoint === 'quota-config') {
       try {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const kind = payload?.kind
-        // 双白名单：provider 必须命中 settings 现有键，kind 过内置枚举；null 表示取消适配。
+        // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
+        // {clear:true} 删掉覆盖键回退自动推断；{kind:null} 存显式停用（baseURL 可推断也不外呼）；{kind:<name>} 指定适配。
         if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
-        if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
         const config = await loadQuotaConfig(dshHome)
-        if (kind === null) delete config.kinds[providerName]
-        else config.kinds[providerName] = kind
+        if (payload?.clear === true) {
+          delete config.kinds[providerName]
+        } else {
+          const kind = payload?.kind
+          if (kind !== null && !QUOTA_KINDS.includes(kind)) return { ok: false, error: 'unknown-kind' }
+          config.kinds[providerName] = kind
+        }
         await saveQuotaConfig(dshHome, config)
         return { ok: true }
       } catch (error) {
