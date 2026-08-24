@@ -1570,6 +1570,33 @@ window.__ModuleLoader__.load({
         resetNode)
       }
 
+      // v0.21.1 圆环弹窗窄视口居中：宿主事实（别再翻外壳源码）——composer 工具行容器带
+      // container-type:inline-size（布局包含：fixed 后代的 containing block 是它而非视口），
+      // 外层会话滚动体又是 overflow:hidden auto，挂在 conversation.input.right 的弹层在手机上
+      // 必然被裁一半，CSS 覆盖救不了。唯一可靠解法是 portal 到 document.body 后 fixed 视口居中。
+      // react-dom 在平台 seed 表内（官方附件插件同源用 createPortal），老外壳可能缺席：
+      // 惰性尝试，拿不到就回落原锚定弹层（与 modelDirectories 同款可选依赖哲学）。
+      let quotaCreatePortal = null
+      try {
+        const reactDom = require('react-dom')
+        if (reactDom !== null && reactDom !== undefined && typeof reactDom.createPortal === 'function') {
+          quotaCreatePortal = reactDom.createPortal
+        }
+      } catch (_) {
+        quotaCreatePortal = null
+      }
+
+      /** 窄视口判定：matchMedia 优先（可订阅变化），缺席时 innerWidth 兜底；
+       * 无 window（SSR/测试）一律宽视口，维持圆环上方锚定弹层。断点 480px 与外壳窄容器一致。 */
+      function quotaNarrowViewport() {
+        if (typeof window === 'undefined' || window === null) return false
+        if (typeof window.matchMedia === 'function') {
+          const query = window.matchMedia('(max-width: 480px)')
+          return typeof query.matches === 'boolean' ? query.matches : false
+        }
+        return typeof window.innerWidth === 'number' && window.innerWidth <= 480
+      }
+
       function QuotaRing(props) {
         const translate = useTranslation()
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
@@ -1593,6 +1620,22 @@ window.__ModuleLoader__.load({
         }, [store, directoryState, props && props.loadDirectory])
         const [open, setOpen] = useState(false)
         const rootRef = useRef(null)
+        const panelRef = useRef(null)
+        // 窄视口（手机竖屏）：弹层 portal 到 body 视口居中；宽视口保持圆环上方锚定。
+        // matchMedia change 订阅让旋转/拖宽窗口时弹层几何实时迁移，open 态不丢。
+        const [narrow, setNarrow] = useState(quotaNarrowViewport)
+        useEffect(() => {
+          if (typeof window === 'undefined' || window === null || typeof window.matchMedia !== 'function') return undefined
+          const query = window.matchMedia('(max-width: 480px)')
+          const sync = () => setNarrow(query.matches)
+          sync()
+          if (typeof query.addEventListener === 'function') query.addEventListener('change', sync)
+          else if (typeof query.addListener === 'function') query.addListener(sync)
+          return () => {
+            if (typeof query.removeEventListener === 'function') query.removeEventListener('change', sync)
+            else if (typeof query.removeListener === 'function') query.removeListener(sync)
+          }
+        }, [])
         const provider = directoryState?.current?.provider ?? null
         const row = provider !== null ? (quota.providers || []).find((entry) => entry.provider === provider && entry.adapted === true) : null
         const windows = Array.isArray(row?.windows) ? row.windows : []
@@ -1617,6 +1660,8 @@ window.__ModuleLoader__.load({
           if (!open || typeof document === 'undefined') return undefined
           const onPointerDown = (event) => {
             if (rootRef.current && event.target instanceof Node && rootRef.current.contains(event.target)) return
+            // portal 模式下面板挂在 body 下、不在 rootRef 子树内：点面板本体不算外点。
+            if (panelRef.current && event.target instanceof Node && panelRef.current.contains(event.target)) return
             setOpen(false)
           }
           const onKeyDown = (event) => {
@@ -1648,8 +1693,11 @@ window.__ModuleLoader__.load({
           ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
               row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
           : null
-        return React.createElement('span', { ref: rootRef, style: { position: 'relative', display: 'inline-flex' } },
-          React.createElement('button', {
+        // 面板先构造、再决定挂载方式：窄视口 portal 到 document.body 后 fixed 视口居中
+        // （根因见 quotaCreatePortal 处注释）；宽视口或 react-dom 缺席时锚定圆环上方（原行为）。
+        const centered = open && narrow && quotaCreatePortal !== null
+          && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
+        const triggerNode = React.createElement('button', {
             type: 'button',
             'data-testid': 'quota-ring-trigger',
             'aria-label': ariaText,
@@ -1670,13 +1718,16 @@ window.__ModuleLoader__.load({
               cx: '7', cy: '7', r: radius, fill: 'none', stroke: color, strokeWidth: '2', strokeLinecap: 'round',
               strokeDasharray: `${(circumference * percent) / 100} ${circumference}`,
               transform: 'rotate(-90 7 7)',
-            }))),
-          open ? React.createElement('div', {
-            role: 'dialog',
-            'aria-label': translate('quota.panel.title'),
-            'data-testid': 'quota-ring-panel',
-            style: { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
-          },
+            })))
+        const panelNode = open ? React.createElement('div', {
+          ref: panelRef,
+          role: 'dialog',
+          'aria-label': translate('quota.panel.title'),
+          'data-testid': 'quota-ring-panel',
+          style: centered
+            ? { position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 96px)', overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
+            : { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
+        },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
@@ -1696,7 +1747,10 @@ window.__ModuleLoader__.load({
                 }))]
             : []),
           errorNode,
-          updatedNode) : null)
+          updatedNode) : null
+        return React.createElement('span', { ref: rootRef, style: { position: 'relative', display: 'inline-flex' } },
+          triggerNode,
+          centered ? quotaCreatePortal(panelNode, document.body) : panelNode)
       }
 
       function FeatureSettingsCard() {

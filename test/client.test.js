@@ -108,6 +108,11 @@ function createRenderer(rpcCall, options = {}) {
       if (!(index in hooks)) hooks[index] = { current: initial }
       return hooks[index]
     },
+    // 与真实 react-dom 的 createPortal 同语义的测试替身：portal 子树仍在渲染树里
+    // 可遍历（断言用），但挂在带 portalContainer 标记的 #portal 节点之下。
+    createPortal(child, container) {
+      return { type: '#portal', props: { portalContainer: container }, children: [child] }
+    },
   }
 
   globalThis.window = {
@@ -220,6 +225,9 @@ function createRenderer(rpcCall, options = {}) {
       await import(`../client.js?test=${Date.now()}-${Math.random()}`)
       assert.equal(moduleDefinition.id, '@gehennawu/dsh-service')
       const plugin = moduleDefinition.factory((name) => {
+        // react-dom 在平台 seed 表内（dsh-web-frontend 前端 bundle 核实）；圆环窄视口
+        // 弹窗 portal 用它，这里提供同语义替身。
+        if (name === 'react-dom') return { createPortal: React.createPortal }
         assert.equal(name, 'react')
         return React
       })
@@ -1877,6 +1885,10 @@ test('quota ring follows the session provider, renders the tightest window, and 
   await renderer.flush()
   const panel = renderer.findByTestId('quota-ring-panel')
   assert.ok(panel)
+  // 宽视口（无 matchMedia/document 的默认测试环境）：保持圆环上方 absolute 锚定几何。
+  assert.equal(panel.props.style.position, 'absolute')
+  assert.equal(panel.props.style.bottom, 'calc(100% + 8px)')
+  assert.equal(panel.props.style.right, 0)
   const panelText = renderer.text()
   assert.match(panelText, /滚动 5 小时.*12%/)
   assert.match(panelText, /本周.*40%/)
@@ -1993,6 +2005,102 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-ring-panel'), false)
   assert.equal(quotaCalls, callsBeforeClose)
+})
+
+test('quota ring panel centers via body portal on narrow viewports and reverts when widened', async () => {
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'opencode-go' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() {
+      return { store, load() { return Promise.resolve() } }
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go',
+            refreshing: false, status: 'ok',
+            windows: [{ id: 'weekly', percent: 40, resetsAt: new Date(Date.now() + 3600_000).toISOString() }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+  // 窄视口模拟：matchMedia 480px 断点命中（matches 用 getter 保持活值），document.body 存在。
+  // createRenderer 会重置 window，所以 mock 必须在其后、load 之前装上。
+  const mediaListeners = new Set()
+  let narrow = true
+  globalThis.window.matchMedia = (query) => ({
+    media: query,
+    get matches() { return narrow },
+    addEventListener(type, listener) { mediaListeners.add(listener) },
+    removeEventListener(type, listener) { mediaListeners.delete(listener) },
+  })
+  const body = {}
+  // querySelector 返回 null 让设置导航标记逻辑走「无 dialog 早退」路径（真实外壳里同理）；
+  // MutationObserver 提供空实现（标记逻辑在无 dialog 时不会真正 observe）。
+  class FakeMutationObserver {
+    constructor() {}
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = { body, querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, removeEventListener() {} }
+  const findPortal = () => {
+    let portal = null
+    const walk = (node) => {
+      if (Array.isArray(node)) { node.forEach(walk); return }
+      if (node === null || node === undefined || typeof node !== 'object') return
+      if (node.type === '#portal') portal = node
+      for (const child of node.children || []) walk(child)
+    }
+    for (const tree of renderer.roots()) walk(tree)
+    return portal
+  }
+  try {
+    await renderer.load()
+    await renderer.flush()
+    await renderer.flush()
+    renderer.findByTestId('quota-ring-trigger').props.onClick()
+    await renderer.flush()
+    // 窄视口几何：fixed 视口居中（left/top 50% + translate 回半宽半高），不再锚定圆环上方。
+    const panel = renderer.findByTestId('quota-ring-panel')
+    assert.equal(panel.props.style.position, 'fixed')
+    assert.equal(panel.props.style.left, '50%')
+    assert.equal(panel.props.style.top, '50%')
+    assert.equal(panel.props.style.transform, 'translate(-50%, -50%)')
+    assert.match(panel.props.style.width, /^min\(280px/)
+    // portal 生效：面板经 #portal 节点挂到 document.body，脱离圆环 span 子树。
+    const portal = findPortal()
+    assert.ok(portal, 'panel should render through a portal node')
+    assert.equal(portal.props.portalContainer, body)
+    assert.match(renderer.text(), /本周.*40%/)
+
+    // 拖宽窗口（断点离开）：面板实时迁回圆环上方锚定几何，open 态不丢。
+    narrow = false
+    for (const listener of [...mediaListeners]) listener({ matches: false })
+    await renderer.flush()
+    const anchored = renderer.findByTestId('quota-ring-panel')
+    assert.equal(anchored.props.style.position, 'absolute')
+    assert.equal(anchored.props.style.bottom, 'calc(100% + 8px)')
+    assert.equal(anchored.props.style.right, 0)
+    assert.equal(findPortal(), null)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+    delete globalThis.window.matchMedia
+  }
 })
 
 test('remaining-basis windows switch the panel word and invert the warn threshold', async () => {
