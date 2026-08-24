@@ -51,7 +51,45 @@ function createHost(overrides = {}) {
   const scheduled = []
   const disposers = []
   const registeredCommands = []
+  const registeredSettings = []
+  let updateFeatureSettings = async () => {}
   const services = new Map(Object.entries(overrides.services || {}))
+  const injectors = []
+  let settingsService
+  if (overrides.featureSettings !== undefined) {
+    let current = {
+      modelUsage: true,
+      quotaLookup: true,
+      backupMaintenance: true,
+      taskNotifications: true,
+      healthz: true,
+      ...overrides.featureSettings,
+    }
+    settingsService = {
+      register(namespace, schema, options) {
+        registeredSettings.push({ namespace, schema, options })
+        const watchers = new Set()
+        updateFeatureSettings = async (patch) => {
+          const previous = current
+          current = { ...current, ...patch }
+          for (const watcher of watchers) await watcher(current, previous)
+        }
+        return {
+          get: () => current,
+          watch(callback) { watchers.add(callback); return () => watchers.delete(callback) },
+          update: updateFeatureSettings,
+          replace: async (section) => { current = { ...section } },
+        }
+      },
+      get(namespace) {
+        return namespace === 'dsh-service' ? current : undefined
+      },
+      describe() {
+        return registeredSettings.map(({ namespace, schema }) => ({ ns: namespace, schema: schema.toJSON(), value: current, revision: 0 }))
+      },
+    }
+    if (overrides.settingsInitiallyAvailable !== false) services.set('settings', settingsService)
+  }
   const previousEnv = {}
   // 运行环境探测默认强制 managed：真实探测分支由 detectRuntimeEnv 纯函数单测覆盖，
   // 升级/重启既有用例在裸机终端（双 TTY）里跑也不会误入「手动启动不退出」分支。
@@ -75,6 +113,9 @@ function createHost(overrides = {}) {
   })
 
   const ctx = {
+    get settings() {
+      return services.get('settings')
+    },
     connection: {
       rpc: {
         handle(channel, handler, options) {
@@ -85,6 +126,16 @@ function createHost(overrides = {}) {
     },
     get(service) {
       return services.get(service)
+    },
+    inject(required, callback) {
+      const names = Array.isArray(required) ? required : [required]
+      const run = () => {
+        if (!names.every((service) => services.has(service))) return false
+        callback(ctx)
+        return true
+      }
+      if (!run()) injectors.push({ names, callback })
+      return () => {}
     },
     effect(callback) {
       const dispose = callback()
@@ -99,7 +150,17 @@ function createHost(overrides = {}) {
     else process.env[key] = value
   }
   assert.equal(handlers.length, 1)
-  return { handler: handlers[0].handler, scheduled, registeredCommands, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  const provideSettings = () => {
+    if (settingsService === undefined) throw new Error('featureSettings fixture is required')
+    services.set('settings', settingsService)
+    for (let index = injectors.length - 1; index >= 0; index -= 1) {
+      const injector = injectors[index]
+      if (!injector.names.every((service) => services.has(service))) continue
+      injectors.splice(index, 1)
+      injector.callback(ctx)
+    }
+  }
+  return { handler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -558,6 +619,85 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.equal(deleted.ok, true)
   assert.equal(deleted.value.items.length, 1)
   assert.equal(deleted.value.totalBytes, imported.value.items.find((item) => item.name === 'dsh-backup-20250819-120000.tar.gz').sizeBytes)
+})
+
+test('feature settings namespace registers when the settings service appears after plugin startup', () => {
+  const { registeredSettings, provideSettings } = createHost({
+    featureSettings: {},
+    settingsInitiallyAvailable: false,
+  })
+
+  assert.equal(registeredSettings.length, 0)
+  provideSettings()
+  assert.equal(registeredSettings.length, 1)
+  assert.equal(registeredSettings[0].namespace, 'dsh-service')
+})
+
+test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
+  const routes = []
+  const { handler, registeredSettings, updateFeatureSettings } = createHost({
+    featureSettings: { modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false },
+    services: {
+      webServer: {
+        register(route) {
+          routes.push(route)
+          return () => {}
+        },
+      },
+    },
+  })
+
+  assert.equal(registeredSettings.length, 1)
+  assert.equal(registeredSettings[0].namespace, 'dsh-service')
+  assert.deepEqual(registeredSettings[0].options?.base, {
+    modelUsage: true,
+    quotaLookup: true,
+    backupMaintenance: true,
+    taskNotifications: true,
+    healthz: true,
+  })
+  assert.deepEqual(registeredSettings[0].schema({}), {
+    modelUsage: true,
+    quotaLookup: true,
+    backupMaintenance: true,
+    taskNotifications: true,
+    healthz: true,
+  })
+  assert.equal(routes.some((route) => route.path === '/healthz'), false)
+  assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
+
+  for (const endpoint of ['usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import']) {
+    assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
+  }
+
+  await updateFeatureSettings({ modelUsage: true, quotaLookup: true, backupMaintenance: true })
+  assert.notDeepEqual(await handler('usage', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('quota', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('backup-list', {}), { ok: false, error: 'feature-disabled' })
+})
+
+test('healthz feature setting unregisters and re-registers the route without restarting the plugin', async () => {
+  const routes = []
+  const active = new Set()
+  const { updateFeatureSettings } = createHost({
+    featureSettings: {},
+    services: {
+      webServer: {
+        register(route) {
+          routes.push(route)
+          active.add(route.path)
+          return () => active.delete(route.path)
+        },
+      },
+    },
+  })
+
+  assert.equal(active.has('/healthz'), true)
+  await updateFeatureSettings({ healthz: false })
+  assert.equal(active.has('/healthz'), false)
+  await updateFeatureSettings({ healthz: true })
+  assert.equal(active.has('/healthz'), true)
+  assert.equal(routes.filter((route) => route.path === '/healthz').length, 2)
 })
 
 test('healthz serves empty liveness responses and unregisters with the plugin fiber', async () => {

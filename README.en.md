@@ -10,6 +10,8 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 The Settings panel "Service Control" page has seven top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Restart**; the Restart and Quota lookup tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
+The plugin also appears under **Plugins → Plugin configuration**, with five host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All five switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+
 ### Version and updates
 
 - Displays current DSH and plugin versions with links to GitHub Releases

@@ -18,6 +18,31 @@ function createRenderer(rpcCall, options = {}) {
   const notificationInstances = []
   let focuses = 0
   const storage = new Map()
+  const featureListeners = new Set()
+  let featureSettings = {
+    modelUsage: true,
+    quotaLookup: true,
+    backupMaintenance: true,
+    taskNotifications: true,
+    healthz: true,
+    ...(options.featureSettings || {}),
+  }
+  const featureScope = {
+    getSnapshot: () => ({ status: 'ready', value: featureSettings, base: {}, user: featureSettings, revision: 0, writable: true, mode: 'host' }),
+    subscribe(listener) {
+      featureListeners.add(listener)
+      return () => featureListeners.delete(listener)
+    },
+    async set(field, value) {
+      featureSettings = { ...featureSettings, [field]: value }
+      for (const listener of featureListeners) listener()
+    },
+    async unset(field) {
+      featureSettings = { ...featureSettings }
+      delete featureSettings[field]
+      for (const listener of featureListeners) listener()
+    },
+  }
   globalThis.localStorage = {
     getItem: (key) => (storage.has(key) ? storage.get(key) : null),
     setItem: (key, value) => storage.set(key, String(value)),
@@ -52,20 +77,27 @@ function createRenderer(rpcCall, options = {}) {
         scheduleRender()
       }]
     },
-    useEffect(effect) {
+    useEffect(effect, dependencies) {
       assert.ok(currentComponent, 'useEffect called outside a component')
       const component = currentComponent
-      const effects = effectState.get(component) || new Set()
+      const effects = effectState.get(component) || new Map()
       effectState.set(component, effects)
       const index = hookCursor++
-      if (effects.has(index)) return
-      effects.add(index)
+      const previous = effects.get(index)
+      const changed = previous === undefined
+        || dependencies === undefined
+        || previous.length !== dependencies.length
+        || dependencies.some((value, dependencyIndex) => !Object.is(value, previous[dependencyIndex]))
+      if (!changed) return
+      effects.set(index, dependencies === undefined ? undefined : dependencies.slice())
+      const cleanups = effectCleanups.get(component) || new Map()
+      effectCleanups.set(component, cleanups)
+      const previousCleanup = cleanups.get(index)
+      if (typeof previousCleanup === 'function') previousCleanup()
+      cleanups.delete(index)
       queueMicrotask(() => {
         const cleanup = effect()
-        if (typeof cleanup !== 'function') return
-        const cleanups = effectCleanups.get(component) || new Map()
-        effectCleanups.set(component, cleanups)
-        cleanups.set(index, cleanup)
+        if (typeof cleanup === 'function') cleanups.set(index, cleanup)
       })
     },
     useRef(initial) {
@@ -233,6 +265,12 @@ function createRenderer(rpcCall, options = {}) {
             return new Promise((resolve) => timers.push({ delay: callbackOrDelay, resolve }))
           },
         },
+        settingsScope: {
+          bind(spec) {
+            assert.equal(spec.namespace, 'dsh-service')
+            return featureScope
+          },
+        },
         slots: {
           inject(key, callback) {
             callback()
@@ -242,7 +280,7 @@ function createRenderer(rpcCall, options = {}) {
             const entries = slotComponents.get(slotOptions.name) || new Map()
             entries.set(slotOptions.id ?? 'entry', { component, options: slotOptions })
             slotComponents.set(slotOptions.name, entries)
-            if (!(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
+            if (slotOptions.name !== 'settings.plugin.item' && !(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
             return () => {
               // 与真实 cordis 一致：disposer 只摘除本条目，整槽无占用时才取消挂载。
               // 此前误杀整个槽名——「关闭左列入口」会把整个设置面板从渲染树里炸掉。
@@ -339,6 +377,9 @@ function createRenderer(rpcCall, options = {}) {
       for (const listener of sessionListeners) listener()
       renderAll()
     },
+    sessionSubscriptionCount() {
+      return sessionListeners.size
+    },
     emitConnectionReset() {
       for (const handler of eventHandlers.get('connection/reset') || []) handler()
     },
@@ -379,6 +420,14 @@ function createRenderer(rpcCall, options = {}) {
       for (const tree of roots.values()) visit(tree, (node) => { if (node.props && node.props['data-testid'] === testId) found = true })
       return found
     },
+    async setFeature(field, value) {
+      await featureScope.set(field, value)
+      renderAll()
+      await this.flush()
+    },
+    featureSettings() {
+      return { ...featureSettings }
+    },
     registrations() {
       const out = {}
       for (const [slot, entries] of slotComponents) {
@@ -411,6 +460,67 @@ function createRenderer(rpcCall, options = {}) {
     },
   }
 }
+
+test('plugin configuration card saves feature switches and disabled features disappear from Client public slots', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    featureSettings: { modelUsage: false, quotaLookup: false, backupMaintenance: false, taskNotifications: false },
+    notificationPermission: 'granted',
+  })
+
+  await renderer.load()
+  assert.ok(renderer.registrations()['settings.plugin.item'].some((entry) => entry.key === 'dsh-service'))
+  renderer.mount('settings.plugin.item')
+  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*控制可选功能和外部能力.*立即生效，无需重启/)
+  assert.doesNotMatch(renderer.text('settings.plugin.item'), /模型统计|额度查询|备份维护|任务通知|\/healthz 探活端点/)
+  const featureCardToggle = renderer.findByTestId('feature-card-toggle')
+  assert.equal(featureCardToggle.props['aria-expanded'], 'false')
+  featureCardToggle.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('feature-card-toggle').props['aria-expanded'], 'true')
+  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*可选功能.*模型统计.*额度查询.*备份维护.*任务通知.*外部能力.*\/healthz 探活端点/)
+  assert.doesNotMatch(renderer.text('settings.section'), /模型统计|额度查询|备份维护|通知/)
+  assert.equal(renderer.hasSlot('conversation.input.left'), false)
+  assert.equal(renderer.hasSlot('conversation.input.right'), false)
+  assert.equal(renderer.sessionSubscriptionCount(), 0)
+  assert.equal(calls.includes('usage'), false)
+  assert.equal(calls.includes('backup-list'), false)
+  assert.equal(calls.includes('quota'), false)
+
+  const modelSwitch = renderer.findByTestId('feature-switch-modelUsage')
+  modelSwitch.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.featureSettings().modelUsage, true)
+  assert.match(renderer.text('settings.section'), /模型统计/)
+  assert.equal(calls.includes('usage'), true)
+
+  await renderer.setFeature('backupMaintenance', true)
+  assert.match(renderer.text('settings.section'), /备份维护/)
+  assert.equal(calls.includes('backup-list'), true)
+
+  await renderer.setFeature('taskNotifications', true)
+  assert.equal(renderer.hasSlot('conversation.input.left'), true)
+  assert.equal(renderer.sessionSubscriptionCount(), 1)
+
+  await renderer.setFeature('quotaLookup', true)
+  assert.match(renderer.text('settings.section'), /额度查询/)
+  assert.equal(renderer.hasSlot('conversation.input.right'), true)
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.includes('quota'), true)
+})
 
 test('plugin registers balanced zh and en dictionaries', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {

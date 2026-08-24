@@ -9,12 +9,28 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import https from 'node:https'
+import z from '@deepseek-ai/schemastery'
 
 const require = createRequire(import.meta.url)
 const name = 'dsh-service'
 const inject = ['connection']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
+const SETTINGS_NAMESPACE = 'dsh-service'
+const DEFAULT_FEATURE_SETTINGS = Object.freeze({
+  modelUsage: true,
+  quotaLookup: true,
+  backupMaintenance: true,
+  taskNotifications: true,
+  healthz: true,
+})
+const FeatureSettingsSchema = z.object({
+  modelUsage: z.boolean().default(true),
+  quotaLookup: z.boolean().default(true),
+  backupMaintenance: z.boolean().default(true),
+  taskNotifications: z.boolean().default(true),
+  healthz: z.boolean().default(true),
+})
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 const MAX_BACKUP_TRANSFER_BYTES = 128 * 1024 * 1024
@@ -1800,6 +1816,25 @@ function scheduleRestart(ctx) {
 
 function apply(ctx) {
   const dshHome = resolveDshHome()
+  let featureSettings = DEFAULT_FEATURE_SETTINGS
+  const featureSettingsListeners = new Set()
+  const publishFeatureSettings = () => {
+    for (const listener of featureSettingsListeners) listener(featureSettings)
+  }
+  ctx.inject(['settings'], (settingsCtx) => {
+    try {
+      const scope = settingsCtx.settings.register(SETTINGS_NAMESPACE, FeatureSettingsSchema, { base: DEFAULT_FEATURE_SETTINGS })
+      featureSettings = scope.get()
+      publishFeatureSettings()
+      if (typeof scope.watch === 'function') settingsCtx.effect(() => scope.watch((value) => {
+        featureSettings = value ?? scope.get()
+        publishFeatureSettings()
+      }), 'dsh-service feature settings watch')
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-service: feature settings unavailable: ${error?.message || error}`)
+    }
+  })
+  const featureEnabled = (key) => featureSettings?.[key] !== false
   // 进程运行环境在生命周期内不变：挂载时探测一次，version RPC 与升级分支共用。
   const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
@@ -1965,19 +2000,33 @@ function apply(ctx) {
   }
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
-    ctx.effect(() => webServer.register({
-      kind: 'exact',
-      path: '/healthz',
-      handler: (req, res) => {
-        if (req.method !== 'GET' && req.method !== 'HEAD') {
-          res.writeHead(405)
+    let healthzDispose = null
+    const syncHealthzRoute = () => {
+      if (healthzDispose !== null) {
+        healthzDispose()
+        healthzDispose = null
+      }
+      if (!featureEnabled('healthz')) return
+      healthzDispose = webServer.register({
+        kind: 'exact',
+        path: '/healthz',
+        handler: (req, res) => {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            res.writeHead(405)
+            res.end()
+            return
+          }
+          res.writeHead(200)
           res.end()
-          return
-        }
-        res.writeHead(200)
-        res.end()
-      },
-    }), 'dsh-service healthz route')
+        },
+      })
+    }
+    syncHealthzRoute()
+    featureSettingsListeners.add(syncHealthzRoute)
+    ctx.effect(() => () => {
+      featureSettingsListeners.delete(syncHealthzRoute)
+      if (healthzDispose !== null) healthzDispose()
+    }, 'dsh-service healthz route')
     ctx.effect(() => webServer.register({
       kind: 'exact',
       path: '/dsh-backup-download',
@@ -2071,6 +2120,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'usage') {
+      if (!featureEnabled('modelUsage')) return { ok: false, error: 'feature-disabled' }
       try {
         return { ok: true, value: publicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
       } catch (error) {
@@ -2079,6 +2129,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'usage-refresh') {
+      if (!featureEnabled('modelUsage')) return { ok: false, error: 'feature-disabled' }
       try {
         if (usageRefreshPromise === undefined) {
           usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
@@ -2118,6 +2169,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-list') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         return { ok: true, value: await listBackups(dshHome) }
       } catch (error) {
@@ -2126,6 +2178,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-create') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         return { ok: true, value: await createBackup(ctx, dshHome) }
       } catch (error) {
@@ -2134,6 +2187,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-export') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await exportBackup(dshHome, downloadTokens, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
@@ -2144,6 +2198,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-delete') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await deleteBackup(dshHome, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
@@ -2154,6 +2209,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-restore') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await restoreBackup(ctx, dshHome, payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
@@ -2165,6 +2221,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-import') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await importBackup(dshHome, payload?.name, payload?.data)
         if (value === undefined) return { ok: false, error: 'invalid-backup' }
@@ -2175,6 +2232,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'quota') {
+      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
         const providers = readLlmProviders(ctx.get('settings'))
         quotaThrottle.prune(new Set(providers.map((profile) => profile.name)))
@@ -2226,6 +2284,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'quota-refresh') {
+      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
         // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
         // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
@@ -2248,6 +2307,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'quota-config') {
+      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
@@ -2273,6 +2333,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'quota-reset-card') {
+      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
         // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
         // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，

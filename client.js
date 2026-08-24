@@ -11,6 +11,16 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav.label': '服务控制',
       'nav.restart': '重启',
+      'features.cardTitle': '服务控制（dsh-service）',
+      'features.cardHint': '控制可选功能和外部能力。开关立即生效，无需重启；详细状态与操作位于左侧「服务控制」。',
+      'features.optional': '可选功能',
+      'features.external': '外部能力',
+      'features.modelUsage': '模型统计',
+      'features.quotaLookup': '额度查询',
+      'features.backupMaintenance': '备份维护',
+      'features.taskNotifications': '任务通知',
+      'features.healthz': '/healthz 探活端点',
+      'features.readOnly': '当前设置不可写。',
       'overlay.label': '服务重启状态',
       'recovery.waiting.title': '服务重启中…',
       'recovery.waiting.body': '正在等待新的 DSH Web 进程启动，已等待 {seconds} 秒。',
@@ -309,6 +319,16 @@ window.__ModuleLoader__.load({
     const en = {
       'nav.label': 'Service Control',
       'nav.restart': 'Restart',
+      'features.cardTitle': 'Service control (dsh-service)',
+      'features.cardHint': 'Control optional features and external capabilities. Changes take effect immediately without a restart; detailed status and actions remain in Service Control.',
+      'features.optional': 'Optional features',
+      'features.external': 'External capabilities',
+      'features.modelUsage': 'Model statistics',
+      'features.quotaLookup': 'Quota lookup',
+      'features.backupMaintenance': 'Backup maintenance',
+      'features.taskNotifications': 'Task notifications',
+      'features.healthz': '/healthz liveness endpoint',
+      'features.readOnly': 'These settings are read-only.',
       'overlay.label': 'Service restart status',
       'recovery.waiting.title': 'Restarting service…',
       'recovery.waiting.body': 'Waiting for a new DSH Web process. Elapsed: {seconds} seconds.',
@@ -664,7 +684,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const inject = ['slots', 'connection', 'timer', 'locale', 'sessions']
+    const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
 
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
@@ -687,6 +707,16 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
+      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true }
+      const featureScope = ctx.settingsScope.bind({ namespace: NS })
+      const featureSnapshot = () => featureScope.getSnapshot()
+      const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
+      const featureEnabled = (key) => featureValue()[key] !== false
+      const useFeatures = () => {
+        const [snapshot, setSnapshot] = React.useState(featureSnapshot())
+        React.useEffect(() => featureScope.subscribe(() => setSnapshot(featureSnapshot())), [])
+        return { snapshot, value: Object.assign({}, DEFAULT_FEATURES, snapshot.value || {}) }
+      }
       // 设置页左列三行打标记，配合上方样式换成各自图标；label 走 locale 绑定值。
       ctx.effect(
         () => markSettingsNavRows([
@@ -762,7 +792,7 @@ window.__ModuleLoader__.load({
       let quotaNavDispose = null
       const syncQuotaNavEntry = () => {
         if (quotaNavDispose) { quotaNavDispose(); quotaNavDispose = null }
-        if (!quotaNavEnabled) return
+        if (!quotaNavEnabled || !featureEnabled('quotaLookup')) return
         quotaNavDispose = ctx.slots.register(
           { name: 'settings.section', id: 'dsh-service-quota', order: 498, label: () => t('tabs.quota') },
           () => React.createElement(QuotaSection, null),
@@ -811,11 +841,14 @@ window.__ModuleLoader__.load({
         } catch (_) {}
         return undefined
       }
-      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：后台额度轮询只刷新 running 会话使用的供应商。
+      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：任务通知和后台额度轮询共享这一事实源。
+      // 两项都关闭时彻底摘除订阅；任一重新开启时重新建立当前快照基线，不补发关闭期间的旧边沿。
       const sessionActivity = { anyRunning: false, runningSessionIds: new Set() }
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()
         let baselined = false
+        let sessionsDispose = null
+        let resetDispose = null
         const observeSessions = () => {
           const snapshot = ctx.sessions.list.getSnapshot()
           if (!snapshot || !snapshot.byId) return
@@ -832,10 +865,10 @@ window.__ModuleLoader__.load({
             const next = { running: summary.running === true, pending: summary.pendingInteraction !== undefined }
             const prev = observed.get(id)
             if (prev !== undefined) {
-              if (prev.running && !next.running && notifyEnabled && notifyDone) {
+              if (prev.running && !next.running && featureEnabled('taskNotifications') && notifyEnabled && notifyDone) {
                 fireNotification(t('notification.doneTitle'), t('notification.doneBody', { title: summary.displayTitle || id }))
               }
-              if (!prev.pending && next.pending && notifyEnabled && notifyInput) {
+              if (!prev.pending && next.pending && featureEnabled('taskNotifications') && notifyEnabled && notifyInput) {
                 const kindKey = NOTIFY_KIND_KEYS[summary.pendingInteraction]
                 const kind = kindKey ? t(kindKey) : String(summary.pendingInteraction)
                 fireNotification(t('notification.inputTitle'), t('notification.inputBody', { title: summary.displayTitle || id, kind }))
@@ -848,12 +881,30 @@ window.__ModuleLoader__.load({
           }
           // agent 启动时轮询链可能已因「隐藏页跳过周期」而死（runQuotaCycle 跳过即不再排下一轮）：
           // 有活跃会话就重新拉起排程（幂等：已有挂起定时器/refs=0/仅手动时 no-op）。
-          // 放在 baselined 早退之后——首次同步调用发生在工厂初始化期（quotaLoop 尚未定义），订阅事件只会在初始化完成后到。
           if (sessionActivity.anyRunning) scheduleQuotaCycle()
         }
-        ctx.effect(() => ctx.sessions.list.subscribe(() => observeSessions()), 'dsh-service: session notification observation')
-        ctx.effect(() => ctx.on('connection/reset', () => { observed.clear(); baselined = false }), 'dsh-service: notification rebaseline on reconnect')
-        observeSessions()
+        const stopSessionObservation = () => {
+          if (sessionsDispose !== null) { sessionsDispose(); sessionsDispose = null }
+          if (resetDispose !== null) { resetDispose(); resetDispose = null }
+          observed.clear()
+          baselined = false
+          sessionActivity.anyRunning = false
+          sessionActivity.runningSessionIds = new Set()
+        }
+        const syncSessionObservation = () => {
+          const needed = featureEnabled('taskNotifications') || featureEnabled('quotaLookup')
+          if (!needed) { stopSessionObservation(); return }
+          if (sessionsDispose !== null) return
+          sessionsDispose = ctx.sessions.list.subscribe(() => observeSessions())
+          resetDispose = ctx.on('connection/reset', () => { observed.clear(); baselined = false })
+          observeSessions()
+        }
+        syncSessionObservation()
+        const unsubscribeFeatures = featureScope.subscribe(syncSessionObservation)
+        ctx.effect(() => () => {
+          unsubscribeFeatures()
+          stopSessionObservation()
+        }, 'dsh-service: shared session observation')
       }
 
       const recoveryListeners = new Set()
@@ -1342,7 +1393,7 @@ window.__ModuleLoader__.load({
       const quotaLoop = { refs: 0, allRefs: 0, nextDispose: null, running: false, onVisible: undefined }
       const isTabHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
       function scheduleQuotaCycle() {
-        if (quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
+        if (!featureEnabled('quotaLookup') || quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
         const minutes = readQuotaPollMinutes()
         quotaLoop.nextDispose = ctx.timer.timeout(() => {
           quotaLoop.nextDispose = null
@@ -1350,7 +1401,7 @@ window.__ModuleLoader__.load({
         }, minutes * 60000)
       }
       function runQuotaCycle() {
-        if (quotaLoop.refs === 0 || quotaLoop.running) return
+        if (!featureEnabled('quotaLookup') || quotaLoop.refs === 0 || quotaLoop.running) return
         // 额度页打开时全量；其余自动/后台轮询只刷新 running 会话供应商。
         const payload = quotaLoop.allRefs > 0 ? { scope: 'all' } : { providers: runningQuotaProviders() }
         if (payload.scope !== 'all' && payload.providers.length === 0) return
@@ -1361,6 +1412,7 @@ window.__ModuleLoader__.load({
         })
       }
       function acquireQuotaLoop(options = {}) {
+        if (!featureEnabled('quotaLookup')) return
         quotaLoop.refs += 1
         if (options.all === true) quotaLoop.allRefs += 1
         // 额度页显式全量；圆环等其他表面由当前交互/后台活跃集合决定目标。
@@ -1377,6 +1429,7 @@ window.__ModuleLoader__.load({
         }
       }
       function releaseQuotaLoop(options = {}) {
+        if (!featureEnabled('quotaLookup') && quotaLoop.refs === 0) return
         quotaLoop.refs = Math.max(0, quotaLoop.refs - 1)
         if (options.all === true) quotaLoop.allRefs = Math.max(0, quotaLoop.allRefs - 1)
         if (quotaLoop.refs > 0) return
@@ -1646,6 +1699,58 @@ window.__ModuleLoader__.load({
           updatedNode) : null)
       }
 
+      function FeatureSettingsCard() {
+        const translate = useTranslation()
+        const { snapshot, value } = useFeatures()
+        const [open, setOpen] = React.useState(false)
+        const [saving, setSaving] = React.useState('')
+        const writable = snapshot.status === 'ready' && snapshot.writable === true
+        const row = (key) => React.createElement('div', {
+          key,
+          style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', padding: '7px 0' },
+        },
+        React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('features.' + key)),
+        React.createElement('button', {
+          type: 'button',
+          role: 'switch',
+          'data-testid': 'feature-switch-' + key,
+          'aria-checked': String(value[key] !== false),
+          disabled: !writable || saving !== '',
+          onClick: async () => {
+            setSaving(key)
+            try { await featureScope.set(key, value[key] === false) } catch (_) {}
+            setSaving('')
+          },
+          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+        return React.createElement('li', {
+          style: { listStyle: 'none', border: '1px solid ' + (open ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), borderRadius: '12px', color: 'var(--dsw-alias-label-primary)', background: open ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)' },
+        },
+        React.createElement('button', {
+          type: 'button',
+          'data-testid': 'feature-card-toggle',
+          'aria-expanded': String(open),
+          onClick: () => setOpen(!open),
+          style: { appearance: 'none', width: '100%', display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', border: 0, borderRadius: '12px', background: 'transparent', color: 'inherit', font: 'inherit', textAlign: 'left', cursor: 'pointer' },
+        },
+        React.createElement('span', { style: { display: 'flex', minWidth: 0, flex: 1, flexDirection: 'column', gap: '4px' } },
+          React.createElement('span', { style: { fontSize: '15px', fontWeight: 600, lineHeight: 1.4 } }, translate('features.cardTitle')),
+          React.createElement('span', { style: { fontSize: '13px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.cardHint'))),
+        React.createElement('svg', {
+          viewBox: '0 0 14 14',
+          width: 14,
+          height: 14,
+          'aria-hidden': 'true',
+          style: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .16s' },
+        }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
+        open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
+          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
+          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications'].map(row),
+          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
+          row('healthz'),
+          !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
+      }
+
       function QuotaSection() {
         return React.createElement(RemoteQuotaCard, null)
       }
@@ -1907,6 +2012,7 @@ window.__ModuleLoader__.load({
 
       function ServicePanel() {
         const translate = useTranslation()
+        const { value: features } = useFeatures()
         const [health, setHealth] = useState(null)
         const [healthError, setHealthError] = useState(null)
         const [diagnostics, setDiagnostics] = useState(null)
@@ -1984,6 +2090,7 @@ window.__ModuleLoader__.load({
           return () => { active = false }
         }, [])
         useEffect(() => {
+          if (!featureEnabled('modelUsage')) return () => {}
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'usage', usageRequestPayload).then(async (res) => {
             if (!active) return
@@ -1998,8 +2105,9 @@ window.__ModuleLoader__.load({
             if (active) setUsageError(translate('usage.error'))
           })
           return () => { active = false }
-        }, [])
+        }, [features.modelUsage])
         useEffect(() => {
+          if (!featureEnabled('backupMaintenance')) return () => {}
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then((res) => {
             if (!active) return
@@ -2009,7 +2117,7 @@ window.__ModuleLoader__.load({
             if (active) setBackupError(translate('backup.error'))
           })
           return () => { active = false }
-        }, [])
+        }, [features.backupMaintenance])
         useEffect(() => {
           let active = true
           let cancelNext = () => {}
@@ -2760,25 +2868,26 @@ window.__ModuleLoader__.load({
         }
         const tabs = [
           ['overview', 'tabs.overview'],
-          ['notify', 'tabs.notify'],
+          ...(features.taskNotifications !== false ? [['notify', 'tabs.notify']] : []),
           ['health', 'tabs.health'],
-          ['usage', 'tabs.usage'],
-          ['quota', 'tabs.quota'],
-          ['backup', 'tabs.backup'],
+          ...(features.modelUsage !== false ? [['usage', 'tabs.usage']] : []),
+          ...(features.quotaLookup !== false ? [['quota', 'tabs.quota']] : []),
+          ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),
           ['restart', 'tabs.restart'],
         ]
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
-        const tabContent = activeTab === 'overview'
+        const visibleActiveTab = tabs.some(([id]) => id === activeTab) ? activeTab : 'overview'
+        const tabContent = visibleActiveTab === 'overview'
           ? overviewBlock
-          : activeTab === 'notify'
+          : visibleActiveTab === 'notify'
             ? notifyBlock
-            : activeTab === 'health'
+            : visibleActiveTab === 'health'
               ? healthBlock
-              : activeTab === 'usage'
+              : visibleActiveTab === 'usage'
                 ? usageBlock
-                : activeTab === 'quota'
+                : visibleActiveTab === 'quota'
                   ? React.createElement(RemoteQuotaCard, null)
-                : activeTab === 'backup'
+                : visibleActiveTab === 'backup'
                   ? maintenanceBlock
                   : restartBlock
         return React.createElement('div', null,
@@ -2786,7 +2895,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
           React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '10px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, activeTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, visibleActiveTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
@@ -2815,13 +2924,27 @@ window.__ModuleLoader__.load({
           },
         }, BellIcon(enabled))
       }
-      ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
-        { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
-        () => React.createElement(InlineNotifyBell, null),
-      ))
+      ctx.slots.inject('conversation.input.left', () => {
+        let dispose = null
+        const sync = () => {
+          if (dispose !== null) { dispose(); dispose = null }
+          if (!featureEnabled('taskNotifications')) return
+          dispose = ctx.slots.register(
+            { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
+            () => React.createElement(InlineNotifyBell, null),
+          )
+        }
+        sync()
+        const unsubscribe = featureScope.subscribe(sync)
+        return () => { unsubscribe(); if (dispose !== null) dispose() }
+      })
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
         { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
         () => React.createElement(UpdateBadge, null),
+      ))
+      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
+        { name: 'settings.plugin.item', id: 'dsh-service', key: 'dsh-service', order: 40 },
+        () => React.createElement(FeatureSettingsCard, null),
       ))
       ctx.slots.inject('settings.section', () => {
         const disposePanel = ctx.slots.register(
@@ -2831,7 +2954,9 @@ window.__ModuleLoader__.load({
         // 左列「重启」「额度查询」入口由各自标签内的开关控制，默认不注册
         syncRestartNavEntry()
         syncQuotaNavEntry()
+        const unsubscribeFeatures = featureScope.subscribe(syncQuotaNavEntry)
         return () => {
+          unsubscribeFeatures()
           disposePanel()
           if (restartNavDispose) {
             restartNavDispose()
@@ -2852,31 +2977,41 @@ window.__ModuleLoader__.load({
       // （老版本 DSH 没有）。槽位条目无条件注册，服务在条目渲染时（inject(sessionId)）
       // 经 ctx.get 惰性解析——此时会话已渲染、model-selection 必然已挂载，不受注入时序影响；
       // 拿不到服务时 props 为空，QuotaRing 渲染 null 且不启动轮询，其他功能零影响。
-      ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
-        name: 'conversation.input.right',
-        id: 'dsh-service-quota-ring',
-        order: 95,
-        label: () => t('quota.ring.label'),
-        inject: (sessionId) => {
-          if (sessionId === undefined || sessionId === null) return {}
-          try {
-            const models = getModelDirectories()
-            if (models === undefined || typeof models.directoryFor !== 'function') return {}
-            const directory = models.directoryFor(sessionId)
-            return {
-              directoryStore: directory.store,
-              loadDirectory: () => {
-                try {
-                  const pending = directory.load()
-                  if (pending && typeof pending.catch === 'function') pending.catch(() => {})
-                } catch (_) {}
-              },
-            }
-          } catch (_) {
-            return {}
-          }
-        },
-      }, (props) => React.createElement(QuotaRing, props)))
+      ctx.slots.inject('conversation.input.right', () => {
+        let dispose = null
+        const sync = () => {
+          if (dispose !== null) { dispose(); dispose = null }
+          if (!featureEnabled('quotaLookup')) return
+          dispose = ctx.slots.register({
+            name: 'conversation.input.right',
+            id: 'dsh-service-quota-ring',
+            order: 95,
+            label: () => t('quota.ring.label'),
+            inject: (sessionId) => {
+              if (sessionId === undefined || sessionId === null) return {}
+              try {
+                const models = getModelDirectories()
+                if (models === undefined || typeof models.directoryFor !== 'function') return {}
+                const directory = models.directoryFor(sessionId)
+                return {
+                  directoryStore: directory.store,
+                  loadDirectory: () => {
+                    try {
+                      const pending = directory.load()
+                      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+                    } catch (_) {}
+                  },
+                }
+              } catch (_) {
+                return {}
+              }
+            },
+          }, (props) => React.createElement(QuotaRing, props))
+        }
+        sync()
+        const unsubscribe = featureScope.subscribe(sync)
+        return () => { unsubscribe(); if (dispose !== null) dispose() }
+      })
     }
 
     exports.inject = inject
