@@ -25,6 +25,7 @@ function createRenderer(rpcCall, options = {}) {
     backupMaintenance: true,
     taskNotifications: true,
     healthz: true,
+    skillManager: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -2812,4 +2813,185 @@ test('settings nav rows get icon markers by localized label and follow text chan
     delete globalThis.document
     delete globalThis.MutationObserver
   }
+})
+
+// ─── v0.22 技能管理 ──────────────────────────────────────────────────────────
+
+function createSkillsRpcFixture() {
+  const state = {
+    entries: [
+      { id: 'id-alpha', name: 'alpha', description: 'Alpha desc', usage: '', invocation: { model: true, user: true }, source: 'project-dsh', writable: true, shadowed: false, annotated: false },
+      { id: 'id-beta', name: 'beta', description: 'Beta desc', usage: 'Use beta', invocation: { model: false, user: true }, source: 'user-agents', writable: true, shadowed: false, annotated: false },
+      { id: 'id-gamma', name: 'gamma', description: 'Gamma desc', usage: '', invocation: { model: false, user: false }, source: 'bundled', writable: false, shadowed: false, annotated: true },
+      { id: 'id-delta', name: 'delta', description: 'Delta desc', usage: '', invocation: { model: true, user: true }, source: 'user-agents', writable: true, shadowed: false, invalid: 'legacy-invocation-key:modelInvocable', annotated: false },
+    ],
+    toggles: [],
+    applies: [],
+    describes: [],
+    batchRuns: [],
+    listCalls: 0,
+  }
+  const clone = (entry) => JSON.parse(JSON.stringify(entry))
+  const handler = async (channel, endpoint, payload = {}) => {
+    if (endpoint === 'skills-list') {
+      state.listCalls += 1
+      return { ok: true, value: { roots: [], entries: state.entries.map(clone), llmAvailable: true } }
+    }
+    if (endpoint === 'skills-toggle') {
+      state.toggles.push(payload)
+      const entry = state.entries.find((candidate) => candidate.id === payload.id)
+      entry.invocation[payload.field] = payload.enable
+      return { ok: true, value: { entry: clone(entry) } }
+    }
+    if (endpoint === 'skills-fix-keys') {
+      const entry = state.entries.find((candidate) => candidate.id === payload.id)
+      delete entry.invalid
+      return { ok: true, value: { entry: clone(entry) } }
+    }
+    if (endpoint === 'skills-models') {
+      return { ok: true, value: { models: [{ provider: 'p', providerName: 'Prov', id: 'm1', name: 'Model One' }, { provider: 'p', providerName: 'Prov', id: 'm2', name: 'Model Two' }], current: { provider: 'p', model: 'm2' } } }
+    }
+    if (endpoint === 'skills-describe') {
+      state.describes.push(payload)
+      return { ok: true, value: { draft: { description: 'AI 描述', usage: 'AI 用法' } } }
+    }
+    if (endpoint === 'skills-apply') {
+      state.applies.push(payload)
+      const entry = state.entries.find((candidate) => candidate.id === payload.id)
+      entry.description = payload.patch.description
+      entry.usage = payload.patch.usage
+      entry.annotated = true
+      return { ok: true, value: { entry: clone(entry) } }
+    }
+    if (endpoint === 'skills-batch-plan') {
+      return { ok: true, value: { planId: 'plan-1', candidates: [{ id: 'id-beta', name: 'beta', source: 'user-agents' }], skipped: [{ id: 'id-alpha', name: 'alpha', reason: 'annotated-current' }], estBytes: 2048 } }
+    }
+    if (endpoint === 'skills-batch-run') {
+      state.batchRuns.push(payload)
+      return { ok: true, value: { started: true, total: 1 } }
+    }
+    if (endpoint === 'skills-batch-status') {
+      return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048 } }
+    }
+    if (endpoint === 'skills-batch-cancel') return { ok: true, value: { phase: 'cancelled' } }
+    return null
+  }
+  return { state, handler }
+}
+
+function baseSkillRenderer(rpcFixture, options = {}) {
+  return createRenderer(async (channel, endpoint, payload) => {
+    const handled = rpcFixture.handler(channel, endpoint, payload)
+    if (handled !== null) return handled
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, options)
+}
+
+test('skills tab renders three groups with badges, filters, and double-confirm toggles', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  assert.equal(renderer.hasTest('skill-entry-alpha'), false)
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('skills-section'), true)
+  assert.equal(renderer.hasTest('skills-group-auto'), true)
+  assert.equal(renderer.hasTest('skills-group-manual'), true)
+  assert.equal(renderer.hasTest('skills-group-disabled'), true)
+  assert.equal(renderer.findAllByTestIdPrefix('skill-entry-').length, 4)
+
+  // 名称过滤：纯前端，命中 alpha 后其余条目消失。
+  renderer.findByTestId('skills-filter').props.onChange({ target: { value: 'alp' } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-entry-alpha'), true)
+  assert.equal(renderer.hasTest('skill-entry-beta'), false)
+  renderer.findByTestId('skills-filter').props.onChange({ target: { value: '' } })
+  await renderer.flush()
+
+  // 两段式开关：第一击只进入待确认，不发 RPC；第二击才下发 enable=true（点亮模型可见）。
+  const betaSwitch = renderer.findByTestId('skill-switch-model-beta')
+  assert.equal(betaSwitch.props['aria-checked'], 'false')
+  betaSwitch.props.onClick()
+  await renderer.flush()
+  assert.equal(fixture.state.toggles.length, 0)
+  assert.equal(renderer.findByTestId('skill-switch-model-beta').props.title, '再次点击生效')
+  renderer.findByTestId('skill-switch-model-beta').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.toggles, [{ id: 'id-beta', field: 'model', enable: true }])
+  assert.equal(renderer.findByTestId('skill-switch-model-beta').props['aria-checked'], 'true')
+
+  // 无效条目组：delta 带 legacy ⚠ 与修复按钮；点击修复后条目转正。
+  assert.equal(renderer.hasTest('skills-invalid-group'), true)
+  renderer.findByTestId('skill-fix-delta').props.onClick()
+  await renderer.flush()
+  const deltaEntry = renderer.findAllByTestIdPrefix('skill-entry-').find((node) => node.props['data-testid'] === 'skill-entry-delta')
+  assert.notEqual(deltaEntry, undefined)
+})
+
+test('AI describe dialog loads models, drafts a preview diff, and writes after explicit confirm', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  renderer.findByTestId('skill-describe-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-describe-dialog'), true)
+  // 默认模型取 localStorage（空）→ 首个模型 m1。
+  assert.equal(renderer.findByTestId('skill-describe-model').props.value.startsWith('p\u0000'), true)
+
+  renderer.findByTestId('skill-describe-run').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.describes, [{ id: 'id-alpha', provider: 'p', model: 'm1' }])
+  assert.match(renderer.text(), /AI 描述/)
+  assert.match(renderer.text(), /Alpha desc/)
+  assert.equal(renderer.hasTest('skill-diff-usage'), true)
+
+  renderer.findByTestId('skill-apply-confirm').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.applies, [{ id: 'id-alpha', patch: { description: 'AI 描述', usage: 'AI 用法' }, model: 'p/m1' }])
+  assert.equal(renderer.hasTest('skill-apply-done'), true)
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
+})
+
+test('batch card plans, starts, and settles through the status poll with a refreshed catalog', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  const listCallsAfterLoad = fixture.state.listCalls
+
+  renderer.findByTestId('skills-batch-plan').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text(), /候选 1 项/)
+  assert.match(renderer.text(), /待确认/)
+  assert.match(renderer.text(), /跳过 1 项/)
+
+  renderer.findByTestId('skills-batch-start').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1' }])
+  assert.match(renderer.text(), /已完成/)
+  assert.match(renderer.text(), /进度 1\/1/)
+  // 落定后列表自动刷新拿最新 annotated 标记。
+  assert.ok(fixture.state.listCalls > listCallsAfterLoad)
 })

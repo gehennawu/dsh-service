@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, createQuotaThrottle, detectRuntimeEnv, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
+import { apply, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, upsertSkillField } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -63,6 +63,7 @@ function createHost(overrides = {}) {
       backupMaintenance: true,
       taskNotifications: true,
       healthz: true,
+      skillManager: true,
       ...overrides.featureSettings,
     }
     settingsService = {
@@ -655,6 +656,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     backupMaintenance: true,
     taskNotifications: true,
     healthz: true,
+    skillManager: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     modelUsage: true,
@@ -662,6 +664,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     backupMaintenance: true,
     taskNotifications: true,
     healthz: true,
+    skillManager: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
@@ -2317,4 +2320,267 @@ test('quota endpoint resolver returns fixed chains and accepts only safe registe
   assert.deepEqual(quotaEndpointFor('opencode-go', 'https://opencode.ai.attacker.example/steal'), [])
   assert.deepEqual(quotaEndpointFor('opencode-go', 'https://user:pass@opencode.ai/steal'), [])
   assert.deepEqual(quotaEndpointFor('opencode-go', 'https://127.0.0.1/steal'), [])
+})
+
+// ─── v0.22 技能管理 ──────────────────────────────────────────────────────────
+
+const SKILL_FILE_ALPHA = '---\nname: alpha\ndescription: "Alpha skill"\n---\n\nAlpha body.\n'
+const SKILL_FILE_BETA = '---\nname: beta\ndescription: "Beta skill"\nwhenToUse: "Use beta for tests"\n---\n\nBeta body.\n'
+const SKILL_FILE_LEGACY = '---\nname: gamma\ndescription: "Gamma skill"\nmodelInvocable: false\n---\n\nGamma body.\n'
+
+function withAgentsHome(agentsHome, run) {
+  const previous = process.env.DSH_AGENTS_HOME
+  process.env.DSH_AGENTS_HOME = agentsHome
+  return Promise.resolve()
+    .then(run)
+    .finally(() => {
+      if (previous === undefined) delete process.env.DSH_AGENTS_HOME
+      else process.env.DSH_AGENTS_HOME = previous
+    })
+}
+
+async function createSkillFixture(t) {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-skills-ws-'))
+  const agentsHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-agents-'))
+  t.after(() => Promise.all([
+    rm(dshHome, { recursive: true, force: true }),
+    rm(workspace, { recursive: true, force: true }),
+    rm(agentsHome, { recursive: true, force: true }),
+  ]))
+  await mkdir(join(dshHome, 'skills'), { recursive: true })
+  await mkdir(join(workspace, '.dsh', 'skills', 'alpha'), { recursive: true })
+  await mkdir(join(agentsHome, 'skills'), { recursive: true })
+  await writeFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), SKILL_FILE_ALPHA)
+  await writeFile(join(agentsHome, 'skills', 'beta.md'), SKILL_FILE_BETA)
+  await writeFile(join(agentsHome, 'skills', 'gamma.md'), SKILL_FILE_LEGACY)
+  await writeFile(join(agentsHome, 'skills', 'alpha.md'), SKILL_FILE_ALPHA.replace('Alpha body.', 'Shadow copy.'))
+  return { dshHome, workspace, agentsHome }
+}
+
+test('skills-list scans roots, marks shadows and legacy entries; toggle round-trips the frontmatter key', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const { handler } = createHost({
+    services: { workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const listed = await handler('skills-list', {})
+    assert.equal(listed.ok, true)
+    const byName = new Map(listed.value.entries.map((entry) => [entry.name + ':' + entry.source, entry]))
+    const alphaProject = byName.get('alpha:project-dsh')
+    const alphaShadow = byName.get('alpha:user-agents')
+    assert.notEqual(alphaProject, undefined)
+    assert.notEqual(alphaShadow, undefined)
+    assert.equal(alphaProject.shadowed, false)
+    assert.equal(alphaShadow.shadowed, true)
+    assert.equal(alphaProject.invocation.model, true)
+    assert.equal(alphaProject.writable, true)
+    assert.equal(alphaProject.annotated, false)
+
+    const beta = byName.get('beta:user-agents')
+    assert.equal(beta.usage, 'Use beta for tests')
+    const gamma = byName.get('gamma:user-agents')
+    assert.match(gamma.invalid, /^legacy-invocation-key:modelInvocable$/)
+
+    // 签名 ID 可逆：伪造 ID 拒绝。
+    assert.equal((await handler('skills-toggle', { id: 'forged-id', field: 'user', enable: false })).error, 'unknown-skill')
+
+    // 两段开关：关 = 写规范键；开 = 删键行，且往返后文件与初始内容一致。
+    const betaPath = join(agentsHome, 'skills', 'beta.md')
+    const disabled = await handler('skills-toggle', { id: beta.id, field: 'user', enable: false })
+    assert.equal(disabled.ok, true)
+    assert.equal(disabled.value.entry.invocation.user, false)
+    assert.match(await readFile(betaPath, 'utf8'), /user-invocable: false/)
+    const reEnabled = await handler('skills-toggle', { id: beta.id, field: 'user', enable: true })
+    assert.equal(reEnabled.value.entry.invocation.user, true)
+    assert.equal(await readFile(betaPath, 'utf8'), SKILL_FILE_BETA)
+
+    // 幂等：重复关闭不叠加行。
+    await handler('skills-toggle', { id: beta.id, field: 'user', enable: false })
+    const twice = await readFile(betaPath, 'utf8')
+    await handler('skills-toggle', { id: beta.id, field: 'user', enable: false })
+    assert.equal(await readFile(betaPath, 'utf8'), twice)
+    await handler('skills-toggle', { id: beta.id, field: 'user', enable: true })
+  })
+})
+
+test('bundled skills are listed read-only and reject toggle and fix', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-bundled-home-'))
+  const bundledDir = await mkdtemp(join(tmpdir(), 'dsh-service-skills-bundled-dir-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(bundledDir, { recursive: true, force: true })]))
+  await mkdir(bundledDir, { recursive: true })
+  await writeFile(join(bundledDir, 'core.md'), SKILL_FILE_BETA)
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  // DSH_BUNDLED_SKILL_DIR 在扫描期读取（createHost 的 env 注入只覆盖 apply 阶段），手动设置并恢复。
+  const previousBundled = process.env.DSH_BUNDLED_SKILL_DIR
+  process.env.DSH_BUNDLED_SKILL_DIR = bundledDir
+  try {
+    const listed = await handler('skills-list', {})
+    assert.equal(listed.ok, true)
+    const core = listed.value.entries.find((entry) => entry.name === 'beta' && entry.source === 'bundled')
+    assert.notEqual(core, undefined)
+    assert.equal(core.writable, false)
+    assert.equal((await handler('skills-toggle', { id: core.id, field: 'model', enable: false })).error, 'read-only-source')
+    assert.equal((await handler('skills-fix-keys', { id: core.id })).error, 'read-only-source')
+  } finally {
+    if (previousBundled === undefined) delete process.env.DSH_BUNDLED_SKILL_DIR
+    else process.env.DSH_BUNDLED_SKILL_DIR = previousBundled
+  }
+})
+
+test('skills-fix-keys rewrites legacy invocation keys with semantic conversion', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const { handler } = createHost({
+    services: { workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const listed = await handler('skills-list', {})
+    const gamma = listed.value.entries.find((entry) => entry.name === 'gamma')
+    const fixed = await handler('skills-fix-keys', { id: gamma.id })
+    assert.equal(fixed.ok, true)
+    assert.equal(fixed.value.entry.invalid, undefined)
+    assert.equal(fixed.value.entry.invocation.model, false)
+    const text = await readFile(join(agentsHome, 'skills', 'gamma.md'), 'utf8')
+    assert.doesNotMatch(text, /modelInvocable/)
+    assert.match(text, /disable-model-invocation: true/)
+  })
+})
+
+test('feature-disabled gate blocks every skills endpoint', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-gate-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome }, featureSettings: { skillManager: false } })
+  for (const endpoint of ['skills-list', 'skills-models', 'skills-batch-status', 'skills-batch-cancel']) {
+    assert.equal((await host.handler(endpoint, {})).error, 'feature-disabled', endpoint)
+  }
+})
+
+function skillLlmMock(state) {
+  return {
+    listProviders: () => [{ id: 'prov', name: 'Provider' }],
+    listModels: async (provider) => provider === 'prov' ? [{ id: 'm1', name: 'Model One' }] : [],
+    stream(options) {
+      state.streamCalls.push(options)
+      const text = state.responses.shift() ?? '{"description":"fallback","whenToUse":""}'
+      return (async function* generate() {
+        yield { type: 'text-delta', index: 0, text }
+      })()
+    },
+  }
+}
+
+test('skills-describe validates the model whitelist and applies a sanitized draft with sidecar annotation', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const llmState = {
+    streamCalls: [],
+    responses: ['Here you go:\n```json\n{"description":"新的描述句子","whenToUse":"新的用法说明"}\n```'],
+  }
+  const { handler } = createHost({
+    services: {
+      workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+      llm: skillLlmMock(llmState),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const models = await handler('skills-models', {})
+    assert.equal(models.ok, true)
+    assert.deepEqual(models.value.models.map((item) => item.provider + '/' + item.id), ['prov/m1'])
+    assert.deepEqual(models.value.current, { provider: 'prov', model: 'm1' })
+
+    const listed = await handler('skills-list', {})
+    const beta = listed.value.entries.find((entry) => entry.name === 'beta')
+    // 白名单外的 route 拒绝。
+    assert.equal((await handler('skills-describe', { id: beta.id, provider: 'other', model: 'm1' })).error, 'invalid-model-route')
+    const described = await handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1' })
+    assert.equal(described.ok, true)
+    assert.deepEqual(described.value.draft, { description: '新的描述句子', usage: '新的用法说明' })
+    // prompt 由宿主模板构造：系统提示含 STRICT JSON 约定，用户消息带技能正文。
+    const streamOptions = llmState.streamCalls[0]
+    assert.match(streamOptions.system, /STRICT JSON/)
+    assert.match(streamOptions.messages[0].content[0].text, /Beta body/)
+
+    const applied = await handler('skills-apply', { id: beta.id, patch: { description: described.value.draft.description, usage: described.value.draft.usage }, model: 'prov/m1' })
+    assert.equal(applied.ok, true)
+    assert.equal(applied.value.entry.annotated, true)
+    const text = await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8')
+    assert.match(text, /description: "新的描述句子"/)
+    assert.match(text, /whenToUse: "新的用法说明"/)
+    assert.doesNotMatch(text, /Beta skill/)
+    // 正文（frontmatter 之后）未变 → 再次批量规划时按「已注释」跳过。
+    const index = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
+    assert.equal(index.version, 1)
+    assert.equal(Object.keys(index.entries).length, 1)
+  })
+})
+
+test('skills batch plan/run/status fills unannotated candidates and skips annotated ones', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const llmState = {
+    streamCalls: [],
+    responses: [
+      '{"description":"Delta desc","whenToUse":"Delta usage"}',
+      '{"description":"Gamma desc","whenToUse":"Gamma usage"}',
+    ],
+  }
+  const { handler } = createHost({
+    services: {
+      workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+      llm: skillLlmMock(llmState),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const planned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
+    assert.equal(planned.ok, true)
+    // 候选 = alpha(project winner，未注释) + beta；alpha 的 user-agents 遮蔽副本与 gamma(invalid) 跳过。
+    assert.deepEqual(planned.value.candidates.map((candidate) => candidate.name), ['alpha', 'beta'])
+    assert.equal(planned.value.skipped.some((item) => item.reason === 'shadowed'), true)
+    assert.equal(planned.value.skipped.some((item) => item.reason.startsWith('legacy-invocation-key:')), true)
+
+    const run = await handler('skills-batch-run', { planId: planned.value.planId })
+    assert.equal(run.value.started, true)
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await handler('skills-batch-status', {})
+      if (status.value.phase !== 'running') {
+        assert.equal(status.value.phase, 'done')
+        assert.equal(status.value.done, 2)
+        assert.equal(status.value.failures.length, 0)
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    // 按调用顺序：第一条候选 alpha、第二条 beta；各自写入对应草稿。
+    assert.equal(llmState.streamCalls.length, 2)
+    assert.match(llmState.streamCalls[0].messages[0].content[0].text, /Alpha body/)
+    assert.match(llmState.streamCalls[1].messages[0].content[0].text, /Beta body/)
+    assert.match(await readFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), 'utf8'), /description: "Delta desc"/)
+    assert.match(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), /description: "Gamma desc"/)
+    // 二次规划：两条都已注释，不再出现候选。
+    const replanned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
+    assert.equal(replanned.value.candidates.length, 0)
+  })
+})
+
+test('skill pure helpers: loose booleans, draft sanitizing, and multi-line description splice', () => {
+  assert.equal(evaluateSkillFile('no frontmatter').invalid, 'missing-frontmatter')
+  assert.equal(evaluateSkillFile('---\nname: Bad Name\ndescription: x\n---\nb').invalid, 'invalid-name')
+  assert.equal(evaluateSkillFile('---\nname: ok\n---\nb').invalid, 'missing-description')
+  assert.deepEqual(evaluateSkillFile(SKILL_FILE_BETA).invocation, { modelInvocable: true, userInvocable: true, legacyKeys: [] })
+
+  const draft = extractSkillDraftJson('noise {"description":"a\\nb\u0000c","whenToUse":"u"} trailing')
+  // 裸 NUL 在 parse 前剥除，\n 转义解析后折叠为单个空格。
+  assert.equal(draft.description, 'a bc')
+  assert.throws(() => extractSkillDraftJson('{"description":"   "}'))
+
+  const multiLine = '---\nname: m\ndescription: |\n  first line\n  second line\nkeepme: yes\n---\nbody'
+  const spliced = upsertSkillField(multiLine, 'description', 'flat now')
+  assert.doesNotMatch(spliced, /first line/)
+  assert.match(spliced, /description: "flat now"/)
+  assert.match(spliced, /keepme: yes/)
+  assert.match(spliced, /body/)
 })

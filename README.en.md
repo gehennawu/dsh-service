@@ -8,9 +8,9 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ## Features
 
-The Settings panel "Service Control" page has seven top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Restart**; the Restart and Quota lookup tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
+The Settings panel "Service Control" page has eight top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Restart**; the Restart, Quota lookup, and Skills tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
-The plugin also appears under **Plugins → Plugin configuration**, with five host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All five switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+The plugin also appears under **Plugins → Plugin configuration**, with six host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All six switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
 
 ### Version and updates
 
@@ -58,6 +58,14 @@ The plugin also appears under **Plugins → Plugin configuration**, with five ho
 - Restore: extract and overwrite to corresponding paths, two-step confirmation followed by automatic restart
 - Import: upload a `.tar.gz` file to the backup directory
 - Delete requires two-step confirmation; backups are unlimited and never auto-pruned
+
+### Skills management
+
+- The "Skills" tab lists every local skill under three sections — **auto-loaded / manual-only / fully disabled** — scanning project `.dsh`, project `.agents`, user `~/.dsh/skills`, `$DSH_AGENTS_HOME`, and `$DSH_BUNDLED_SKILL_DIR` roots one level deep, with a name filter and source badges; same-name shadowing (lower rank wins) marks both winner and loser copies, and bundled directories are shown read-only
+- Two per-entry switches edit the SKILL.md frontmatter directly: `disable-model-invocation` for "visible to model", `user-invocable` for "invocable via /"; switches use a two-click confirmation, changes go live within ~200 ms, active sessions receive a catalog-update notice on their next step, and toggling back and forth leaves no residue in the file
+- Entries carrying legacy camelCase invocation keys (e.g. `disableModelInvocation`) are dropped entirely by the official parser: the panel shows a ⚠ warning with a one-click fix that converts them to canonical keys semantically
+- "Fill with AI" (✨): pick any configured model (last choice remembered); the Host calls it with a fixed template to draft description and usage — description follows the skill body language as a single routing sentence; the draft is previewed old-vs-new and written only after explicit confirmation. The "annotated" marker lives in `DSH_HOME/dsh-service-skills-index.json` (body-hash comparison): editing a body flips it back to unannotated, while touching only the description or switches does not
+- One-click batch fill: automatically collects writable-root skills that are unannotated or whose body changed, shows candidate count / estimated payload / skip list first, then runs sequentially with live progress; individual failures never block the batch and it can be cancelled anytime. The plugin never issues model calls autonomously
 
 ### Task notifications
 

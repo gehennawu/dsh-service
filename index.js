@@ -1,6 +1,6 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
-import { createHmac, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants, existsSync, readFileSync } from 'node:fs'
 import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
@@ -23,6 +23,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   backupMaintenance: true,
   taskNotifications: true,
   healthz: true,
+  skillManager: true,
 })
 const FeatureSettingsSchema = z.object({
   modelUsage: z.boolean().default(true),
@@ -30,6 +31,7 @@ const FeatureSettingsSchema = z.object({
   backupMaintenance: z.boolean().default(true),
   taskNotifications: z.boolean().default(true),
   healthz: z.boolean().default(true),
+  skillManager: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -39,6 +41,25 @@ const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 const USAGE_INDEX_VERSION = 5
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+
+// 技能管理（v0.22）：来源 rank 表复制自 @deepseek-ai/dsh-skill-filesystem 0.1.1-rc.2
+// 常量，只用于展示与同名遮蔽判定；官方升级改值时此处同步。
+const SKILL_SOURCE_RANK = Object.freeze({ 'project-dsh': 100, 'project-agents': 200, custom: 300, 'user-dsh': 400, 'user-agents': 500, bundled: 600 })
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const SKILLS_INDEX_VERSION = 1
+const SKILLS_INDEX_FILE = 'dsh-service-skills-index.json'
+const MAX_SKILL_FILE_BYTES = 512 * 1024
+const SKILL_DESCRIBE_TIMEOUT_MS = 90 * 1000
+const SKILL_DESCRIPTION_MAX_CHARS = 200
+const SKILL_USAGE_MAX_CHARS = 300
+const skillsIdSecret = randomBytes(32)
+// 官方解析器整条剔除的 legacy 调用键 → 规范键与语义换算。invert:true 表示 legacy 真值
+// 等价规范键「不写行」（如 modelInvocable:true ≡ 无 disable-model-invocation）。
+const SKILL_LEGACY_KEYS = {
+  disableModelInvocation: { canonical: 'disable-model-invocation', invert: false },
+  modelInvocable: { canonical: 'disable-model-invocation', invert: true },
+  userInvocable: { canonical: 'user-invocable', invert: true },
+}
 
 // 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
 const QUOTA_CONFIG_VERSION = 1
@@ -1814,6 +1835,458 @@ function scheduleRestart(ctx) {
   return doExit()
 }
 
+// ─── 技能管理（v0.22）：扫描 / frontmatter 手术 / AI 补全 ─────────────────────
+// 管理事实源是文件扫描而非运行时注册表：要能看到被同名遮蔽的候选、无效条目，
+// 且不依赖 preset standing mount。启停与补全全部落在 frontmatter 行级手术上。
+
+function skillIdFor(path) {
+  return createHmac('sha256', skillsIdSecret).update(path).digest('base64url')
+}
+
+function bodyHashOf(raw, bodyStart) {
+  return createHash('sha256').update(raw.slice(bodyStart)).digest('hex')
+}
+
+/** 定位 frontmatter：返回内部区间索引；无 frontmatter 返回 undefined。 */
+function locateSkillFrontmatter(raw) {
+  const firstLineEnd = raw.indexOf('\n')
+  if (firstLineEnd < 0) return undefined
+  if (raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') return undefined
+  let lineStart = firstLineEnd + 1
+  while (lineStart <= raw.length) {
+    const nextNewline = raw.indexOf('\n', lineStart)
+    const lineEnd = nextNewline < 0 ? raw.length : nextNewline
+    if (raw.slice(lineStart, lineEnd).replace(/\r$/, '') === '---') {
+      return { headStart: firstLineEnd + 1, headEnd: lineStart, bodyStart: nextNewline < 0 ? raw.length : nextNewline + 1 }
+    }
+    if (nextNewline < 0) return undefined
+    lineStart = nextNewline + 1
+  }
+  return undefined
+}
+
+function unquoteScalar(text) {
+  const trimmed = text.trim()
+  if (trimmed.length >= 2) {
+    const quote = trimmed[0]
+    if ((quote === '"' || quote === '\'') && trimmed.endsWith(quote)) return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+/** 官方解析器同款宽松布尔：true/false、yes/no、on/off、1/0；其余 undefined。 */
+function parseLooseBoolean(value) {
+  if (typeof value !== 'string') return undefined
+  switch (value.trim().toLowerCase()) {
+    case 'true': case 'yes': case 'on': case '1': return true
+    case 'false': case 'no': case 'off': case '0': return false
+    default: return undefined
+  }
+}
+
+/**
+ * 保守解析 frontmatter 顶层字段。只承诺管理动作需要的简单标量；块标量/嵌套结构
+ * 归入 complex（展示用拼接文本），绝不假装理解完整 YAML——官方解析器若因复杂
+ * 结构得出不同结论，条目会以 invalid 或只读形态出现，不会误写。
+ */
+function parseSkillFrontmatterData(raw) {
+  const located = locateSkillFrontmatter(raw)
+  if (located === undefined) return undefined
+  const inner = raw.slice(located.headStart, located.headEnd)
+  const lines = inner.split(/\r?\n/)
+  const fields = new Map()
+  const TOP_LEVEL = /^([A-Za-z][A-Za-z0-9_-]*):(?:[ \t]*(.*))?$/
+  for (let index = 0; index < lines.length;) {
+    const match = lines[index].match(TOP_LEVEL)
+    if (match === null) { index += 1; continue }
+    const key = match[1]
+    let rest = typeof match[2] === 'string' ? match[2].trim() : ''
+    index += 1
+    let complex = false
+    let text = rest
+    if (rest === '' || rest === '|' || rest === '>' || rest.startsWith('|') || rest.startsWith('>') || rest.startsWith('[') || rest.startsWith('{')) {
+      complex = true
+      const collected = []
+      if (rest !== '' && rest !== '|' && rest !== '>') collected.push(rest.replace(/^[|>][+-]?[0-9]*$/, '').trim())
+      while (index < lines.length && lines[index].match(TOP_LEVEL) === null) {
+        collected.push(lines[index].replace(/^[ \t]+/, ''))
+        index += 1
+      }
+      text = collected.filter((part) => part !== '').join(' ')
+    } else if (rest.startsWith('"') && !rest.endsWith('"')) {
+      complex = true
+      const collected = [rest]
+      while (index < lines.length && !lines[index].endsWith('"')) { collected.push(lines[index].trim()); index += 1 }
+      text = collected.join(' ')
+    }
+    fields.set(key, { value: complex ? text : unquoteScalar(rest), complex })
+  }
+  return { fields, inner, headStart: located.headStart, headEnd: located.headEnd, bodyStart: located.bodyStart }
+}
+
+/** 由解析出的字段求调用位状态；官方语义：缺席即允许，宽松布尔失败按允许处理。 */
+function resolveSkillInvocationState(parsed) {
+  const legacyKeys = Object.keys(SKILL_LEGACY_KEYS).filter((key) => parsed.fields.has(key))
+  const disable = parsed.fields.get('disable-model-invocation')
+  const userKey = parsed.fields.get('user-invocable')
+  return {
+    modelInvocable: parseLooseBoolean(disable?.value) !== true,
+    userInvocable: parseLooseBoolean(userKey?.value) !== false,
+    legacyKeys,
+  }
+}
+
+/** 单文件评估：产出列表条目核心（不含来源/可写等扫描上下文）。 */
+function evaluateSkillFile(raw) {
+  const parsed = parseSkillFrontmatterData(raw)
+  if (parsed === undefined) return { invalid: 'missing-frontmatter' }
+  const invocation = resolveSkillInvocationState(parsed)
+  const nameField = parsed.fields.get('name')
+  const descriptionField = parsed.fields.get('description')
+  const usageField = parsed.fields.get('whenToUse')
+  const name = String(nameField?.value ?? '')
+  if (name === '') return { invalid: 'missing-name', invocation }
+  if (!SKILL_NAME_RE.test(name)) return { invalid: 'invalid-name', invocation }
+  if (invocation.legacyKeys.length > 0) return { name, description: String(descriptionField?.value ?? ''), invocation, invalid: 'legacy-invocation-key:' + invocation.legacyKeys.join(',') }
+  const description = String(descriptionField?.value ?? '')
+  if (description === '') return { invalid: 'missing-description', invocation }
+  return {
+    name,
+    description,
+    usage: usageField !== undefined ? String(usageField.value ?? '') : '',
+    invocation,
+  }
+}
+
+/** 在 frontmatter 内做顶层行级手术的原语：返回新的完整文件文本。 */
+function rewriteFrontmatterInner(raw, located, nextLines) {
+  return raw.slice(0, located.headStart) + nextLines.join('\n') + '\n' + raw.slice(located.headEnd)
+}
+
+function splitHeaderLines(located, raw) {
+  const lines = raw.slice(located.headStart, located.headEnd).split(/\r?\n/)
+  // 收尾空串来自「关闭 --- 前的换行」，不还原会在每次手术时累积空行。
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/**
+ * 启停开关：kind 'model' 规范键 disable-model-invocation（禁用行值为 true），
+ * kind 'user' 规范键 user-invocable（禁用行值为 false）。enable=true 删除键行
+ * （缺席即允许），enable=false 原位写入或改值。
+ */
+function setSkillInvocationKey(raw, kind, enable) {
+  const located = locateSkillFrontmatter(raw)
+  if (located === undefined) throw new Error('missing-frontmatter')
+  const canonical = kind === 'model' ? 'disable-model-invocation' : 'user-invocable'
+  const disabledLine = kind === 'model' ? 'disable-model-invocation: true' : 'user-invocable: false'
+  const lines = splitHeaderLines(located, raw)
+  const matcher = new RegExp('^' + canonical + ':(?:[ \t].*)?$')
+  const next = []
+  let existing = false
+  for (const line of lines) {
+    if (matcher.test(line)) {
+      existing = true
+      if (!enable) next.push(disabledLine)
+      continue
+    }
+    next.push(line)
+  }
+  if (!existing && !enable) next.unshift(disabledLine)
+  return rewriteFrontmatterInner(raw, located, next)
+}
+
+/** legacy 调用键一键修复：换算为规范键或删除默认真值行；不可解析的布尔保持原样。 */
+function fixLegacySkillInvocationKeys(raw) {
+  const located = locateSkillFrontmatter(raw)
+  if (located === undefined) throw new Error('missing-frontmatter')
+  const lines = splitHeaderLines(located, raw)
+  const next = []
+  const renamed = []
+  for (const line of lines) {
+    const legacy = Object.keys(SKILL_LEGACY_KEYS).find((key) => line.startsWith(key + ':'))
+    if (legacy === undefined) { next.push(line); continue }
+    const { canonical, invert } = SKILL_LEGACY_KEYS[legacy]
+    const value = parseLooseBoolean(line.slice(legacy.length + 1))
+    if (value === undefined) { next.push(line); continue }
+    // 换算语义：legacy 值等价于「该调用位被禁用」时才保留规范禁用行，否则删行。
+    const disabled = invert ? !value : value
+    renamed.push(legacy)
+    if (disabled) next.push(canonical === 'disable-model-invocation' ? 'disable-model-invocation: true' : 'user-invocable: false')
+  }
+  return { text: rewriteFrontmatterInner(raw, located, next), changed: renamed.length > 0, renamed }
+}
+
+/**
+ * 描述/用法字段写入：已有字段连块整体替换为单行双引号标量（JSON 转义即 YAML
+ * 双引号风格转义）；新字段插到 frontmatter 首位。多行块标量被安全吞并。
+ */
+function upsertSkillField(raw, field, value) {
+  const located = locateSkillFrontmatter(raw)
+  if (located === undefined) throw new Error('missing-frontmatter')
+  const lines = splitHeaderLines(located, raw)
+  const replacement = field + ': ' + JSON.stringify(String(value))
+  const matcher = new RegExp('^' + field + ':(?:[ \t].*)?$')
+  const index = lines.findIndex((line) => matcher.test(line))
+  if (index < 0) return rewriteFrontmatterInner(raw, located, [replacement].concat(lines))
+  let end = index + 1
+  while (end < lines.length && (lines[end] === '' || /^[ \t]/.test(lines[end]))) end += 1
+  return rewriteFrontmatterInner(raw, located, lines.slice(0, index).concat([replacement], lines.slice(end)))
+}
+
+/** 扫描根固定五类；工作区路径精确去重（权限面板同口径）。custom 来源 v1 不扫。 */
+function buildSkillRoots(ctx, dshHome) {
+  const roots = []
+  const seenProjects = new Set()
+  const workspaceRegistry = ctx.get('workspaceRegistry')
+  if (workspaceRegistry !== undefined && Array.isArray(workspaceRegistry.list())) {
+    for (const workspace of workspaceRegistry.list()) {
+      const projectRoot = String(workspace?.path ?? '')
+      if (projectRoot === '' || seenProjects.has(projectRoot)) continue
+      seenProjects.add(projectRoot)
+      roots.push({ source: 'project-dsh', dir: join(projectRoot, '.dsh', 'skills'), writable: true })
+      roots.push({ source: 'project-agents', dir: join(projectRoot, '.agents', 'skills'), writable: true })
+    }
+  }
+  const agentsHome = process.env.DSH_AGENTS_HOME?.trim() || join(homedir(), '.agents')
+  roots.push({ source: 'user-dsh', dir: join(dshHome, 'skills'), writable: true })
+  roots.push({ source: 'user-agents', dir: join(agentsHome, 'skills'), writable: true })
+  const bundledDir = process.env.DSH_BUNDLED_SKILL_DIR?.trim()
+  if (bundledDir !== undefined && bundledDir !== '') roots.push({ source: 'bundled', dir: bundledDir, writable: false })
+  return roots
+}
+
+/** 全量扫描：一层深度发现目录 bundle 与扁平 .md，逐文件评估并标注同名遮蔽。 */
+async function scanSkillEntries(ctx, dshHome) {
+  const roots = []
+  const entries = []
+  for (const def of buildSkillRoots(ctx, dshHome)) {
+    let dirInfo
+    try {
+      dirInfo = await stat(def.dir)
+    } catch (_) { continue }
+    if (!dirInfo.isDirectory()) continue
+    const dirWritable = def.writable && await hasAgentAccess(def.dir, true)
+    roots.push({ source: def.source, dir: def.dir, writable: dirWritable })
+    let dirents
+    try {
+      dirents = await readdir(def.dir, { withFileTypes: true })
+    } catch (error) {
+      roots[roots.length - 1].error = error?.code || error?.message || String(error)
+      continue
+    }
+    for (const dirent of [...dirents].sort((left, right) => left.name.localeCompare(right.name))) {
+      const bundlePath = join(def.dir, dirent.name)
+      const path = dirent.isDirectory() ? join(bundlePath, 'SKILL.md') : dirent.isFile() && dirent.name.endsWith('.md') ? bundlePath : undefined
+      if (path === undefined) continue
+      const base = { id: skillIdFor(path), path, source: def.source, rank: SKILL_SOURCE_RANK[def.source] ?? 999, dir: def.dir, writable: dirWritable && await hasAgentAccess(path, false) }
+      try {
+        const info = await stat(path)
+        if (info.size > MAX_SKILL_FILE_BYTES) { entries.push({ ...base, invalid: 'too-large' }); continue }
+        const raw = await readFile(path, 'utf8')
+        const evaluated = evaluateSkillFile(raw)
+        entries.push({ ...base, ...evaluated, bodyHash: bodyHashOf(raw, locateSkillFrontmatter(raw)?.bodyStart ?? 0), bytes: info.size })
+      } catch (error) {
+        entries.push({ ...base, invalid: 'read-error:' + (error?.code || error?.message || String(error)).slice(0, 80) })
+      }
+    }
+  }
+  const winners = new Map()
+  for (const entry of entries) {
+    if (entry.invalid !== undefined) continue
+    const current = winners.get(entry.name)
+    const better = current === undefined
+      || entry.rank < current.rank
+      || (entry.rank === current.rank && (entry.path < current.path))
+    if (better) winners.set(entry.name, entry)
+  }
+  for (const entry of entries) {
+    if (entry.invalid === undefined && winners.get(entry.name) !== entry) entry.shadowed = true
+  }
+  entries.sort((left, right) => left.rank - right.rank || left.name.localeCompare(right.name) || (left.path < right.path ? -1 : 1))
+  return { roots, entries }
+}
+
+async function loadSkillsIndex(dshHome) {
+  try {
+    const parsed = JSON.parse(await readFile(join(dshHome, SKILLS_INDEX_FILE), 'utf8'))
+    if (parsed?.version !== SKILLS_INDEX_VERSION || typeof parsed.entries !== 'object' || parsed.entries === null) return {}
+    const entries = {}
+    for (const [path, record] of Object.entries(parsed.entries)) {
+      if (typeof path === 'string' && typeof record?.bodyHash === 'string') entries[path] = { bodyHash: record.bodyHash, ...(typeof record.model === 'string' ? { model: record.model } : {}), ...(typeof record.at === 'number' ? { at: record.at } : {}) }
+    }
+    return entries
+  } catch (_) { return {} }
+}
+
+async function saveSkillsIndex(dshHome, entries) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, SKILLS_INDEX_FILE)
+  const temporary = `${target}.tmp-${randomUUID()}`
+  await writeFile(temporary, JSON.stringify({ version: SKILLS_INDEX_VERSION, entries }), { mode: 0o600 })
+  await rename(temporary, target)
+}
+
+/** 批量候选：可写、非 invalid、非遮蔽、且侧车记录缺失或正文哈希过期。 */
+function selectSkillBatchCandidates(entries, index) {
+  const candidates = []
+  const skipped = []
+  for (const entry of entries) {
+    if (entry.invalid !== undefined) skipped.push({ id: entry.id, name: entry.name ?? '', reason: entry.invalid })
+    else if (!entry.writable) skipped.push({ id: entry.id, name: entry.name, reason: 'read-only-source' })
+    else if (entry.shadowed === true) skipped.push({ id: entry.id, name: entry.name, reason: 'shadowed' })
+    else if (index[entry.path]?.bodyHash === entry.bodyHash) skipped.push({ id: entry.id, name: entry.name, reason: 'annotated-current' })
+    else candidates.push({ id: entry.id, name: entry.name, source: entry.source })
+  }
+  return { candidates, skipped }
+}
+
+function publicSkillEntry(entry, index) {
+  const annotated = entry.path !== undefined && index[entry.path]?.bodyHash === entry.bodyHash
+  return {
+    id: entry.id,
+    name: entry.name ?? '',
+    description: entry.description ?? '',
+    usage: entry.usage ?? '',
+    invocation: {
+      model: entry.invocation?.modelInvocable !== false,
+      user: entry.invocation?.userInvocable !== false,
+    },
+    source: entry.source,
+    writable: entry.writable === true,
+    shadowed: entry.shadowed === true,
+    ...(entry.invalid !== undefined ? { invalid: entry.invalid } : {}),
+    annotated,
+  }
+}
+
+/** AI 草稿落盘原语：描述必写，用法仅在非空时覆盖（空串不抹掉既有用法）。 */
+function applySkillDraftToRaw(raw, draft) {
+  let text = upsertSkillField(raw, 'description', draft.description)
+  if (draft.usage !== '') text = upsertSkillField(text, 'whenToUse', draft.usage)
+  return text
+}
+
+/** 变更类动作共用通道：重扫定位签名 ID（浏览器零路径输入），校验后执行手术。 */
+async function mutateSkillEntryById(ctx, dshHome, index, id, allowInvalid, mutate) {
+  if (typeof id !== 'string' || id === '') return { ok: false, error: 'unknown-skill' }
+  const { entries } = await scanSkillEntries(ctx, dshHome)
+  const entry = entries.find((candidate) => candidate.id === id)
+  if (entry === undefined) return { ok: false, error: 'unknown-skill' }
+  if (entry.invalid !== undefined && !(allowInvalid === true && entry.invalid.startsWith('legacy-invocation-key:'))) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
+  if (entry.writable !== true) return { ok: false, error: 'read-only-source' }
+  const raw = await readFile(entry.path, 'utf8')
+  const outcome = mutate(raw, entry)
+  if (outcome.text !== raw) await writeFile(entry.path, outcome.text, 'utf8')
+  const evaluated = evaluateSkillFile(outcome.text)
+  const freshLocated = locateSkillFrontmatter(outcome.text)
+  const fresh = { ...entry, ...evaluated, bodyHash: bodyHashOf(outcome.text, freshLocated?.bodyStart ?? 0) }
+  if (evaluated.invalid === undefined) delete fresh.invalid
+  if (typeof outcome.indexBodyHash === 'string') {
+    // AI 注释落盘：侧车记录新正文哈希（正文含描述字段变更），供批量候选判定。
+    index[entry.path] = { bodyHash: outcome.indexBodyHash, ...(typeof outcome.model === 'string' ? { model: outcome.model } : {}), at: Date.now() }
+    await saveSkillsIndex(dshHome, index)
+  }
+  return { ok: true, entry: publicSkillEntry(fresh, index), entryPath: entry.path }
+}
+
+function skillDescribeSystemPrompt() {
+  return [
+    'You write catalog metadata for agent-harness skills.',
+    'Reply with STRICT JSON only, no markdown fences, no extra keys, no commentary:',
+    '{"description":"...","whenToUse":"..."}',
+    'Rules: match the primary language of the skill body; "description" is ONE routing sentence (max ' + SKILL_DESCRIPTION_MAX_CHARS + ' characters) saying what the skill does and when to pick it; "whenToUse" is short usage guidance (max ' + SKILL_USAGE_MAX_CHARS + ' characters); never use line breaks inside either value.',
+  ].join(' ')
+}
+
+function sanitizeSkillDraftText(value, maxChars) {
+  return String(value ?? '')
+    // eslint-disable-next-line no-control-regex -- 控制字符按不可信输入剔除
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .trim()
+    .slice(0, maxChars)
+}
+
+function extractSkillDraftJson(text) {
+  // 模型输出按不可信数据处理：先剥掉会破坏 JSON.parse 的裸控制字符（保留换行/回车/制表）。
+  const cleaned = String(text ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('no-json-object')
+  const parsed = JSON.parse(cleaned.slice(start, end + 1))
+  const description = sanitizeSkillDraftText(parsed?.description, SKILL_DESCRIPTION_MAX_CHARS)
+  if (description === '') throw new Error('empty-description')
+  return { description, usage: sanitizeSkillDraftText(parsed?.whenToUse, SKILL_USAGE_MAX_CHARS) }
+}
+
+async function collectLlmText(llm, options) {
+  const controller = new AbortController()
+  const timeoutHandle = setTimeout(() => controller.abort(new Error('describe-timeout')), SKILL_DESCRIBE_TIMEOUT_MS)
+  try {
+    let text = ''
+    const stream = llm.stream({
+      provider: options.provider,
+      model: options.model,
+      system: skillDescribeSystemPrompt(),
+      messages: [createSkillDescribeMessage(options.prompt)],
+      maxTokens: 512,
+      signal: controller.signal,
+    })
+    for await (const chunk of stream) {
+      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+    }
+    return text
+  } finally {
+    clearTimeout(timeoutHandle)
+  }
+}
+
+// dsh-llm 的消息构造走 createUserMessage；此处只依赖其形状，避免拉起可选依赖。
+function createSkillDescribeMessage(prompt) {
+  return { role: 'user', content: [{ type: 'text', text: prompt }] }
+}
+
+async function describeSkillDraft(llm, entryName, rawContent, provider, model) {
+  const prompt = 'Skill name: ' + entryName + '\n\nSkill file content:\n' + rawContent.slice(0, 16000)
+  let lastError
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const text = await collectLlmText(llm, { provider, model, prompt })
+      return extractSkillDraftJson(text)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+/** 模型清单白名单：describe/批量运行时以此复核 provider/model 组合。 */
+async function listSkillModels(llm, agentDefaultModel) {
+  const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : []
+  const models = []
+  const seen = new Set()
+  for (const provider of Array.isArray(providers) ? providers : []) {
+    if (typeof provider?.id !== 'string') continue
+    let providerModels
+    try {
+      providerModels = await llm.listModels(provider.id)
+    } catch (_) { continue }
+    for (const model of Array.isArray(providerModels) ? providerModels : []) {
+      if (typeof model?.id !== 'string') continue
+      const key = provider.id + '\u0000' + model.id
+      if (seen.has(key)) continue
+      seen.add(key)
+      models.push({ provider: provider.id, providerName: typeof provider.name === 'string' ? provider.name : provider.id, id: model.id, name: typeof model.name === 'string' ? model.name : model.id })
+    }
+  }
+  let current
+  try {
+    const selection = agentDefaultModel?.currentSelection?.()
+    if (typeof selection?.provider === 'string' && typeof selection?.model === 'string') current = { provider: selection.provider, model: selection.model }
+  } catch (_) {}
+  return { models, ...(current !== undefined ? { current } : {}) }
+}
+
 function apply(ctx) {
   const dshHome = resolveDshHome()
   let featureSettings = DEFAULT_FEATURE_SETTINGS
@@ -1844,6 +2317,12 @@ function apply(ctx) {
   let updateCache
   let updatePromise
   const quotaThrottle = createQuotaThrottle()
+  // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
+  let skillsIndexPromise = loadSkillsIndex(dshHome)
+  let skillsBatch = null
+  ctx.effect(() => () => {
+    if (skillsBatch !== null) skillsBatch.aborted = true
+  }, 'dsh-service skills batch teardown')
   let quotaConfig = createEmptyQuotaConfig()
   let quotaConfigLoaded = false
   let quotaConfigLoadPromise
@@ -2231,6 +2710,190 @@ function apply(ctx) {
       }
     }
 
+    if (endpoint === 'skills-list') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      try {
+        const index = await skillsIndexPromise
+        const { roots, entries } = await scanSkillEntries(ctx, dshHome)
+        return {
+          ok: true,
+          value: {
+            roots: roots.map(({ source, dir, writable }) => ({ source, dir, writable })),
+            entries: entries.map((entry) => publicSkillEntry(entry, index)),
+            llmAvailable: ctx.get('llm') !== undefined,
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-models') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      const llm = ctx.get('llm')
+      if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
+      try {
+        return { ok: true, value: await listSkillModels(llm, ctx.get('agentDefaultModel')) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-toggle') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      const field = payload?.field === 'model' || payload?.field === 'user' ? payload.field : null
+      if (field === null) return { ok: false, error: 'invalid-field' }
+      if (typeof payload?.enable !== 'boolean') return { ok: false, error: 'invalid-enable' }
+      try {
+        const index = await skillsIndexPromise
+        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, false, (raw) => ({ text: setSkillInvocationKey(raw, field, payload.enable) }))
+        if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
+        return { ok: true, value: { entry: outcome.entry } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-fix-keys') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      try {
+        const index = await skillsIndexPromise
+        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, true, (raw) => {
+          const fixed = fixLegacySkillInvocationKeys(raw)
+          return { text: fixed.text }
+        })
+        if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
+        return { ok: true, value: { entry: outcome.entry } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-describe') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      const llm = ctx.get('llm')
+      if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
+      const provider = typeof payload?.provider === 'string' ? payload.provider : ''
+      const model = typeof payload?.model === 'string' ? payload.model : ''
+      if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
+      try {
+        // provider/model 必须命中白名单；条目必须能被签名 ID 重新定位。
+        const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
+        if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
+        const index = await skillsIndexPromise
+        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const entry = entries.find((candidate) => candidate.id === payload?.id)
+        if (entry === undefined) return { ok: false, error: 'unknown-skill' }
+        if (entry.invalid !== undefined) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
+        const raw = await readFile(entry.path, 'utf8')
+        const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model)
+        return { ok: true, value: { draft } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error), ...(error?.message === 'describe-timeout' ? { detail: 'timeout' } : {}) }
+      }
+    }
+
+    if (endpoint === 'skills-apply') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      const description = sanitizeSkillDraftText(payload?.patch?.description, SKILL_DESCRIPTION_MAX_CHARS)
+      const usage = sanitizeSkillDraftText(payload?.patch?.usage ?? '', SKILL_USAGE_MAX_CHARS)
+      if (description === '') return { ok: false, error: 'invalid-description' }
+      try {
+        const index = await skillsIndexPromise
+        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, false, (raw) => {
+          const text = applySkillDraftToRaw(raw, { description, usage })
+          const located = locateSkillFrontmatter(text)
+          return { text, indexBodyHash: bodyHashOf(text, located?.bodyStart ?? 0), model: typeof payload?.model === 'string' ? payload.model.slice(0, 120) : undefined }
+        })
+        if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
+        return { ok: true, value: { entry: outcome.entry } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-batch-plan') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      const provider = typeof payload?.provider === 'string' ? payload.provider : ''
+      const model = typeof payload?.model === 'string' ? payload.model : ''
+      if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
+      try {
+        const index = await skillsIndexPromise
+        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const { candidates, skipped } = selectSkillBatchCandidates(entries, index)
+        const planId = randomUUID()
+        skillsBatch = { phase: 'planned', planId, provider, model, items: candidates, total: candidates.length, done: 0, failures: [], aborted: false, running: false, current: null, estBytes: entries.filter((entry) => candidates.some((candidate) => candidate.id === entry.id)).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) }
+        return { ok: true, value: { planId, candidates, skipped, estBytes: skillsBatch.estBytes } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'skills-batch-run') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      if (skillsBatch === null || skillsBatch.planId !== payload?.planId) return { ok: false, error: 'unknown-batch-plan' }
+      if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
+      skillsBatch.phase = 'running'
+      skillsBatch.running = true
+      // 有意不 await：批量在后台顺序执行，客户端轮询 skills-batch-status 取进度。
+      void (async () => {
+        for (let cursor = 0; cursor < skillsBatch.items.length; cursor += 1) {
+          const item = skillsBatch.items[cursor]
+          if (skillsBatch.aborted) break
+          skillsBatch.current = item.name
+          try {
+            const llm = ctx.get('llm')
+            if (llm === undefined) throw new Error('llm-unavailable')
+            const { entries } = await scanSkillEntries(ctx, dshHome)
+            const entry = entries.find((candidate) => candidate.id === item.id)
+            if (entry === undefined) throw new Error('unknown-skill')
+            if (entry.invalid !== undefined || !entry.writable) throw new Error('entry-changed')
+            const raw = await readFile(entry.path, 'utf8')
+            if ((await loadSkillsIndex(dshHome))[entry.path]?.bodyHash === entry.bodyHash) throw new Error('annotated-currently')
+            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model)
+            const text = applySkillDraftToRaw(raw, draft)
+            await writeFile(entry.path, text, 'utf8')
+            const located = locateSkillFrontmatter(text)
+            skillsIndexPromise = Promise.resolve({
+              ...await skillsIndexPromise,
+              [entry.path]: { bodyHash: bodyHashOf(text, located?.bodyStart ?? 0), model: skillsBatch.provider + '/' + skillsBatch.model, at: Date.now() },
+            })
+            await saveSkillsIndex(dshHome, await skillsIndexPromise)
+            skillsBatch.done += 1
+          } catch (error) {
+            skillsBatch.failures.push({ name: item.name, reason: String(error?.message || error).slice(0, 160) })
+          } finally {
+            skillsBatch.current = null
+          }
+        }
+        skillsBatch.phase = skillsBatch.aborted ? 'cancelled' : 'done'
+        skillsBatch.running = false
+      })()
+      return { ok: true, value: { started: true, total: skillsBatch.total } }
+    }
+
+    if (endpoint === 'skills-batch-status') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      if (skillsBatch === null) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [] } }
+      return {
+        ok: true,
+        value: {
+          phase: skillsBatch.phase,
+          total: skillsBatch.total,
+          done: skillsBatch.done,
+          failures: [...skillsBatch.failures],
+          current: skillsBatch.current,
+          estBytes: skillsBatch.estBytes,
+        },
+      }
+    }
+
+    if (endpoint === 'skills-batch-cancel') {
+      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      if (skillsBatch !== null) skillsBatch.aborted = true
+      return { ok: true, value: { phase: skillsBatch?.phase ?? 'idle' } }
+    }
+
     if (endpoint === 'quota') {
       if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
@@ -2384,12 +3047,18 @@ function apply(ctx) {
 }
 
 export {
+  SKILL_SOURCE_RANK,
   apply,
+  applySkillDraftToRaw,
   createQuotaThrottle,
   detectRuntimeEnv,
+  evaluateSkillFile,
+  extractSkillDraftJson,
   fetchProviderUsage,
+  fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  locateSkillFrontmatter,
   name,
   normalizeKimiBalance,
   normalizeOpenRouterCredits,
@@ -2397,18 +3066,31 @@ export {
   normalizeSiliconFlowInfo,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  parseSkillFrontmatterData,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
+  resolveSkillInvocationState,
   runtimeEnvCheck,
+  sanitizeSkillDraftText,
+  selectSkillBatchCandidates,
+  setSkillInvocationKey,
+  skillIdFor,
+  upsertSkillField,
 }
 export default {
+  SKILL_SOURCE_RANK,
   apply,
+  applySkillDraftToRaw,
   createQuotaThrottle,
   detectRuntimeEnv,
+  evaluateSkillFile,
+  extractSkillDraftJson,
   fetchProviderUsage,
+  fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  locateSkillFrontmatter,
   name,
   normalizeKimiBalance,
   normalizeOpenRouterCredits,
@@ -2416,8 +3098,15 @@ export default {
   normalizeSiliconFlowInfo,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  parseSkillFrontmatterData,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
+  resolveSkillInvocationState,
   runtimeEnvCheck,
+  sanitizeSkillDraftText,
+  selectSkillBatchCandidates,
+  setSkillInvocationKey,
+  skillIdFor,
+  upsertSkillField,
 }

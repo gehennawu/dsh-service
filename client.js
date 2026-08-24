@@ -20,7 +20,65 @@ window.__ModuleLoader__.load({
       'features.backupMaintenance': '备份维护',
       'features.taskNotifications': '任务通知',
       'features.healthz': '/healthz 探活端点',
+      'features.skillManager': '技能管理',
       'features.readOnly': '当前设置不可写。',
+      'tabs.skills': '技能',
+      'skills.error': '加载失败：{error}',
+      'skills.empty': '未发现任何技能',
+      'skills.filter': '按名称过滤…',
+      'skills.group.auto': '自动加载',
+      'skills.group.manual': '仅手动调用',
+      'skills.group.disabled': '完全停用',
+      'skills.source.project-dsh': '项目 .dsh',
+      'skills.source.project-agents': '项目 .agents',
+      'skills.source.user-dsh': '用户 DSH',
+      'skills.source.user-agents': '用户 .agents',
+      'skills.source.bundled': '内置',
+      'skills.source.custom': '自定义目录',
+      'skills.badge.shadowed': '被同名遮蔽',
+      'skills.badge.readonly': '只读',
+      'skills.badge.annotated': '已注释',
+      'skills.usage.empty': '（无用法说明）',
+      'skills.invalid.legacy': '存在旧版调用键，已从模型目录剔除',
+      'skills.invalid.other': '无效条目：{reason}',
+      'skills.fix.legacy': '一键修复旧键',
+      'skills.switch.model': '对模型可见',
+      'skills.switch.user': '可被 / 调用',
+      'skills.switch.confirm': '再次点击生效',
+      'skills.describe.button': 'AI 补全说明',
+      'skills.describe.title': 'AI 补全说明 — {name}',
+      'skills.describe.model': '模型',
+      'skills.describe.models.loading': '获取模型列表…',
+      'skills.describe.models.empty': '未发现已配置模型',
+      'skills.describe.run': '生成草稿',
+      'skills.describe.running': '生成中…',
+      'skills.apply.title': '确认写入 — {name}',
+      'skills.apply.description': '描述',
+      'skills.apply.usage': '用法',
+      'skills.apply.old': '旧',
+      'skills.apply.new': '新',
+      'skills.apply.confirm': '写入文件',
+      'skills.apply.done': '已写入',
+      'skills.apply.keepusage': '（保留现有）',
+      'skills.llm.unavailable': '宿主 LLM 服务不可用，无法 AI 补全。',
+      'skills.batch.title': '批量补全未注释技能',
+      'skills.batch.hint': '对「用户/项目根下、可写且正文有变」的技能逐条调用所选模型补全描述与用法；内置与只读目录自动跳过。',
+      'skills.batch.plan': '生成计划',
+      'skills.batch.candidates': '候选 {count} 项',
+      'skills.batch.estBytes': '约发送 {size} 内容',
+      'skills.batch.skipped': '跳过 {count} 项（只读 / 无效 / 已注释 / 被遮蔽）',
+      'skills.batch.start': '开始批量补全',
+      'skills.batch.progress': '进度 {done}/{total}',
+      'skills.batch.current': '当前：{name}',
+      'skills.batch.cancel': '取消',
+      'skills.batch.phase.idle': '空闲',
+      'skills.batch.phase.planned': '待确认',
+      'skills.batch.phase.running': '进行中',
+      'skills.batch.phase.done': '已完成',
+      'skills.batch.phase.cancelled': '已取消',
+      'skills.batch.failures': '失败 {count} 项',
+      'skills.batch.no-candidates': '没有需要补全的候选',
+      'skills.nav.toggle': '设置页左列显示「技能」入口',
       'overlay.label': '服务重启状态',
       'recovery.waiting.title': '服务重启中…',
       'recovery.waiting.body': '正在等待新的 DSH Web 进程启动，已等待 {seconds} 秒。',
@@ -328,7 +386,65 @@ window.__ModuleLoader__.load({
       'features.backupMaintenance': 'Backup maintenance',
       'features.taskNotifications': 'Task notifications',
       'features.healthz': '/healthz liveness endpoint',
+      'features.skillManager': 'Skill manager',
       'features.readOnly': 'These settings are read-only.',
+      'tabs.skills': 'Skills',
+      'skills.error': 'Failed to load: {error}',
+      'skills.empty': 'No skills found',
+      'skills.filter': 'Filter by name…',
+      'skills.group.auto': 'Auto-loaded',
+      'skills.group.manual': 'Manual only',
+      'skills.group.disabled': 'Fully disabled',
+      'skills.source.project-dsh': 'Project .dsh',
+      'skills.source.project-agents': 'Project .agents',
+      'skills.source.user-dsh': 'User DSH',
+      'skills.source.user-agents': 'User .agents',
+      'skills.source.bundled': 'Bundled',
+      'skills.source.custom': 'Custom dir',
+      'skills.badge.shadowed': 'Shadowed',
+      'skills.badge.readonly': 'Read-only',
+      'skills.badge.annotated': 'Annotated',
+      'skills.usage.empty': '(no usage notes)',
+      'skills.invalid.legacy': 'Legacy invocation keys present; excluded from the model catalog',
+      'skills.invalid.other': 'Invalid entry: {reason}',
+      'skills.fix.legacy': 'Fix legacy keys',
+      'skills.switch.model': 'Visible to model',
+      'skills.switch.user': 'Invocable via /',
+      'skills.switch.confirm': 'Click again to apply',
+      'skills.describe.button': 'Fill with AI',
+      'skills.describe.title': 'Fill metadata with AI — {name}',
+      'skills.describe.model': 'Model',
+      'skills.describe.models.loading': 'Loading models…',
+      'skills.describe.models.empty': 'No configured models found',
+      'skills.describe.run': 'Generate draft',
+      'skills.describe.running': 'Generating…',
+      'skills.apply.title': 'Confirm write — {name}',
+      'skills.apply.description': 'Description',
+      'skills.apply.usage': 'Usage',
+      'skills.apply.old': 'Old',
+      'skills.apply.new': 'New',
+      'skills.apply.confirm': 'Write file',
+      'skills.apply.done': 'Written',
+      'skills.apply.keepusage': '(keep existing)',
+      'skills.llm.unavailable': 'Host LLM service unavailable; AI fill disabled.',
+      'skills.batch.title': 'Batch-fill unannotated skills',
+      'skills.batch.hint': 'Calls the selected model per skill under writable user/project roots whose body changed since the last fill. Bundled and read-only roots are skipped automatically.',
+      'skills.batch.plan': 'Plan batch',
+      'skills.batch.candidates': '{count} candidates',
+      'skills.batch.estBytes': '~{size} of content will be sent',
+      'skills.batch.skipped': '{count} skipped (read-only / invalid / annotated / shadowed)',
+      'skills.batch.start': 'Start batch',
+      'skills.batch.progress': 'Progress {done}/{total}',
+      'skills.batch.current': 'Current: {name}',
+      'skills.batch.cancel': 'Cancel',
+      'skills.batch.phase.idle': 'Idle',
+      'skills.batch.phase.planned': 'Ready to start',
+      'skills.batch.phase.running': 'Running',
+      'skills.batch.phase.done': 'Done',
+      'skills.batch.phase.cancelled': 'Cancelled',
+      'skills.batch.failures': '{count} failed',
+      'skills.batch.no-candidates': 'Nothing to fill',
+      'skills.nav.toggle': 'Show Skills entry in the settings sidebar',
       'overlay.label': 'Service restart status',
       'recovery.waiting.title': 'Restarting service…',
       'recovery.waiting.body': 'Waiting for a new DSH Web process. Elapsed: {seconds} seconds.',
@@ -638,6 +754,8 @@ window.__ModuleLoader__.load({
     const NAV_ICON_BODY_SERVICE = '%3Cpath d=%27M4 8h16%27/%3E%3Cpath d=%27M4 16h16%27/%3E%3Ccircle cx=%279%27 cy=%278%27 r=%272.5%27 fill=%27black%27/%3E%3Ccircle cx=%2715%27 cy=%2716%27 r=%272.5%27 fill=%27black%27/%3E'
     const NAV_ICON_BODY_QUOTA = '%3Cpath d=%27m12 14 4-4%27/%3E%3Cpath d=%27M3.34 19a10 10 0 1 1 17.32 0%27/%3E'
     const NAV_ICON_BODY_RESTART = '%3Cpath d=%27M12 2v10%27/%3E%3Cpath d=%27M18.4 6.6a9 9 0 1 1-12.77.04%27/%3E'
+    // 技能 = 书本轮廓（lucide book 风格，16px 下可读）
+    const NAV_ICON_BODY_SKILLS = '%3Cpath d=%27M4 19.5A2.5 2.5 0 0 1 6.5 17H20%27/%3E%3Cpath d=%27M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z%27/%3E'
 
     function markSettingsNavRows(rows) {
       if (typeof document === 'undefined' || !document.body) return () => {}
@@ -697,9 +815,10 @@ window.__ModuleLoader__.load({
           // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
           // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
           '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
+          '[data-dsh-service-skills-nav]::before{' + navIconMask(NAV_ICON_BODY_SKILLS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
         ].join('')
         document.head.appendChild(svcStyle)
@@ -707,7 +826,7 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
-      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true }
+      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -723,6 +842,7 @@ window.__ModuleLoader__.load({
           { attr: 'data-dsh-service-nav', label: () => t('nav.label') },
           { attr: 'data-dsh-service-quota-nav', label: () => t('tabs.quota') },
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
+          { attr: 'data-dsh-service-skills-nav', label: () => t('tabs.skills') },
         ]),
         'dsh-service settings nav icons',
       )
@@ -814,6 +934,35 @@ window.__ModuleLoader__.load({
           return () => quotaNavListeners.delete(update)
         }, [])
         return [enabled, setQuotaNavEnabled]
+      }
+      // 设置页左列「技能」入口显示开关：与重启/额度同模式（localStorage 持久化，默认关）。
+      let skillsNavEnabled = false
+      try { skillsNavEnabled = localStorage.getItem('dsh-service-skills-nav') === 'true' } catch (_) {}
+      let skillsNavDispose = null
+      const syncSkillsNavEntry = () => {
+        if (skillsNavDispose) { skillsNavDispose(); skillsNavDispose = null }
+        if (!skillsNavEnabled || !featureEnabled('skillManager')) return
+        skillsNavDispose = ctx.slots.register(
+          { name: 'settings.section', id: 'dsh-service-skills', order: 497, label: () => t('tabs.skills') },
+          () => React.createElement(SkillsSection, null),
+        )
+      }
+      const skillsNavListeners = new Set()
+      const setSkillsNavEnabled = (value) => {
+        skillsNavEnabled = value === true
+        try { localStorage.setItem('dsh-service-skills-nav', skillsNavEnabled ? 'true' : 'false') } catch (_) {}
+        syncSkillsNavEntry()
+        for (const listener of skillsNavListeners) listener()
+      }
+      const useSkillsNavEnabled = () => {
+        const [enabled, setEnabled] = useState(skillsNavEnabled)
+        useEffect(() => {
+          const update = () => setEnabled(skillsNavEnabled)
+          skillsNavListeners.add(update)
+          setEnabled(skillsNavEnabled)
+          return () => skillsNavListeners.delete(update)
+        }, [])
+        return [enabled, setSkillsNavEnabled]
       }
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
@@ -1799,10 +1948,273 @@ window.__ModuleLoader__.load({
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications'].map(row),
+          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager'].map(row),
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
           row('healthz'),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
+      }
+
+      // ─── 技能管理（v0.22）：三区列表 / 启停 / AI 补全 / 批量 ────────────────
+      const SKILLS_MODEL_STORAGE_KEY = 'dsh-service-skills-model'
+      const SKILL_RPC = (endpoint, payload) => ctx.connection.rpc.call('/dsh-service', endpoint, payload)
+      function formatSkillBytes(size) {
+        return size >= 1024 * 1024 ? (size / 1024 / 1024).toFixed(1) + ' MB' : size >= 1024 ? (size / 1024).toFixed(1) + ' KB' : String(size) + ' B'
+      }
+      function skillModelKey(item) { return item.provider + '\u0000' + item.id }
+      function readStoredSkillModel() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(SKILLS_MODEL_STORAGE_KEY) || 'null')
+          if (parsed && typeof parsed.provider === 'string' && typeof parsed.model === 'string') return parsed
+        } catch (_) {}
+        return null
+      }
+      function pickSkillModel(models, preferred) {
+        const current = typeof preferred === 'object' && preferred !== null ? preferred : readStoredSkillModel()
+        if (current !== null) {
+          const match = models.find((item) => item.provider === current.provider && item.id === current.model)
+          if (match !== undefined) return match
+        }
+        return models[0] ?? null
+      }
+
+      function SkillsSection() {
+        const translate = useTranslation()
+        const [data, setData] = useState(null)
+        const [error, setError] = useState('')
+        const [loading, setLoading] = useState(true)
+        const [filterText, setFilterText] = useState('')
+        const [confirmingKey, setConfirmingKey] = useState(null)
+        const [describe, setDescribe] = useState(null)   // {entry, models, modelItem, draft, busy, error, applied}
+        const [batch, setBatch] = useState(null)         // 宿主批量状态快照（null=未计划）
+        const [batchPlan, setBatchPlan] = useState(null) // skills-batch-plan 返回的计划（含所选模型）
+        const [batchBusy, setBatchBusy] = useState(false)
+
+        const load = async () => {
+          setLoading(true)
+          try {
+            const res = await SKILL_RPC('skills-list', {})
+            if (res.ok) { setData(res.value); setError('') } else setError(res.error || 'unknown')
+          } finally { setLoading(false) }
+        }
+        useEffect(() => { void load() }, [])
+        // 批量进行中每 2s 轮询；进入 running 先立即取一次，落定后刷新列表拿最新 annotated 标记。
+        useEffect(() => {
+          if (batch === null || batch.phase !== 'running') return undefined
+          let alive = true
+          const tick = async () => {
+            try {
+              const res = await SKILL_RPC('skills-batch-status', {})
+              if (!alive || !res.ok) return
+              setBatch(res.value)
+              if (res.value.phase === 'done' || res.value.phase === 'cancelled') void load()
+            } catch (_) {}
+          }
+          void tick()
+          const handle = setInterval(() => void tick(), 2000)
+          return () => { alive = false; clearInterval(handle) }
+        }, [batch !== null && batch.phase])
+
+        const patchEntry = (next) => {
+          setData((prev) => prev === null ? prev : { ...prev, entries: prev.entries.map((entry) => entry.id === next.id ? next : entry) })
+        }
+        const toggleSkill = async (entry, field) => {
+          const key = entry.id + ':' + field
+          // 两段式：第一击只进入待确认态，3 秒内再击才下发；点别处自然超时复位。
+          if (confirmingKey !== key) { setConfirmingKey(key); return }
+          setConfirmingKey(null)
+          const enable = field === 'model' ? entry.invocation.model !== true : entry.invocation.user !== true
+          const res = await SKILL_RPC('skills-toggle', { id: entry.id, field, enable })
+          if (res.ok) patchEntry(res.value.entry)
+          else setError(res.error || 'unknown')
+        }
+        const fixLegacyKeys = async (entry) => {
+          const res = await SKILL_RPC('skills-fix-keys', { id: entry.id })
+          if (res.ok) patchEntry(res.value.entry)
+          else setError(res.error || 'unknown')
+        }
+
+        const openDescribe = async (entry) => {
+          const stored = readStoredSkillModel()
+          setDescribe({ entry, models: null, modelItem: null, draft: null, busy: false, error: '', applied: false, preferred: stored })
+          const res = await SKILL_RPC('skills-models', {})
+          if (!res.ok) { setDescribe((prev) => ({ ...prev, error: res.error || 'unknown' })); return }
+          const models = res.value.models ?? []
+          let modelItem = pickSkillModel(models, stored)
+          if (modelItem === null && res.value.current !== undefined) {
+            modelItem = models.find((item) => item.provider === res.value.current.provider && item.id === res.value.current.model) ?? null
+          }
+          setDescribe((prev) => ({ ...prev, models, modelItem }))
+        }
+        const runDescribe = async () => {
+          if (describe === null || describe.modelItem === null) return
+          const { entry, modelItem } = describe
+          setDescribe((prev) => ({ ...prev, busy: true, error: '' }))
+          const res = await SKILL_RPC('skills-describe', { id: entry.id, provider: modelItem.provider, model: modelItem.id })
+          if (res.ok) {
+            try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: modelItem.provider, model: modelItem.id })) } catch (_) {}
+            setDescribe((prev) => ({ ...prev, draft: res.value.draft, busy: false }))
+          } else {
+            setDescribe((prev) => ({ ...prev, busy: false, error: res.error + (res.detail ? ':' + res.detail : '') }))
+          }
+        }
+        const applyDraft = async () => {
+          if (describe === null || describe.draft === null || describe.modelItem === null) return
+          const { entry, draft, modelItem } = describe
+          setDescribe((prev) => ({ ...prev, busy: true }))
+          const res = await SKILL_RPC('skills-apply', { id: entry.id, patch: { description: draft.description, usage: draft.usage }, model: modelItem.provider + '/' + modelItem.id })
+          if (res.ok) {
+            patchEntry(res.value.entry)
+            setDescribe((prev) => ({ ...prev, busy: false, applied: true }))
+          } else {
+            setDescribe((prev) => ({ ...prev, busy: false, error: res.error || 'unknown' }))
+          }
+        }
+
+        const planBatch = async () => {
+          setBatchBusy(true)
+          try {
+            const modelsRes = await SKILL_RPC('skills-models', {})
+            if (!modelsRes.ok) { setError(modelsRes.error || 'unknown'); return }
+            const modelItem = pickSkillModel(modelsRes.value.models ?? [], readStoredSkillModel())
+            if (modelItem === null) { setError('skills.models.empty'); return }
+            try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: modelItem.provider, model: modelItem.id })) } catch (_) {}
+            const res = await SKILL_RPC('skills-batch-plan', { provider: modelItem.provider, model: modelItem.id })
+            if (!res.ok) { setError(res.error || 'unknown'); return }
+            setBatchPlan({ ...res.value, modelItem })
+            setBatch({ phase: 'planned', total: res.value.candidates.length, done: 0, failures: [], current: null, estBytes: res.value.estBytes })
+          } finally { setBatchBusy(false) }
+        }
+        const startBatch = async () => {
+          if (batchPlan === null) return
+          setBatchBusy(true)
+          try {
+            const res = await SKILL_RPC('skills-batch-run', { planId: batchPlan.planId })
+            if (res.ok) setBatch((prev) => prev === null ? prev : { ...prev, phase: 'running' })
+            else setError(res.error || 'unknown')
+          } finally { setBatchBusy(false) }
+        }
+        const cancelBatch = async () => { await SKILL_RPC('skills-batch-cancel', {}) }
+
+        // ── 渲染 ──
+        const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
+        const badge = (text, tone) => React.createElement('span', { key: text, style: { marginLeft: '6px', fontSize: '10px', padding: '1px 7px', borderRadius: 999, verticalAlign: 'middle', background: tone === 'warn' ? 'rgba(198,128,0,0.18)' : tone === 'danger' ? 'rgba(196,64,64,0.16)' : 'var(--dsw-alias-interactive-bg-hover)', color: tone === 'warn' ? 'var(--dsw-alias-state-warn-primary)' : tone === 'danger' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-tertiary)' } }, text)
+        const pillSwitch = (checked, opts) => React.createElement('button', {
+          type: 'button',
+          role: 'switch',
+          'data-testid': opts.testid,
+          'aria-checked': String(checked),
+          title: opts.title,
+          disabled: opts.disabled,
+          onClick: opts.onClick,
+          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', cursor: opts.disabled ? 'default' : 'pointer', lineHeight: 0, border: '1px solid ' + (opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: opts.armed ? 'transparent' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: opts.disabled ? 0.5 : 1 },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: checked && !opts.armed ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
+        const entryCard = { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px', display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' }
+
+        const renderEntry = (entry) => {
+          const invalidLegacy = typeof entry.invalid === 'string' && entry.invalid.startsWith('legacy-invocation-key:')
+          const nameLine = React.createElement('div', { style: { fontSize: '14px', fontWeight: 650, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' } },
+            entry.name,
+            badge(translate('skills.source.' + entry.source) === 'skills.source.' + entry.source ? entry.source : translate('skills.source.' + entry.source)),
+            entry.shadowed ? badge(translate('skills.badge.shadowed'), 'warn') : null,
+            !entry.writable ? badge(translate('skills.badge.readonly'), 'danger') : null,
+            entry.annotated ? badge(translate('skills.badge.annotated')) : null)
+          const descLine = React.createElement('div', { style: { fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', marginTop: '3px', lineHeight: 1.45, overflowWrap: 'anywhere' } }, entry.description)
+          const usageLine = React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px', lineHeight: 1.45, overflowWrap: 'anywhere' } },
+            entry.usage === '' ? translate('skills.usage.empty') : translate('skills.apply.usage') + '：' + entry.usage)
+          const invalidLine = entry.invalid !== undefined ? React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+            '⚠ ', invalidLegacy ? translate('skills.invalid.legacy') : translate('skills.invalid.other', { reason: entry.invalid }),
+            invalidLegacy && entry.writable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-fix-' + entry.name, onClick: () => void fixLegacyKeys(entry), style: { fontSize: '11px', padding: '2px 9px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'transparent', color: 'var(--dsw-alias-state-warn-primary)', cursor: 'pointer' } }, translate('skills.fix.legacy')) : null) : null
+          const switches = entry.invalid === undefined ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '7px', alignItems: 'flex-end', flexShrink: 0 } },
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.switch.model'),
+              pillSwitch(entry.invocation.model, { testid: 'skill-switch-model-' + entry.name, disabled: !entry.writable, armed: confirmingKey === entry.id + ':model', title: confirmingKey === entry.id + ':model' ? translate('skills.switch.confirm') : undefined, onClick: () => void toggleSkill(entry, 'model') })),
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.switch.user'),
+              pillSwitch(entry.invocation.user, { testid: 'skill-switch-user-' + entry.name, disabled: !entry.writable, armed: confirmingKey === entry.id + ':user', title: confirmingKey === entry.id + ':user' ? translate('skills.switch.confirm') : undefined, onClick: () => void toggleSkill(entry, 'user') })),
+            data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-' + entry.name, onClick: () => void openDescribe(entry), style: { fontSize: '11px', padding: '3px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-interactive-bg-hover)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' } }, '✨ ' + translate('skills.describe.button')) : null) : null
+          return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
+            React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine, descLine, usageLine, invalidLine),
+            switches)
+        }
+
+        const renderGroups = () => {
+          if (data === null || data.entries.length === 0) return React.createElement('p', { style: hint }, translate('skills.empty'))
+          const needle = filterText.trim().toLowerCase()
+          const visible = needle === '' ? data.entries : data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
+          const invalidEntries = visible.filter((entry) => entry.invalid !== undefined)
+          const validEntries = visible.filter((entry) => entry.invalid === undefined)
+          const groups = [
+            ['skills.group.auto', validEntries.filter((entry) => entry.invocation.model)],
+            ['skills.group.manual', validEntries.filter((entry) => !entry.invocation.model && entry.invocation.user)],
+            ['skills.group.disabled', validEntries.filter((entry) => !entry.invocation.model && !entry.invocation.user)],
+          ]
+          return React.createElement('div', null,
+            invalidEntries.length > 0 ? React.createElement('div', { 'data-testid': 'skills-invalid-group', style: { marginBottom: '12px' } }, invalidEntries.map(renderEntry)) : null,
+            groups.map(([label, items]) => items.length === 0 ? null : React.createElement('div', { key: label, 'data-testid': 'skills-group-' + label.split('.').pop(), style: { marginBottom: '14px' } },
+              React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, margin: '0 0 7px', color: 'var(--dsw-alias-label-secondary)' } }, translate(label) + ' · ' + items.length),
+              items.map(renderEntry))))
+        }
+
+        const renderDescribeDialog = () => {
+          if (describe === null) return null
+          const { entry, models, modelItem, draft, busy, error, applied } = describe
+          const inputStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
+          const diffRows = draft === null ? null : [['description', entry.description, draft.description], ['usage', entry.usage, draft.usage === '' ? null : draft.usage]].map(([field, oldText, newText]) =>
+            React.createElement('div', { key: field, 'data-testid': 'skill-diff-' + field, style: { marginBottom: '9px' } },
+              React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '3px' } }, translate('skills.apply.' + field)),
+              React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', textDecoration: 'line-through', lineHeight: 1.45 } }, translate('skills.apply.old') + '：' + (oldText === '' ? '—' : oldText)),
+              React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', lineHeight: 1.45 } }, translate('skills.apply.new') + '：' + (newText === null ? translate('skills.apply.keepusage') : newText))))
+          return React.createElement('div', { 'data-testid': 'skill-describe-dialog', style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '12px', padding: '14px 16px', marginBottom: '14px', background: 'var(--dsw-alias-bg-layer-2)' } },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' } },
+              React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('skills.describe.title', { name: entry.name })),
+              React.createElement('button', { type: 'button', onClick: () => setDescribe(null), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '15px' } }, '✕')),
+            models === null && error === '' ? React.createElement('p', { style: hint }, translate('skills.describe.models.loading')) : null,
+            models !== null && models.length === 0 ? React.createElement('p', { style: hint }, translate('skills.describe.models.empty')) : null,
+            models !== null && models.length > 0 ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
+              React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.describe.model')),
+              React.createElement('select', { 'data-testid': 'skill-describe-model', value: modelItem === null ? '' : skillModelKey(modelItem), onChange: (event) => setDescribe((prev) => prev === null ? prev : { ...prev, modelItem: models.find((item) => skillModelKey(item) === event.target.value) ?? null }), style: inputStyle },
+                models.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name))),
+              draft === null ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-run', disabled: busy || modelItem === null, onClick: () => void runDescribe(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', cursor: busy ? 'default' : 'pointer', opacity: busy || modelItem === null ? 0.55 : 1 } }, busy ? translate('skills.describe.running') : translate('skills.describe.run')) : null) : null,
+            error !== '' ? React.createElement('p', { 'data-testid': 'skill-describe-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error === 'llm-unavailable' ? translate('skills.llm.unavailable') : error) : null,
+            diffRows,
+            applied ? React.createElement('p', { 'data-testid': 'skill-apply-done', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('skills.apply.done')) : null,
+            draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
+        }
+
+        const renderBatchCard = () => {
+          const phaseLabel = batch === null ? 'idle' : batch.phase
+          const progress = batch !== null && batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0
+          return React.createElement('div', { 'data-testid': 'skills-batch-card', style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '12px', padding: '13px 15px', margin: '14px 0' } },
+            React.createElement('div', { style: { fontSize: '13.5px', fontWeight: 700 } }, translate('skills.batch.title')),
+            React.createElement('p', { style: { ...hint, marginTop: '4px' } }, translate('skills.batch.hint')),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '9px', flexWrap: 'wrap' } },
+              batch === null || batch.phase === 'idle' || batch.phase === 'done' || batch.phase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: { fontSize: '12.5px', padding: '5px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.plan')) : null,
+              batchPlan !== null ? React.createElement('span', { 'data-testid': 'skills-batch-candidates', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
+                translate('skills.batch.candidates', { count: batchPlan.candidates.length }) + (batchPlan.estBytes > 0 ? ' · ' + translate('skills.batch.estBytes', { size: formatSkillBytes(batchPlan.estBytes) }) : '') + ' · ' + translate('skills.batch.skipped', { count: batchPlan.skipped.length })) : null,
+              batchPlan !== null && batch !== null && batch.phase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || batchPlan.candidates.length === 0, onClick: () => void startBatch(), style: { fontSize: '12.5px', padding: '5px 14px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.start')) : null,
+              batch !== null && batch.phase === 'running' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-cancel', onClick: () => void cancelBatch(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' } }, translate('skills.batch.cancel')) : null,
+              batch !== null ? React.createElement('span', { 'data-testid': 'skills-batch-phase', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('skills.batch.phase.' + phaseLabel)) : null),
+            batchPlan !== null && batchPlan.candidates.length === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
+            batch !== null && batch.total > 0 ? React.createElement('div', { style: { marginTop: '10px' } },
+              React.createElement('div', { 'data-testid': 'skills-batch-progress', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } },
+                translate('skills.batch.progress', { done: batch.done, total: batch.total }) + (batch.current !== null ? ' · ' + translate('skills.batch.current', { name: batch.current }) : '')),
+              React.createElement('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--dsw-alias-bg-layer-3)', overflow: 'hidden' } },
+                React.createElement('div', { style: { height: '100%', width: progress + '%', background: 'var(--dsw-alias-state-success-primary)', transition: 'width .3s' } })),
+              Array.isArray(batch.failures) && batch.failures.length > 0 ? React.createElement('div', { 'data-testid': 'skills-batch-failures', style: { marginTop: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)', lineHeight: 1.5 } },
+                translate('skills.batch.failures', { count: batch.failures.length }) + '：' + batch.failures.map((failure) => failure.name + '(' + failure.reason + ')').join('、')) : null) : null)
+        }
+
+        const [skillsNav, setSkillsNav] = useSkillsNavEnabled()
+        return React.createElement('div', { 'data-testid': 'skills-section' },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
+            React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsh-service-skip, var(--dsw-alias-border-l2))', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
+            React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻')),
+          loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
+          error !== '' ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error === 'feature-disabled' ? translate('features.skillManager') + '：off' : translate('skills.error', { error })) : null,
+          renderDescribeDialog(),
+          data !== null && data.llmAvailable ? renderBatchCard() : null,
+          renderGroups(),
+          React.createElement('div', { style: { marginTop: '16px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+            React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('skills.nav.toggle')),
+            pillSwitch(skillsNav, { testid: 'skills-nav-switch', onClick: () => setSkillsNav(!skillsNav) })))
       }
 
       function QuotaSection() {
@@ -2927,6 +3339,7 @@ window.__ModuleLoader__.load({
           ...(features.modelUsage !== false ? [['usage', 'tabs.usage']] : []),
           ...(features.quotaLookup !== false ? [['quota', 'tabs.quota']] : []),
           ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),
+          ...(features.skillManager !== false ? [['skills', 'tabs.skills']] : []),
           ['restart', 'tabs.restart'],
         ]
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
@@ -2943,6 +3356,8 @@ window.__ModuleLoader__.load({
                   ? React.createElement(RemoteQuotaCard, null)
                 : visibleActiveTab === 'backup'
                   ? maintenanceBlock
+                : visibleActiveTab === 'skills'
+                  ? React.createElement(SkillsSection, null)
                   : restartBlock
         return React.createElement('div', null,
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
@@ -3005,12 +3420,15 @@ window.__ModuleLoader__.load({
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」「额度查询」入口由各自标签内的开关控制，默认不注册
+        // 左列「重启」「额度查询」「技能」入口由各自标签内的开关控制，默认不注册
         syncRestartNavEntry()
         syncQuotaNavEntry()
+        syncSkillsNavEntry()
         const unsubscribeFeatures = featureScope.subscribe(syncQuotaNavEntry)
+        const unsubscribeFeaturesSkills = featureScope.subscribe(syncSkillsNavEntry)
         return () => {
           unsubscribeFeatures()
+          unsubscribeFeaturesSkills()
           disposePanel()
           if (restartNavDispose) {
             restartNavDispose()
@@ -3019,6 +3437,10 @@ window.__ModuleLoader__.load({
           if (quotaNavDispose) {
             quotaNavDispose()
             quotaNavDispose = null
+          }
+          if (skillsNavDispose) {
+            skillsNavDispose()
+            skillsNavDispose = null
           }
         }
       })
