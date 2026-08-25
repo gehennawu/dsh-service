@@ -2977,9 +2977,9 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   await renderer.flush()
   assert.deepEqual(fixture.state.applies, [{ id: 'id-alpha', patch: { description: 'AI 描述', usage: 'AI 用法' }, model: 'p/m1' }])
   assert.equal(renderer.hasTest('skill-apply-done'), true)
-  // 注释以独立块展示在条目下方（仅面板展示语义）。
+  // 注释以独立块展示在条目下方：只含描述与用法两行，不再带标题说明。
   assert.equal(renderer.hasTest('skill-note-alpha'), true)
-  assert.match(renderer.text(), /AI 注释（仅面板展示，不改技能文件）/)
+  assert.equal(renderer.text().includes('仅面板展示'), false)
   // 运行日志盒保留最后一次生成的过程记录。
   console.log('DEBUG-TIDS:', renderer.findAllByTestIdPrefix('skill-').map((n) => n.props['data-testid']).join(','))
   console.log('DEBUG-BUSY-PRESENT:', renderer.text().includes('生成中'))
