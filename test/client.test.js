@@ -2248,6 +2248,54 @@ test('remaining-basis windows switch the panel word and invert the warn threshol
   assert.equal(bar.props.style.background, 'var(--dsw-alias-state-success-primary)')
 })
 
+test('balance-only providers show remaining wording and skip the fake percent in the ring panel', async () => {
+  // 纯文本窗口（余额类）没有「已用」概念：头部按剩余口径，aria 不带假百分比。
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'deepseek-official' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() { return { store, load() { return Promise.resolve() } } },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.25.0', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'deepseek-official',
+            displayName: 'DeepSeek',
+            adapted: true,
+            kind: 'deepseek',
+            refreshing: false,
+            status: 'ok',
+            windows: [{ id: 'balance-cny', text: '¥110.00', label: 'CNY', kindKey: 'balance' }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  const trigger = renderer.findByTestId('quota-ring-trigger')
+  assert.equal(trigger.props['aria-label'].includes('%'), false)
+  trigger.props.onClick()
+  await renderer.flush()
+  const text = renderer.text()
+  assert.match(text, /剩余/)
+  assert.doesNotMatch(text, /已用/)
+  assert.match(text, /CNY · 余额/)
+  assert.match(text, /¥110\.00/)
+})
+
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }

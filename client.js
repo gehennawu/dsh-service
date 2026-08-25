@@ -2211,12 +2211,17 @@ window.__ModuleLoader__.load({
         }, [open])
         if (row === undefined || row === null) return null
         const percent = tightest === null ? 0 : tightest.percent
-        const remainingBasis = tightest !== null && tightest.remaining === true
+        // 纯文本窗口（余额类：DeepSeek/Kimi/硅基流动）没有百分比可「已用」，头部按剩余口径显示；
+        // 百分比窗口仍按方言的 remaining 标记切换已用/剩余。
+        const hasPercentWindow = tightest !== null
+        const remainingBasis = !hasPercentWindow || tightest.remaining === true
         const usedWord = remainingBasis ? translate('quota.panel.remaining') : translate('quota.panel.used')
         const color = (remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
         const radius = 5.5
         const circumference = 2 * Math.PI * radius
-        const ariaText = `${translate('quota.ring.label')} · ${provider} · ${usedWord} ${percent}%`
+        const ariaText = hasPercentWindow
+          ? `${translate('quota.ring.label')} · ${provider} · ${usedWord} ${percent}%`
+          : `${translate('quota.ring.label')} · ${provider}`
         const retrySuffix = typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
           ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
           : ''
