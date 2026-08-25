@@ -410,6 +410,7 @@ window.__ModuleLoader__.load({
       'quota.kind.openrouter': 'OpenRouter',
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': '硅基流动',
+      'quota.kind.deepseek': 'DeepSeek 开放平台',
       'quota.kind.cliproxy': 'CLIProxyAPI 账号额度',
       'quota.kindAuto': '自动识别',
       'quota.noAdapted': '暂无已适配的供应商，可在下方手动适配',
@@ -450,6 +451,12 @@ window.__ModuleLoader__.load({
       'quota.unit.day': '{count} 天',
       'quota.unit.hour': '{count} 小时',
       'quota.unit.minute': '{count} 分钟',
+      'quota.window.granted-balance': '赠送余额（未过期）',
+      'quota.peak.nowIdle': '当前空闲时段 · 半价计费',
+      'quota.peak.nowPeak': '当前高峰时段 · 标准价',
+      'quota.peak.untilIdle': '{time} 转空闲（{dur}后）',
+      'quota.peak.untilPeak': '{time} 转高峰（{dur}后）',
+      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -854,6 +861,7 @@ window.__ModuleLoader__.load({
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': 'SiliconFlow',
       'quota.kind.cliproxy': 'CLIProxyAPI accounts',
+      'quota.kind.deepseek': 'DeepSeek Platform',
       'quota.kindAuto': 'Auto-detected',
       'quota.noAdapted': 'No adapted providers yet — adapt manually below',
       'quota.disable': 'Disable',
@@ -893,6 +901,12 @@ window.__ModuleLoader__.load({
       'quota.unit.day': '{count} d',
       'quota.unit.hour': '{count} h',
       'quota.unit.minute': '{count} min',
+      'quota.window.granted-balance': 'Granted balance (unexpired)',
+      'quota.peak.nowIdle': 'Off-peak now · half price',
+      'quota.peak.nowPeak': 'Peak now · standard price',
+      'quota.peak.untilIdle': 'Half price from {time} (in {dur})',
+      'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
+      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
     }
 
     // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
@@ -1673,7 +1687,7 @@ window.__ModuleLoader__.load({
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'cliproxy']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'cliproxy']
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
@@ -1879,6 +1893,130 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
+
+      // ─── DeepSeek 峰谷时段（v0.25）───────────────────────────────────────────
+      // 官方计费口径：空闲时段价格为高峰的一半。高峰 = 北京时间周一至周五 9:00–12:00、14:00–18:00；
+      // 其余全为空闲（周六日全天空闲）。北京时间固定 UTC+8 无夏令时：nowMs 平移 8h 后读 UTC 字段即得。
+      const DEEPSEEK_PEAK_SEGMENTS = [[540, 720], [840, 1080]] // 当日分钟数（北京零点起算）
+      const DEEPSEEK_PEAK_COLOR = '#f0952f'
+      const DEEPSEEK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
+      const DEEPSEEK_PEAK_TICK_MS = 30000
+      function beijingCivilParts(nowMs) {
+        const shifted = new Date(nowMs + 8 * 3600 * 1000)
+        return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
+      }
+      function deepseekIsPeakMinute(dayIndex, minutesOfDay) {
+        if (dayIndex === 0 || dayIndex === 6) return false
+        return DEEPSEEK_PEAK_SEGMENTS.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
+      }
+      /** 当前时刻的当日色带分段：周末整条空闲；工作日按峰谷边界切分（首尾相接铺满 24h）。 */
+      function deepseekDaySegments(dayIndex) {
+        if (dayIndex === 0 || dayIndex === 6) return [{ start: 0, end: 1440, peak: false }]
+        const segments = []
+        let cursor = 0
+        for (const [start, end] of DEEPSEEK_PEAK_SEGMENTS) {
+          if (cursor < start) segments.push({ start: cursor, end: start, peak: false })
+          segments.push({ start, end, peak: true })
+          cursor = end
+        }
+        if (cursor < 1440) segments.push({ start: cursor, end: 1440, peak: false })
+        return segments
+      }
+      /** 下一次峰谷切换时刻（毫秒）：逐日扫描工作日的四个边界点，取第一个状态翻转点。
+       * 最坏情形是周五 18:00 后——下一个翻转是周一 09:00，扫 5 天必然覆盖。找不到返回 null。 */
+      function deepseekNextPeakFlip(nowMs) {
+        const current = beijingCivilParts(nowMs)
+        const inPeak = deepseekIsPeakMinute(current.dayIndex, current.minutesOfDay)
+        const shifted = new Date(nowMs + 8 * 3600 * 1000)
+        shifted.setUTCHours(0, 0, 0, 0)
+        const beijingDayStart = shifted.getTime() - 8 * 3600 * 1000
+        for (let dayOffset = 0; dayOffset <= 5; dayOffset++) {
+          const dayStart = beijingDayStart + dayOffset * 86400000
+          const dayIndex = new Date(dayStart + 8 * 3600 * 1000).getUTCDay()
+          if (dayIndex === 0 || dayIndex === 6) continue
+          for (const minute of DEEPSEEK_PEAK_SEGMENTS.flat()) {
+            const candidate = dayStart + minute * 60000
+            if (candidate <= nowMs) continue
+            const parts = beijingCivilParts(candidate)
+            if (deepseekIsPeakMinute(parts.dayIndex, parts.minutesOfDay) !== inPeak) return candidate
+          }
+        }
+        return null
+      }
+      function formatBeijingClockTime(ms) {
+        const shifted = new Date(ms + 8 * 3600 * 1000)
+        const digits = (value) => String(value).padStart(2, '0')
+        return `${digits(shifted.getUTCHours())}:${digits(shifted.getUTCMinutes())}`
+      }
+
+      /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 换挡倒计时、24 小时峰谷色带
+       * （橙=高峰、绿=空闲）、跟随北京时间移动的圆点、规则说明一行。额度卡与圆环面板共用，
+       * 圆环面板窄所以不渲染说明行（showCaption:false）。时刻推进用 ctx.timer 自续链而非
+       * setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。 */
+      function QuotaPeakTimeline({ showCaption }) {
+        const translate = useTranslation()
+        // 测试桩的 useState 不调用函数式初始化器，直接传值（多算一次 Date.now 无副作用）。
+        const [now, setNow] = useState(Date.now())
+        useEffect(() => {
+          let disposed = false
+          let disposer = null
+          const schedule = () => {
+            if (disposed) return
+            disposer = ctx.timer.timeout(() => {
+              setNow(Date.now())
+              schedule()
+            }, DEEPSEEK_PEAK_TICK_MS)
+          }
+          schedule()
+          return () => {
+            disposed = true
+            if (disposer !== null && disposer !== undefined) disposer()
+          }
+        }, [])
+        const civil = beijingCivilParts(now)
+        const inPeak = deepseekIsPeakMinute(civil.dayIndex, civil.minutesOfDay)
+        const nextFlip = deepseekNextPeakFlip(now)
+        const accentColor = inPeak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR
+        const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
+        return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', minHeight: '16px' } },
+            React.createElement('span', {
+              'data-testid': 'quota-peak-state',
+              'data-in-peak': String(inPeak),
+              style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', lineHeight: '16px', color: accentColor },
+            },
+            React.createElement('span', { style: { width: '7px', height: '7px', borderRadius: '50%', background: accentColor, flexShrink: 0 } }),
+            translate(inPeak ? 'quota.peak.nowPeak' : 'quota.peak.nowIdle')),
+            nextFlip !== null ? React.createElement('span', {
+              'data-testid': 'quota-peak-next',
+              style: { marginLeft: 'auto', fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
+            }, translate(inPeak ? 'quota.peak.untilIdle' : 'quota.peak.untilPeak', {
+              time: formatBeijingClockTime(nextFlip),
+              dur: humanizeDuration(nextFlip - now, translate),
+            })) : null),
+          React.createElement('div', {
+            'data-testid': 'quota-peak-bar',
+            style: { position: 'relative', height: '10px', borderRadius: 999, overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
+          },
+          deepseekDaySegments(civil.dayIndex).map((segment, index) => React.createElement('span', {
+            key: index,
+            'data-testid': `quota-peak-segment-${index}`,
+            'data-peak': String(segment.peak),
+            style: { position: 'absolute', top: 0, bottom: 0, left: `${pctOf(segment.start)}%`, width: `${pctOf(segment.end - segment.start)}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR },
+          })),
+          React.createElement('span', {
+            'data-testid': 'quota-peak-dot',
+            'data-value': String(pctOf(civil.minutesOfDay)),
+            style: { position: 'absolute', top: '50%', left: `${pctOf(civil.minutesOfDay)}%`, transform: 'translate(-50%, -50%)', width: '12px', height: '12px', borderRadius: '50%', background: accentColor, border: '2px solid var(--dsw-specific-menu)', boxSizing: 'border-box' },
+          })),
+          React.createElement('div', { 'data-testid': 'quota-peak-axis', style: { display: 'flex', justifyContent: 'space-between', fontSize: '10px', lineHeight: '12px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' } },
+            ['00:00', '06:00', '12:00', '18:00', '24:00'].map((label) => React.createElement('span', { key: label }, label))),
+          showCaption === true ? React.createElement('div', {
+            'data-testid': 'quota-peak-caption',
+            style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
+          }, translate('quota.peak.caption')) : null)
+      }
+
       /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。v0.20 起免次数。 */
       function resetCardContent(card, translate) {
         const rawExpiry = typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '' ? card.expiresAt.trim() : ''
@@ -2122,6 +2260,9 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             windows.map((window) => renderQuotaWindowRow(window, translate, null))),
+          ...(row.kind === 'deepseek' && windows.length > 0
+            ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false })]
+            : []),
           ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
             ? [React.createElement('div', { key: 'panel-reset-cards', style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
                 row.resetCards.map((card, cardIndex) => {
@@ -2814,6 +2955,10 @@ window.__ModuleLoader__.load({
                   } else {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }
+                  // DeepSeek 余额卡专属：峰谷提示（状态徽标 + 换挡倒计时 + 24h 色带 + 随北京时间移动的圆点）。
+                  const peakTimeline = row.kind === 'deepseek' && windows.length > 0
+                    ? React.createElement(QuotaPeakTimeline, { key: 'peak-timeline', showCaption: true })
+                    : null
                                     // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，行尾自带「移除」。
                   const resetCardNodes = Array.isArray(row.resetCards)
                     ? row.resetCards.map((card, cardIndex) => {
@@ -2864,6 +3009,7 @@ window.__ModuleLoader__.load({
                           ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
                           : null)),
                     body,
+                    ...(peakTimeline !== null ? [peakTimeline] : []),
                     ...(row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
                       ? (() => {
                           const editingCred = credEditor !== null && credEditor.provider === row.provider

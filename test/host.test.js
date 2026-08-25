@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
+import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -2008,6 +2008,40 @@ test('balance parsers map credits percent and text balances', () => {
   assert.deepEqual(normalizeKimiBalance({ available_balance: 1234 }).windows, [{ id: 'balance', text: '¥12.34' }])
   assert.deepEqual(normalizeKimiBalance({ balance: 88.5 }).windows, [{ id: 'balance', text: '¥88.50' }])
   assert.deepEqual(normalizeSiliconFlowInfo({ data: { balance: 12 } }).windows, [{ id: 'balance', text: '¥12.00' }])
+})
+
+test('deepseek balance parser maps currency windows and tolerates missing fields', () => {
+  // 官方文档 fixture（api-docs.deepseek.com/zh-cn/api/get-user-balance，2026-08 核实）：
+  // 金额是字符串，total_balance = granted_balance + topped_up_balance。
+  assert.deepEqual(normalizeDeepseekBalance({
+    is_available: true,
+    balance_infos: [{ currency: 'CNY', total_balance: '110.00', granted_balance: '10.00', topped_up_balance: '100.00' }],
+  }).windows, [
+    { id: 'balance-cny', text: '¥110.00', label: 'CNY', kindKey: 'balance' },
+    { id: 'granted-cny', text: '¥10.00', label: 'CNY', kindKey: 'granted-balance' },
+  ])
+  // 赠金为 0 不追加赠金行；金额字符串直接是数字也收。
+  assert.deepEqual(
+    normalizeDeepseekBalance({ balance_infos: [{ currency: 'USD', total_balance: '9.5', granted_balance: '0.00' }] }).windows,
+    [{ id: 'balance-usd', text: '$9.50', label: 'USD', kindKey: 'balance' }],
+  )
+  // 非人民币/美元币种不带符号、后缀 ISO 码；重复币种去重；坏条目（负数/缺金额/null）逐条丢弃。
+  assert.deepEqual(
+    normalizeDeepseekBalance({ balance_infos: [
+      { currency: 'eur', total_balance: '7' },
+      { currency: 'EUR', total_balance: '8.00' },
+      { currency: 'CNY', total_balance: '-1' },
+      { currency: 'CNY' },
+      null,
+    ] }).windows,
+    [{ id: 'balance-eur', text: '7.00 EUR', label: 'EUR', kindKey: 'balance' }],
+  )
+  assert.deepEqual(normalizeDeepseekBalance(null).windows, [])
+  assert.deepEqual(normalizeDeepseekBalance({ balance_infos: 'nope' }).windows, [])
+  // 宿主常量端点链与 baseURL 自动推断（含子域与 /v1 路径后缀）。
+  assert.deepEqual(quotaEndpointFor('deepseek', ''), ['https://api.deepseek.com/user/balance'])
+  assert.equal(inferQuotaKind('https://api.deepseek.com/v1'), 'deepseek')
+  assert.equal(inferQuotaKind('https://api.deepseek.com'), 'deepseek')
 })
 
 test('zai parser derives percentage from currentValue/usage when missing (CREDIT_LIMIT)', () => {

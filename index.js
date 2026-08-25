@@ -107,6 +107,14 @@ const KIND_REGISTRY = {
     keyHints: ['SILICONFLOW_API_KEY'],
     hosts: ['siliconflow.cn'],
   },
+  // DeepSeek 开放平台官方余额（v0.25）：GET /user/balance，Bearer 即 API key。
+  // balance_infos[] 每项一个币种（文档枚举 CNY/USD），金额是字符串，total = granted + topped_up。
+  deepseek: {
+    parser: normalizeDeepseekBalance,
+    endpoints: ['https://api.deepseek.com/user/balance'],
+    keyHints: ['DEEPSEEK_API_KEY'],
+    hosts: ['api.deepseek.com', 'deepseek.com'],
+  },
   // CLIProxyAPI（router-for-me/CLIProxyAPI）管理面：查它托管的 OAuth 上游账号官方额度。
   // 无固定 endpoints / 全局 hosts——每个部署一个域名，保存适配时把 settings baseURL 的
   // hostname 钉进配置 allowedHosts[provider]（见 quota-config 写入口），外呼前复验精确命中。
@@ -964,6 +972,48 @@ function normalizeSiliconFlowInfo(payload) {
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return { windows: [] }
   return { windows: [{ id: 'balance', text: `¥${(Math.round(n * 100) / 100).toFixed(2)}` }] }
+}
+
+/**
+ * DeepSeek 官方余额（v0.25）：{is_available, balance_infos:[{currency,total_balance,granted_balance,topped_up_balance}]}
+ * → 文本窗口。每币种一行总额；赠金 > 0 时追加一行（官方口径：granted 是未过期赠金，total 含赠金+充值）。
+ * currency 作为 label（纯数据，多币种区分），窗口名走客户端词典（双语教义：宿主不拼用户可见句子，
+ * 货币符号 ¥/$ 属于数字格式化惯例，与 kimi 解析器同口径）。is_available 不改写金额——余额为 0 时
+ * 数字本身已说明问题，不伪造状态文案。
+ */
+function normalizeDeepseekBalance(payload) {
+  const infos = Array.isArray(payload?.balance_infos) ? payload.balance_infos : []
+  const windows = []
+  const seenCurrencies = new Set()
+  for (const info of infos) {
+    if (info === null || typeof info !== 'object') continue
+    const rawCurrency = typeof info.currency === 'string' ? info.currency.trim().toUpperCase() : ''
+    // 文档枚举 CNY/USD；其他三~八字母码照收（上游扩展不炸），形状不对的条目丢弃。
+    const currency = /^[A-Z]{3,8}$/.test(rawCurrency) ? rawCurrency : ''
+    if (currency === '' || seenCurrencies.has(currency)) continue
+    const total = normalizeDeepseekMoney(info.total_balance)
+    if (total === null) continue
+    seenCurrencies.add(currency)
+    const idSuffix = currency.toLowerCase()
+    windows.push({ id: `balance-${idSuffix}`, text: deepseekMoneyText(total, currency), label: currency, kindKey: 'balance' })
+    const granted = normalizeDeepseekMoney(info.granted_balance)
+    if (granted !== null && Number(granted) > 0) {
+      windows.push({ id: `granted-${idSuffix}`, text: deepseekMoneyText(granted, currency), label: currency, kindKey: 'granted-balance' })
+    }
+  }
+  return { windows }
+}
+
+/** DeepSeek 金额字段归一：字符串/数字均可（官方下发字符串），负数或非有限值拒绝，保留两位小数。 */
+function normalizeDeepseekMoney(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return null
+  return (Math.round(n * 100) / 100).toFixed(2)
+}
+
+function deepseekMoneyText(amount, currency) {
+  const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
+  return symbol === '' ? `${amount} ${currency}` : `${symbol}${amount}`
 }
 
 // ─── CLIProxyAPI（cliproxy）管理面编排 ──────────────────────────────────────
@@ -3758,6 +3808,7 @@ export {
   name,
   normalizeAntigravityModels,
   normalizeCodexRateLimit,
+  normalizeDeepseekBalance,
   normalizeGeminiBuckets,
   normalizeKimiBalance,
   normalizeOpencodeUsage,
@@ -3799,6 +3850,7 @@ export default {
   name,
   normalizeAntigravityModels,
   normalizeCodexRateLimit,
+  normalizeDeepseekBalance,
   normalizeGeminiBuckets,
   normalizeKimiBalance,
   normalizeOpencodeUsage,

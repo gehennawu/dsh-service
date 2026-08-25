@@ -2348,7 +2348,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'cliproxy'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'cliproxy'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 已适配卡片脚部下拉预选当前 kind。
@@ -2515,6 +2515,86 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.equal(renderer.hasTest('quota-provider-card-zai-coding-cn'), false)
   const backCandidates = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.ok(backCandidates.includes('zai-coding-cn'))
+})
+
+test('deepseek balance card shows a peak/off-peak timeline following Beijing time', async () => {
+  // 固定时刻驱动（Date.now 覆盖 + ctx.timer 桩推进）：周三 10:30 北京时间 = UTC 02:30，处于高峰中段。
+  const wednesdayPeak = Date.UTC(2026, 0, 7, 2, 30)
+  const realNow = Date.now
+  Date.now = () => wednesdayPeak
+  try {
+    const deepseekWindows = [
+      { id: 'balance-cny', text: '¥110.00', label: 'CNY', kindKey: 'balance' },
+      { id: 'granted-cny', text: '¥10.00', label: 'CNY', kindKey: 'granted-balance' },
+    ]
+    const renderer = createRenderer(async (channel, endpoint) => {
+      if (endpoint === 'version') return { ok: true, value: { current: '0.25.0', instanceId: 'x' } }
+      if (endpoint === 'quota') {
+        return {
+          ok: true,
+          value: {
+            providers: [
+              { provider: 'ds-official', displayName: 'DeepSeek 官方', adapted: true, kind: 'deepseek', refreshing: false, status: 'ok', windows: deepseekWindows, fetchedAt: wednesdayPeak },
+              { provider: 'kimi-row', displayName: 'Kimi', adapted: true, kind: 'kimi', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥1.00' }], fetchedAt: wednesdayPeak },
+            ],
+            serverTime: wednesdayPeak,
+          },
+        }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+
+    // 余额行：currency 作 label 与本地化窗口名拼接；赠金 > 0 追加一行。
+    const text = renderer.text('settings.section')
+    assert.match(text, /CNY · 余额/)
+    assert.match(text, /¥110\.00/)
+    assert.match(text, /CNY · 赠送余额（未过期）/)
+    assert.match(text, /¥10\.00/)
+    // 峰谷块只出现在 deepseek 卡上。
+    assert.ok(renderer.hasTest('quota-provider-card-ds-official'))
+    assert.ok(renderer.hasTest('quota-provider-card-kimi-row'))
+    assert.ok(renderer.hasTest('quota-peak-timeline')) // 只有 deepseek 卡渲染峰谷块：全页仅一份（分段数 5 可证）
+
+    // 高峰状态徽标；倒计时指向 12:00 转空闲（90 分钟）。
+    const stateNode = renderer.findByTestId('quota-peak-state')
+    assert.equal(stateNode.props['data-in-peak'], 'true')
+    const nextNode = renderer.findByTestId('quota-peak-next')
+    assert.match(String(nextNode.children[0]), /12:00 转空闲（1 小时 30 分钟后）/)
+    // 色带五个分段：idle/peak/idle/peak/idle，位置与官方时段一致（9-12、14-18 为橙）。
+    const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
+    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['false', 'true', 'false', 'true', 'false'])
+    assert.equal(segments[0].props.style.left, '0%')
+    assert.equal(segments[0].props.style.width, '37.5%')
+    assert.equal(segments[1].props.style.left, '37.5%')
+    assert.equal(segments[1].props.style.width, '12.5%')
+    assert.equal(segments[2].props.style.left, '50%')
+    assert.equal(segments[2].props.style.width, '8.3333%')
+    assert.equal(segments[3].props.style.left, '58.3333%')
+    assert.equal(segments[3].props.style.width, '16.6667%')
+    assert.equal(segments[4].props.style.left, '75%')
+    assert.equal(segments[4].props.style.width, '25%')
+    // 圆点跟随北京时间当前时刻：10:30 → 43.75%。
+    const dotNode = renderer.findByTestId('quota-peak-dot')
+    assert.equal(dotNode.props['data-value'], '43.75')
+    // 卡片内带规则说明行。
+    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五/)
+
+    // 切到周六 15:00 北京时间（UTC 07:00）：全天空闲——单条绿色分段、圆点 62.5%、下一个换挡是周一 09:00。
+    Date.now = () => Date.UTC(2026, 0, 10, 7, 0)
+    renderer.advanceTimer(30000)
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    const weekendSegments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
+    assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false'])
+    assert.equal(weekendSegments[0].props.style.width, '100%')
+    assert.equal(renderer.findByTestId('quota-peak-dot').props['data-value'], '62.5')
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /09:00 转高峰（1 天 18 小时后）/)
+  } finally {
+    Date.now = realNow
+  }
 })
 
 test('quota card header has a refresh icon that forces per-provider refresh', async () => {
