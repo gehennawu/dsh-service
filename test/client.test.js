@@ -2589,8 +2589,15 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const cardOrder = () => renderer.findByTestId('quota-card-list').children.flat(Infinity).map((child) => child.props['data-testid'])
-  // 初始为快照序；首卡↑、末卡↓禁用。
+  // 初始为快照序。
   assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-kimi-row', 'quota-provider-card-sf-row'])
+  // 默认收起：无 ↑↓ 按钮；≥2 张卡才显示「调整排序」开关，点击后箭头才出现。
+  assert.equal(renderer.hasTest('quota-move-up-zai-row'), false)
+  assert.equal(renderer.hasTest('quota-reorder-toggle'), true)
+  renderer.findByTestId('quota-reorder-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-reorder-toggle').props['aria-pressed'], 'true')
+  // 进入排序模式后：首卡↑、末卡↓禁用。
   assert.equal(renderer.findByTestId('quota-move-up-zai-row').props.disabled, true)
   assert.equal(renderer.findByTestId('quota-move-down-zai-row').props.disabled, false)
   assert.equal(renderer.findByTestId('quota-move-down-sf-row').props.disabled, true)
@@ -2609,6 +2616,15 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(cardOrder(), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row', 'quota-provider-card-openrouter-row'])
+  // 再点一次收起箭头；只剩一张卡时「调整排序」开关整体消失。
+  renderer.findByTestId('quota-reorder-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-move-up-kimi-row'), false)
+  snapshotProviders = [snapshotProviders.find((row) => row.provider === 'kimi-row')]
+  renderer.findByTestId('quota-refresh-kimi-row').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-reorder-toggle'), false)
 })
 
 test('deepseek balance card shows a peak/off-peak timeline following Beijing time', async () => {
@@ -2744,15 +2760,14 @@ test('quota card header has a refresh icon that forces per-provider refresh', as
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /滚动 5 小时.*5%/)
 
-  // 图标在更新时间之前，aria 标记为「刷新」，默认可点；排序 ↑↓ 两钮在刷新图标之前（v0.25 手动排序）。
+  // 图标在更新时间之前，aria 标记为「刷新」，默认可点；排序模式未开启时头部无 ↑↓（v0.25 收起式排序）。
   const cardRoot = renderer.findByTestId('quota-provider-card-zai-coding-cn')
   const rightCluster = cardRoot.children[0].children[1]
-  assert.equal(rightCluster.children[0].props['data-testid'], 'quota-move-up-zai-coding-cn')
-  assert.equal(rightCluster.children[1].props['data-testid'], 'quota-move-down-zai-coding-cn')
-  assert.equal(rightCluster.children[2].props['data-testid'], 'quota-refresh-zai-coding-cn')
-  assert.equal(rightCluster.children[2].props['aria-label'], '刷新')
-  assert.equal(rightCluster.children[2].props.disabled, false)
-  assert.match(String(rightCluster.children[3].children), /更新于/)
+  assert.equal(rightCluster.children[0].props['data-testid'], 'quota-refresh-zai-coding-cn')
+  assert.equal(rightCluster.children[0].props['aria-label'], '刷新')
+  assert.equal(rightCluster.children[0].props.disabled, false)
+  assert.match(String(rightCluster.children[1].children), /更新于/)
+  assert.equal(renderer.hasTest('quota-move-up-zai-coding-cn'), false)
 
   // 点击：发起 quota-refresh 并立即补拉快照；在途期间图标置灰防重入。
   const initialQuotaCalls = quotaCalls

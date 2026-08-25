@@ -406,6 +406,7 @@ window.__ModuleLoader__.load({
       'quota.refresh': '刷新',
       'quota.card.moveUp': '上移',
       'quota.card.moveDown': '下移',
+      'quota.reorder': '调整排序',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': '智谱 GLM Coding Plan',
@@ -860,6 +861,7 @@ window.__ModuleLoader__.load({
       'quota.refresh': 'Refresh',
       'quota.card.moveUp': 'Move up',
       'quota.card.moveDown': 'Move down',
+      'quota.reorder': 'Reorder',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': 'Zhipu GLM Coding Plan',
@@ -2929,6 +2931,8 @@ window.__ModuleLoader__.load({
         const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
         // 卡片手动排序：localStorage 名单驱动展示序（纯客户端，宿主契约不动）；新供应商自然排末尾。
         const [cardOrder, setCardOrder] = useState(readQuotaCardOrder())
+        // 排序模式开关（用户点名）：平时不显示 ↑↓，点「调整排序」才出现，避免卡片头部常驻小钮。
+        const [reorderMode, setReorderMode] = useState(false)
         // 卡片分区（v0.20）：只展示已适配供应商；未适配/已停用的不渲染灰行，统一收进底部「手动适配」行。
         const adaptedRows = applyQuotaCardOrder(providers.filter((row) => row.adapted === true), cardOrder)
         const candidateRows = providers.filter((row) => row.adapted !== true)
@@ -2981,6 +2985,18 @@ window.__ModuleLoader__.load({
               style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
             }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
+          // 「调整排序」开关（≥2 张卡才有意义）：进入后卡片头部出现 ↑↓，再点一次收起。
+          ...(adaptedRows.length >= 2
+            ? [React.createElement('div', { key: 'quota-reorder-row', style: { display: 'flex', justifyContent: 'flex-end', margin: '2px 0 8px' } },
+                React.createElement('button', {
+                  type: 'button',
+                  'data-testid': 'quota-reorder-toggle',
+                  'aria-pressed': String(reorderMode),
+                  title: translate('quota.reorder'),
+                  onClick: () => setReorderMode(!reorderMode),
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l2)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                }, translate('quota.reorder')))]
+            : []),
           adaptedRows.length === 0
             ? React.createElement('p', { style: hint }, translate('quota.noAdapted'))
             : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
@@ -3048,25 +3064,28 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
                       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
-                        // 手动排序（用户点名）：↑↓ 与相邻卡换位，首/末卡对应方向禁用；顺序存本浏览器。
-                        React.createElement('button', {
-                          type: 'button',
-                          'data-testid': `quota-move-up-${row.provider}`,
-                          'aria-label': translate('quota.card.moveUp'),
-                          title: translate('quota.card.moveUp'),
-                          disabled: index === 0,
-                          onClick: () => moveQuotaCard(row.provider, -1),
-                          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === 0 ? 'default' : 'pointer', opacity: index === 0 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
-                        }, '↑'),
-                        React.createElement('button', {
-                          type: 'button',
-                          'data-testid': `quota-move-down-${row.provider}`,
-                          'aria-label': translate('quota.card.moveDown'),
-                          title: translate('quota.card.moveDown'),
-                          disabled: index === adaptedRows.length - 1,
-                          onClick: () => moveQuotaCard(row.provider, 1),
-                          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === adaptedRows.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === adaptedRows.length - 1 ? 'default' : 'pointer', opacity: index === adaptedRows.length - 1 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
-                        }, '↓'),
+                        // 手动排序（用户点名）：仅在「调整排序」模式下出现；↑↓ 与相邻卡换位，
+                        // 首/末卡对应方向禁用；顺序存本浏览器。
+                        ...(reorderMode ? [
+                          React.createElement('button', {
+                            type: 'button',
+                            'data-testid': `quota-move-up-${row.provider}`,
+                            'aria-label': translate('quota.card.moveUp'),
+                            title: translate('quota.card.moveUp'),
+                            disabled: index === 0,
+                            onClick: () => moveQuotaCard(row.provider, -1),
+                            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === 0 ? 'default' : 'pointer', opacity: index === 0 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
+                          }, '↑'),
+                          React.createElement('button', {
+                            type: 'button',
+                            'data-testid': `quota-move-down-${row.provider}`,
+                            'aria-label': translate('quota.card.moveDown'),
+                            title: translate('quota.card.moveDown'),
+                            disabled: index === adaptedRows.length - 1,
+                            onClick: () => moveQuotaCard(row.provider, 1),
+                            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === adaptedRows.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === adaptedRows.length - 1 ? 'default' : 'pointer', opacity: index === adaptedRows.length - 1 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
+                          }, '↓'),
+                        ] : []),
                         // 手动刷新：SVG 图标按钮，点击强制该 provider 重拉上游；在途时置灰防重入。
                         React.createElement('button', {
                           type: 'button',
