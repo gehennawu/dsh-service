@@ -2562,7 +2562,15 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     const stateNode = renderer.findByTestId('quota-peak-state')
     assert.equal(stateNode.props['data-in-peak'], 'true')
     const nextNode = renderer.findByTestId('quota-peak-next')
-    assert.match(String(nextNode.children[0]), /12:00 转空闲（1 小时 30 分钟后）/)
+    assert.match(String(nextNode.children[0]), /12点转空闲（1 小时 30 分钟后）/)
+    // 刻度 = 区段边界时刻、两行交错（用户点名：不标均匀整点，9点/12点不相邻）。
+    const axisLabels = renderer.findAllByTestIdPrefix('quota-peak-axis-').map((node) => node.children[0])
+    assert.deepEqual(axisLabels, ['0点', '12点', '18点', '9点', '14点', '24点'])
+    const axis9 = renderer.findByTestId('quota-peak-axis-540')
+    assert.equal(axis9.props.style.left, '37.5%')
+    assert.equal(axis9.props.style.top, '13px') // 第二行，与第一行的 12 点错开
+    assert.equal(renderer.findByTestId('quota-peak-axis-720').props.style.top, '0')
+    assert.equal(renderer.findByTestId('quota-peak-axis-1440').props.style.right, 0)
     // 色带五个分段：idle/peak/idle/peak/idle，位置与官方时段一致（9-12、14-18 为橙）。
     const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
     assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['false', 'true', 'false', 'true', 'false'])
@@ -2579,8 +2587,8 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     // 圆点跟随北京时间当前时刻：10:30 → 43.75%。
     const dotNode = renderer.findByTestId('quota-peak-dot')
     assert.equal(dotNode.props['data-value'], '43.75')
-    // 卡片内带规则说明行。
-    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五/)
+    // 卡片内带规则说明行（时间措辞为「9点–12点」式，用户点名）。
+    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。/)
 
     // 切到周六 15:00 北京时间（UTC 07:00）：全天空闲——单条绿色分段、圆点 62.5%、下一个换挡是周一 09:00。
     Date.now = () => Date.UTC(2026, 0, 10, 7, 0)
@@ -2591,7 +2599,7 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false'])
     assert.equal(weekendSegments[0].props.style.width, '100%')
     assert.equal(renderer.findByTestId('quota-peak-dot').props['data-value'], '62.5')
-    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /09:00 转高峰（1 天 18 小时后）/)
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /9点转高峰（1 天 18 小时后）/)
   } finally {
     Date.now = realNow
   }

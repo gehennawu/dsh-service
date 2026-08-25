@@ -454,9 +454,15 @@ window.__ModuleLoader__.load({
       'quota.window.granted-balance': '赠送余额（未过期）',
       'quota.peak.nowIdle': '当前空闲时段 · 半价计费',
       'quota.peak.nowPeak': '当前高峰时段 · 标准价',
-      'quota.peak.untilIdle': '{time} 转空闲（{dur}后）',
-      'quota.peak.untilPeak': '{time} 转高峰（{dur}后）',
-      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
+      'quota.peak.untilIdle': '{time}转空闲（{dur}后）',
+      'quota.peak.untilPeak': '{time}转高峰（{dur}后）',
+      'quota.peak.axis.0': '0点',
+      'quota.peak.axis.540': '9点',
+      'quota.peak.axis.720': '12点',
+      'quota.peak.axis.840': '14点',
+      'quota.peak.axis.1080': '18点',
+      'quota.peak.axis.1440': '24点',
+      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -906,7 +912,13 @@ window.__ModuleLoader__.load({
       'quota.peak.nowPeak': 'Peak now · standard price',
       'quota.peak.untilIdle': 'Half price from {time} (in {dur})',
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
-      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
+      'quota.peak.axis.0': '12am',
+      'quota.peak.axis.540': '9am',
+      'quota.peak.axis.720': '12pm',
+      'quota.peak.axis.840': '2pm',
+      'quota.peak.axis.1080': '6pm',
+      'quota.peak.axis.1440': '12am',
+      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 9am–12pm and 2pm–6pm. All other times are off-peak, including all day Saturday and Sunday.',
     }
 
     // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
@@ -1901,6 +1913,16 @@ window.__ModuleLoader__.load({
       const DEEPSEEK_PEAK_COLOR = '#f0952f'
       const DEEPSEEK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
       const DEEPSEEK_PEAK_TICK_MS = 30000
+      // 色带刻度 = 区段边界时刻（而非均匀整点），两行交错避免相邻标签挤在一起（用户点名）。
+      // 文案走词典 quota.peak.axis.<分钟数>（zh「9点」/en「9am」），换挡倒计时复用同一组键。
+      const DEEPSEEK_PEAK_AXIS = [
+        { minute: 0, row: 0, align: 'start' },
+        { minute: 720, row: 0, align: 'center' },
+        { minute: 1080, row: 0, align: 'center' },
+        { minute: 540, row: 1, align: 'center' },
+        { minute: 840, row: 1, align: 'center' },
+        { minute: 1440, row: 1, align: 'end' },
+      ]
       function beijingCivilParts(nowMs) {
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
@@ -1948,6 +1970,13 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${digits(shifted.getUTCHours())}:${digits(shifted.getUTCMinutes())}`
       }
+      /** 边界时刻 → 本地化短语（zh「9点」/en「9am」，复用色带刻度词典）；键缺失回落数字钟格式。 */
+      function deepseekBoundaryLabel(ts, translate) {
+        const minute = beijingCivilParts(ts).minutesOfDay
+        const key = `quota.peak.axis.${minute}`
+        const text = translate(key)
+        return text !== key ? text : formatBeijingClockTime(ts)
+      }
 
       /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 换挡倒计时、24 小时峰谷色带
        * （橙=高峰、绿=空闲）、跟随北京时间移动的圆点、规则说明一行。额度卡与圆环面板共用，
@@ -1979,11 +2008,12 @@ window.__ModuleLoader__.load({
         const accentColor = inPeak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR
         const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
         return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', minHeight: '16px' } },
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', minHeight: '16px' } },
             React.createElement('span', {
               'data-testid': 'quota-peak-state',
               'data-in-peak': String(inPeak),
-              style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', lineHeight: '16px', color: accentColor },
+              // nowrap + flexShrink:0：容器过窄时整块折行，绝不把文字挤成一列竖排（用户点名）。
+              style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', lineHeight: '16px', color: accentColor, whiteSpace: 'nowrap', flexShrink: 0 },
             },
             React.createElement('span', { style: { width: '7px', height: '7px', borderRadius: '50%', background: accentColor, flexShrink: 0 } }),
             translate(inPeak ? 'quota.peak.nowPeak' : 'quota.peak.nowIdle')),
@@ -1991,7 +2021,7 @@ window.__ModuleLoader__.load({
               'data-testid': 'quota-peak-next',
               style: { marginLeft: 'auto', fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
             }, translate(inPeak ? 'quota.peak.untilIdle' : 'quota.peak.untilPeak', {
-              time: formatBeijingClockTime(nextFlip),
+              time: deepseekBoundaryLabel(nextFlip, translate),
               dur: humanizeDuration(nextFlip - now, translate),
             })) : null),
           React.createElement('div', {
@@ -2009,8 +2039,21 @@ window.__ModuleLoader__.load({
             'data-value': String(pctOf(civil.minutesOfDay)),
             style: { position: 'absolute', top: '50%', left: `${pctOf(civil.minutesOfDay)}%`, transform: 'translate(-50%, -50%)', width: '12px', height: '12px', borderRadius: '50%', background: accentColor, border: '2px solid var(--dsw-specific-menu)', boxSizing: 'border-box' },
           })),
-          React.createElement('div', { 'data-testid': 'quota-peak-axis', style: { display: 'flex', justifyContent: 'space-between', fontSize: '10px', lineHeight: '12px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' } },
-            ['00:00', '06:00', '12:00', '18:00', '24:00'].map((label) => React.createElement('span', { key: label }, label))),
+          React.createElement('div', { 'data-testid': 'quota-peak-axis', style: { position: 'relative', height: '26px', marginTop: '1px' } },
+            DEEPSEEK_PEAK_AXIS.map(({ minute, row, align }) => React.createElement('span', {
+              key: minute,
+              'data-testid': `quota-peak-axis-${minute}`,
+              style: {
+                position: 'absolute',
+                top: row === 0 ? '0' : '13px',
+                ...(align === 'start' ? { left: 0 } : align === 'end' ? { right: 0 } : { left: `${pctOf(minute)}%`, transform: 'translateX(-50%)' }),
+                fontSize: '10px',
+                lineHeight: '13px',
+                color: 'var(--dsw-alias-label-tertiary)',
+                whiteSpace: 'nowrap',
+                fontVariantNumeric: 'tabular-nums',
+              },
+            }, translate(`quota.peak.axis.${minute}`)))),
           showCaption === true ? React.createElement('div', {
             'data-testid': 'quota-peak-caption',
             style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
