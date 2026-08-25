@@ -50,6 +50,7 @@ const SKILLS_INDEX_VERSION = 2
 const SKILLS_INDEX_FILE = 'dsh-service-skills-index.json'
 const MAX_SKILL_FILE_BYTES = 512 * 1024
 const SKILL_DESCRIBE_TIMEOUT_MS = 90 * 1000
+const SKILL_DESCRIBE_MAX_TOKENS = 2000
 const SKILL_DESCRIPTION_MAX_CHARS = 200
 const SKILL_USAGE_MAX_CHARS = 300
 const skillsIdSecret = randomBytes(32)
@@ -2240,12 +2241,15 @@ async function collectLlmText(llm, options) {
   }, 10 * 1000)
   try {
     let text = ''
+    let reasoningChars = 0
+    let finishKind = null
+    let blockText
     const stream = llm.stream({
       provider: options.provider,
       model: options.model,
       system: skillDescribeSystemPrompt(),
       messages: [createSkillDescribeMessage(options.prompt)],
-      maxTokens: 512,
+      maxTokens: options.maxTokens ?? SKILL_DESCRIBE_MAX_TOKENS,
       signal: controller.signal,
     })
     let firstChunkSeen = false
@@ -2259,7 +2263,29 @@ async function collectLlmText(llm, options) {
         receivedChars += chunk.text.length
         if (chunk.text.length > 0 && receivedChars % 200 < chunk.text.length) options.onEvent?.('已接收 ' + receivedChars + ' 字符')
         text += chunk.text
+      } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+        // 推理流不进正文，但要计数并在日志里可见：推理耗尽预算正是「正文 0 字符」的头号原因。
+        if (!firstChunkSeen) {
+          firstChunkSeen = true
+          options.onEvent?.('模型已开始返回（先输出推理）')
+        }
+        reasoningChars += chunk.text.length
+      } else if (chunk?.type === 'block-end' && chunk.block !== undefined && chunk.block !== null && chunk.block.type === 'text' && typeof chunk.block.text === 'string') {
+        // 个别适配器不发 text-delta，只在整块里给正文：先存着，流结束后正文仍为空时兜底。
+        if (blockText === undefined) blockText = chunk.block.text
+      } else if (chunk?.type === 'finish' && chunk.reason !== undefined && chunk.reason !== null) {
+        finishKind = typeof chunk.reason === 'object' ? String(chunk.reason.kind ?? '') : String(chunk.reason)
+        if (finishKind === '') finishKind = null
       }
+    }
+    if (text === '' && finishKind !== null) options.onEvent?.('模型结束：' + finishKind + (reasoningChars > 0 ? '（仅推理 ' + reasoningChars + ' 字符，未产出正文）' : '（无任何输出）'))
+    if (text === '' && typeof blockText === 'string' && blockText !== '') {
+      options.onEvent?.('从整块输出提取正文（' + blockText.length + ' 字符）')
+      text = blockText
+    }
+    if (text === '') {
+      // 空输出给出带结束码的明确错误，不再落进误导性的 no-json-object。
+      throw new Error('empty-output' + (finishKind !== null ? ':' + finishKind : ''))
     }
     return text
   } finally {
@@ -2279,7 +2305,8 @@ async function describeSkillDraft(llm, entryName, rawContent, provider, model, o
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       onEvent?.('第 ' + (attempt + 1) + '/2 次生成：调用 ' + provider + '/' + model)
-      const text = await collectLlmText(llm, { provider, model, prompt, onEvent })
+      // 重试时把输出预算放大：推理型模型首跑可能耗尽配额却产不出正文。
+      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: attempt === 0 ? SKILL_DESCRIBE_MAX_TOKENS : SKILL_DESCRIBE_MAX_TOKENS * 4 })
       onEvent?.('输出接收完成（' + text.length + ' 字符），解析 JSON…')
       const draft = extractSkillDraftJson(text)
       onEvent?.('解析成功，草稿就绪')

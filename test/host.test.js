@@ -2638,3 +2638,70 @@ test('a directory hit by both the workspace and user root rules is scanned once 
     assert.equal(agentRoots[0].source, 'project-agents')
   })
 })
+
+test('skills-describe surfaces empty-output finish reasons and recovers via bigger budget or whole-block fallback', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-empty-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-skills-empty-ws-'))
+  t.after(() => Promise.all([
+    rm(dshHome, { recursive: true, force: true }),
+    rm(workspace, { recursive: true, force: true }),
+  ]))
+  await mkdir(join(workspace, '.agents', 'skills'), { recursive: true })
+  await writeFile(join(workspace, '.agents', 'skills', 'beta.md'), SKILL_FILE_BETA)
+  // 响应脚本：第一轮只给推理流并以 max-tokens 截断；重试（4 倍预算）返回正文。
+  const llmState = { streamCalls: [] }
+  const buildLlm = (responses) => ({
+    listProviders: () => [{ id: 'prov', name: 'Provider' }],
+    listModels: async () => [{ id: 'm1', name: 'Model One' }],
+    stream(options) {
+      llmState.streamCalls.push(options)
+      const response = responses.shift()
+      return (async function* generate() {
+        if (response === '__REASONING_TRUNCATED__') {
+          yield { type: 'reasoning-delta', index: 0, text: 'thinking...' }
+          yield { type: 'finish', reason: { kind: 'max-tokens' } }
+          return
+        }
+        if (response && response.__BLOCK__) {
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: response.__BLOCK__ } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        yield { type: 'text-delta', index: 0, text: response }
+      })()
+    },
+  })
+
+  const { handler } = createHost({
+    services: {
+      workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+      llm: buildLlm(['__REASONING_TRUNCATED__', '{"description":"恢复后的中文描述","whenToUse":"恢复后的用法"}']),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(join(workspace, '.agents'), async () => {
+    const listed = await handler('skills-list', {})
+    const beta = listed.value.entries.find((entry) => entry.name === 'beta')
+    const described = await handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1' })
+    assert.equal(described.ok, true)
+    assert.deepEqual(described.value.draft, { description: '恢复后的中文描述', usage: '恢复后的用法' })
+    const joined = (await handler('skills-describe-log', { id: beta.id })).value.logs.join('\n')
+    assert.match(joined, /模型结束：max-tokens（仅推理 \d+ 字符，未产出正文）/)
+    assert.match(joined, /失败：empty-output:max-tokens，自动重试一次/)
+    assert.match(joined, /解析成功，草稿就绪/)
+
+    // 整块兜底：适配器不发 text-delta 时从 block-end 提取。
+    const fallbackHost = createHost({
+      services: {
+        workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+        llm: buildLlm([{ __BLOCK__: '{"description":"整块描述","whenToUse":""}' }]),
+        agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+      },
+      env: { DSH_HOME: dshHome },
+    })
+    const described2 = await fallbackHost.handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1' })
+    assert.equal(described2.ok, true)
+    assert.equal(described2.value.draft.description, '整块描述')
+  })
+})
