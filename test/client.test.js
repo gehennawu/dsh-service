@@ -694,10 +694,14 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.match(text, /deepseek\/deepseek-chat.*openai\/gpt-5.*anthropic\/claude/)
   assert.doesNotMatch(text, /google\/gemini/)
   assert.match(text, /▸ 展开其余 1 个模型/)
-  assert.match(text, /按 token 总量从多到少排列/)
+  assert.match(text, /按近 7 天 token 从多到少排列/)
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
+  assert.equal(renderer.findByTestId('usage-model-scope-week').props.style.color, 'var(--dsw-alias-brand-primary)')
+  assert.notEqual(renderer.findByTestId('usage-model-scope-today').props.style.color, 'var(--dsw-alias-brand-primary)')
+  assert.notEqual(renderer.findByTestId('usage-model-scope-all').props.style.color, 'var(--dsw-alias-brand-primary)')
   let topModelBars = renderer.findAllByTestIdPrefix('usage-model-bar-')
   assert.deepEqual(topModelBars.map((bar) => Number(bar.props['data-value'])), [4300, 3160, 2020])
-  assert.equal(topModelBars[0].props['aria-label'], 'deepseek/deepseek-chat：共 4.3K token')
+  assert.equal(topModelBars[0].props['aria-label'], 'deepseek/deepseek-chat：近 7 天 4.3K token')
   assert.equal(topModelBars[0].children[0].props.style.width, '100%')
   assert.equal(topModelBars[1].children[0].props.style.width, '73.49%')
   assert.equal(renderer.findAllByTestIdPrefix('usage-model-segment-').length, 9)
@@ -741,6 +745,89 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.findButton('刷新统计').props.onClick()
   await renderer.flush()
   assert.equal(refreshes, 2)
+})
+
+test('usage model list re-sorts and relabels when switching between total and today scopes', async () => {
+  const formatDay = (offset) => {
+    const date = new Date()
+    date.setDate(date.getDate() - offset)
+    return date.toLocaleDateString('en-CA')
+  }
+  const totals = (steps, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens) => ({ steps, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheHitRate: cacheReadTokens / (inputTokens + cacheReadTokens + cacheWriteTokens) })
+  const projectModels = (models) => [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }, models }]
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 2,
+    totals: {},
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: { models: [], tools: [] },
+    days: {
+      [formatDay(9)]: {
+        // 窗口外的旧用量：只进「累计」口径，让 claude 在累计下反超 gpt-5。
+        totals: totals(2, 800, 200, 800, 200),
+        projects: projectModels([
+          { id: 'anthropic/claude', provider: 'anthropic', model: 'claude', totals: totals(2, 800, 200, 800, 200) },
+        ]),
+      },
+      [formatDay(1)]: {
+        totals: totals(8, 2500, 500, 7500, 250),
+        projects: projectModels([
+          // 昨日 gemini 独大：总量口径登顶，今日口径无数据跌出前三。
+          { id: 'google/gemini', provider: 'google', model: 'gemini', totals: totals(6, 2000, 400, 6000, 200) },
+          { id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: totals(2, 500, 100, 1500, 50) },
+        ]),
+      },
+      [formatDay(0)]: {
+        totals: totals(12, 2700, 540, 6000, 240),
+        projects: projectModels([
+          { id: 'deepseek/deepseek-chat', provider: 'deepseek', model: 'deepseek-chat', totals: totals(5, 1000, 200, 3000, 100) },
+          { id: 'openai/gpt-5', provider: 'openai', model: 'gpt-5', totals: totals(4, 900, 180, 2000, 80) },
+          { id: 'anthropic/claude', provider: 'anthropic', model: 'claude', totals: totals(3, 800, 160, 1000, 60) },
+        ]),
+      },
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  const barValues = () => renderer.findAllByTestIdPrefix('usage-model-bar-').map((bar) => Number(bar.props['data-value']))
+  // 默认近 7 天口径：gemini 8600 登顶，deepseek 6450、gpt-5 3160 随后，claude 被折叠（第 9 天旧用量不计入）。
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
+  assert.deepEqual(barValues(), [8600, 6450, 3160])
+  assert.match(renderer.text('settings.section'), /▸ 展开其余 1 个模型/)
+  // 切到今日：只聚合今天的数据——gemini 无今日用量消失，claude 进入前三。
+  await renderer.findByTestId('usage-model-scope-today').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按今日 token 从多到少排列')
+  assert.equal(renderer.findByTestId('usage-model-scope-today').props.style.color, 'var(--dsw-alias-brand-primary)')
+  assert.deepEqual(barValues(), [4300, 3160, 2020])
+  assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
+  assert.equal(renderer.findByTestId('usage-model-bar-deepseek/deepseek-chat').props['aria-label'], 'deepseek/deepseek-chat：今日 4.3K token')
+  // 切到累计：第 9 天旧用量并入，claude（4020）反超 gpt-5 进入前三。
+  await renderer.findByTestId('usage-model-scope-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按累计 token 从多到少排列')
+  assert.deepEqual(barValues(), [8600, 6450, 4020])
+  assert.match(renderer.text('settings.section'), /▸ 展开其余 1 个模型/)
+  assert.equal(renderer.findByTestId('usage-model-bar-anthropic/claude').props['aria-label'], 'anthropic/claude：累计 4K token')
+  // 切回近 7 天：排序与折叠恢复默认视图。
+  await renderer.findByTestId('usage-model-scope-week').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
+  assert.deepEqual(barValues(), [8600, 6450, 3160])
+  assert.equal(renderer.findByTestId('usage-model-bar-google/gemini').props['aria-label'], 'google/gemini：近 7 天 8.6K token')
 })
 
 test('service panel uses distinct cards, display surfaces, and semantic action colors', async () => {

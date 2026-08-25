@@ -313,8 +313,15 @@ window.__ModuleLoader__.load({
       'usage.axis': 'token 纵轴',
       'usage.models.more': '展开其余 {count} 个模型',
       'usage.models.less': '收起模型列表',
-      'usage.modelSortHint': '按 token 总量从多到少排列',
-      'usage.modelBar': '{model}：共 {total} token',
+      'usage.modelScope.today': '今日',
+      'usage.modelScope.week': '近 7 天',
+      'usage.modelScope.all': '累计',
+      'usage.modelSortHint.today': '按今日 token 从多到少排列',
+      'usage.modelSortHint.week': '按近 7 天 token 从多到少排列',
+      'usage.modelSortHint.all': '按累计 token 从多到少排列',
+      'usage.modelBar.today': '{model}：今日 {total} token',
+      'usage.modelBar.week': '{model}：近 7 天 {total} token',
+      'usage.modelBar.all': '{model}：累计 {total} token',
       'usage.refresh': '刷新统计',
       'usage.refreshing': '刷新中…',
       'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
@@ -727,8 +734,15 @@ window.__ModuleLoader__.load({
       'usage.axis': 'token vertical axis',
       'usage.models.more': 'Show {count} more models',
       'usage.models.less': 'Collapse model list',
-      'usage.modelSortHint': 'Sorted by total tokens, largest first',
-      'usage.modelBar': '{model}: {total} tokens in total',
+      'usage.modelScope.today': 'Today',
+      'usage.modelScope.week': 'Last 7 days',
+      'usage.modelScope.all': 'All time',
+      'usage.modelSortHint.today': 'Sorted by tokens used today, largest first',
+      'usage.modelSortHint.week': 'Sorted by tokens in the last 7 days, largest first',
+      'usage.modelSortHint.all': 'Sorted by all-time tokens, largest first',
+      'usage.modelBar.today': '{model}: {total} tokens today',
+      'usage.modelBar.week': '{model}: {total} tokens in the last 7 days',
+      'usage.modelBar.all': '{model}: {total} tokens in total',
       'usage.refresh': 'Refresh usage',
       'usage.refreshing': 'Refreshing…',
       'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
@@ -2820,6 +2834,8 @@ window.__ModuleLoader__.load({
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
+        // 模型列表口径：today=仅今日 / week=近 7 天（默认，保持既有视图）/ all=宿主索引内全部日期累计。
+        const [modelScope, setModelScope] = useState('week')
         const [activeTab, setActiveTab] = useState('overview')
         // 版本详情行内展开（不用浮层：弹层会被设置模态盖住）
         const [channelOpen, setChannelOpen] = useState(false)
@@ -3152,6 +3168,8 @@ window.__ModuleLoader__.load({
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
         const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 10px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
         const inlineTabActive = { color: 'var(--dsw-alias-brand-primary)', borderBottom: '2px solid var(--dsw-alias-brand-primary)', fontWeight: 700 }
+        // 模型列表头部的紧凑口径切换：沿用下划线标签语言，但按 11px 行高缩比。
+        const compactTab = Object.assign({}, inlineTab, { padding: '3px 6px', fontSize: '11px' })
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
         const formatSize = (bytes) => {
@@ -3242,23 +3260,34 @@ window.__ModuleLoader__.load({
         const selectedProjects = usageProject === 'all'
           ? (usage?.projects || []).map((project) => project.id)
           : [usageProject]
-        const modelTotals = new Map()
-        for (const day of usageDays) {
-          const source = usage?.days?.[day.key]
-          if (!source) continue
+        const emptyModelTotals = (id) => ({ id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+        const accumulateModelTotals = (buckets, model) => {
+          const existing = buckets.get(model.id) || emptyModelTotals(model.id)
+          existing.steps += model.totals.steps || 0
+          existing.inputTokens += model.totals.inputTokens || 0
+          existing.outputTokens += model.totals.outputTokens || 0
+          existing.cacheReadTokens += model.totals.cacheReadTokens || 0
+          existing.cacheWriteTokens += model.totals.cacheWriteTokens || 0
+          buckets.set(model.id, existing)
+        }
+        const modelTodayTotals = new Map()
+        const modelWeekTotals = new Map()
+        const modelAllTotals = new Map()
+        const weekDayKeys = new Set(usageDays.map((day) => day.key))
+        const todayDayKey = usageDays[usageDays.length - 1].key
+        // 累计口径遍历宿主下发的全部日期键（可早于 7 天窗口）；周/今日按窗口命中累积。
+        for (const [dayKey, source] of Object.entries(usage?.days || {})) {
+          const targets = [modelAllTotals]
+          if (weekDayKeys.has(dayKey)) targets.push(modelWeekTotals)
+          if (dayKey === todayDayKey) targets.push(modelTodayTotals)
           for (const project of source.projects) {
             if (!selectedProjects.includes(project.id)) continue
             for (const model of project.models) {
-              const existing = modelTotals.get(model.id) || { id: model.id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
-              existing.steps += model.totals.steps || 0
-              existing.inputTokens += model.totals.inputTokens || 0
-              existing.outputTokens += model.totals.outputTokens || 0
-              existing.cacheReadTokens += model.totals.cacheReadTokens || 0
-              existing.cacheWriteTokens += model.totals.cacheWriteTokens || 0
-              modelTotals.set(model.id, existing)
+              for (const buckets of targets) accumulateModelTotals(buckets, model)
             }
           }
         }
+        const scopedModelTotals = modelScope === 'today' ? modelTodayTotals : modelScope === 'all' ? modelAllTotals : modelWeekTotals
         const diagnosticDetail = (check) => {
           const detail = String(check.detail ?? '')
           if (check.id === 'session-storage' && check.status === 'ok') return translate('health.detail.session-storage.ok', { count: detail })
@@ -3297,7 +3326,7 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, translate(label)),
             React.createElement('span', { style: { fontWeight: 650 } }, value)))
         )
-        const sortedModels = [...modelTotals.values()].sort((a, b) => modelTotalTokens(b) - modelTotalTokens(a) || b.steps - a.steps || a.id.localeCompare(b.id))
+        const sortedModels = [...scopedModelTotals.values()].sort((a, b) => modelTotalTokens(b) - modelTotalTokens(a) || b.steps - a.steps || a.id.localeCompare(b.id))
         const visibleModels = modelsOpen ? sortedModels : sortedModels.slice(0, 3)
         const hiddenModelCount = Math.max(0, sortedModels.length - 3)
         const maxModelTokens = Math.max(1, ...visibleModels.map((model) => modelTotalTokens(model)))
@@ -3360,7 +3389,15 @@ window.__ModuleLoader__.load({
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
                 React.createElement('div', { 'data-testid': 'usage-model-list', style: { marginTop: '10px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)' } },
-                  React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } }, translate('usage.modelSortHint')),
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' } },
+                    React.createElement('div', { 'data-testid': 'usage-model-sort-hint', style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, translate(`usage.modelSortHint.${modelScope}`)),
+                    React.createElement('div', { 'data-testid': 'usage-model-scope-tabs', style: { display: 'flex', gap: '2px' } },
+                      ['today', 'week', 'all'].map((scopeId) => React.createElement('button', {
+                        key: scopeId,
+                        'data-testid': `usage-model-scope-${scopeId}`,
+                        style: Object.assign({}, compactTab, modelScope === scopeId ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }),
+                        onClick: () => setModelScope(scopeId),
+                      }, translate(`usage.modelScope.${scopeId}`))))),
                   visibleModels.map((model, index) => {
                     const total = modelTotalTokens(model)
                     const fillWidth = `${Math.round(total / maxModelTokens * 10000) / 100}%`
@@ -3368,7 +3405,7 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', fontSize: '12px' } },
                         React.createElement('span', { style: { overflowWrap: 'anywhere' } }, model.id),
                         React.createElement('span', { style: { fontWeight: 650, whiteSpace: 'nowrap' } }, formatTokenValue(total))),
-                      React.createElement('div', { 'data-testid': `usage-model-bar-${model.id}`, 'data-value': total, 'aria-label': translate('usage.modelBar', { model: model.id, total: formatTokenValue(total) }), style: { height: '8px', borderRadius: '4px', marginTop: '6px', overflow: 'hidden', background: 'var(--dsw-alias-border-l1)' } },
+                      React.createElement('div', { 'data-testid': `usage-model-bar-${model.id}`, 'data-value': total, 'aria-label': translate(`usage.modelBar.${modelScope}`, { model: model.id, total: formatTokenValue(total) }), style: { height: '8px', borderRadius: '4px', marginTop: '6px', overflow: 'hidden', background: 'var(--dsw-alias-border-l1)' } },
                         React.createElement('div', { style: { display: 'flex', height: '100%', width: fillWidth } },
                           usageSegments.map(([metricName, , color]) => {
                             const value = modelSegmentValue(model, metricName)

@@ -38,7 +38,7 @@ The plugin also appears under **Plugins → Plugin configuration**, with six hos
 
 - 7-day stacked bar chart of input/output/cache tokens with blue/orange/teal legend
 - Filter by project; hover for exact values
-- Model breakdown as horizontal stacked bars (same legend colors), sorted by total tokens, largest first; each row keeps `x times · Cache hit x% · Input xM token · Output xM token`
+- Model breakdown as horizontal stacked bars (same legend colors) with a "Today / Last 7 days / All time" toggle on the right of the list header (default: last 7 days): Today aggregates only the current day, Last 7 days ranks within the chart's window, and All time covers every date in the index (bounded by session retention); each row keeps `x times · Cache hit x% · Input xM token · Output xM token`
 - Steps whose provider reports no token usage are excluded from the statistics
 - Last-24-hour model/tool error statistics, collapsed by default
 
