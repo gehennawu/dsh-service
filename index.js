@@ -79,6 +79,8 @@ const KIND_REGISTRY = {
     parser: normalizeOpencodeUsage,
     keyHints: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
     hosts: ['opencode.ai'],
+    // 官网用户页（卡片标题外链；宿主常量，零浏览器输入）。
+    usageUrl: 'https://opencode.ai/',
   },
   'zai-coding-cn': {
     parser: normalizeZaiCodingUsage,
@@ -88,6 +90,7 @@ const KIND_REGISTRY = {
     ],
     keyHints: ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'BIGMODEL_API_KEY'],
     hosts: ['open.bigmodel.cn', 'bigmodel.cn'],
+    usageUrl: 'https://open.bigmodel.cn/coding-plan/personal/usage',
   },
   openrouter: {
     parser: normalizeOpenRouterCredits,
@@ -114,6 +117,7 @@ const KIND_REGISTRY = {
     endpoints: ['https://api.deepseek.com/user/balance'],
     keyHints: ['DEEPSEEK_API_KEY'],
     hosts: ['api.deepseek.com', 'deepseek.com'],
+    usageUrl: 'https://platform.deepseek.com/usage',
   },
   // CLIProxyAPI（router-for-me/CLIProxyAPI）管理面：查它托管的 OAuth 上游账号官方额度。
   // 无固定 endpoints / 全局 hosts——每个部署一个域名，保存适配时把 settings baseURL 的
@@ -3677,6 +3681,8 @@ function apply(ctx) {
             nextAllowedAt: view.nextAllowedAt,
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
             ...(credentialHints !== undefined ? { credentialHints } : {}),
+            // 官网用户页余额网址（宿主常量白名单随 kind 下发；无则缺省）。
+            ...(typeof KIND_REGISTRY[kind].usageUrl === 'string' && KIND_REGISTRY[kind].usageUrl !== '' ? { usageUrl: KIND_REGISTRY[kind].usageUrl } : {}),
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }

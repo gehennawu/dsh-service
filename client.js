@@ -407,6 +407,7 @@ window.__ModuleLoader__.load({
       'quota.card.moveUp': '上移',
       'quota.card.moveDown': '下移',
       'quota.reorder': '调整排序',
+      'quota.usageLink': '打开官网用量页',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': '智谱 GLM Coding Plan',
@@ -862,6 +863,7 @@ window.__ModuleLoader__.load({
       'quota.card.moveUp': 'Move up',
       'quota.card.moveDown': 'Move down',
       'quota.reorder': 'Reorder',
+      'quota.usageLink': 'Open the official usage page',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': 'Zhipu GLM Coding Plan',
@@ -3002,7 +3004,17 @@ window.__ModuleLoader__.load({
             : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
                 adaptedRows.map((row, index) => {
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
-                    row.displayName || row.provider,
+                    // 官网用量页链接（用户点名）：宿主按 kind 下发 usageUrl 时，展示名本身即外链。
+                    typeof row.usageUrl === 'string' && row.usageUrl !== ''
+                      ? React.createElement('a', {
+                          'data-testid': `quota-usage-link-${row.provider}`,
+                          href: row.usageUrl,
+                          target: '_blank',
+                          rel: 'noreferrer',
+                          title: translate('quota.usageLink'),
+                          style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline' },
+                        }, row.displayName || row.provider)
+                      : (row.displayName || row.provider),
                     row.kindSource === 'auto'
                       ? React.createElement('span', {
                           'data-testid': `quota-auto-tag-${row.provider}`,

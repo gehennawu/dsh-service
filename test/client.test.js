@@ -2324,7 +2324,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
         ...(opencodeAdapted ? [{
           provider: 'opencode-go', displayName: 'OpenCode Go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok',
           windows: [{ id: 'rolling', percent: 3, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
-          fetchedAt: Date.now(),
+          fetchedAt: Date.now(), usageUrl: 'https://opencode.ai/',
         }] : [{ provider: 'opencode-go', displayName: 'OpenCode Go', adapted: false }]),
         ...(zaiAdapted ? [{
           provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: true, kind: zaiKind === null ? 'zai-coding-cn' : zaiKind,
@@ -2333,7 +2333,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
           fetchedAt: Date.now(),
           ...(zaiCards.length > 0 ? { resetCards: zaiCards.map((card) => ({ provider: 'zai-coding-cn', ...card })) } : {}),
         }] : [{ provider: 'zai-coding-cn', displayName: 'zai-coding-cn', adapted: false }]),
-        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ id: 'or-1', provider: 'openrouter', label: '周额度重置卡', expiresAt: '2099-06-01' }] },
+        { provider: 'openrouter', displayName: 'openrouter', adapted: true, kind: 'opencode-go', kindSource: 'auto', refreshing: false, status: 'ok', windows: [{ id: 'weekly', percent: 14 }], fetchedAt: Date.now(), resetCards: [{ id: 'or-1', provider: 'openrouter', label: '周额度重置卡', expiresAt: '2099-06-01' }], usageUrl: 'https://opencode.ai/' },
       ],
     },
   })
@@ -2425,6 +2425,8 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   assert.deepEqual(configCalls, [{ provider: 'opencode-go', kind: 'opencode-go' }])
   assert.ok(renderer.hasTest('quota-provider-card-opencode-go'))
+  // 官网用量页链接（用户点名）：opencode-go 标题即外链。
+  assert.equal(renderer.findByTestId('quota-usage-link-opencode-go').props.href, 'https://opencode.ai/')
   assert.ok(renderer.hasTest('quota-add-adapt')) // zai 仍未适配，手动适配行保留
   const restCandidates = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(restCandidates, ['', 'zai-coding-cn']) // 已适配的 opencode-go 从候选中移除
@@ -2568,7 +2570,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
 test('quota cards support manual reordering persisted in localStorage', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   let snapshotProviders = [
-    { provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3 }], fetchedAt: Date.now() },
+    { provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3 }], fetchedAt: Date.now(), usageUrl: 'https://open.bigmodel.cn/coding-plan/personal/usage' },
     { provider: 'kimi-row', displayName: 'Kimi', adapted: true, kind: 'kimi', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥12.34' }], fetchedAt: Date.now() },
     { provider: 'sf-row', displayName: '硅基流动', adapted: true, kind: 'siliconflow', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥8.00' }], fetchedAt: Date.now() },
   ]
@@ -2589,6 +2591,11 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const cardOrder = () => renderer.findByTestId('quota-card-list').children.flat(Infinity).map((child) => child.props['data-testid'])
+  // 官网用量页链接：zai 卡标题为外链（新标签页），kimi 未登记无链接。
+  const zaiLink = renderer.findByTestId('quota-usage-link-zai-row')
+  assert.equal(zaiLink.props.href, 'https://open.bigmodel.cn/coding-plan/personal/usage')
+  assert.equal(zaiLink.props.target, '_blank')
+  assert.equal(renderer.hasTest('quota-usage-link-kimi-row'), false)
   // 初始为快照序。
   assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-kimi-row', 'quota-provider-card-sf-row'])
   // 默认收起：无 ↑↓ 按钮；≥2 张卡才显示「调整排序」开关，点击后箭头才出现。

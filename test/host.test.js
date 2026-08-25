@@ -1970,6 +1970,8 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   assert.equal(dsRow.kind, 'deepseek')
   assert.equal(dsRow.kindSource, 'auto')
   assert.equal(dsRow.displayName, 'DeepSeek') // 渠道对象的 name 作展示名
+  assert.equal(dsRow.usageUrl, 'https://platform.deepseek.com/usage') // 官网用户页随 kind 下发
+  assert.equal(byProvider.get('openrouter').usageUrl, undefined)
   assert.equal(byProvider.has('pi-catalog-noise'), false)
   assert.equal(byProvider.has('legacy-string'), false)
 
@@ -2044,6 +2046,7 @@ test('quota RPC auto-infers the kind from baseURL and honors explicit null as di
   const disabledRow = rows.find((row) => row.provider === 'zai-disabled')
   assert.equal(disabledRow.adapted, false)
   assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
+  assert.equal(rows.find((row) => row.provider === 'zai-bigmodel').usageUrl, 'https://open.bigmodel.cn/coding-plan/personal/usage')
   // 只有自动适配的那一行打了上游。
   assert.deepEqual(requests, ['https://open.bigmodel.cn/api/monitor/usage/quota/limit'])
 })
