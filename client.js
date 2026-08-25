@@ -454,16 +454,10 @@ window.__ModuleLoader__.load({
       'quota.window.granted-balance': '赠送余额（未过期）',
       'quota.peak.nowIdle': '当前空闲时段 · 半价计费',
       'quota.peak.nowPeak': '当前高峰时段 · 标准价',
-      'quota.peak.untilIdle': '{time}转空闲（{dur}后）',
-      'quota.peak.untilPeak': '{time}转高峰（{dur}后）',
+      'quota.peak.untilIdle': '{time} 转空闲（{dur}后）',
+      'quota.peak.untilPeak': '{time} 转高峰（{dur}后）',
       'quota.peak.tag.peak': '忙时',
       'quota.peak.tag.idle': '闲时',
-      'quota.peak.boundary.0': '0点',
-      'quota.peak.boundary.540': '9点',
-      'quota.peak.boundary.720': '12点',
-      'quota.peak.boundary.840': '14点',
-      'quota.peak.boundary.1080': '18点',
-      'quota.peak.boundary.1440': '24点',
       'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。',
     }
     const en = {
@@ -916,12 +910,6 @@ window.__ModuleLoader__.load({
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
       'quota.peak.tag.peak': 'Peak',
       'quota.peak.tag.idle': 'Off-peak',
-      'quota.peak.boundary.0': '12am',
-      'quota.peak.boundary.540': '9am',
-      'quota.peak.boundary.720': '12pm',
-      'quota.peak.boundary.840': '2pm',
-      'quota.peak.boundary.1080': '6pm',
-      'quota.peak.boundary.1440': '12am',
       'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 9am–12pm and 2pm–6pm. All other times are off-peak, including all day Saturday and Sunday.',
     }
 
@@ -1957,14 +1945,7 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${digits(shifted.getUTCHours())}:${digits(shifted.getUTCMinutes())}`
       }
-      /** 边界时刻 → 本地化短语（zh「9点」/en「9am」，复用色带刻度词典）；键缺失回落数字钟格式。 */
-      function deepseekBoundaryLabel(ts, translate) {
-        const minute = beijingCivilParts(ts).minutesOfDay
-        const key = `quota.peak.boundary.${minute}`
-        const text = translate(key)
-        return text !== key ? text : formatBeijingClockTime(ts)
-      }
-
+      
       /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 换挡倒计时、24 小时峰谷色带
        * （橙=高峰、绿=空闲）、跟随北京时间移动的圆点、规则说明一行。额度卡与圆环面板共用，
        * 圆环面板窄所以不渲染说明行（showCaption:false）。时刻推进用 ctx.timer 自续链而非
@@ -2010,7 +1991,7 @@ window.__ModuleLoader__.load({
               'data-testid': 'quota-peak-next',
               style: { marginLeft: 'auto', fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
             }, translate(inPeak ? 'quota.peak.untilIdle' : 'quota.peak.untilPeak', {
-              time: deepseekBoundaryLabel(nextFlip, translate),
+              time: formatBeijingClockTime(nextFlip),
               dur: humanizeDuration(nextFlip - now, translate),
             })) : null),
           React.createElement('div', {

@@ -2562,7 +2562,7 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     const stateNode = renderer.findByTestId('quota-peak-state')
     assert.equal(stateNode.props['data-in-peak'], 'true')
     const nextNode = renderer.findByTestId('quota-peak-next')
-    assert.match(String(nextNode.children[0]), /12点转空闲（1 小时 30 分钟后）/)
+    assert.match(String(nextNode.children[0]), /12:00 转空闲（1 小时 30 分钟后）/)
     // 两段式色带（用户点名）：第一段 = 当前时段剩余，第二段 = 下一个相反时段，宽度按实际时长。
     // 周三 10:30 高峰中段：剩余 90 分钟 + 空闲 12-14 的 120 分钟。
     const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
@@ -2592,7 +2592,7 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.equal(String(weekendSegments[0].children[0].children[0]), '闲时')
     assert.equal(weekendSegments[1].props.style.width, '6.6667%')
     assert.deepEqual(weekendSegments[1].children.filter(Boolean), [])
-    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /9点转高峰（1 天 18 小时后）/)
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /09:00 转高峰（1 天 18 小时后）/)
   } finally {
     Date.now = realNow
   }
