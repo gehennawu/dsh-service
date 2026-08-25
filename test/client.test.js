@@ -3010,7 +3010,7 @@ test('batch card plans, starts, and settles through the status poll with a refre
   renderer.findByTestId('skills-batch-plan').props.onClick()
   await renderer.flush()
   assert.match(renderer.text(), /候选 1 项/)
-  assert.match(renderer.text(), /待确认/)
+  assert.match(renderer.text(), /待开始（核对候选后点击「开始批量补全」）/)
   assert.match(renderer.text(), /跳过 1 项/)
 
   renderer.findByTestId('skills-batch-start').props.onClick()
