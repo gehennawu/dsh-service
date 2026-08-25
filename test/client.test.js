@@ -3001,6 +3001,11 @@ test('batch card plans, starts, and settles through the status poll with a refre
   await renderer.flush()
   await renderer.flush()
   await renderer.flush()
+  // 批量入口默认折叠为单个按钮；点击展开完整卡片。
+  assert.equal(renderer.hasTest('skills-batch-card'), false)
+  renderer.findByTestId('skills-batch-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-batch-card'), true)
   const listCallsAfterLoad = fixture.state.listCalls
 
   // 批量卡片自带模型下拉：默认取会话默认模型（fixture current = p/m2），可改选。
@@ -3065,6 +3070,7 @@ test('an adopted planned batch without a local plan recovers through the plan bu
   await renderer.flush()
   await renderer.flush()
 
+  // 宿主遗留 planned 任务：批量卡片自动展开（在途任务自动可见），无需点击入口。
   // 宿主停在 planned 但本端无计划：不显示开始按钮，而是回到空闲态给出「生成计划」。
   assert.equal(renderer.hasTest('skills-batch-start'), false)
   const planButton = renderer.findByTestId('skills-batch-plan')

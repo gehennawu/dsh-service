@@ -41,6 +41,8 @@ window.__ModuleLoader__.load({
       'skills.note.stale': '正文已变更，待重新补全',
       'skills.note.remove': '移除 AI 注释',
       'skills.log.title': '运行日志',
+      'skills.batch.toggle': '批量注释',
+      'skills.batch.collapse': '收起',
       'skills.batch.already': '已有批量任务在进行中，请等待完成或先取消',
       'skills.invalid.legacy': '存在旧版调用键，已从模型目录剔除',
       'skills.invalid.other': '无效条目：{reason}',
@@ -411,6 +413,8 @@ window.__ModuleLoader__.load({
       'skills.note.stale': 'Body changed; refill needed',
       'skills.note.remove': 'Remove AI note',
       'skills.log.title': 'Run log',
+      'skills.batch.toggle': 'Batch annotate',
+      'skills.batch.collapse': 'Collapse',
       'skills.batch.already': 'A batch is already running; wait for it or cancel first',
       'skills.invalid.legacy': 'Legacy invocation keys present; excluded from the model catalog',
       'skills.invalid.other': 'Invalid entry: {reason}',
@@ -2341,7 +2345,9 @@ window.__ModuleLoader__.load({
           const phaseLabel = effectivePhase
           const progress = batch !== null && batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0
           return React.createElement('div', { 'data-testid': 'skills-batch-card', style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '12px', padding: '13px 15px', margin: '14px 0' } },
-            React.createElement('div', { style: { fontSize: '13.5px', fontWeight: 700 } }, translate('skills.batch.title')),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' } },
+              React.createElement('div', { style: { fontSize: '13.5px', fontWeight: 700 } }, translate('skills.batch.title')),
+              React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-collapse', onClick: () => setBatchCardOpen(false), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '12px' } }, translate('skills.batch.collapse') + ' ▴')),
             React.createElement('p', { style: { ...hint, marginTop: '4px' } }, translate('skills.batch.hint')),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '9px', flexWrap: 'wrap' } },
               batchModels !== null && batchModels.length > 0 ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.batch.model'),
@@ -2373,18 +2379,24 @@ window.__ModuleLoader__.load({
         }
 
         const [skillsNav, setSkillsNav] = useSkillsNavEnabled()
+        // 批量注释默认折叠成单个入口按钮；有任务在途（运行/待开始）时自动展开。
+        const [batchCardOpen, setBatchCardOpen] = useState(false)
+        useEffect(() => {
+          if (batch !== null && (batch.phase === 'running' || batch.phase === 'planned')) setBatchCardOpen(true)
+        }, [batch !== null && batch.phase])
         return React.createElement('div', { 'data-testid': 'skills-section' },
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
-            React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsh-service-skip, var(--dsw-alias-border-l2))', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
-            React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻')),
+            React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.nav.toggle'),
+                pillSwitch(skillsNav, { testid: 'skills-nav-switch', onClick: () => setSkillsNav(!skillsNav) })),
+              React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻'))),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
           (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(error !== '' ? error : batchError)) : null,
+          data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
+          batchCardOpen && data !== null && data.llmAvailable ? renderBatchCard() : null,
           renderDescribeDialog(),
-          data !== null && data.llmAvailable ? renderBatchCard() : null,
-          renderGroups(),
-          React.createElement('div', { style: { marginTop: '16px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
-            React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('skills.nav.toggle')),
-            pillSwitch(skillsNav, { testid: 'skills-nav-switch', onClick: () => setSkillsNav(!skillsNav) })))
+          renderGroups())
       }
 
       function QuotaSection() {
