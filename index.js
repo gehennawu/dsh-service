@@ -733,6 +733,47 @@ function readLlmProviders(settings) {
 }
 
 /**
+ * 运行时 LLM 渠道别名表（v0.25）：DSH 有 settings 之外的内置 LLM 渠道（如 dsh-llm-deepseek
+ * 注册的 deepseek-official 路由），它们不出现在 llm-pi-ai.providers 清单里，额度查询却同样适用。
+ * 只有「kind 固定端点 + keyHints 齐备」的渠道才允许进表——进表即自证兼容（官方域名、凭据线索
+ * 宿主常量），延续零意外外呼口径：不在表内的运行时渠道一概不产生行。
+ */
+const QUOTA_RUNTIME_CHANNEL_KINDS = {
+  'deepseek-official': 'deepseek',
+}
+
+/** 运行时 llm 服务已注册渠道 → 合成 provider 行（runtimeKind 标记别名来源）。服务缺席/异常返回空表。 */
+function readRuntimeQuotaChannels(llm) {
+  if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') return []
+  let ids
+  try {
+    ids = llm.listProviders()
+  } catch (_) {
+    return []
+  }
+  if (!Array.isArray(ids)) return []
+  const channels = []
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0 || id.length > MAX_QUOTA_PROVIDER_NAME) continue
+    if (!Object.prototype.hasOwnProperty.call(QUOTA_RUNTIME_CHANNEL_KINDS, id)) continue
+    const kind = QUOTA_RUNTIME_CHANNEL_KINDS[id]
+    if (KIND_REGISTRY[kind] === undefined) continue
+    channels.push({ name: id, displayName: id, baseURL: '', apiKeyEnv: '', runtimeKind: kind })
+  }
+  return channels
+}
+
+/** 额度查询的供应商清单 = settings 路由在前 + 运行时别名渠道殿后（settings 同名条目优先）。 */
+function readQuotaProfiles(settings, llm) {
+  const profiles = readLlmProviders(settings)
+  const known = new Set(profiles.map((profile) => profile.name))
+  for (const channel of readRuntimeQuotaChannels(llm)) {
+    if (!known.has(channel.name)) profiles.push(channel)
+  }
+  return profiles
+}
+
+/**
  * opencode-go 方言 → 统一窗口形状。真实端点只有 percent 与 resetsAt（ISO），
  * 没有金额字段：percent 是一等公民，缺字段/非数字跳过该窗口，percent 截到 [0,100]。
  */
@@ -830,7 +871,8 @@ function cliproxyFetchGuard(profile, config) {
 
 /**
  * 单个 provider 的 kind 解析（quota 与 quota-refresh 共用）。
- * 优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断；未命中返回空对象。
+ * 优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断 >
+ * 运行时渠道别名（readRuntimeQuotaChannels 合成的行带 runtimeKind）；未命中返回空对象。
  */
 function resolveQuotaKind(config, profile) {
   if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
@@ -840,6 +882,7 @@ function resolveQuotaKind(config, profile) {
     return {}
   }
   const inferred = inferQuotaKind(profile.baseURL)
+    ?? (profile.runtimeKind !== undefined && KIND_REGISTRY[profile.runtimeKind] !== undefined ? profile.runtimeKind : undefined)
   if (inferred !== undefined && KIND_REGISTRY[inferred] !== undefined) return { kind: inferred, kindSource: 'auto' }
   return {}
 }
@@ -3561,7 +3604,7 @@ function apply(ctx) {
     if (endpoint === 'quota') {
       if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
-        const providers = readLlmProviders(ctx.get('settings'))
+        const providers = readQuotaProfiles(ctx.get('settings'), ctx.get('llm'))
         quotaThrottle.prune(new Set(providers.map((profile) => profile.name)))
         const config = await refreshQuotaConfigCache()
         const allResetCards = Array.isArray(config.resetCards) ? config.resetCards : []
@@ -3640,7 +3683,7 @@ function apply(ctx) {
         // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
         // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const profile = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        const profile = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
         if (profile === undefined) return { ok: false, error: 'unknown-provider' }
         const config = await refreshQuotaConfigCache()
         const { kind } = resolveQuotaKind(config, profile)
@@ -3663,7 +3706,7 @@ function apply(ctx) {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
         // {clear:true} 删掉覆盖键回退自动推断；{kind:null} 存显式停用（baseURL 可推断也不外呼）；{kind:<name>} 指定适配。
-        const profileForProvider = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
         if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
         return await serializeQuotaConfigWrite(async (config) => {
           if (payload?.clear === true) {
@@ -3703,7 +3746,7 @@ function apply(ctx) {
       if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
       try {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const profileForProvider = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
         if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
         const config = await refreshQuotaConfigCache()
         const { kind } = resolveQuotaKind(config, profileForProvider)
@@ -3744,7 +3787,7 @@ function apply(ctx) {
         // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，
         // 其余载荷为追加一条（label/expiresAt 截断限长），单 provider 上限 10 条防配置膨胀。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        if (!readLlmProviders(ctx.get('settings')).some((candidate) => candidate.name === providerName)) {
+        if (!readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
         return await serializeQuotaConfigWrite(async (config) => {

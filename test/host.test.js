@@ -1940,6 +1940,53 @@ test('zai-coding-cn parser maps every limit window and tolerates idle windows wi
   )
 })
 
+test('quota merges runtime llm channels via the alias table (deepseek-official) without extra rows', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-channel-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 全程离线保险：记录一切 https.get——别名渠道无凭据时应在解凭据一步就停，绝不出网。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    return originalGet(url, options, callback)
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' } } } : undefined) },
+      llm: { listProviders: () => ['pi-catalog-noise', 'deepseek-official', 'openrouter'] },
+    },
+  })
+
+  const first = await host.handler('quota', {})
+  assert.equal(first.ok, true)
+  const byProvider = new Map(first.value.providers.map((row) => [row.provider, row]))
+  // 别名渠道合成行并按 runtimeKind 自动适配；表外运行时渠道不产生行；settings 路由照旧。
+  const dsRow = byProvider.get('deepseek-official')
+  assert.ok(dsRow, 'deepseek-official row missing')
+  assert.equal(dsRow.adapted, true)
+  assert.equal(dsRow.kind, 'deepseek')
+  assert.equal(dsRow.kindSource, 'auto')
+  assert.equal(byProvider.has('pi-catalog-noise'), false)
+  assert.equal(byProvider.get('openrouter').adapted, false)
+
+  // 显式停用（kind:null）优先于别名自动适配；clear 回退后恢复。
+  const saved = await host.handler('quota-config', { provider: 'deepseek-official', kind: null })
+  assert.equal(saved.ok, true)
+  assert.equal((await host.handler('quota', {})).value.providers.find((row) => row.provider === 'deepseek-official').adapted, false)
+  await host.handler('quota-config', { provider: 'deepseek-official', clear: true })
+  assert.equal((await host.handler('quota', {})).value.providers.find((row) => row.provider === 'deepseek-official').adapted, true)
+
+  // 别名渠道在白名单语义里与 settings 路由同权：凭据写入窗口接受它、未知名字仍拒绝。
+  const credForm = await host.handler('quota-credential-set', { provider: 'deepseek-official', name: 'DEEPSEEK_API_KEY', value: 'k' })
+  assert.notEqual(credForm.error, 'unknown-provider')
+  assert.equal((await host.handler('quota-reset-card', { provider: 'no-such-provider' })).error, 'unknown-provider')
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(requests.filter((url) => url.includes('deepseek')), [])
+})
+
 test('inferQuotaKind matches an exact registered hostname or subdomain and refuses deceptive URLs', () => {
   assert.equal(inferQuotaKind('https://open.bigmodel.cn/api/coding/paas/v4'), 'zai-coding-cn')
   assert.equal(inferQuotaKind('https://api.open.bigmodel.cn/v1'), 'zai-coding-cn')
