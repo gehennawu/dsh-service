@@ -2578,7 +2578,7 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.equal(renderer.hasTest('quota-peak-dot'), false)
     assert.equal(renderer.findAllByTestIdPrefix('quota-peak-axis-').length, 0)
     // 卡片内带规则说明行（时间措辞为「9点–12点」式，用户点名）。
-    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。/)
+    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。/)
 
     // 切到周六 15:00 北京时间（UTC 07:00）：全天空闲——单条绿色分段、圆点 62.5%、下一个换挡是周一 09:00。
     Date.now = () => Date.UTC(2026, 0, 10, 7, 0)

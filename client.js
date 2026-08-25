@@ -458,7 +458,7 @@ window.__ModuleLoader__.load({
       'quota.peak.untilPeak': '{time} 转高峰（{dur}后）',
       'quota.peak.tag.peak': '忙时',
       'quota.peak.tag.idle': '闲时',
-      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。',
+      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -910,7 +910,7 @@ window.__ModuleLoader__.load({
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
       'quota.peak.tag.peak': 'Peak',
       'quota.peak.tag.idle': 'Off-peak',
-      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 9am–12pm and 2pm–6pm. All other times are off-peak, including all day Saturday and Sunday.',
+      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
     }
 
     // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
