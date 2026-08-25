@@ -2563,20 +2563,16 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.equal(stateNode.props['data-in-peak'], 'true')
     const nextNode = renderer.findByTestId('quota-peak-next')
     assert.match(String(nextNode.children[0]), /12点转空闲（1 小时 30 分钟后）/)
-    // 色带只画「当前 → 当天结束」（用户点名：过去不显示）：周三 10:30 → 域 810 分钟，
-    // 四段可见（首段是 9-12 的剩余部分），范围文字内嵌段中；左缘细标线即当前时刻。
+    // 两段式色带（用户点名）：第一段 = 当前时段剩余，第二段 = 下一个相反时段，宽度按实际时长。
+    // 周三 10:30 高峰中段：剩余 90 分钟 + 空闲 12-14 的 120 分钟。
     const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
-    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['true', 'false', 'true', 'false'])
+    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['true', 'false'])
     assert.equal(segments[0].props.style.left, '0%')
-    assert.equal(segments[0].props.style.width, '11.1111%') // 10:30–12:00 剩余 90 分钟
-    assert.equal(segments[1].props.style.left, '11.1111%')
-    assert.equal(segments[1].props.style.width, '14.8148%')
-    assert.equal(segments[2].props.style.left, '25.9259%')
-    assert.equal(segments[2].props.style.width, '29.6296%')
-    assert.equal(segments[3].props.style.left, '55.5556%')
-    assert.equal(segments[3].props.style.width, '44.4444%')
-    // 段内嵌各自的范围文字（小时区间）。
-    assert.deepEqual(segments.map((segment) => segment.children[0] ? String(segment.children[0].children[0]) : ''), ['10-12', '12-14', '14-18', '18-24'])
+    assert.equal(segments[0].props.style.width, '42.8571%') // 90 / 210
+    assert.equal(segments[1].props.style.left, '42.8571%')
+    assert.equal(segments[1].props.style.width, '57.1429%') // 120 / 210
+    // 段内只标「忙时/闲时」短词（精确时刻在倒计时与说明行）。
+    assert.deepEqual(segments.map((segment) => String(segment.children[0].children[0])), ['忙时', '闲时'])
     // 左缘「当前」标线取代旧移动圆点（now 起点域下圆点恒在左缘）。
     assert.ok(renderer.hasTest('quota-peak-now'))
     assert.equal(renderer.hasTest('quota-peak-dot'), false)
@@ -2590,10 +2586,12 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     await renderer.flush()
     assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
     const weekendSegments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
-    assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false'])
-    assert.equal(weekendSegments[0].props.style.width, '100%')
-    // 周末整条空闲不内嵌范围文字。
-    assert.deepEqual(weekendSegments[0].children.filter(Boolean), [])
+    // 周六 15:00 闲时：第一段跨周末到周一 9 点（93.33%），第二段是周一 9-12 忙时（6.67%，过窄不标字）。
+    assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false', 'true'])
+    assert.equal(weekendSegments[0].props.style.width, '93.3333%')
+    assert.equal(String(weekendSegments[0].children[0].children[0]), '闲时')
+    assert.equal(weekendSegments[1].props.style.width, '6.6667%')
+    assert.deepEqual(weekendSegments[1].children.filter(Boolean), [])
     assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /9点转高峰（1 天 18 小时后）/)
   } finally {
     Date.now = realNow

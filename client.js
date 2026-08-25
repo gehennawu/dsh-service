@@ -456,6 +456,8 @@ window.__ModuleLoader__.load({
       'quota.peak.nowPeak': '当前高峰时段 · 标准价',
       'quota.peak.untilIdle': '{time}转空闲（{dur}后）',
       'quota.peak.untilPeak': '{time}转高峰（{dur}后）',
+      'quota.peak.tag.peak': '忙时',
+      'quota.peak.tag.idle': '闲时',
       'quota.peak.boundary.0': '0点',
       'quota.peak.boundary.540': '9点',
       'quota.peak.boundary.720': '12点',
@@ -912,6 +914,8 @@ window.__ModuleLoader__.load({
       'quota.peak.nowPeak': 'Peak now · standard price',
       'quota.peak.untilIdle': 'Half price from {time} (in {dur})',
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
+      'quota.peak.tag.peak': 'Peak',
+      'quota.peak.tag.idle': 'Off-peak',
       'quota.peak.boundary.0': '12am',
       'quota.peak.boundary.540': '9am',
       'quota.peak.boundary.720': '12pm',
@@ -1924,41 +1928,29 @@ window.__ModuleLoader__.load({
         if (dayIndex === 0 || dayIndex === 6) return false
         return DEEPSEEK_PEAK_SEGMENTS.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
       }
-      /** 当前时刻起的当日色带分段（用户点名：过去的时间不显示，左缘即当前）。
- * start 已裁到当前分钟；周末整条空闲；工作日按峰谷边界切分到当天结束。 */
-      function deepseekDaySegments(dayIndex, minutesOfDay) {
-        const pieces = []
-        const push = (start, end, peak) => { if (end > start) pieces.push({ start, end, peak }) }
-        if (dayIndex === 0 || dayIndex === 6) { push(minutesOfDay, 1440, false); return pieces }
-        let cursor = minutesOfDay
-        for (const [segStart, segEnd] of DEEPSEEK_PEAK_SEGMENTS) {
-          if (cursor < segStart) push(cursor, segStart, false)
-          push(Math.max(cursor, segStart), segEnd, true)
-          cursor = Math.max(cursor, segEnd)
-        }
-        push(cursor, 1440, false)
-        return pieces
-      }
-      /** 下一次峰谷切换时刻（毫秒）：逐日扫描工作日的四个边界点，取第一个状态翻转点。
-       * 最坏情形是周五 18:00 后——下一个翻转是周一 09:00，扫 5 天必然覆盖。找不到返回 null。 */
-      function deepseekNextPeakFlip(nowMs) {
+      /** 从当前时刻起收集前 count 个峰谷切换时刻（毫秒，升序）。
+ * 工作日的四个边界点必为状态翻转；周末无边界。最坏情形（周五 18:00 后）下个翻转在
+ * 周一 09:00，扫 7 天必然覆盖任意 count ≤ 8 的需求。 */
+      function deepseekUpcomingFlips(nowMs, count) {
         const current = beijingCivilParts(nowMs)
         const inPeak = deepseekIsPeakMinute(current.dayIndex, current.minutesOfDay)
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         shifted.setUTCHours(0, 0, 0, 0)
         const beijingDayStart = shifted.getTime() - 8 * 3600 * 1000
-        for (let dayOffset = 0; dayOffset <= 5; dayOffset++) {
+        const flips = []
+        for (let dayOffset = 0; dayOffset <= 6 && flips.length < count; dayOffset++) {
           const dayStart = beijingDayStart + dayOffset * 86400000
           const dayIndex = new Date(dayStart + 8 * 3600 * 1000).getUTCDay()
           if (dayIndex === 0 || dayIndex === 6) continue
           for (const minute of DEEPSEEK_PEAK_SEGMENTS.flat()) {
             const candidate = dayStart + minute * 60000
             if (candidate <= nowMs) continue
-            const parts = beijingCivilParts(candidate)
-            if (deepseekIsPeakMinute(parts.dayIndex, parts.minutesOfDay) !== inPeak) return candidate
+            flips.push(candidate)
+            if (flips.length >= count) return flips
           }
         }
-        return null
+        void inPeak
+        return flips
       }
       function formatBeijingClockTime(ms) {
         const shifted = new Date(ms + 8 * 3600 * 1000)
@@ -1999,10 +1991,10 @@ window.__ModuleLoader__.load({
         }, [])
         const civil = beijingCivilParts(now)
         const inPeak = deepseekIsPeakMinute(civil.dayIndex, civil.minutesOfDay)
-        const nextFlip = deepseekNextPeakFlip(now)
+        const flips = deepseekUpcomingFlips(now, 2)
+        const nextFlip = flips[0] ?? null
         const accentColor = inPeak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR
-        // 色带域 = [当前分钟, 1440]；pctOf 复用 /1440 归一：传入「相对当前的分段宽」即可。
-        const domainMinutes = 1440 - civil.minutesOfDay
+        // pctOf 复用 /1440 归一：传入「权重占比 ×1440」得到百分比（保留 4 位小数）。
         const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
         return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', minHeight: '16px' } },
@@ -2025,18 +2017,21 @@ window.__ModuleLoader__.load({
             'data-testid': 'quota-peak-bar',
             style: { position: 'relative', height: '14px', borderRadius: 999, overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
           },
-          // 域 = [当前分钟, 1440]：过去不显示，剩余区段足够宽，范围文字直接内嵌（用户点名）。
-          deepseekDaySegments(civil.dayIndex, civil.minutesOfDay).map((segment, index) => {
-            const leftPct = pctOf((segment.start - civil.minutesOfDay) / domainMinutes * 1440)
-            const widthPct = pctOf((segment.end - segment.start) / domainMinutes * 1440)
-            const showRange = civil.dayIndex !== 0 && civil.dayIndex !== 6 && widthPct >= 11
+          // 两段式（用户点名）：第一段 = 当前时段剩余，第二段 = 下一个相反时段（可跨天），
+          // 宽度按实际时长比例；段内只标「忙时/闲时」，过窄自动隐藏（精确时刻在倒计时与说明行）。
+          (flips.length > 0 ? [
+            { peak: inPeak, weight: flips[0] - now },
+            ...(flips.length > 1 ? [{ peak: !inPeak, weight: flips[1] - flips[0] }] : []),
+          ] : [{ peak: inPeak, weight: 1 }]).map((segment, index, all) => {
+            const totalWeight = all.reduce((sum, part) => sum + part.weight, 0)
+            const widthPct = pctOf(segment.weight / totalWeight * 1440)
             return React.createElement('span', {
               key: index,
               'data-testid': `quota-peak-segment-${index}`,
               'data-peak': String(segment.peak),
-              style: { position: 'absolute', top: 0, bottom: 0, left: `${leftPct}%`, width: `${widthPct}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR, overflow: 'hidden' },
+              style: { position: 'absolute', top: 0, bottom: 0, left: `${index === 0 ? 0 : pctOf(all[0].weight / totalWeight * 1440)}%`, width: `${widthPct}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR, overflow: 'hidden' },
             },
-            showRange ? React.createElement('span', { style: { position: 'absolute', inset: 0, textAlign: 'center', fontSize: '9px', lineHeight: '14px', fontWeight: 500, color: 'rgba(255,255,255,0.95)', fontVariantNumeric: 'tabular-nums' } }, `${Math.floor(segment.start / 60)}-${Math.floor(segment.end / 60)}`) : null)
+            widthPct >= 11 ? React.createElement('span', { style: { position: 'absolute', inset: 0, textAlign: 'center', fontSize: '9px', lineHeight: '14px', fontWeight: 500, color: 'rgba(255,255,255,0.95)' } }, translate(segment.peak ? 'quota.peak.tag.peak' : 'quota.peak.tag.idle')) : null)
           }),
           // 左缘细标线即「当前」时刻（原移动圆点在 now 起点域下恒在左缘，退化为标线）。
           React.createElement('span', {
