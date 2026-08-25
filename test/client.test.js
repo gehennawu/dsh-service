@@ -2565,6 +2565,52 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.ok(backCandidates.includes('zai-coding-cn'))
 })
 
+test('quota cards support manual reordering persisted in localStorage', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  let snapshotProviders = [
+    { provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3 }], fetchedAt: Date.now() },
+    { provider: 'kimi-row', displayName: 'Kimi', adapted: true, kind: 'kimi', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥12.34' }], fetchedAt: Date.now() },
+    { provider: 'sf-row', displayName: '硅基流动', adapted: true, kind: 'siliconflow', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥8.00' }], fetchedAt: Date.now() },
+  ]
+  const buildQuotaResponse = () => ({ ok: true, value: { serverTime: Date.now(), providers: snapshotProviders } })
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return buildQuotaResponse()
+    if (endpoint === 'quota-refresh') return { ok: true }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const cardOrder = () => renderer.findByTestId('quota-card-list').children.flat(Infinity).map((child) => child.props['data-testid'])
+  // 初始为快照序；首卡↑、末卡↓禁用。
+  assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-kimi-row', 'quota-provider-card-sf-row'])
+  assert.equal(renderer.findByTestId('quota-move-up-zai-row').props.disabled, true)
+  assert.equal(renderer.findByTestId('quota-move-down-zai-row').props.disabled, false)
+  assert.equal(renderer.findByTestId('quota-move-down-sf-row').props.disabled, true)
+  // ↓ 换位立即生效并整体落盘。
+  renderer.findByTestId('quota-move-down-zai-row').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(cardOrder(), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row'])
+  assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-order')), ['kimi-row', 'zai-row', 'sf-row'])
+  assert.equal(renderer.findByTestId('quota-move-up-kimi-row').props.disabled, true)
+  // 快照里新出现的供应商即使排宿主清单第一位，也追加在记忆序之后。
+  snapshotProviders = [
+    { provider: 'openrouter-row', displayName: 'OpenRouter', adapted: true, kind: 'openrouter', refreshing: false, status: 'ok', windows: [{ id: 'credits', percent: 25 }], fetchedAt: Date.now() },
+    ...snapshotProviders,
+  ]
+  renderer.findByTestId('quota-refresh-kimi-row').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(cardOrder(), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row', 'quota-provider-card-openrouter-row'])
+})
+
 test('deepseek balance card shows a peak/off-peak timeline following Beijing time', async () => {
   // 固定时刻驱动（Date.now 覆盖 + ctx.timer 桩推进）：周三 10:30 北京时间 = UTC 02:30，处于高峰中段。
   const wednesdayPeak = Date.UTC(2026, 0, 7, 2, 30)
@@ -2698,13 +2744,15 @@ test('quota card header has a refresh icon that forces per-provider refresh', as
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /滚动 5 小时.*5%/)
 
-  // 图标在更新时间之前，aria 标记为「刷新」，默认可点。
+  // 图标在更新时间之前，aria 标记为「刷新」，默认可点；排序 ↑↓ 两钮在刷新图标之前（v0.25 手动排序）。
   const cardRoot = renderer.findByTestId('quota-provider-card-zai-coding-cn')
   const rightCluster = cardRoot.children[0].children[1]
-  assert.equal(rightCluster.children[0].props['data-testid'], 'quota-refresh-zai-coding-cn')
-  assert.equal(rightCluster.children[0].props['aria-label'], '刷新')
-  assert.equal(rightCluster.children[0].props.disabled, false)
-  assert.match(String(rightCluster.children[1].children), /更新于/)
+  assert.equal(rightCluster.children[0].props['data-testid'], 'quota-move-up-zai-coding-cn')
+  assert.equal(rightCluster.children[1].props['data-testid'], 'quota-move-down-zai-coding-cn')
+  assert.equal(rightCluster.children[2].props['data-testid'], 'quota-refresh-zai-coding-cn')
+  assert.equal(rightCluster.children[2].props['aria-label'], '刷新')
+  assert.equal(rightCluster.children[2].props.disabled, false)
+  assert.match(String(rightCluster.children[3].children), /更新于/)
 
   // 点击：发起 quota-refresh 并立即补拉快照；在途期间图标置灰防重入。
   const initialQuotaCalls = quotaCalls

@@ -404,6 +404,8 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': '移除',
       'quota.retryAt': '{time} 后可重试',
       'quota.refresh': '刷新',
+      'quota.card.moveUp': '上移',
+      'quota.card.moveDown': '下移',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': '智谱 GLM Coding Plan',
@@ -856,6 +858,8 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': 'Remove',
       'quota.retryAt': 'Retry allowed after {time}',
       'quota.refresh': 'Refresh',
+      'quota.card.moveUp': 'Move up',
+      'quota.card.moveDown': 'Move down',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
       'quota.kind.zai-coding-cn': 'Zhipu GLM Coding Plan',
@@ -1702,6 +1706,28 @@ window.__ModuleLoader__.load({
       }
       function writeQuotaPollMinutes(minutes) {
         try { localStorage.setItem(QUOTA_POLL_KEY, String(minutes)) } catch (_) {}
+      }
+      const QUOTA_CARD_ORDER_KEY = 'dsh-service-quota-card-order'
+      // 卡片手动排序（用户点名）：localStorage 只存 provider 名单；坏形状/超限整体回退快照序。
+      function readQuotaCardOrder() {
+        try {
+          const raw = JSON.parse(localStorage.getItem(QUOTA_CARD_ORDER_KEY) ?? 'null')
+          if (!Array.isArray(raw)) return []
+          return raw.filter((name) => typeof name === 'string' && name !== '').slice(0, 64)
+        } catch (_) {
+          return []
+        }
+      }
+      function writeQuotaCardOrder(order) {
+        try { localStorage.setItem(QUOTA_CARD_ORDER_KEY, JSON.stringify(order.slice(0, 64))) } catch (_) {}
+      }
+      /** 快照序 → 记忆序：名单内的按存储位次在前，名单外的保持快照相对顺序追加在后。 */
+      function applyQuotaCardOrder(rows, order) {
+        const rank = new Map(order.map((name, index) => [name, index]))
+        return rows
+          .map((row, index) => ({ row, key: rank.has(row.provider) ? rank.get(row.provider) : order.length + index }))
+          .sort((a, b) => a.key - b.key)
+          .map((entry) => entry.row)
       }
       let quotaSnapshotPromise = null
       let quotaSnapshotQueuedPayload = null
@@ -2901,10 +2927,22 @@ window.__ModuleLoader__.load({
         const adaptProvider = (providerName, kind) => requestQuotaConfig({ provider: providerName, kind })
         // 删掉手动覆盖键，回退 baseURL 自动推断。
         const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
+        // 卡片手动排序：localStorage 名单驱动展示序（纯客户端，宿主契约不动）；新供应商自然排末尾。
+        const [cardOrder, setCardOrder] = useState(readQuotaCardOrder())
         // 卡片分区（v0.20）：只展示已适配供应商；未适配/已停用的不渲染灰行，统一收进底部「手动适配」行。
-        const adaptedRows = providers.filter((row) => row.adapted === true)
+        const adaptedRows = applyQuotaCardOrder(providers.filter((row) => row.adapted === true), cardOrder)
         const candidateRows = providers.filter((row) => row.adapted !== true)
         const quotaSelectStyle = { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' }
+        // ↑↓ 换位：以当前可见卡序列表交换相邻项并整体落盘（新见过的供应商一并入册）。
+        const moveQuotaCard = (providerName, delta) => {
+          const names = adaptedRows.map((row) => row.provider)
+          const from = names.indexOf(providerName)
+          const to = from + delta
+          if (from < 0 || to < 0 || to >= names.length || from === to) return
+          names.splice(to, 0, names.splice(from, 1)[0])
+          setCardOrder(names)
+          writeQuotaCardOrder(names)
+        }
         // 手动适配行（未适配/已停用的候选供应商）的选择状态；拆成两个独立 state 避免对象草稿接力更新。
         const [addProvider, setAddProvider] = useState('')
         const [addKind, setAddKind] = useState('')
@@ -2945,8 +2983,8 @@ window.__ModuleLoader__.load({
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
           adaptedRows.length === 0
             ? React.createElement('p', { style: hint }, translate('quota.noAdapted'))
-            : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
-                adaptedRows.map((row) => {
+            : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                adaptedRows.map((row, index) => {
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
                     row.displayName || row.provider,
                     row.kindSource === 'auto'
@@ -3010,6 +3048,25 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
                       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
+                        // 手动排序（用户点名）：↑↓ 与相邻卡换位，首/末卡对应方向禁用；顺序存本浏览器。
+                        React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-move-up-${row.provider}`,
+                          'aria-label': translate('quota.card.moveUp'),
+                          title: translate('quota.card.moveUp'),
+                          disabled: index === 0,
+                          onClick: () => moveQuotaCard(row.provider, -1),
+                          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === 0 ? 'default' : 'pointer', opacity: index === 0 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
+                        }, '↑'),
+                        React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-move-down-${row.provider}`,
+                          'aria-label': translate('quota.card.moveDown'),
+                          title: translate('quota.card.moveDown'),
+                          disabled: index === adaptedRows.length - 1,
+                          onClick: () => moveQuotaCard(row.provider, 1),
+                          style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === adaptedRows.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === adaptedRows.length - 1 ? 'default' : 'pointer', opacity: index === adaptedRows.length - 1 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
+                        }, '↓'),
                         // 手动刷新：SVG 图标按钮，点击强制该 provider 重拉上游；在途时置灰防重入。
                         React.createElement('button', {
                           type: 'button',
