@@ -432,6 +432,7 @@ window.__ModuleLoader__.load({
       'quota.error.host-not-pinned': 'baseURL 与适配时记录的域名不一致，请重新保存适配',
       'quota.error.upstream-status': '上游官方接口返回错误状态',
       'quota.credential.edit': '填写 API 密钥',
+      'quota.credential.editManagement': '填写管理密钥（网页登录的 key）',
       'quota.credential.nameLabel': '凭据名称',
       'quota.credential.valueLabel': '密钥值',
       'quota.credential.save': '保存',
@@ -874,6 +875,7 @@ window.__ModuleLoader__.load({
       'quota.error.host-not-pinned': 'baseURL differs from the domain recorded when adapting; save the adapter again',
       'quota.error.upstream-status': 'Upstream official API returned an error status',
       'quota.credential.edit': 'Set API credential',
+      'quota.credential.editManagement': 'Set management key (web login key)',
       'quota.credential.nameLabel': 'Credential name',
       'quota.credential.valueLabel': 'Secret value',
       'quota.credential.save': 'Save',
@@ -2902,7 +2904,7 @@ window.__ModuleLoader__.load({
                                   'data-testid': `quota-cred-edit-${row.provider}`,
                                   onClick: () => openCredEditor(row),
                                   style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
-                                }, translate('quota.credential.edit')))]
+                                }, translate(row.kind === 'cliproxy' ? 'quota.credential.editManagement' : 'quota.credential.edit')))]
                         })()
                       : []),
                     ...resetCardNodes,

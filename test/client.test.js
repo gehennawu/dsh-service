@@ -3371,8 +3371,10 @@ test('unconfigured quota rows offer an inline credential form that writes via th
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  // 未配置行：错误文案旁出现「填写 API 密钥」入口。
+  // 未配置行：错误文案旁出现表单入口；cliproxy 行的按钮文案是「管理密钥」而非「API 密钥」
+  // ——那是 CPA 网页登录的 remote-management key，写错标签会诱导用户填代理 key 撞封禁。
   assert.match(renderer.text(), /凭据未配置/)
+  assert.equal(renderer.findByTestId('quota-cred-edit-cpa').children.join(''), '填写管理密钥（网页登录的 key）')
   renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
   await renderer.flush()
   const input = renderer.findByTestId('quota-cred-input-value')
@@ -3418,6 +3420,30 @@ test('credential form defaults to the configured alias and marks the primary nam
   const selectNode = renderer.findByTestId('quota-cred-name-select')
   assert.equal(selectNode.props.value, 'CLIPROXY_MANAGEMENT_KEY')
   assert.deepEqual(selectNode.children.flat(Infinity).map((option) => option.props.value), ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'])
+})
+
+test('classic-kind credential rows keep the API-key label while cliproxy uses the management-key one', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [{
+      provider: 'or', displayName: 'OR', adapted: true, kind: 'openrouter', kindSource: 'config',
+      refreshing: false, status: 'unconfigured', errorCode: 'credential-missing', nextAllowedAt: Date.now() - 1,
+      credentialHints: [{ name: 'OPENROUTER_API_KEY', configured: false }],
+    }], serverTime: Date.now() } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // 经典 kind 的凭据确实是 API key，文案保持「填写 API 密钥」。
+  assert.equal(renderer.findByTestId('quota-cred-edit-or').children.join(''), '填写 API 密钥')
 })
 
 test('clearing a stored credential requires a second confirming click', async () => {
