@@ -23,9 +23,26 @@ window.__ModuleLoader__.load({
       'features.skillManager': '技能管理',
       'features.readOnly': '当前设置不可写。',
       'tabs.skills': '技能',
-      'skills.error': '加载失败：{error}',
+      'skills.error': '操作失败：{error}',
+      'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
+      'skills.error.network': '网络错误，请稍后重试',
+      'skills.error.read-only-source': '该条目位于只读来源，无法修改',
+      'skills.error.unknown-skill': '技能未找到，列表可能已变化，请刷新重试',
+      'skills.error.invalid-skill': '条目当前无效：{reason}',
+      'skills.error.invalid-field': '开关字段无效',
+      'skills.error.invalid-enable': '开关值无效',
+      'skills.error.invalid-model-route': '模型路由无效，请重新选择模型',
+      'skills.error.invalid-description': '描述不能为空',
+      'skills.error.describe-timeout': '模型生成超时（90 秒）',
+      'skills.error.empty-output': '模型未产出正文（结束原因：{kind}）',
+      'skills.error.batch-cancelled': '已取消',
+      'skills.error.entry-changed': '条目在运行中发生变化，已跳过',
+      'skills.error.unknown-batch-plan': '批量计划已失效，请重新生成',
+      'skills.error.batch-already-done': '该批量计划已完成',
+      'skills.error.batch-already-cancelled': '该批量计划已取消',
       'skills.empty': '未发现任何技能',
       'skills.filter': '按名称过滤…',
+      'skills.colon': '：',
       'skills.group.auto': '自动加载',
       'skills.group.manual': '仅手动调用',
       'skills.group.disabled': '完全停用',
@@ -40,7 +57,22 @@ window.__ModuleLoader__.load({
       'skills.badge.annotated': '已注释',
       'skills.note.stale': '正文已变更，待重新补全',
       'skills.note.remove': '移除 AI 注释',
+      'skills.note.panelOnly': '注释仅保存在本面板展示，不写入 SKILL.md。',
       'skills.log.title': '运行日志',
+      'skills.log.located': '已定位技能 {name}（文件 {chars} 字符）',
+      'skills.log.attempt': '第 {n}/{total} 次生成：调用 {route}',
+      'skills.log.received': '输出接收完成（{chars} 字符），解析 JSON…',
+      'skills.log.parsed': '解析成功，草稿就绪',
+      'skills.log.failed-retry': '失败：{message}，自动重试',
+      'skills.log.failed': '失败：{message}',
+      'skills.log.wait': '等待模型输出… {secs}s',
+      'skills.log.first-delta': '模型已开始返回',
+      'skills.log.first-reasoning': '模型已开始返回（先输出推理）',
+      'skills.log.progress': '已接收 {chars} 字符',
+      'skills.log.finish-reasoning-only': '模型结束：{kind}（仅推理 {chars} 字符，未产出正文）',
+      'skills.log.finish-empty': '模型结束：{kind}（无任何输出）',
+      'skills.log.block-extract': '从整块输出提取正文（{chars} 字符）',
+      'skills.log.item-start': '开始生成注释…',
       'skills.batch.toggle': '批量注释',
       'skills.batch.collapse': '收起',
       'skills.batch.already': '已有批量任务在进行中，请等待完成或先取消',
@@ -57,13 +89,13 @@ window.__ModuleLoader__.load({
       'skills.describe.models.empty': '未发现已配置模型',
       'skills.describe.run': '生成草稿',
       'skills.describe.running': '生成中…',
-      'skills.apply.title': '确认写入 — {name}',
+      'skills.apply.title': '保存 AI 注释 — {name}',
       'skills.apply.description': '描述',
       'skills.apply.usage': '用法',
       'skills.apply.old': '旧',
       'skills.apply.new': '新',
       'skills.apply.confirm': '保存注释',
-      'skills.apply.done': '已写入',
+      'skills.apply.done': '注释已保存',
       'skills.apply.keepusage': '（保留现有）',
       'skills.llm.unavailable': '宿主 LLM 服务不可用，无法 AI 补全。',
       'skills.batch.title': '批量补全未注释技能',
@@ -71,7 +103,17 @@ window.__ModuleLoader__.load({
       'skills.batch.plan': '生成计划',
       'skills.batch.candidates': '候选 {count} 项',
       'skills.batch.estBytes': '约发送 {size} 内容',
-      'skills.batch.skipped': '跳过 {count} 项（只读 / 无效 / 已注释 / 被遮蔽）',
+      'skills.batch.skipped': '跳过 {count} 项（无效 / 已注释 / 被遮蔽）',
+      'skills.skippedList': '跳过清单',
+      'skills.skip.annotated-current': '已注释',
+      'skills.skip.shadowed': '被遮蔽',
+      'skills.skip.invalid': '无效（{reason}）',
+      'skills.skip.reason.missing-frontmatter': '缺 frontmatter',
+      'skills.skip.reason.missing-name': '缺 name',
+      'skills.skip.reason.invalid-name': 'name 不合法',
+      'skills.skip.reason.missing-description': '缺 description',
+      'skills.skip.reason.too-large': '文件过大',
+      'skills.skip.reason.legacy-invocation-key': '旧版调用键',
       'skills.batch.start': '开始批量补全',
       'skills.batch.progress': '进度 {done}/{total}',
       'skills.batch.current': '当前：{name}',
@@ -395,9 +437,26 @@ window.__ModuleLoader__.load({
       'features.skillManager': 'Skill manager',
       'features.readOnly': 'These settings are read-only.',
       'tabs.skills': 'Skills',
-      'skills.error': 'Failed to load: {error}',
+      'skills.error': 'Operation failed: {error}',
+      'skills.error.feature-disabled': 'Skill manager is switched off in settings',
+      'skills.error.network': 'Network error, try again later',
+      'skills.error.read-only-source': 'This entry lives in a read-only source',
+      'skills.error.unknown-skill': 'Skill not found; the list may have changed, refresh and retry',
+      'skills.error.invalid-skill': 'Entry is currently invalid: {reason}',
+      'skills.error.invalid-field': 'Invalid switch field',
+      'skills.error.invalid-enable': 'Invalid switch value',
+      'skills.error.invalid-model-route': 'Invalid model route; pick a model again',
+      'skills.error.invalid-description': 'Description cannot be empty',
+      'skills.error.describe-timeout': 'Model generation timed out (90s)',
+      'skills.error.empty-output': 'Model produced no body output (finish: {kind})',
+      'skills.error.batch-cancelled': 'Cancelled',
+      'skills.error.entry-changed': 'Entry changed during the run; skipped',
+      'skills.error.unknown-batch-plan': 'Batch plan is stale; regenerate it',
+      'skills.error.batch-already-done': 'That batch already finished',
+      'skills.error.batch-already-cancelled': 'That batch was already cancelled',
       'skills.empty': 'No skills found',
       'skills.filter': 'Filter by name…',
+      'skills.colon': ': ',
       'skills.group.auto': 'Auto-loaded',
       'skills.group.manual': 'Manual only',
       'skills.group.disabled': 'Fully disabled',
@@ -412,7 +471,22 @@ window.__ModuleLoader__.load({
       'skills.badge.annotated': 'Annotated',
       'skills.note.stale': 'Body changed; refill needed',
       'skills.note.remove': 'Remove AI note',
+      'skills.note.panelOnly': 'Notes are stored and shown in this panel only; SKILL.md is never modified.',
       'skills.log.title': 'Run log',
+      'skills.log.located': 'Located skill {name} ({chars} chars)',
+      'skills.log.attempt': 'Attempt {n}/{total}: calling {route}',
+      'skills.log.received': 'Output received ({chars} chars), parsing JSON…',
+      'skills.log.parsed': 'Parsed OK, draft ready',
+      'skills.log.failed-retry': 'Failed: {message}, retrying',
+      'skills.log.failed': 'Failed: {message}',
+      'skills.log.wait': 'Waiting for model output… {secs}s',
+      'skills.log.first-delta': 'Model started returning',
+      'skills.log.first-reasoning': 'Model started returning (reasoning first)',
+      'skills.log.progress': 'Received {chars} chars',
+      'skills.log.finish-reasoning-only': 'Finished: {kind} (only {chars} reasoning chars, no body)',
+      'skills.log.finish-empty': 'Finished: {kind} (no output)',
+      'skills.log.block-extract': 'Extracted body from whole block ({chars} chars)',
+      'skills.log.item-start': 'Generating note…',
       'skills.batch.toggle': 'Batch annotate',
       'skills.batch.collapse': 'Collapse',
       'skills.batch.already': 'A batch is already running; wait for it or cancel first',
@@ -429,13 +503,13 @@ window.__ModuleLoader__.load({
       'skills.describe.models.empty': 'No configured models found',
       'skills.describe.run': 'Generate draft',
       'skills.describe.running': 'Generating…',
-      'skills.apply.title': 'Confirm write — {name}',
+      'skills.apply.title': 'Save AI note — {name}',
       'skills.apply.description': 'Description',
       'skills.apply.usage': 'Usage',
       'skills.apply.old': 'Old',
       'skills.apply.new': 'New',
       'skills.apply.confirm': 'Save note',
-      'skills.apply.done': 'Written',
+      'skills.apply.done': 'Note saved',
       'skills.apply.keepusage': '(keep existing)',
       'skills.llm.unavailable': 'Host LLM service unavailable; AI fill disabled.',
       'skills.batch.title': 'Batch-fill unannotated skills',
@@ -443,7 +517,17 @@ window.__ModuleLoader__.load({
       'skills.batch.plan': 'Plan batch',
       'skills.batch.candidates': '{count} candidates',
       'skills.batch.estBytes': '~{size} of content will be sent',
-      'skills.batch.skipped': '{count} skipped (read-only / invalid / annotated / shadowed)',
+      'skills.batch.skipped': '{count} skipped (invalid / annotated / shadowed)',
+      'skills.skippedList': 'Skipped',
+      'skills.skip.annotated-current': 'annotated',
+      'skills.skip.shadowed': 'shadowed',
+      'skills.skip.invalid': 'invalid ({reason})',
+      'skills.skip.reason.missing-frontmatter': 'no frontmatter',
+      'skills.skip.reason.missing-name': 'missing name',
+      'skills.skip.reason.invalid-name': 'invalid name',
+      'skills.skip.reason.missing-description': 'missing description',
+      'skills.skip.reason.too-large': 'file too large',
+      'skills.skip.reason.legacy-invocation-key': 'legacy invocation keys',
       'skills.batch.start': 'Start batch',
       'skills.batch.progress': 'Progress {done}/{total}',
       'skills.batch.current': 'Current: {name}',
@@ -888,94 +972,46 @@ window.__ModuleLoader__.load({
         }, [])
         return { enabled, done, input, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v) }
       }
-      // 设置页左列「重启」入口显示开关：默认关闭，localStorage 持久化；
-      // 开启时才注册 settings.section 条目（导航列单元格由外壳渲染，开关不生效就不能用 null 内容占位）。
-      let restartNavEnabled = false
-      try { restartNavEnabled = localStorage.getItem('dsh-service-restart-nav') === 'true' } catch (_) {}
-      let restartNavDispose = null
-      const syncRestartNavEntry = () => {
-        if (restartNavDispose) { restartNavDispose(); restartNavDispose = null }
-        if (!restartNavEnabled) return
-        restartNavDispose = ctx.slots.register(
-          { name: 'settings.section', id: 'dsh-service-restart', order: 499, label: () => t('nav.restart') },
-          () => React.createElement(RestartSection, null),
-        )
+      // 设置页左列入口开关的通用实现（重启/额度/技能三个入口共用，不再三套复制）：
+      // localStorage 持久化、默认关；开启才注册 settings.section 条目、关闭即注销——
+      // 导航列单元格由外壳渲染，null 内容不能隐藏导航项。feature 可选：功能关闭时同样注销。
+      const createNavEntryToggle = ({ storageKey, sectionId, order, labelKey, feature, renderContent }) => {
+        let enabled = false
+        try { enabled = localStorage.getItem(storageKey) === 'true' } catch (_) {}
+        let dispose = null
+        const listeners = new Set()
+        const sync = () => {
+          if (dispose) { dispose(); dispose = null }
+          if (!enabled || (feature !== undefined && !featureEnabled(feature))) return
+          dispose = ctx.slots.register(
+            { name: 'settings.section', id: sectionId, order, label: () => t(labelKey) },
+            renderContent,
+          )
+        }
+        const setEnabled = (value) => {
+          enabled = value === true
+          try { localStorage.setItem(storageKey, enabled ? 'true' : 'false') } catch (_) {}
+          sync()
+          for (const listener of listeners) listener()
+        }
+        const useEnabled = () => {
+          const [state, setState] = useState(enabled)
+          useEffect(() => {
+            const update = () => setState(enabled)
+            listeners.add(update)
+            setState(enabled)
+            return () => listeners.delete(update)
+          }, [])
+          return [state, setEnabled]
+        }
+        const disposeEntry = () => {
+          if (dispose) { dispose(); dispose = null }
+        }
+        return { sync, setEnabled, useEnabled, disposeEntry }
       }
-      const restartNavListeners = new Set()
-      const setRestartNavEnabled = (value) => {
-        restartNavEnabled = value === true
-        try { localStorage.setItem('dsh-service-restart-nav', restartNavEnabled ? 'true' : 'false') } catch (_) {}
-        syncRestartNavEntry()
-        for (const listener of restartNavListeners) listener()
-      }
-      const useRestartNavEnabled = () => {
-        const [enabled, setEnabled] = useState(restartNavEnabled)
-        useEffect(() => {
-          const update = () => setEnabled(restartNavEnabled)
-          restartNavListeners.add(update)
-          setEnabled(restartNavEnabled)
-          return () => restartNavListeners.delete(update)
-        }, [])
-        return [enabled, setRestartNavEnabled]
-      }
-      // 设置页左列「额度查询」入口显示开关：默认关闭，localStorage 持久化；与重启入口同模式。
-      let quotaNavEnabled = false
-      try { quotaNavEnabled = localStorage.getItem('dsh-service-quota-nav') === 'true' } catch (_) {}
-      let quotaNavDispose = null
-      const syncQuotaNavEntry = () => {
-        if (quotaNavDispose) { quotaNavDispose(); quotaNavDispose = null }
-        if (!quotaNavEnabled || !featureEnabled('quotaLookup')) return
-        quotaNavDispose = ctx.slots.register(
-          { name: 'settings.section', id: 'dsh-service-quota', order: 498, label: () => t('tabs.quota') },
-          () => React.createElement(QuotaSection, null),
-        )
-      }
-      const quotaNavListeners = new Set()
-      const setQuotaNavEnabled = (value) => {
-        quotaNavEnabled = value === true
-        try { localStorage.setItem('dsh-service-quota-nav', quotaNavEnabled ? 'true' : 'false') } catch (_) {}
-        syncQuotaNavEntry()
-        for (const listener of quotaNavListeners) listener()
-      }
-      const useQuotaNavEnabled = () => {
-        const [enabled, setEnabled] = useState(quotaNavEnabled)
-        useEffect(() => {
-          const update = () => setEnabled(quotaNavEnabled)
-          quotaNavListeners.add(update)
-          setEnabled(quotaNavEnabled)
-          return () => quotaNavListeners.delete(update)
-        }, [])
-        return [enabled, setQuotaNavEnabled]
-      }
-      // 设置页左列「技能」入口显示开关：与重启/额度同模式（localStorage 持久化，默认关）。
-      let skillsNavEnabled = false
-      try { skillsNavEnabled = localStorage.getItem('dsh-service-skills-nav') === 'true' } catch (_) {}
-      let skillsNavDispose = null
-      const syncSkillsNavEntry = () => {
-        if (skillsNavDispose) { skillsNavDispose(); skillsNavDispose = null }
-        if (!skillsNavEnabled || !featureEnabled('skillManager')) return
-        skillsNavDispose = ctx.slots.register(
-          { name: 'settings.section', id: 'dsh-service-skills', order: 497, label: () => t('tabs.skills') },
-          () => React.createElement(SkillsSection, null),
-        )
-      }
-      const skillsNavListeners = new Set()
-      const setSkillsNavEnabled = (value) => {
-        skillsNavEnabled = value === true
-        try { localStorage.setItem('dsh-service-skills-nav', skillsNavEnabled ? 'true' : 'false') } catch (_) {}
-        syncSkillsNavEntry()
-        for (const listener of skillsNavListeners) listener()
-      }
-      const useSkillsNavEnabled = () => {
-        const [enabled, setEnabled] = useState(skillsNavEnabled)
-        useEffect(() => {
-          const update = () => setEnabled(skillsNavEnabled)
-          skillsNavListeners.add(update)
-          setEnabled(skillsNavEnabled)
-          return () => skillsNavListeners.delete(update)
-        }, [])
-        return [enabled, setSkillsNavEnabled]
-      }
+      const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
+      const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
+      const skillsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-skills-nav', sectionId: 'dsh-service-skills', order: 497, labelKey: 'tabs.skills', feature: 'skillManager', renderContent: () => React.createElement(SkillsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       let skillsBatchState = null       // 宿主状态快照
       let skillsBatchPlan = null        // 本端计划（含所选模型）
@@ -990,7 +1026,8 @@ window.__ModuleLoader__.load({
         if (skillsBatchPollHandle !== null) { clearInterval(skillsBatchPollHandle); skillsBatchPollHandle = null }
       }
       const syncSkillsBatchPolling = () => {
-        const shouldPoll = skillsBatchState !== null && skillsBatchState.phase === 'running'
+        // 功能关闭时不轮询（宿主也会拒绝 skill-* RPC）；重开后由下一次交互重新拉起。
+        const shouldPoll = skillsBatchState !== null && skillsBatchState.phase === 'running' && featureEnabled('skillManager')
         if (shouldPoll && skillsBatchPollHandle === null) {
           const tick = async () => {
             try {
@@ -1016,13 +1053,7 @@ window.__ModuleLoader__.load({
           const res = await ctx.connection.rpc.call('/dsh-service', 'skills-models', {})
           if (!res.ok) { skillsBatchModels = []; return skillsBatchModels }
           skillsBatchModels = res.value.models ?? []
-          if (skillsBatchModelItem === null) {
-            let item = pickSkillModel(skillsBatchModels, readStoredSkillModel())
-            if (item === null && res.value.current !== undefined) {
-              item = skillsBatchModels.find((candidate) => candidate.provider === res.value.current.provider && candidate.id === res.value.current.model) ?? null
-            }
-            skillsBatchModelItem = item
-          }
+          if (skillsBatchModelItem === null) skillsBatchModelItem = resolveSkillModelChoice(skillsBatchModels, res.value.current)
         } catch (_) { skillsBatchModels = [] }
         return skillsBatchModels
       }
@@ -1079,6 +1110,20 @@ window.__ModuleLoader__.load({
         }, [])
         return { batch: skillsBatchState, plan: skillsBatchPlan, models: skillsBatchModels, modelItem: skillsBatchModelItem, error: skillsBatchError }
       }
+      // 轮询器归属当前 Fiber（AGENTS.md 生命周期不变量）：插件停止即停表；
+      // 功能开关关闭也停表。放在 useSkillsBatch 之后——这里引用的函数都已就绪。
+      ctx.effect(() => {
+        const unsubscribe = featureScope.subscribe(() => {
+          if (!featureEnabled('skillManager')) skillsBatchPollStop()
+        })
+        return () => {
+          unsubscribe()
+          skillsBatchPollStop()
+        }
+      }, 'dsh-service skills batch polling lifecycle')
+      // 页面刷新/插件重载后自动采纳宿主现存批量任务：不再依赖用户先进入技能页，
+      // ⟳ 角标与轮询在工厂启动即恢复（孤儿计划恢复的另一半闭环）。
+      void adoptSkillsBatchStatus()
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
       const NOTIFY_KIND_KEYS = {
@@ -1466,7 +1511,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           fetchVersionSnapshot()
         }, [])
-        const [navEnabled, setNavEnabled] = useRestartNavEnabled()
+        const [navEnabled, setNavEnabled] = restartNavToggle.useEnabled()
         const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
         const danger = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
         const ghost = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
@@ -2092,11 +2137,53 @@ window.__ModuleLoader__.load({
         return models[0] ?? null
       }
 
-      function mapSkillErrorMessage(code) {
-        if (code === 'feature-disabled') return translate('features.skillManager') + '：off'
-        if (code === 'llm-unavailable') return translate('skills.llm.unavailable')
+      // 批量与单条共用的模型预选：localStorage 记忆 > 宿主当前默认 > 清单首个。
+      const resolveSkillModelChoice = (models, current) => {
+        let item = pickSkillModel(models, readStoredSkillModel())
+        if (item === null && current !== undefined) {
+          item = models.find((candidate) => candidate.provider === current.provider && candidate.id === current.model) ?? null
+        }
+        return item
+      }
+
+      // 宿主下发的日志条目是结构化 {at, name?, code, params}：时间戳本地拼、文案词典渲染，
+      // 词典没有的 code 原样透出（不吞异常事件）。
+      const formatSkillLogLine = (translate, entry) => {
+        if (entry === null || typeof entry !== 'object') return String(entry)
+        const time = new Date(entry.at).toISOString().slice(11, 19)
+        const key = 'skills.log.' + entry.code
+        const label = translate(key, entry.params ?? {})
+        return '[' + time + ']' + (entry.name !== undefined ? ' [' + entry.name + ']' : '') + ' ' + (label === key ? entry.code : label)
+      }
+
+      // 错误码 → 本地化文案：translate 必须由调用方传入（本函数所在作用域没有 translate，
+      // 此前直接引用自由变量，技能页一出错误就 ReferenceError 整页崩溃）。
+      function mapSkillErrorMessage(translate, code) {
         if (code === 'models-empty') return translate('skills.describe.models.empty')
+        if (code === 'llm-unavailable') return translate('skills.llm.unavailable')
         if (code === 'batch-already-running') return translate('skills.batch.already')
+        if (code === 'feature-disabled') return translate('skills.error.feature-disabled')
+        if (code === 'network') return translate('skills.error.network')
+        if (code === 'read-only-source') return translate('skills.error.read-only-source')
+        if (code === 'unknown-skill') return translate('skills.error.unknown-skill')
+        if (code === 'invalid-field') return translate('skills.error.invalid-field')
+        if (code === 'invalid-enable') return translate('skills.error.invalid-enable')
+        if (code === 'invalid-model-route') return translate('skills.error.invalid-model-route')
+        if (code === 'invalid-description') return translate('skills.error.invalid-description')
+        if (code === 'describe-timeout') return translate('skills.error.describe-timeout')
+        if (code === 'batch-cancelled') return translate('skills.error.batch-cancelled')
+        if (code === 'entry-changed') return translate('skills.error.entry-changed')
+        if (code === 'unknown-batch-plan') return translate('skills.error.unknown-batch-plan')
+        if (code === 'batch-already-done') return translate('skills.error.batch-already-done')
+        if (code === 'batch-already-cancelled') return translate('skills.error.batch-already-cancelled')
+        if (typeof code === 'string' && code.startsWith('empty-output')) {
+          const kind = code.slice('empty-output:'.length)
+          return translate('skills.error.empty-output', { kind: kind === '' ? '?' : kind })
+        }
+        if (typeof code === 'string' && code.startsWith('invalid-skill')) {
+          const reason = code.startsWith('invalid-skill:') ? code.slice('invalid-skill:'.length) : ''
+          return translate('skills.error.invalid-skill', { reason })
+        }
         return translate('skills.error', { error: code })
       }
 
@@ -2113,6 +2200,8 @@ window.__ModuleLoader__.load({
         // 运行日志盒：生成中自动展开；落定自动折叠为一行开关，可手动展开回看。
         // 初值恒为折叠（此时 batch 尚未解构），挂载后的阶段 effect 会立即校正。
         const [batchLogOpen, setBatchLogOpen] = useState(false)
+        // 跳过清单：默认折叠，点开看逐条原因。
+        const [skippedOpen, setSkippedOpen] = useState(false)
         // 批量进度/计划/模型来自工厂共享作用域：跨标签与设置面板开关存活。
         const { batch, plan: batchPlan, models: batchModels, modelItem: batchModelItem, error: batchError } = useSkillsBatch()
         // 运行日志盒：生成中自动展开；落定自动折叠为一行开关，可手动展开回看。
@@ -2124,6 +2213,9 @@ window.__ModuleLoader__.load({
           try {
             const res = await SKILL_RPC('skills-list', {})
             if (res.ok) { setData(res.value); setError('') } else setError(res.error || 'unknown')
+          } catch (_) {
+            // 断连/传输失败也要落到错误态，而不是静默 unhandled rejection。
+            setError('network')
           } finally { setLoading(false) }
         }
         useEffect(() => {
@@ -2168,20 +2260,34 @@ window.__ModuleLoader__.load({
         const patchEntry = (next) => {
           setData((prev) => prev === null ? prev : { ...prev, entries: prev.entries.map((entry) => entry.id === next.id ? next : entry) })
         }
+        // 待确认态 3 秒无第二击自动复位（armed 态不再无限滞留）。
+        useEffect(() => {
+          if (confirmingKey === null) return undefined
+          const handle = setTimeout(() => setConfirmingKey(null), 3000)
+          return () => clearTimeout(handle)
+        }, [confirmingKey])
         const toggleSkill = async (entry, field) => {
           const key = entry.id + ':' + field
-          // 两段式：第一击只进入待确认态，3 秒内再击才下发；点别处自然超时复位。
+          // 两段式：第一击只进入待确认态，3 秒内再击才下发；超时点别处自然复位。
           if (confirmingKey !== key) { setConfirmingKey(key); return }
           setConfirmingKey(null)
           const enable = field === 'model' ? entry.invocation.model !== true : entry.invocation.user !== true
-          const res = await SKILL_RPC('skills-toggle', { id: entry.id, field, enable })
-          if (res.ok) patchEntry(res.value.entry)
-          else setError(res.error || 'unknown')
+          try {
+            const res = await SKILL_RPC('skills-toggle', { id: entry.id, field, enable })
+            if (res.ok) patchEntry(res.value.entry)
+            else setError(res.error + (res.detail ? ':' + res.detail : '') || 'unknown')
+          } catch (_) { setError('network') }
         }
         const fixLegacyKeys = async (entry) => {
-          const res = await SKILL_RPC('skills-fix-keys', { id: entry.id })
-          if (res.ok) patchEntry(res.value.entry)
-          else setError(res.error || 'unknown')
+          // 与开关同款两段式：一键修复会直接改写 SKILL.md frontmatter，先确认再动手。
+          const key = entry.id + ':fix'
+          if (confirmingKey !== key) { setConfirmingKey(key); return }
+          setConfirmingKey(null)
+          try {
+            const res = await SKILL_RPC('skills-fix-keys', { id: entry.id })
+            if (res.ok) patchEntry(res.value.entry)
+            else setError(res.error + (res.detail ? ':' + res.detail : '') || 'unknown')
+          } catch (_) { setError('network') }
         }
         const clearNote = async (entry) => {
           const res = await SKILL_RPC('skills-note-clear', { id: entry.id })
@@ -2196,11 +2302,7 @@ window.__ModuleLoader__.load({
           const res = await SKILL_RPC('skills-models', {})
           if (!res.ok) { setDescribe((prev) => ({ ...prev, error: res.error || 'unknown' })); return }
           const models = res.value.models ?? []
-          let modelItem = pickSkillModel(models, stored)
-          if (modelItem === null && res.value.current !== undefined) {
-            modelItem = models.find((item) => item.provider === res.value.current.provider && item.id === res.value.current.model) ?? null
-          }
-          setDescribe((prev) => ({ ...prev, models, modelItem }))
+          setDescribe((prev) => ({ ...prev, models, modelItem: resolveSkillModelChoice(models, res.value.current) }))
         }
         const runDescribe = async () => {
           if (describe === null || describe.modelItem === null) return
@@ -2277,7 +2379,7 @@ window.__ModuleLoader__.load({
             React.createElement('button', { type: 'button', 'data-testid': 'skill-note-remove-' + entry.name, onClick: () => void clearNote(entry), title: translate('skills.note.remove'), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '13px', flexShrink: 0, lineHeight: 1 } }, '✕')) : null
           const invalidLine = entry.invalid !== undefined ? React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
             '⚠ ', invalidLegacy ? translate('skills.invalid.legacy') : translate('skills.invalid.other', { reason: entry.invalid }),
-            invalidLegacy && entry.writable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-fix-' + entry.name, onClick: () => void fixLegacyKeys(entry), style: { fontSize: '11px', padding: '2px 9px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'transparent', color: 'var(--dsw-alias-state-warn-primary)', cursor: 'pointer' } }, translate('skills.fix.legacy')) : null) : null
+            invalidLegacy && entry.writable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-fix-' + entry.name, onClick: () => void fixLegacyKeys(entry), title: confirmingKey === entry.id + ':fix' ? translate('skills.switch.confirm') : undefined, style: { fontSize: '11px', padding: '2px 9px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: confirmingKey === entry.id + ':fix' ? 'rgba(198,128,0,0.14)' : 'transparent', color: 'var(--dsw-alias-state-warn-primary)', cursor: 'pointer' } }, confirmingKey === entry.id + ':fix' ? translate('skills.switch.confirm') : translate('skills.fix.legacy')) : null) : null
           const switches = entry.invalid === undefined ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '7px', alignItems: 'flex-end', flexShrink: 0 } },
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.switch.model'),
               pillSwitch(entry.invocation.model, { testid: 'skill-switch-model-' + entry.name, disabled: !entry.writable, armed: confirmingKey === entry.id + ':model', title: confirmingKey === entry.id + ':model' ? translate('skills.switch.confirm') : undefined, onClick: () => void toggleSkill(entry, 'model') })),
@@ -2331,11 +2433,21 @@ window.__ModuleLoader__.load({
               React.createElement('select', { 'data-testid': 'skill-describe-model', value: modelItem === null ? '' : skillModelKey(modelItem), onChange: (event) => setDescribe((prev) => prev === null ? prev : { ...prev, modelItem: models.find((item) => skillModelKey(item) === event.target.value) ?? null }), style: inputStyle },
                 models.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name))),
               draft === null ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-run', disabled: busy || modelItem === null, onClick: () => void runDescribe(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', cursor: busy ? 'default' : 'pointer', opacity: busy || modelItem === null ? 0.55 : 1 } }, busy ? translate('skills.describe.running') : translate('skills.describe.run')) : null) : null,
-            error !== '' ? React.createElement('p', { 'data-testid': 'skill-describe-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error === 'llm-unavailable' ? translate('skills.llm.unavailable') : error) : null,
-            renderLogBox('skill-describe-log', describeLogs),
+            error !== '' ? React.createElement('p', { 'data-testid': 'skill-describe-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error)) : null,
+            renderLogBox('skill-describe-log', describeLogs.map((line) => formatSkillLogLine(translate, line))),
             diffRows,
             applied ? React.createElement('p', { 'data-testid': 'skill-apply-done', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('skills.apply.done')) : null,
+            draft !== null && !applied ? React.createElement('p', { 'data-testid': 'skill-note-disclaimer', style: { ...hint, fontSize: '11px' } }, translate('skills.note.panelOnly')) : null,
             draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
+        }
+
+        // 跳过原因 → 本地化标签：已知原因走词典，未知原因原样透出。
+        const skipReasonLabel = (reason) => {
+          if (reason === 'annotated-current') return translate('skills.skip.annotated-current')
+          if (reason === 'shadowed') return translate('skills.skip.shadowed')
+          if (typeof reason === 'string' && reason.startsWith('legacy-invocation-key')) return translate('skills.skip.reason.legacy-invocation-key')
+          const mapped = translate('skills.skip.reason.' + reason)
+          return mapped === 'skills.skip.reason.' + reason ? reason : mapped
         }
 
         const renderBatchCard = () => {
@@ -2360,6 +2472,16 @@ window.__ModuleLoader__.load({
               batch !== null && batch.phase === 'running' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-cancel', onClick: () => void cancelBatch(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' } }, translate('skills.batch.cancel')) : null,
               batch !== null ? React.createElement('span', { 'data-testid': 'skills-batch-phase', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('skills.batch.phase.' + phaseLabel)) : null),
             batchPlan !== null && batchPlan.candidates.length === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
+            // 跳过清单不只报数量：可展开查看每条的名称与原因（宿主本来就下发了 name+reason）。
+            (() => {
+              if (batchPlan === null || batchPlan.skipped.length === 0) return null
+              return React.createElement('div', { 'data-testid': 'skills-batch-skipped', style: { marginTop: '6px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-skipped-toggle', onClick: () => setSkippedOpen((value) => !value), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '11.5px', padding: 0 } },
+                  (skippedOpen ? '▾ ' : '▸ ') + translate('skills.skippedList') + '（' + batchPlan.skipped.length + '）'),
+                skippedOpen ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11.5px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } },
+                  batchPlan.skipped.map((item, index) => React.createElement('div', { key: item.id ?? index, 'data-testid': 'skills-batch-skipped-item' },
+                    (item.name === '' ? item.id : item.name) + translate('skills.colon') + skipReasonLabel(item.reason)))) : null)
+            })(),
             batch !== null && batch.total > 0 && effectivePhase !== 'idle' ? (() => {
               const failuresNode = Array.isArray(batch.failures) && batch.failures.length > 0 ? React.createElement('div', { 'data-testid': 'skills-batch-failures', style: { marginTop: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)', lineHeight: 1.5 } },
                 translate('skills.batch.failures', { count: batch.failures.length }) + '：' + batch.failures.map((failure) => failure.name + '(' + failure.reason + ')').join('、')) : null
@@ -2367,7 +2489,7 @@ window.__ModuleLoader__.load({
               const logNode = logLines.length === 0 ? null : React.createElement('div', null,
                 React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-log-toggle', onClick: () => setBatchLogOpen((value) => !value), style: { marginTop: '7px', border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '11.5px', padding: 0 } },
                   (batchLogOpen ? '▾ ' : '▸ ') + translate('skills.log.title') + '（' + logLines.length + '）'),
-                batchLogOpen ? renderLogBox('skills-batch-log', logLines.slice(-30), false) : null)
+                batchLogOpen ? renderLogBox('skills-batch-log', logLines.slice(-30).map((line) => formatSkillLogLine(translate, line)), false) : null)
               return React.createElement('div', { style: { marginTop: '10px' } },
                 React.createElement('div', { 'data-testid': 'skills-batch-progress', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } },
                   translate('skills.batch.progress', { done: batch.done, total: batch.total }) + (batch.current !== null ? ' · ' + translate('skills.batch.current', { name: batch.current }) : '')),
@@ -2378,7 +2500,7 @@ window.__ModuleLoader__.load({
             })() : null)
         }
 
-        const [skillsNav, setSkillsNav] = useSkillsNavEnabled()
+        const [skillsNav, setSkillsNav] = skillsNavToggle.useEnabled()
         // 批量注释默认折叠成单个入口按钮；有任务在途（运行/待开始）时自动展开。
         const [batchCardOpen, setBatchCardOpen] = useState(false)
         useEffect(() => {
@@ -2392,7 +2514,7 @@ window.__ModuleLoader__.load({
                 pillSwitch(skillsNav, { testid: 'skills-nav-switch', onClick: () => setSkillsNav(!skillsNav) })),
               React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻'))),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
-          (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(error !== '' ? error : batchError)) : null,
+          (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error !== '' ? error : batchError)) : null,
           data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
           batchCardOpen && data !== null && data.llmAvailable ? renderBatchCard() : null,
           renderDescribeDialog(),
@@ -2405,7 +2527,7 @@ window.__ModuleLoader__.load({
 
       function RemoteQuotaCard() {
         const translate = useTranslation()
-        const [quotaNav, setQuotaNav] = useQuotaNavEnabled()
+        const [quotaNav, setQuotaNav] = quotaNavToggle.useEnabled()
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
@@ -3606,27 +3728,18 @@ window.__ModuleLoader__.load({
           () => React.createElement(ServicePanel, null),
         )
         // 左列「重启」「额度查询」「技能」入口由各自标签内的开关控制，默认不注册
-        syncRestartNavEntry()
-        syncQuotaNavEntry()
-        syncSkillsNavEntry()
-        const unsubscribeFeatures = featureScope.subscribe(syncQuotaNavEntry)
-        const unsubscribeFeaturesSkills = featureScope.subscribe(syncSkillsNavEntry)
+        restartNavToggle.sync()
+        quotaNavToggle.sync()
+        skillsNavToggle.sync()
+        const unsubscribeFeatures = featureScope.subscribe(quotaNavToggle.sync)
+        const unsubscribeFeaturesSkills = featureScope.subscribe(skillsNavToggle.sync)
         return () => {
           unsubscribeFeatures()
           unsubscribeFeaturesSkills()
           disposePanel()
-          if (restartNavDispose) {
-            restartNavDispose()
-            restartNavDispose = null
-          }
-          if (quotaNavDispose) {
-            quotaNavDispose()
-            quotaNavDispose = null
-          }
-          if (skillsNavDispose) {
-            skillsNavDispose()
-            skillsNavDispose = null
-          }
+          restartNavToggle.disposeEntry()
+          quotaNavToggle.disposeEntry()
+          skillsNavToggle.disposeEntry()
         }
       })
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(

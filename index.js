@@ -2019,23 +2019,6 @@ function fixLegacySkillInvocationKeys(raw) {
   return { text: rewriteFrontmatterInner(raw, located, next), changed: renamed.length > 0, renamed }
 }
 
-/**
- * 描述/用法字段写入：已有字段连块整体替换为单行双引号标量（JSON 转义即 YAML
- * 双引号风格转义）；新字段插到 frontmatter 首位。多行块标量被安全吞并。
- */
-function upsertSkillField(raw, field, value) {
-  const located = locateSkillFrontmatter(raw)
-  if (located === undefined) throw new Error('missing-frontmatter')
-  const lines = splitHeaderLines(located, raw)
-  const replacement = field + ': ' + JSON.stringify(String(value))
-  const matcher = new RegExp('^' + field + ':(?:[ \t].*)?$')
-  const index = lines.findIndex((line) => matcher.test(line))
-  if (index < 0) return rewriteFrontmatterInner(raw, located, [replacement].concat(lines))
-  let end = index + 1
-  while (end < lines.length && (lines[end] === '' || /^[ \t]/.test(lines[end]))) end += 1
-  return rewriteFrontmatterInner(raw, located, lines.slice(0, index).concat([replacement], lines.slice(end)))
-}
-
 /** 扫描根固定五类；工作区路径精确去重（权限面板同口径）。custom 来源 v1 不扫。 */
 function buildSkillRoots(ctx, dshHome) {
   const roots = []
@@ -2232,13 +2215,18 @@ function extractSkillDraftJson(text) {
   return { description, usage: sanitizeSkillDraftText(parsed?.whenToUse, SKILL_USAGE_MAX_CHARS) }
 }
 
+// 日志事件为结构化 {code, params}：宿主只发稳定代码，本地化文案由客户端词典渲染，
+// 宿主侧不拼任何用户可见语言（AGENTS.md 双语约束）。
 async function collectLlmText(llm, options) {
   const controller = new AbortController()
   const timeoutHandle = setTimeout(() => controller.abort(new Error('describe-timeout')), SKILL_DESCRIBE_TIMEOUT_MS)
+  // 外部取消（批量取消 / Fiber 销毁）级联到本地 controller，立即中断在途流。
+  const onExternalAbort = () => controller.abort(new Error('batch-cancelled'))
+  if (options.signal !== undefined) options.signal.addEventListener('abort', onExternalAbort)
   // 等待首包/长输出的可观测性：每 10 秒向日志回调报告一次已等待时长。
   const startedAt = Date.now()
   const waitTicker = options.onEvent === undefined ? undefined : setInterval(() => {
-    options.onEvent('等待模型输出… ' + Math.round((Date.now() - startedAt) / 1000) + 's')
+    options.onEvent('wait', { secs: Math.round((Date.now() - startedAt) / 1000) })
   }, 10 * 1000)
   try {
     let text = ''
@@ -2259,16 +2247,16 @@ async function collectLlmText(llm, options) {
       if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
         if (!firstChunkSeen) {
           firstChunkSeen = true
-          options.onEvent?.('模型已开始返回')
+          options.onEvent?.('first-delta')
         }
         receivedChars += chunk.text.length
-        if (chunk.text.length > 0 && receivedChars % 200 < chunk.text.length) options.onEvent?.('已接收 ' + receivedChars + ' 字符')
+        if (chunk.text.length > 0 && receivedChars % 200 < chunk.text.length) options.onEvent?.('progress', { chars: receivedChars })
         text += chunk.text
       } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
         // 推理流不进正文，但要计数并在日志里可见：推理耗尽预算正是「正文 0 字符」的头号原因。
         if (!firstChunkSeen) {
           firstChunkSeen = true
-          options.onEvent?.('模型已开始返回（先输出推理）')
+          options.onEvent?.('first-reasoning')
         }
         reasoningChars += chunk.text.length
       } else if (chunk?.type === 'block-end' && chunk.block !== undefined && chunk.block !== null && chunk.block.type === 'text' && typeof chunk.block.text === 'string') {
@@ -2279,9 +2267,11 @@ async function collectLlmText(llm, options) {
         if (finishKind === '') finishKind = null
       }
     }
-    if (text === '' && finishKind !== null) options.onEvent?.('模型结束：' + finishKind + (reasoningChars > 0 ? '（仅推理 ' + reasoningChars + ' 字符，未产出正文）' : '（无任何输出）'))
+    if (text === '' && finishKind !== null) {
+      options.onEvent?.(reasoningChars > 0 ? 'finish-reasoning-only' : 'finish-empty', { kind: finishKind, ...(reasoningChars > 0 ? { chars: reasoningChars } : {}) })
+    }
     if (text === '' && typeof blockText === 'string' && blockText !== '') {
-      options.onEvent?.('从整块输出提取正文（' + blockText.length + ' 字符）')
+      options.onEvent?.('block-extract', { chars: blockText.length })
       text = blockText
     }
     if (text === '') {
@@ -2292,6 +2282,7 @@ async function collectLlmText(llm, options) {
   } finally {
     clearTimeout(timeoutHandle)
     if (waitTicker !== undefined) clearInterval(waitTicker)
+    if (options.signal !== undefined) options.signal.removeEventListener('abort', onExternalAbort)
   }
 }
 
@@ -2300,21 +2291,24 @@ function createSkillDescribeMessage(prompt) {
   return { role: 'user', content: [{ type: 'text', text: prompt }] }
 }
 
-async function describeSkillDraft(llm, entryName, rawContent, provider, model, onEvent) {
+async function describeSkillDraft(llm, entryName, rawContent, provider, model, onEvent, options = {}) {
   const prompt = 'Skill name: ' + entryName + '\n\nSkill file content:\n' + rawContent.slice(0, 16000)
   let lastError
   for (let attempt = 0; attempt < SKILL_DESCRIBE_ATTEMPTS; attempt += 1) {
+    // 外部取消（批量取消 / Fiber 销毁）不重试：立即以稳定错误码出栈。
+    if (options.signal?.aborted) throw new Error('batch-cancelled')
     try {
-      onEvent?.('第 ' + (attempt + 1) + '/' + SKILL_DESCRIBE_ATTEMPTS + ' 次生成：调用 ' + provider + '/' + model)
+      onEvent?.('attempt', { n: attempt + 1, total: SKILL_DESCRIBE_ATTEMPTS, route: provider + '/' + model })
       // 重试时逐级放大输出预算：推理型模型可能耗尽配额却产不出正文。
-      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: SKILL_DESCRIBE_MAX_TOKENS * Math.pow(4, attempt) })
-      onEvent?.('输出接收完成（' + text.length + ' 字符），解析 JSON…')
+      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: SKILL_DESCRIBE_MAX_TOKENS * Math.pow(4, attempt), signal: options.signal })
+      onEvent?.('received', { chars: text.length })
       const draft = extractSkillDraftJson(text)
-      onEvent?.('解析成功，草稿就绪')
+      onEvent?.('parsed')
       return draft
     } catch (error) {
+      if (options.signal?.aborted) throw new Error('batch-cancelled')
       const message = String((error && error.message) || error).slice(0, 120)
-      onEvent?.('失败：' + message + (attempt < SKILL_DESCRIBE_ATTEMPTS - 1 ? '，自动重试' : ''))
+      onEvent?.(attempt < SKILL_DESCRIBE_ATTEMPTS - 1 ? 'failed-retry' : 'failed', { message })
       lastError = error
     }
   }
@@ -2382,19 +2376,46 @@ function apply(ctx) {
   let skillsIndexPromise = loadSkillsIndex(dshHome)
   let skillsBatch = null
   // 单条补全的运行日志环形缓冲：客户端在「生成中」期间轮询展示。
+  // 条目是结构化 {at, code, params}，本地化文案由客户端词典渲染。
   const describeJobs = new Map()
   const makeDescribeJobLogger = (jobKey) => {
     if (!describeJobs.has(jobKey) && describeJobs.size >= 20) describeJobs.delete(describeJobs.keys().next().value)
     const job = { logs: [] }
-    job.push = (line) => {
-      job.logs.push('[' + new Date().toISOString().slice(11, 19) + '] ' + line)
+    job.push = (code, params = {}) => {
+      job.logs.push({ at: Date.now(), code, params })
       if (job.logs.length > 60) job.logs.shift()
     }
     describeJobs.set(jobKey, job)
     return job
   }
+  // 侧车索引写串行化（quota-config 同款）：所有写从同一内存快照复制、保存成功后替换快照，
+  // 避免单条注释保存与批量循环的读改写交错互相覆盖（丢注释或把磁盘回退到旧快照）。
+  let skillsIndexWrites = Promise.resolve()
+  const serializeSkillsIndexWrite = (work) => {
+    const result = skillsIndexWrites.then(async () => {
+      const current = { ...(await skillsIndexPromise) }
+      const outcome = await work(current)
+      if (outcome?.save === false) return outcome?.value
+      await saveSkillsIndex(dshHome, current)
+      skillsIndexPromise = Promise.resolve(current)
+      return outcome?.value
+    })
+    skillsIndexWrites = result.then(() => undefined, () => undefined)
+    return result
+  }
+  // 在途 LLM 调用注册表：批量取消与 Fiber 销毁都从这里立即 abort（规格承诺的 AbortController 取消）。
+  const skillsActiveControllers = new Set()
+  const registerSkillCall = () => {
+    const call = new AbortController()
+    skillsActiveControllers.add(call)
+    return { signal: call.signal, done: () => skillsActiveControllers.delete(call) }
+  }
   ctx.effect(() => () => {
     if (skillsBatch !== null) skillsBatch.aborted = true
+    for (const call of skillsActiveControllers) {
+      try { call.abort(new Error('batch-cancelled')) } catch (_) {}
+    }
+    skillsActiveControllers.clear()
   }, 'dsh-service skills batch teardown')
   let quotaConfig = createEmptyQuotaConfig()
   let quotaConfigLoaded = false
@@ -2860,9 +2881,15 @@ function apply(ctx) {
         if (entry.invalid !== undefined) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
         const raw = await readFile(entry.path, 'utf8')
         const job = makeDescribeJobLogger(entry.id)
-        job.push('已定位技能 ' + (entry.name ?? '') + '（文件 ' + raw.length + ' 字符），模型路由白名单校验通过')
-        const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model, (line) => job.push(line))
-        return { ok: true, value: { draft } }
+        job.push('located', { name: entry.name ?? '', chars: raw.length })
+        // 注册进活动调用表：Fiber 销毁时立即中断，不再僵尸到 90s 超时。
+        const call = registerSkillCall()
+        try {
+          const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model, (code, params) => job.push(code, params), { signal: call.signal })
+          return { ok: true, value: { draft } }
+        } finally {
+          call.done()
+        }
       } catch (error) {
         return { ok: false, error: error?.message || String(error), ...(error?.message === 'describe-timeout' ? { detail: 'timeout' } : {}) }
       }
@@ -2880,18 +2907,19 @@ function apply(ctx) {
       const usage = sanitizeSkillDraftText(payload?.patch?.usage ?? '', SKILL_USAGE_MAX_CHARS)
       if (description === '') return { ok: false, error: 'invalid-description' }
       try {
-        const index = await skillsIndexPromise
         // 注释只进插件侧车索引，绝不写回技能文件；因此不要求条目可写，只要求能被签名 ID 定位。
         const { entries } = await scanSkillEntries(ctx, dshHome)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
         if (entry === undefined) return { ok: false, error: 'unknown-skill' }
-        index[entry.path] = {
-          bodyHash: entry.bodyHash,
-          note: { description, usage },
-          ...(typeof payload?.model === 'string' ? { model: payload.model.slice(0, 120) } : {}),
-          at: Date.now(),
-        }
-        await saveSkillsIndex(dshHome, index)
+        const index = await serializeSkillsIndexWrite((current) => {
+          current[entry.path] = {
+            bodyHash: entry.bodyHash,
+            note: { description, usage },
+            ...(typeof payload?.model === 'string' ? { model: payload.model.slice(0, 120) } : {}),
+            at: Date.now(),
+          }
+          return { value: current }
+        })
         return { ok: true, value: { entry: publicSkillEntry({ ...entry }, index) } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -2901,12 +2929,13 @@ function apply(ctx) {
     if (endpoint === 'skills-note-clear') {
       if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
       try {
-        const index = await skillsIndexPromise
         const { entries } = await scanSkillEntries(ctx, dshHome)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
         if (entry === undefined) return { ok: false, error: 'unknown-skill' }
-        delete index[entry.path]
-        await saveSkillsIndex(dshHome, index)
+        const index = await serializeSkillsIndexWrite((current) => {
+          delete current[entry.path]
+          return { value: current }
+        })
         return { ok: true, value: { entry: publicSkillEntry(entry, index) } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -2921,6 +2950,11 @@ function apply(ctx) {
       const model = typeof payload?.model === 'string' ? payload.model : ''
       if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
       try {
+        // 与单条 describe 同款白名单：批量路由必须命中 skills-models 清单。
+        const llm = ctx.get('llm')
+        if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
+        const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
+        if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
         const index = await skillsIndexPromise
         const { entries } = await scanSkillEntries(ctx, dshHome)
         const { candidates, skipped } = selectSkillBatchCandidates(entries, index)
@@ -2938,40 +2972,56 @@ function apply(ctx) {
       if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
       skillsBatch.phase = 'running'
       skillsBatch.running = true
+      // 批量级 AbortController：取消/销毁时立即中断在途 LLM 调用（不只等当前条目自然结束）。
+      const batchCall = registerSkillCall()
       // 有意不 await：批量在后台顺序执行，客户端轮询 skills-batch-status 取进度。
       void (async () => {
+        // 扫描一次建立 id→条目映射；逐条只重读目标文件校验新鲜度，不再每条全量重扫五类根。
+        let byId = new Map()
+        try {
+          const { entries } = await scanSkillEntries(ctx, dshHome)
+          byId = new Map(entries.map((entry) => [entry.id, entry]))
+        } catch (_) {}
         for (let cursor = 0; cursor < skillsBatch.items.length; cursor += 1) {
           const item = skillsBatch.items[cursor]
           if (skillsBatch.aborted) break
           skillsBatch.current = item.name
-          const batchLog = (line) => {
-            skillsBatch.logs.push('[' + new Date().toISOString().slice(11, 19) + '] [' + item.name + '] ' + line)
+          const batchLog = (code, params = {}) => {
+            skillsBatch.logs.push({ at: Date.now(), name: item.name, code, params })
             if (skillsBatch.logs.length > 120) skillsBatch.logs.shift()
           }
-          batchLog('开始生成注释…')
+          batchLog('item-start')
           try {
             const llm = ctx.get('llm')
             if (llm === undefined) throw new Error('llm-unavailable')
-            const { entries } = await scanSkillEntries(ctx, dshHome)
-            const entry = entries.find((candidate) => candidate.id === item.id)
-            if (entry === undefined) throw new Error('unknown-skill')
-            if (entry.invalid !== undefined) throw new Error('entry-changed')
-            const raw = await readFile(entry.path, 'utf8')
-            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model, batchLog)
-            // 注释只进侧车索引：文件零改动，正文哈希取当前扫描值（正文再变更即自动回到待补全）。
-            skillsIndexPromise = Promise.resolve({
-              ...await skillsIndexPromise,
-              [entry.path]: { bodyHash: entry.bodyHash, note: { description: draft.description, usage: draft.usage }, model: skillsBatch.provider + '/' + skillsBatch.model, at: Date.now() },
+            const entry = byId.get(item.id)
+            if (entry === undefined || entry.invalid !== undefined) throw new Error('entry-changed')
+            let raw
+            try {
+              raw = await readFile(entry.path, 'utf8')
+            } catch (_) {
+              throw new Error('entry-changed')
+            }
+            const evaluated = evaluateSkillFile(raw)
+            if (evaluated.invalid !== undefined) throw new Error('entry-changed')
+            const located = locateSkillFrontmatter(raw)
+            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model, batchLog, { signal: batchCall.signal })
+            // 注释只进侧车索引：文件零改动，正文哈希取当前内容（正文再变更即自动回到待补全）。
+            await serializeSkillsIndexWrite((current) => {
+              current[entry.path] = { bodyHash: bodyHashOf(raw, located?.bodyStart ?? 0), note: { description: draft.description, usage: draft.usage }, model: skillsBatch.provider + '/' + skillsBatch.model, at: Date.now() }
+              return {}
             })
-            await saveSkillsIndex(dshHome, await skillsIndexPromise)
             skillsBatch.done += 1
           } catch (error) {
+            // 取消导致的失败不是条目失败：直接跳出，由循环外的 phase 落定。
+            if (skillsBatch.aborted || batchCall.signal.aborted) break
             skillsBatch.failures.push({ name: item.name, reason: String(error?.message || error).slice(0, 160) })
           } finally {
             skillsBatch.current = null
           }
         }
-        skillsBatch.phase = skillsBatch.aborted ? 'cancelled' : 'done'
+        batchCall.done()
+        skillsBatch.phase = skillsBatch.aborted || batchCall.signal.aborted ? 'cancelled' : 'done'
         skillsBatch.running = false
       })()
       return { ok: true, value: { started: true, total: skillsBatch.total } }
@@ -2997,6 +3047,10 @@ function apply(ctx) {
     if (endpoint === 'skills-batch-cancel') {
       if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
       if (skillsBatch !== null) skillsBatch.aborted = true
+      // 立即中断在途 LLM 调用：不等当前条目跑满 90s 超时/重试链。
+      for (const call of skillsActiveControllers) {
+        try { call.abort(new Error('batch-cancelled')) } catch (_) {}
+      }
       return { ok: true, value: { phase: skillsBatch?.phase ?? 'idle' } }
     }
 
@@ -3181,7 +3235,6 @@ export {
   selectSkillBatchCandidates,
   setSkillInvocationKey,
   skillIdFor,
-  upsertSkillField,
 }
 export default {
   SKILL_SOURCE_RANK,
@@ -3212,5 +3265,4 @@ export default {
   selectSkillBatchCandidates,
   setSkillInvocationKey,
   skillIdFor,
-  upsertSkillField,
 }

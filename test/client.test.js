@@ -10,6 +10,7 @@ function createRenderer(rpcCall, options = {}) {
   const effectState = new Map()
   const effectCleanups = new Map()
   const timers = []
+  const factoryDisposers = []
   const localeListeners = new Set()
   const localeDictionaries = new Map()
   const sessionListeners = new Set()
@@ -317,6 +318,7 @@ function createRenderer(rpcCall, options = {}) {
         } : {}),
         effect(callback) {
           const dispose = callback()
+          if (typeof dispose === 'function') factoryDisposers.push(dispose)
           return typeof dispose === 'function' ? dispose : () => {}
         },
         on(event, handler) {
@@ -342,6 +344,13 @@ function createRenderer(rpcCall, options = {}) {
     async flush() {
       await new Promise((resolve) => setImmediate(resolve))
       await Promise.resolve()
+    },
+    // 工厂级 ctx.effect 的 disposer（批量轮询表等）：测试末尾显式停表，防止真实 setInterval 挂住进程。
+    disposeFactory() {
+      while (factoryDisposers.length > 0) {
+        const batch = factoryDisposers.splice(0)
+        for (const dispose of batch) dispose()
+      }
     },
     async advanceTimer(expectedDelay) {
       const index = expectedDelay === undefined ? 0 : timers.findIndex((timer) => timer.delay === expectedDelay)
@@ -2826,6 +2835,7 @@ function createSkillsRpcFixture() {
       { id: 'id-delta', name: 'delta', description: 'Delta desc', usage: '', invocation: { model: true, user: true }, source: 'user-agents', writable: true, shadowed: false, invalid: 'legacy-invocation-key:modelInvocable', annotated: false },
     ],
     toggles: [],
+    fixes: [],
     applies: [],
     describes: [],
     batchPlans: [],
@@ -2846,6 +2856,7 @@ function createSkillsRpcFixture() {
       return { ok: true, value: { entry: clone(entry) } }
     }
     if (endpoint === 'skills-fix-keys') {
+      state.fixes.push(payload)
       const entry = state.entries.find((candidate) => candidate.id === payload.id)
       delete entry.invalid
       return { ok: true, value: { entry: clone(entry) } }
@@ -2865,7 +2876,12 @@ function createSkillsRpcFixture() {
       return { ok: true, value: { entry: clone(entry) } }
     }
     if (endpoint === 'skills-describe-log') {
-      return { ok: true, value: { logs: ['[00:00:01] 第 1/2 次生成：调用 p/m1', '[00:00:02] 解析成功，草稿就绪'] } }
+      // 宿主下发结构化 {at, code, params}；本地化由客户端词典渲染。
+      return { ok: true, value: { logs: [
+        { at: Date.now(), code: 'located', params: { name: 'alpha', chars: 128 } },
+        { at: Date.now(), code: 'attempt', params: { n: 1, total: 3, route: 'p/m1' } },
+        { at: Date.now(), code: 'parsed', params: {} },
+      ] } }
     }
     if (endpoint === 'skills-note-clear') {
       const entry = state.entries.find((candidate) => candidate.id === payload.id)
@@ -2886,7 +2902,7 @@ function createSkillsRpcFixture() {
         return { ok: true, value: { phase: 'planned', total: 2, done: 0, failures: [], current: null, estBytes: 1024, logs: [] } }
       }
       if (state.batchRuns.length === 0) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [], current: null, estBytes: 0, logs: [] } }
-      return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048, logs: ['[00:00:03] [beta] 解析成功，草稿就绪'] } }
+      return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048, logs: [{ at: Date.now(), name: 'beta', code: 'parsed', params: {} }] } }
     }
     if (endpoint === 'skills-batch-cancel') return { ok: true, value: { phase: 'cancelled' } }
     return null
@@ -2946,12 +2962,17 @@ test('skills tab renders three groups with badges, filters, and double-confirm t
   assert.deepEqual(fixture.state.toggles, [{ id: 'id-beta', field: 'model', enable: true }])
   assert.equal(renderer.findByTestId('skill-switch-model-beta').props['aria-checked'], 'true')
 
-  // 无效条目组：delta 带 legacy ⚠ 与修复按钮；点击修复后条目转正。
+  // 无效条目组：delta 带 legacy ⚠ 与修复按钮；修复与开关同款两段式——第一击只进入待确认不发 RPC。
   assert.equal(renderer.hasTest('skills-invalid-group'), true)
   renderer.findByTestId('skill-fix-delta').props.onClick()
   await renderer.flush()
-  const deltaEntry = renderer.findAllByTestIdPrefix('skill-entry-').find((node) => node.props['data-testid'] === 'skill-entry-delta')
-  assert.notEqual(deltaEntry, undefined)
+  assert.equal(fixture.state.fixes.length, 0)
+  assert.equal(renderer.findByTestId('skill-fix-delta').children.join(''), '再次点击生效')
+  // 第二击才真正下发修复；条目转正后无效组消失。
+  renderer.findByTestId('skill-fix-delta').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.fixes, [{ id: 'id-delta' }])
+  assert.equal(renderer.hasTest('skills-invalid-group'), false)
 })
 
 test('AI describe dialog loads models, drafts a preview diff, and writes after explicit confirm', async () => {
@@ -2984,9 +3005,7 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   // 注释以独立块展示在条目下方：只含描述与用法两行，不再带标题说明。
   assert.equal(renderer.hasTest('skill-note-alpha'), true)
   assert.equal(renderer.text().includes('仅面板展示'), false)
-  // 运行日志盒保留最后一次生成的过程记录。
-  console.log('DEBUG-TIDS:', renderer.findAllByTestIdPrefix('skill-').map((n) => n.props['data-testid']).join(','))
-  console.log('DEBUG-BUSY-PRESENT:', renderer.text().includes('生成中'))
+  // 运行日志盒保留最后一次生成的过程记录（结构化条目经词典渲染）。
   assert.equal(renderer.hasTest('skill-describe-log'), true)
   assert.match(renderer.text(), /解析成功，草稿就绪/)
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
@@ -3080,4 +3099,108 @@ test('an adopted planned batch without a local plan recovers through the plan bu
   // 重新计划后恢复正常两段流程。
   assert.match(renderer.text(), /候选 1 项/)
   assert.equal(renderer.hasTest('skills-batch-start'), true)
+})
+
+test('skills tab renders localized error text instead of crashing on failed loads and rejected toggles', async () => {
+  const fixture = createSkillsRpcFixture()
+  // 只读条目 gamma 的开关被宿主拒绝 read-only-source；此前 mapSkillErrorMessage 引用
+  // 不存在的 translate 自由变量，任何错误渲染都会 ReferenceError 把整个技能页炸掉。
+  const originalHandler = fixture.handler
+  fixture.handler = async (channel, endpoint, payload) => {
+    if (endpoint === 'skills-toggle' && payload.id === 'id-gamma') return { ok: false, error: 'read-only-source' }
+    return originalHandler(channel, endpoint, payload)
+  }
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-section'), true)
+
+  // 双击只读条目开关 → 宿主拒绝 → 错误行显示词典文案而非原始错误码，页面不崩溃。
+  renderer.findByTestId('skill-switch-model-gamma').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('skill-switch-model-gamma').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-error'), true)
+  assert.match(renderer.text(), /只读来源/)
+  assert.doesNotMatch(renderer.text(), /read-only-source/)
+})
+
+test('skills batch plan shows an expandable skipped list with per-entry reasons and no stale read-only claim', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skills-batch-toggle').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('skills-batch-plan').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // 摘要不再宣称「只读」跳过（只读目录早已是合法候选）。
+  const summary = renderer.findByTestId('skills-batch-candidates').children.join('')
+  assert.doesNotMatch(summary, /只读/)
+  assert.match(summary, /跳过 1 项/)
+
+  // 跳过清单可展开：逐条显示名称与本地化原因。
+  assert.equal(renderer.hasTest('skills-batch-skipped-item'), false)
+  renderer.findByTestId('skills-batch-skipped-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-batch-skipped-item'), true)
+  assert.match(renderer.text(), /alpha：已注释/)
+})
+
+test('describe dialog shows the panel-only disclaimer before saving a note', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-run').props.onClick()
+  await renderer.flush()
+
+  // 草稿就绪后、确认保存前，「仅面板展示」免责声明可见（此前只在批量 hint 里出现）。
+  assert.equal(renderer.hasTest('skill-note-disclaimer'), true)
+  assert.match(renderer.findByTestId('skill-note-disclaimer').children.join(''), /不写入 SKILL\.md/)
+
+  // 保存后的完成文案说「注释已保存」，不再说「已写入」。
+  renderer.findByTestId('skill-apply-confirm').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('skill-apply-done').children.join(''), /注释已保存/)
+})
+
+test('factory-level adopt restores a host-side running batch badge without visiting the skills tab', async () => {
+  const fixture = createSkillsRpcFixture()
+  const originalHandler = fixture.handler
+  let statusCalls = 0
+  fixture.handler = async (channel, endpoint, payload) => {
+    if (endpoint === 'skills-batch-status') {
+      statusCalls += 1
+      if (fixture.state.batchRuns.length === 0) {
+        // 页面刷新后的宿主态：批量正在运行（本端计划已丢）。
+        return { ok: true, value: { phase: 'running', total: 3, done: 1, failures: [], current: 'beta', estBytes: 128, logs: [] } }
+      }
+    }
+    return originalHandler(channel, endpoint, payload)
+  }
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.flush()
+  // 工厂启动即采纳：不进技能页，「技能」标签标题也带 ⟳done/total 角标。
+  // 标签标题带 ⟳done/total 角标（按钮文本带角标后 findButton 精确匹配会漏，改全文断言）。
+  assert.match(renderer.text(), /技能 ⟳1\/3/)
+  assert.ok(statusCalls >= 1)
+  renderer.disposeFactory()
 })

@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, upsertSkillField } from '../index.js'
+import { apply, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -2506,8 +2506,11 @@ test('skills-describe validates the model whitelist and applies a sanitized draf
     // 运行日志可回读：包含调用路由与解析成功标记。
     const logs = await handler('skills-describe-log', { id: beta.id })
     assert.equal(logs.ok, true)
-    assert.match(logs.value.logs.join('\n'), /调用 prov\/m1/)
-    assert.match(logs.value.logs.join('\n'), /解析成功，草稿就绪/)
+    // 日志条目是结构化 {at, code, params}：宿主不再拼本地化文案。
+    const logLine = (code) => logs.value.logs.find((entry) => entry.code === code)
+    assert.match(String(logLine('located').params.name), /beta/)
+    assert.equal(logLine('attempt').params.route, 'prov/m1')
+    assert.notEqual(logLine('parsed'), undefined)
 
     const saved = await handler('skills-note-save', { id: beta.id, patch: { description: described.value.draft.description, usage: described.value.draft.usage }, model: 'prov/m1' })
     assert.equal(saved.ok, true)
@@ -2571,8 +2574,9 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
     // 批量日志随状态返回：含逐条目与模型路由信息。
     assert.notEqual(finalStatus, null)
     assert.ok(finalStatus.logs.length > 0)
-    assert.match(finalStatus.logs.join('\n'), /\[alpha\]/)
-    assert.match(finalStatus.logs.join('\n'), /prov\/m1/)
+    assert.ok(finalStatus.logs.every((entry) => typeof entry.code === 'string'))
+    assert.ok(finalStatus.logs.some((entry) => entry.name === 'alpha' && entry.code === 'item-start'))
+    assert.ok(finalStatus.logs.some((entry) => entry.code === 'attempt' && entry.params.route === 'prov/m1'))
     // 按调用顺序：第一条候选 alpha、第二条 beta；草稿只进侧车索引，技能文件零改动。
     assert.equal(llmState.streamCalls.length, 2)
     assert.match(llmState.streamCalls[0].messages[0].content[0].text, /Alpha body/)
@@ -2603,12 +2607,6 @@ test('skill pure helpers: loose booleans, draft sanitizing, and multi-line descr
   assert.equal(draft.description, 'a bc')
   assert.throws(() => extractSkillDraftJson('{"description":"   "}'))
 
-  const multiLine = '---\nname: m\ndescription: |\n  first line\n  second line\nkeepme: yes\n---\nbody'
-  const spliced = upsertSkillField(multiLine, 'description', 'flat now')
-  assert.doesNotMatch(spliced, /first line/)
-  assert.match(spliced, /description: "flat now"/)
-  assert.match(spliced, /keepme: yes/)
-  assert.match(spliced, /body/)
 })
 
 test('a directory hit by both the workspace and user root rules is scanned once under the higher-priority source', async (t) => {
@@ -2686,12 +2684,14 @@ test('skills-describe surfaces empty-output finish reasons and recovers via bigg
     const described = await handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1' })
     assert.equal(described.ok, true)
     assert.deepEqual(described.value.draft, { description: '恢复后的中文描述', usage: '恢复后的用法' })
-    const joined = (await handler('skills-describe-log', { id: beta.id })).value.logs.join('\n')
-    assert.match(joined, /模型结束：max-tokens（仅推理 \d+ 字符，未产出正文）/)
+    const entries = (await handler('skills-describe-log', { id: beta.id })).value.logs
+    const byCode = (code) => entries.filter((entry) => entry.code === code)
+    const finishEntry = byCode('finish-reasoning-only')[0]
+    assert.equal(finishEntry.params.kind, 'max-tokens')
     assert.equal(llmState.streamCalls.length, 3)
-    assert.match(joined, /第 3\/3 次生成/)
-    assert.match(joined, /失败：empty-output:max-tokens，自动重试/)
-    assert.match(joined, /解析成功，草稿就绪/)
+    assert.equal(byCode('attempt')[2].params.n, 3)
+    assert.match(byCode('failed-retry')[0].params.message, /^empty-output:max-tokens$/)
+    assert.notEqual(byCode('parsed')[0], undefined)
 
     // 整块兜底：适配器不发 text-delta 时从 block-end 提取。
     const fallbackHost = createHost({
@@ -2705,5 +2705,95 @@ test('skills-describe surfaces empty-output finish reasons and recovers via bigg
     const described2 = await fallbackHost.handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1' })
     assert.equal(described2.ok, true)
     assert.equal(described2.value.draft.description, '整块描述')
+  })
+})
+
+test('skills-batch-plan validates the model route against the whitelist', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const { handler } = createHost({
+    services: {
+      workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+      llm: skillLlmMock({ streamCalls: [], responses: [] }),
+      agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    // 白名单外的 provider/model 组合拒绝：批量路由与单条 describe 同一道闸。
+    assert.equal((await handler('skills-batch-plan', { provider: 'other', model: 'm1' })).error, 'invalid-model-route')
+    assert.equal((await handler('skills-batch-plan', { provider: 'prov', model: 'nope' })).error, 'invalid-model-route')
+    const planned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
+    assert.equal(planned.ok, true)
+  })
+})
+
+test('skills-batch-cancel interrupts the in-flight LLM call and settles without retrying', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const streamCalls = []
+  const llm = {
+    listProviders: () => [{ id: 'prov', name: 'Provider' }],
+    listModels: async () => [{ id: 'm1', name: 'Model One' }],
+    stream(options) {
+      streamCalls.push(options)
+      // 挂起直到 signal 中断：模拟一条慢生成。
+      return (async function* () {
+        await new Promise((resolve, reject) => {
+          if (options.signal?.aborted) { reject(new Error('batch-cancelled')); return }
+          options.signal?.addEventListener('abort', () => reject(new Error('batch-cancelled')))
+        })
+      })()
+    },
+  }
+  const { handler } = createHost({
+    services: {
+      workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
+      llm,
+      agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const planned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
+    assert.equal((await handler('skills-batch-run', { planId: planned.value.planId })).ok, true)
+    // 等第一条进入在途（stream 调用发生）再取消。
+    for (let attempt = 0; attempt < 100 && streamCalls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(streamCalls.length, 1)
+    const cancelled = await handler('skills-batch-cancel', {})
+    assert.equal(cancelled.ok, true)
+    let settled = null
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const status = await handler('skills-batch-status', {})
+      if (status.value.phase !== 'running') { settled = status.value; break }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    // 取消中断在途调用：批次落为 cancelled、零完成、不重试、不记条目失败。
+    assert.notEqual(settled, null)
+    assert.equal(settled.phase, 'cancelled')
+    assert.equal(settled.done, 0)
+    assert.equal(settled.failures.length, 0)
+    assert.equal(streamCalls.length, 1)
+  })
+})
+
+test('concurrent skills-note-save writes are serialized and both persist', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const { handler } = createHost({
+    services: { workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const listed = await handler('skills-list', {})
+    const alpha = listed.value.entries.find((entry) => entry.name === 'alpha' && entry.source === 'project-dsh')
+    const beta = listed.value.entries.find((entry) => entry.name === 'beta')
+    // 并发保存两条注释：写队列串行化后磁盘上两条都在（旧实现互相覆盖会丢一条）。
+    await Promise.all([
+      handler('skills-note-save', { id: alpha.id, patch: { description: 'A 注释', usage: '' } }),
+      handler('skills-note-save', { id: beta.id, patch: { description: 'B 注释', usage: '' } }),
+    ])
+    const index = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
+    const notes = Object.values(index.entries).map((record) => record.note.description).sort()
+    assert.deepEqual(notes, ['A 注释', 'B 注释'])
   })
 })
