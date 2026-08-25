@@ -2087,6 +2087,11 @@ test('deepseek balance parser maps currency windows and tolerates missing fields
   )
   assert.deepEqual(normalizeDeepseekBalance(null).windows, [])
   assert.deepEqual(normalizeDeepseekBalance({ balance_infos: 'nope' }).windows, [])
+  // 空串/空白金额是上游缺数据不是零余额：Number('') === 0 会伪装成 ¥0.00，必须整条丢弃。
+  assert.deepEqual(
+    normalizeDeepseekBalance({ balance_infos: [{ currency: 'CNY', total_balance: '', granted_balance: ' ' }] }).windows,
+    [],
+  )
   // 宿主常量端点链与 baseURL 自动推断（含子域与 /v1 路径后缀）。
   assert.deepEqual(quotaEndpointFor('deepseek', ''), ['https://api.deepseek.com/user/balance'])
   assert.equal(inferQuotaKind('https://api.deepseek.com/v1'), 'deepseek')

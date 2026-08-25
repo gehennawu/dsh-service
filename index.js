@@ -1053,8 +1053,10 @@ function normalizeDeepseekBalance(payload) {
   return { windows }
 }
 
-/** DeepSeek 金额字段归一：字符串/数字均可（官方下发字符串），负数或非有限值拒绝，保留两位小数。 */
+/** DeepSeek 金额字段归一：字符串/数字均可（官方下发字符串），负数或非有限值拒绝；
+ * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00。保留两位小数。 */
 function normalizeDeepseekMoney(value) {
+  if (typeof value === 'string' && value.trim() === '') return null
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return null
   return (Math.round(n * 100) / 100).toFixed(2)

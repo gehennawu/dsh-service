@@ -1905,9 +1905,9 @@ window.__ModuleLoader__.load({
       const DEEPSEEK_PEAK_COLOR = '#f0952f'
       const DEEPSEEK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
       const DEEPSEEK_PEAK_TICK_MS = 30000
-      // 换挡倒计时的边界时刻命名走词典 quota.peak.boundary.<分钟数>（zh「9点」/en「9am」）。
-      // 色带本体不再有外部刻度：v0.25 打磨后只画「当前 → 当天结束」的剩余区间（左缘即当前，
-      // 用户点名隐藏过去时间），各区段范围文字直接内嵌在色带里。
+      // 换挡倒计时用数字钟时刻（formatBeijingClockTime），无 boundary 类词典键。
+      // 色带无外部刻度：只画两段——当前时段剩余 + 下一个相反时段（可跨天，用户点名隐藏
+      // 过去时间），左缘细标线即当前时刻，段内短词「忙时/闲时」过窄自动隐藏。
       function beijingCivilParts(nowMs) {
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
@@ -1917,11 +1917,9 @@ window.__ModuleLoader__.load({
         return DEEPSEEK_PEAK_SEGMENTS.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
       }
       /** 从当前时刻起收集前 count 个峰谷切换时刻（毫秒，升序）。
- * 工作日的四个边界点必为状态翻转；周末无边界。最坏情形（周五 18:00 后）下个翻转在
- * 周一 09:00，扫 7 天必然覆盖任意 count ≤ 8 的需求。 */
+       * 工作日的四个边界点必为状态翻转；周末无边界。最坏情形（周五 18:00 后）下个翻转在
+       * 周一 09:00，扫 7 天必然覆盖（现有调用最多取 2 个）。 */
       function deepseekUpcomingFlips(nowMs, count) {
-        const current = beijingCivilParts(nowMs)
-        const inPeak = deepseekIsPeakMinute(current.dayIndex, current.minutesOfDay)
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         shifted.setUTCHours(0, 0, 0, 0)
         const beijingDayStart = shifted.getTime() - 8 * 3600 * 1000
@@ -1937,7 +1935,6 @@ window.__ModuleLoader__.load({
             if (flips.length >= count) return flips
           }
         }
-        void inPeak
         return flips
       }
       function formatBeijingClockTime(ms) {
@@ -1945,11 +1942,16 @@ window.__ModuleLoader__.load({
         const digits = (value) => String(value).padStart(2, '0')
         return `${digits(shifted.getUTCHours())}:${digits(shifted.getUTCMinutes())}`
       }
-      
-      /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 换挡倒计时、24 小时峰谷色带
-       * （橙=高峰、绿=空闲）、跟随北京时间移动的圆点、规则说明一行。额度卡与圆环面板共用，
-       * 圆环面板窄所以不渲染说明行（showCaption:false）。时刻推进用 ctx.timer 自续链而非
-       * setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。 */
+
+      /** 峰谷块显隐判定：仅 DeepSeek 行且有窗口数据（额度卡与圆环面板共用一处口径）。 */
+      function deepseekPeakVisible(row, windows) {
+        return row?.kind === 'deepseek' && Array.isArray(windows) && windows.length > 0
+      }
+
+      /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 数字钟换挡倒计时、两段式峰谷色带
+       * （橙=高峰、绿=空闲；当前时段剩余 + 下一个相反时段，可跨天）、左缘细标线即当前时刻，
+       * 规则说明行可选。额度卡与圆环面板共用，圆环面板窄所以不渲染说明行（showCaption:false）。
+       * 时刻推进用 ctx.timer 自续链而非 setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。 */
       function QuotaPeakTimeline({ showCaption }) {
         const translate = useTranslation()
         // 测试桩的 useState 不调用函数式初始化器，直接传值（多算一次 Date.now 无副作用）。
@@ -2273,7 +2275,7 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             windows.map((window) => renderQuotaWindowRow(window, translate, null))),
-          ...(row.kind === 'deepseek' && windows.length > 0
+          ...(deepseekPeakVisible(row, windows)
             ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false })]
             : []),
           ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
@@ -2969,7 +2971,7 @@ window.__ModuleLoader__.load({
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }
                   // DeepSeek 余额卡专属：峰谷提示（状态徽标 + 换挡倒计时 + 24h 色带 + 随北京时间移动的圆点）。
-                  const peakTimeline = row.kind === 'deepseek' && windows.length > 0
+                  const peakTimeline = deepseekPeakVisible(row, windows)
                     ? React.createElement(QuotaPeakTimeline, { key: 'peak-timeline', showCaption: true })
                     : null
                                     // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，行尾自带「移除」。
