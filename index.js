@@ -107,6 +107,19 @@ const KIND_REGISTRY = {
     keyHints: ['SILICONFLOW_API_KEY'],
     hosts: ['siliconflow.cn'],
   },
+  // CLIProxyAPI（router-for-me/CLIProxyAPI）管理面：查它托管的 OAuth 上游账号官方额度。
+  // 无固定 endpoints / 全局 hosts——每个部署一个域名，保存适配时把 settings baseURL 的
+  // hostname 钉进配置 allowedHosts[provider]（见 quota-config 写入口），外呼前复验精确命中。
+  // managementPlane:true 表示凭据是 remote-management.secret-key（线索 CPA_MANAGEMENT_KEY），
+  // 绝不使用也不回退 settings 的 apiKeyEnv——那是代理 key，发去管理面等于拿错钥匙撞 fail2ban
+  // （CPA 内建：管理面错 key 满 5 次封 IP 30 分钟，源码核实）。
+  cliproxy: {
+    fetcher: fetchCliproxyUsage,
+    fetcherGuard: cliproxyFetchGuard,
+    keyHints: ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'],
+    hosts: [],
+    managementPlane: true,
+  },
 }
 const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
@@ -125,6 +138,12 @@ const MAX_QUOTA_PROVIDER_NAME = 128
 const MAX_QUOTA_RESET_CARDS = 500
 const MAX_QUOTA_RESET_CARDS_PER_PROVIDER = 10
 const MAX_QUOTA_ERROR_DETAIL = 256
+// CLIProxyAPI 编排参数（v0.24）：账号数 / api-call 总次数（antigravity 候选 URL 也计入）/
+// 并发 / 窗口总数上限。数值只在此处与 TODO.md 里程碑两处出现。
+const MAX_QUOTA_CPA_ACCOUNTS = 8
+const MAX_QUOTA_CPA_CALLS = 12
+const QUOTA_CPA_CONCURRENCY = 3
+const MAX_QUOTA_CPA_WINDOWS = 32
 
 // 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
 // TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
@@ -559,7 +578,41 @@ async function saveUsageIndex(dshHome, index) {
 // ── 远端额度（v0.18）：kind 映射存取、方言解析、节流状态机 ─────────────
 
 function createEmptyQuotaConfig() {
-  return { version: QUOTA_CONFIG_VERSION, kinds: {}, resetCards: [] }
+  return { version: QUOTA_CONFIG_VERSION, kinds: {}, resetCards: [], allowedHosts: {} }
+}
+
+/** 钉住表主机名归一：小写、去尾点；拒绝 IP 字面量与非法形状。合法返回归一值，否则 undefined。 */
+function normalizeQuotaHostname(value) {
+  if (typeof value !== 'string') return undefined
+  const host = value.trim().toLowerCase().replace(/\.$/, '')
+  if (host.length === 0 || host.length > 253) return undefined
+  if (/^[\d.]+$/.test(host) || host.includes(':')) return undefined
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/.test(host)) return undefined
+  return host
+}
+
+/** 解析磁盘上的 allowedHosts（cliproxy 等「每部署一个域名」kind 的钉住表）：
+ * provider 键沿用 kinds 白名单形状，每家最多 4 条去重主机名；非法条目整键丢弃。 */
+function normalizeQuotaAllowedHosts(raw) {
+  if (typeof raw !== 'object' || raw === null) return {}
+  const out = {}
+  let count = 0
+  for (const [provider, hosts] of Object.entries(raw)) {
+    if (count >= MAX_QUOTA_PROVIDERS) break
+    if (typeof provider !== 'string' || provider.length === 0 || provider.length > MAX_QUOTA_PROVIDER_NAME) continue
+    if (!Array.isArray(hosts)) continue
+    const normalized = []
+    for (const candidate of hosts) {
+      if (normalized.length >= 4) break
+      const host = normalizeQuotaHostname(candidate)
+      if (host !== undefined && !normalized.includes(host)) normalized.push(host)
+    }
+    if (normalized.length > 0) {
+      out[provider] = normalized
+      count += 1
+    }
+  }
+  return out
 }
 
 /**
@@ -607,7 +660,7 @@ function parseQuotaConfigText(text) {
       kindCount += 1
     }
   }
-  return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards) }
+  return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards), allowedHosts: normalizeQuotaAllowedHosts(parsed.allowedHosts) }
 }
 
 async function loadQuotaConfig(dshHome) {
@@ -634,10 +687,15 @@ async function saveQuotaConfig(dshHome, config) {
 }
 
 function copyQuotaConfig(config) {
+  const allowedHosts = {}
+  for (const [provider, hosts] of Object.entries(config?.allowedHosts ?? {})) {
+    allowedHosts[provider] = Array.isArray(hosts) ? [...hosts] : []
+  }
   return {
     version: QUOTA_CONFIG_VERSION,
     kinds: { ...(config?.kinds ?? {}) },
     resetCards: Array.isArray(config?.resetCards) ? config.resetCards.map((card) => ({ ...card })) : [],
+    allowedHosts,
   }
 }
 
@@ -723,6 +781,41 @@ function inferQuotaKind(baseURL) {
   return hits.length === 1 ? hits[0][0] : undefined
 }
 
+/** 保存适配时的钉住派生（服务端从 settings baseURL 取值，浏览器零输入）：
+ * 仅接受 HTTPS、无 userinfo、默认端口、DNS 域名（拒 IP 字面量）；不合格返回 undefined。 */
+function cliproxyPinHostFromBaseURL(baseURL) {
+  let parsed
+  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
+  if (parsed.port !== '' && parsed.port !== '443') return undefined
+  return normalizeQuotaHostname(parsed.hostname)
+}
+
+/**
+ * CLIProxyAPI 管理面 origin 守卫：baseURL 必须整体 HTTPS，且 hostname 与保存适配时
+ * 钉入 allowedHosts[provider] 的记录**精确相等**——不做子串/子域猜测，管理密钥只发往
+ * 用户钉过的那个域；settings 里改了 baseURL 就必须重新保存适配才恢复外呼。
+ * 返回规范化 origin（scheme://host[:443]，无路径）或 undefined。
+ */
+function safeCliproxyOrigin(baseURL, pinnedHosts) {
+  if (!Array.isArray(pinnedHosts) || pinnedHosts.length === 0) return undefined
+  let parsed
+  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
+  if (parsed.port !== '' && parsed.port !== '443') return undefined
+  const host = normalizeQuotaHostname(parsed.hostname)
+  if (host === undefined || !pinnedHosts.includes(host)) return undefined
+  return parsed.origin
+}
+
+/** fetcher 类 kind 的外呼前置守卫：返回稳定错误码或 null（放行）。在解凭据之前跑，省一次凭据查找。 */
+function cliproxyFetchGuard(profile, config) {
+  const base = String(profile?.baseURL ?? '').trim()
+  if (base === '') return 'no-base-url'
+  const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
+  return safeCliproxyOrigin(base, pinned) === undefined ? 'host-not-pinned' : null
+}
+
 /**
  * 单个 provider 的 kind 解析（quota 与 quota-refresh 共用）。
  * 优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断；未命中返回空对象。
@@ -759,19 +852,29 @@ function normalizeResetTimestamp(value) {
 }
 
 /**
+ * 凭据线索名清单（与发现链同一顺序）：settings 声明的 apiKeyEnv 在前、kind keyHints 殿后，去重。
+ * 凭据填写窗口（quota-credential-set/unset）只接受这份清单里的名字——零输入拼接：浏览器传来的
+ * 名字必须命中宿主派生的白名单，顺带保证 CredentialRef 文法（POSIX shell 标识符）合法。
+ */
+function quotaCredentialHintNames(kind, profile) {
+  const names = []
+  // 管理面 kind（cliproxy）的凭据独立于模型代理 key：settings 的 apiKeyEnv 指向代理 key，
+  // 发去管理面等于拿错钥匙撞 fail2ban（CPA 错 5 次封 IP 30 分钟）——不尝试、不回退。
+  if (KIND_REGISTRY[kind]?.managementPlane !== true && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
+  for (const name of KIND_REGISTRY[kind]?.keyHints ?? []) {
+    if (!names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/**
  * Key 发现链：settings 声明的 apiKeyEnv → DSH 凭据库按 kind 线索名 → 环境变量（含旧名兼容）。
  * 全部落空返回 undefined（调用方转为 credential-missing）；settings 显式声明了 apiKeyEnv
  * 但凭据服务缺席且环境变量也兜不住时抛 credentials-unavailable——有明确意图却无处取 key，
  * 与「从未配置」的 credential-missing 区分。
  */
 async function discoverQuotaCredential(ctx, kind, profile) {
-  const hints = KIND_REGISTRY[kind]?.keyHints ?? []
-  const attempted = []
-  if (profile.apiKeyEnv !== '') attempted.push(profile.apiKeyEnv)
-  for (const name of hints) {
-    if (attempted.includes(name)) continue
-    attempted.push(name)
-  }
+  const attempted = quotaCredentialHintNames(kind, profile)
   const envHas = (name) => typeof process.env[name] === 'string' && process.env[name].trim() !== ''
   const credentials = ctx.get('credentials')
   if (credentials !== undefined && typeof credentials.resolve === 'function') {
@@ -857,6 +960,245 @@ function normalizeSiliconFlowInfo(payload) {
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return { windows: [] }
   return { windows: [{ id: 'balance', text: `¥${(Math.round(n * 100) / 100).toFixed(2)}` }] }
+}
+
+// ─── CLIProxyAPI（cliproxy）管理面编排 ──────────────────────────────────────
+// 上游官方额度端点注册表（经 CPA api-call 代调，header 的 $TOKEN$ 由 CPA 替换为对应账号凭据）。
+// 形状来源：muyouzhi6/astrbot_plugin_cliproxy_stats + CPA main 分支源码（2026-08 核实）；
+// 全部折算成统一「已用 %」口径（remainingFraction 类字段做纯 clamp，不做 ≤1 启发式——教训见 KNOWLEDGE.md）。
+const CLIPROXY_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const CLIPROXY_GEMINI_QUOTA_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
+const CLIPROXY_ANTIGRAVITY_QUOTA_URLS = [
+  'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+  'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
+  'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+]
+const CLIPROXY_SUPPORTED_ACCOUNT_KINDS = new Set(['codex', 'gemini', 'gemini-cli', 'antigravity'])
+
+/** Codex 窗口长度 → 展示桶位代码：按上游下发的实际秒数判，绝不按 primary/secondary 位置猜
+ * （真实部署里主槽位完全可能就是周额度——2026-08-25 用户实测踩中）。 */
+function codexWindowCode(key, window) {
+  const seconds = Number(window.limit_window_seconds)
+  if (Number.isFinite(seconds) && seconds > 0) {
+    if (seconds <= 6 * 3600) return 'codex-5h'
+    if (seconds <= 24 * 3600) return 'codex-day'
+    if (seconds <= 8 * 24 * 3600) return 'codex-week'
+    return 'codex-month'
+  }
+  // 上游没带窗口长度时的位置兜底：primary 常见为短周期、secondary 为长周期。
+  return key === 'primary_window' ? 'codex-primary' : 'codex-secondary'
+}
+
+/** Codex wham/usage 的 rate_limit → 窗口（used_percent 已用口径；reset_at 为 unix 秒）。
+ * secondary_window 可为 null（真实上游行为）；窗口名由 limit_window_seconds 推导。 */
+function normalizeCodexRateLimit(rateLimit) {
+  const windows = []
+  if (rateLimit === null || typeof rateLimit !== 'object') return windows
+  for (const key of ['primary_window', 'secondary_window']) {
+    const window = rateLimit[key]
+    if (window === null || typeof window !== 'object') continue
+    const percent = normalizePercentValue(window.used_percent)
+    if (percent === null) continue
+    const code = codexWindowCode(key, window)
+    const resetsAt = normalizeResetTimestamp(window.reset_at)
+    windows.push({ id: code, kindKey: code, percent, ...(resetsAt !== undefined ? { resetsAt } : {}) })
+  }
+  // 已用多的排前面（与 gemini/antigravity 解析器同一关注序）。
+  return windows.sort((a, b) => b.percent - a.percent)
+}
+
+/** GeminiCLI retrieveUserQuota 的 buckets → 窗口（remainingFraction∈[0,1] 折算为已用 %）。 */
+function normalizeGeminiBuckets(buckets) {
+  const windows = []
+  if (!Array.isArray(buckets)) return windows
+  for (const bucket of buckets) {
+    if (bucket === null || typeof bucket !== 'object') continue
+    const modelId = typeof bucket.modelId === 'string' && bucket.modelId.trim() !== '' ? bucket.modelId.trim() : ''
+    const remaining = Number(bucket.remainingFraction)
+    if (modelId === '' || !Number.isFinite(remaining)) continue
+    const fraction = Math.max(0, Math.min(1, remaining))
+    const resetsAt = normalizeResetTimestamp(bucket.resetTime)
+    windows.push({
+      id: modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'model',
+      kindKey: modelId,
+      percent: Math.round((1 - fraction) * 100),
+      ...(resetsAt !== undefined ? { resetsAt } : {}),
+    })
+  }
+  // 剩得最少的排前面（最值得关注）：已用 % 降序。
+  return windows.sort((a, b) => b.percent - a.percent)
+}
+
+/** Antigravity fetchAvailableModels 的 models{} → 窗口（quotaInfo.remainingFraction 折算已用 %）。 */
+function normalizeAntigravityModels(models) {
+  const windows = []
+  if (models === null || typeof models !== 'object') return windows
+  for (const [modelId, entry] of Object.entries(models)) {
+    if (entry === null || typeof entry !== 'object') continue
+    const info = entry.quotaInfo !== null && typeof entry.quotaInfo === 'object' ? entry.quotaInfo
+      : entry.quota_info !== null && typeof entry.quota_info === 'object' ? entry.quota_info : null
+    if (info === null) continue
+    const remaining = Number(info.remainingFraction ?? info.remaining_fraction)
+    if (!Number.isFinite(remaining)) continue
+    const fraction = Math.max(0, Math.min(1, remaining))
+    const resetsAt = normalizeResetTimestamp(info.resetTime ?? info.reset_time)
+    windows.push({
+      id: String(modelId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'model',
+      kindKey: modelId,
+      percent: Math.round((1 - fraction) * 100),
+      ...(resetsAt !== undefined ? { resetsAt } : {}),
+    })
+  }
+  // 剩得最少的排前面（最值得关注）：已用 % 降序。
+  return windows.sort((a, b) => b.percent - a.percent)
+}
+
+/** api-call 信封解包：{status_code:int, body:string|object} → {statusCode, payload}。 */
+function unwrapCliproxyApiCallEnvelope(envelope) {
+  if (envelope === null || typeof envelope !== 'object') return { statusCode: 0, payload: null }
+  const rawStatus = Number(envelope.status_code)
+  let payload = envelope.body
+  if (typeof payload === 'string') {
+    try { payload = JSON.parse(payload) } catch (_) { payload = null }
+  }
+  if (payload === null || typeof payload !== 'object') payload = null
+  return { statusCode: Number.isFinite(rawStatus) ? rawStatus : 0, payload }
+}
+
+/** GeminiCLI project 提取：优先 auth-files 条目的 project_id 字段，回落文件名 gemini-{email}-{project}.json。 */
+function cliproxyProjectFor(entry) {
+  const direct = typeof entry?.project_id === 'string' ? entry.project_id.trim() : ''
+  if (direct !== '') return direct
+  const name = typeof entry?.name === 'string' ? entry.name.trim().replace(/\.json$/i, '') : ''
+  if (/^gemini-[^@]+@/.test(name)) {
+    const afterAt = name.slice(name.lastIndexOf('@') + 1)
+    const dash = afterAt.indexOf('-')
+    if (dash > 0 && dash + 1 < afterAt.length) return afterAt.slice(dash + 1)
+  }
+  return ''
+}
+
+/** auth-files 条目 → api-call 计划；不支持的类型或缺关键参数（如 project 推不出）返回 null 跳过。 */
+function buildCliproxyAccountPlan(entry) {
+  const provider = String(entry?.provider ?? entry?.type ?? '').toLowerCase()
+  if (!CLIPROXY_SUPPORTED_ACCOUNT_KINDS.has(provider)) return null
+  const baseHeaders = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json' }
+  if (provider === 'codex') {
+    return { provider, calls: [{ method: 'GET', url: CLIPROXY_CODEX_USAGE_URL, header: baseHeaders, data: '' }] }
+  }
+  if (provider === 'antigravity') {
+    // 候选 URL 顺试到首个成功；每次尝试都计入 api-call 预算。
+    return {
+      provider,
+      calls: CLIPROXY_ANTIGRAVITY_QUOTA_URLS.map((url) => ({
+        method: 'POST',
+        url,
+        header: { ...baseHeaders, 'User-Agent': 'antigravity/1.11.5 windows/amd64' },
+        data: '{}',
+      })),
+    }
+  }
+  const project = cliproxyProjectFor(entry)
+  if (project === '') return null
+  return {
+    provider,
+    calls: [{ method: 'POST', url: CLIPROXY_GEMINI_QUOTA_URL, header: baseHeaders, data: JSON.stringify({ project }) }],
+  }
+}
+
+/** 按账号类型分发上游 payload 解析。 */
+function parseCliproxyUpstream(provider, payload) {
+  if (provider === 'codex') return normalizeCodexRateLimit(payload?.rate_limit)
+  if (provider === 'antigravity') {
+    const models = payload?.models
+    return models !== null && typeof models === 'object' ? normalizeAntigravityModels(models) : []
+  }
+  return normalizeGeminiBuckets(payload?.buckets)
+}
+
+/**
+ * CLIProxyAPI 编排：auth-files 列账号 → 小并发池逐账号 api-call 代调上游官方额度 → 合并窗口。
+ * 预算：账号 ≤8、api-call 总次数 ≤12、并发 3、窗口总数 ≤32；部分账号失败不拖垮整行
+ * （有成功窗口即返回），全部失败抛首个稳定错误码。守卫与凭据由 kickQuotaRefresh 先行完成。
+ */
+async function fetchCliproxyUsage({ profile, config, authorization, signal }) {
+  const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
+  const origin = safeCliproxyOrigin(profile.baseURL, pinned)
+  if (origin === undefined) throw new Error('host-not-pinned')
+  let filesPayload
+  try {
+    filesPayload = await requestQuotaJson(`${origin}/v0/management/auth-files`, { authorization, signal })
+  } catch (error) {
+    // 管理路由未注册（secret-key 为空）时 CPA 整体 404——单独成码，别让用户猜。
+    // 注意用完整 message 比较：quotaErrorCode 会把 http-status:404 截成 http-status。
+    if (error?.message === 'http-status:404') throw new Error('mgmt-disabled')
+    throw error
+  }
+  const files = Array.isArray(filesPayload?.files) ? filesPayload.files : []
+  const accounts = []
+  for (const entry of files) {
+    if (entry === null || typeof entry !== 'object') continue
+    if (entry.disabled === true || entry.unavailable === true) continue
+    if (typeof entry.auth_index !== 'string' || entry.auth_index.trim() === '') continue
+    const plan = buildCliproxyAccountPlan(entry)
+    if (plan === null) continue
+    const label = typeof entry.email === 'string' && entry.email.trim() !== '' ? entry.email.trim()
+      : typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name.trim() : ''
+    const slugSource = `${label !== '' ? label : plan.provider}-${accounts.length}`
+    const slug = slugSource.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `acct-${accounts.length}`
+    accounts.push({ authIndex: entry.auth_index, provider: plan.provider, label, slug, calls: plan.calls })
+    if (accounts.length >= MAX_QUOTA_CPA_ACCOUNTS) break
+  }
+  if (accounts.length === 0) return []
+
+  const windows = []
+  const failures = []
+  let callBudget = MAX_QUOTA_CPA_CALLS
+  const runAccount = async (account) => {
+    for (const call of account.calls) {
+      if (callBudget <= 0 || signal?.aborted === true) return
+      callBudget -= 1
+      let envelope
+      try {
+        envelope = await requestQuotaJson(`${origin}/v0/management/api-call`, {
+          method: 'POST',
+          authorization,
+          signal,
+          body: JSON.stringify({ auth_index: account.authIndex, method: call.method, url: call.url, header: call.header, data: call.data }),
+        })
+      } catch (error) {
+        failures.push(quotaErrorCode(error))
+        return
+      }
+      const { statusCode, payload } = unwrapCliproxyApiCallEnvelope(envelope)
+      const parsed = statusCode === 200 && payload !== null ? parseCliproxyUpstream(account.provider, payload) : []
+      if (parsed.length > 0) {
+        for (const window of parsed) {
+          if (windows.length >= MAX_QUOTA_CPA_WINDOWS) return
+          windows.push({
+            id: `${account.slug}-${window.id}`,
+            kindKey: window.kindKey ?? window.id,
+            ...(account.label !== '' ? { label: account.label } : {}),
+            percent: window.percent,
+            ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
+          })
+        }
+        return
+      }
+      failures.push(statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}`)
+      // antigravity 候选链：当前候选失败换下一个；其余单调用类型直接结束该账号。
+      if (account.provider !== 'antigravity') return
+    }
+  }
+  const queue = [...accounts]
+  await Promise.all(Array.from({ length: Math.min(QUOTA_CPA_CONCURRENCY, queue.length) }, async () => {
+    while (queue.length > 0 && signal?.aborted !== true && windows.length < MAX_QUOTA_CPA_WINDOWS) {
+      await runAccount(queue.shift())
+    }
+  }))
+  if (signal?.aborted === true) throw new Error('cancelled')
+  if (windows.length === 0 && failures.length > 0) throw new Error(failures[0])
+  return windows
 }
 
 /** 稳定错误码提取：fetchProviderUsage 抛错时 message 即错误码（可带 :detail）。 */
@@ -958,19 +1300,98 @@ function abortableDelay(delay, signal) {
   })
 }
 
-/** 带重试的上游 GET：仅瞬时网络错误退避重试（共 3 次尝试，300/600ms），支持整体取消。 */
-async function fetchProviderUsage(endpoint, authorization, options = {}) {
+/** 瞬时错误退避重试骨架：共 3 次尝试、300/600ms 退避，仅 quotaTransient 错误续命；支持整体取消。 */
+async function retryQuotaTransient(attempt, signal) {
   let lastError
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    if (attempt > 1) await abortableDelay(300 * (attempt - 1), options.signal)
+  for (let attemptNo = 1; attemptNo <= 3; attemptNo++) {
+    if (attemptNo > 1) await abortableDelay(300 * (attemptNo - 1), signal)
     try {
-      return await fetchProviderUsageOnce(endpoint, authorization, options)
+      return await attempt()
     } catch (error) {
       lastError = error
       if (error?.quotaTransient !== true) break
     }
   }
   throw lastError
+}
+
+/** 带重试的上游 GET：仅瞬时网络错误退避重试（共 3 次尝试，300/600ms），支持整体取消。 */
+async function fetchProviderUsage(endpoint, authorization, options = {}) {
+  return retryQuotaTransient(() => fetchProviderUsageOnce(endpoint, authorization, options), options.signal)
+}
+
+/**
+ * 单次 JSON 请求（GET/POST，POST 带 JSON body）：CLIProxyAPI 管理面专用（GET auth-files +
+ * POST api-call）。与 GET 版同样的 15s 超时、64KB 上限、瞬时错误白名单；body 只接受已序列化字符串。
+ */
+function requestQuotaJsonOnce(endpoint, options = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (code, transient = false) => {
+      if (settled) return
+      settled = true
+      const error = new Error(code)
+      error.quotaTransient = transient
+      reject(error)
+    }
+    if (options.signal?.aborted === true) { fail('cancelled'); return }
+    const body = typeof options.body === 'string' ? options.body : ''
+    const request = https.request(endpoint, {
+      method: options.method === 'POST' ? 'POST' : 'GET',
+      timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
+      signal: options.signal,
+      headers: {
+        Accept: 'application/json',
+        'user-agent': `dsh-service/${pluginVersion} (DeepSeek Harness plugin)`,
+        ...(body === '' ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }),
+        ...(options.authorization === undefined || options.authorization === '' ? {} : { Authorization: options.authorization }),
+      },
+    }, (response) => {
+      const status = response.statusCode || 0
+      if (status < 200 || status >= 300) {
+        response.resume()
+        fail(`http-status:${status}`)
+        return
+      }
+      let payload = ''
+      let bytes = 0
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > MAX_QUOTA_RESPONSE_BYTES) {
+          fail('bad-payload:oversize')
+          request.destroy()
+          return
+        }
+        payload += chunk
+      })
+      response.on('error', () => fail('network'))
+      response.on('end', () => {
+        try {
+          resolve(JSON.parse(payload))
+        } catch (_) {
+          fail('bad-payload:json')
+        }
+      })
+    })
+    request.on('error', (error) => {
+      const code = error?.cause?.code ?? error?.code
+      if (options.signal?.aborted === true || code === 'ABORT_ERR') { fail('cancelled'); return }
+      fail(typeof code === 'string' && QUOTA_TRANSIENT_CODES.has(code) ? 'network-transient' : 'network',
+        typeof code === 'string' && QUOTA_TRANSIENT_CODES.has(code))
+    })
+    request.on('timeout', () => {
+      request.destroy()
+      fail('timeout', true)
+    })
+    if (body !== '') request.write(body)
+    request.end()
+  })
+}
+
+/** 带重试的 JSON 请求：与 GET 版同一套瞬时错误白名单退避。 */
+async function requestQuotaJson(endpoint, options = {}) {
+  return retryQuotaTransient(() => requestQuotaJsonOnce(endpoint, options), options.signal)
 }
 
 /**
@@ -2487,13 +2908,35 @@ function apply(ctx) {
     return true
   }
   // 远端额度：后台补拉一次。是否真的发上游由节流器判定；跨 provider 经小型并发池调度。
-  const kickQuotaRefresh = (profile, kind) => {
+  // config 供 fetcher 类 kind（cliproxy）做钉住域守卫；经典 kind 忽略该参数。
+  const kickQuotaRefresh = (profile, kind, config) => {
     const decision = quotaThrottle.attempt(profile.name)
     if (!decision.ok) return
-    const parser = KIND_REGISTRY[kind]?.parser
+    const registered = KIND_REGISTRY[kind]
     const queued = enqueueQuotaWork(async () => {
       try {
-        if (parser === undefined) throw new Error('bad-payload:kind')
+        if (registered === undefined || (registered.parser === undefined && registered.fetcher === undefined)) throw new Error('bad-payload:kind')
+        if (registered.fetcher !== undefined) {
+          // 编排类 kind（cliproxy）：端点守卫 → 凭据 → fetcher 合并多账号窗口，无候选链。
+          const guard = registered.fetcherGuard?.(profile, config) ?? null
+          if (guard !== null) throw new Error(guard)
+          const authorization = await discoverQuotaCredential(ctx, kind, profile)
+          if (authorization === undefined) throw new Error('credential-missing')
+          const controller = new AbortController()
+          quotaAbortControllers.add(controller)
+          const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
+          let produced
+          try {
+            produced = await registered.fetcher({ profile, config, authorization, signal: controller.signal })
+          } finally {
+            clearTimeout(deadline)
+            quotaAbortControllers.delete(controller)
+          }
+          if (!Array.isArray(produced)) throw new Error('bad-payload:shape')
+          if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows: produced })
+          return
+        }
+        const parser = registered.parser
         // 端点候选链先于凭据解析：baseURL 缺失是更明确的配置错误（也省一次凭据查找）。
         const candidates = quotaEndpointFor(kind, profile.baseURL)
         if (candidates.length === 0) throw new Error('no-base-url')
@@ -3080,11 +3523,34 @@ function apply(ctx) {
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
             continue
           }
-          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind)
+          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind, config)
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
           const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable'
           const providerResetCards = resetCardsByProvider.get(profile.name) ?? []
+          // 凭据填写窗口的数据源：仅对「缺凭据」的未配置行附带候选线索名的配置状态（describe 只回
+          // 配置与否/来源/可写，绝不带值）；凭据服务缺席时省略字段——客户端隐藏窗口退回文案指引。
+          let credentialHints
+          if (credentialClass && !view.refreshing && (view.lastError === 'credential-missing' || view.lastError === 'credentials-unavailable')) {
+            const credentials = ctx.get('credentials')
+            if (credentials !== undefined && typeof credentials.describe === 'function') {
+              const described = []
+              for (const name of quotaCredentialHintNames(kind, profile)) {
+                try {
+                  const info = await Promise.resolve(credentials.describe(name))
+                  described.push({
+                    name,
+                    configured: info?.configured === true,
+                    ...(typeof info?.source === 'string' ? { source: info.source } : {}),
+                    ...(info?.writable === false ? { writable: false } : {}),
+                  })
+                } catch (_) {
+                  described.push({ name, configured: false })
+                }
+              }
+              credentialHints = described
+            }
+          }
           rows.push({
             provider: profile.name,
             displayName: profile.displayName,
@@ -3098,6 +3564,7 @@ function apply(ctx) {
             ...(view.lastErrorDetail !== undefined ? { errorDetail: view.lastErrorDetail } : {}),
             nextAllowedAt: view.nextAllowedAt,
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
+            ...(credentialHints !== undefined ? { credentialHints } : {}),
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
@@ -3122,7 +3589,7 @@ function apply(ctx) {
           if (forced.reason === 'inflight') return { ok: true }
           return { ok: false, error: forced.reason === 'cooldown' ? 'refresh-cooldown' : 'refresh-backoff', nextAllowedAt: forced.nextAllowedAt }
         }
-        kickQuotaRefresh(profile, kind)
+        kickQuotaRefresh(profile, kind, config)
         return { ok: true }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -3140,16 +3607,70 @@ function apply(ctx) {
         return await serializeQuotaConfigWrite(async (config) => {
           if (payload?.clear === true) {
             delete config.kinds[providerName]
+            delete config.allowedHosts[providerName]
           } else {
             const kind = payload?.kind
             if (kind !== null && !QUOTA_KINDS.includes(kind)) return { save: false, value: { ok: false, error: 'unknown-kind' } }
-            if (kind !== null && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
-              return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
+            if (kind !== null && KIND_REGISTRY[kind]?.managementPlane === true) {
+              // 管理面 kind：把 settings baseURL 的 host 钉进本条目（服务端派生，浏览器零输入）。
+              // 外呼时复验同一张表——之后改 baseURL 必须重新保存适配才恢复外呼。
+              const host = cliproxyPinHostFromBaseURL(profileForProvider.baseURL)
+              if (host === undefined) {
+                return { save: false, value: { ok: false, error: profileForProvider.baseURL === '' ? 'no-base-url' : 'unsafe-provider-endpoint' } }
+              }
+              config.allowedHosts[providerName] = [host]
+            } else {
+              if (kind !== null && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
+                return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
+              }
+              // 非管理面 kind（含显式停用/清除）不保留钉住记录，避免陈旧域残留。
+              delete config.allowedHosts[providerName]
             }
             config.kinds[providerName] = kind
           }
           return { value: { ok: true } }
         })
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    // 凭据填写窗口（v0.24）：面板输入密钥 → 宿主写进凭据提供方（dsh-credentials-local 即
+    // $DSH_HOME/.credentials.yaml 的 refs 分节，热生效无需重启）。名字只收宿主派生的线索白名单，
+    // 值只在写入方向流动——describe/快照永远不回传密钥内容。unset 供清除文件层存量。
+    if (endpoint === 'quota-credential-set' || endpoint === 'quota-credential-unset') {
+      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+      try {
+        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+        const profileForProvider = readLlmProviders(ctx.get('settings')).find((candidate) => candidate.name === providerName)
+        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
+        const config = await refreshQuotaConfigCache()
+        const { kind } = resolveQuotaKind(config, profileForProvider)
+        if (kind === undefined) return { ok: false, error: 'not-adapted' }
+        const name = typeof payload?.name === 'string' ? payload.name : ''
+        if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
+        const credentials = ctx.get('credentials')
+        if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
+        if (endpoint === 'quota-credential-set') {
+          if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
+          // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
+          const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
+          if (value === '' || value.length > 4096) return { ok: false, error: 'invalid-value' }
+          try {
+            await credentials.set(name, value)
+          } catch (error) {
+            // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
+            return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+          }
+          return { ok: true }
+        }
+        if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
+        try {
+          await credentials.unset(name)
+        } catch (error) {
+          return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+        }
+        return { ok: true }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -3209,60 +3730,82 @@ function apply(ctx) {
 export {
   SKILL_SOURCE_RANK,
   apply,
+  buildCliproxyAccountPlan,
+  cliproxyFetchGuard,
+  cliproxyPinHostFromBaseURL,
+  cliproxyProjectFor,
   createQuotaThrottle,
   detectRuntimeEnv,
   evaluateSkillFile,
   extractSkillDraftJson,
+  fetchCliproxyUsage,
   fetchProviderUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
   locateSkillFrontmatter,
   name,
+  normalizeAntigravityModels,
+  normalizeCodexRateLimit,
+  normalizeGeminiBuckets,
   normalizeKimiBalance,
-  normalizeOpenRouterCredits,
   normalizeOpencodeUsage,
+  normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
+  quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   resolveSkillInvocationState,
   runtimeEnvCheck,
+  safeCliproxyOrigin,
   sanitizeSkillDraftText,
   selectSkillBatchCandidates,
   setSkillInvocationKey,
   skillIdFor,
+  unwrapCliproxyApiCallEnvelope,
 }
 export default {
   SKILL_SOURCE_RANK,
   apply,
+  buildCliproxyAccountPlan,
+  cliproxyFetchGuard,
+  cliproxyPinHostFromBaseURL,
+  cliproxyProjectFor,
   createQuotaThrottle,
   detectRuntimeEnv,
   evaluateSkillFile,
   extractSkillDraftJson,
+  fetchCliproxyUsage,
   fetchProviderUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
   locateSkillFrontmatter,
   name,
+  normalizeAntigravityModels,
+  normalizeCodexRateLimit,
+  normalizeGeminiBuckets,
   normalizeKimiBalance,
-  normalizeOpenRouterCredits,
   normalizeOpencodeUsage,
+  normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
+  quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   resolveSkillInvocationState,
   runtimeEnvCheck,
+  safeCliproxyOrigin,
   sanitizeSkillDraftText,
   selectSkillBatchCandidates,
   setSkillInvocationKey,
   skillIdFor,
+  unwrapCliproxyApiCallEnvelope,
 }

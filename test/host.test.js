@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchProviderUsage, inferQuotaKind, name, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck } from '../index.js'
+import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -1534,12 +1534,12 @@ test('opencode-go parser maps percent-only windows and tolerates missing fields'
 })
 
 test('quota config parsing falls back safely on corruption and drops unknown kinds', () => {
-  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {}, resetCards: [] })
-  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [] })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [] })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [] })
+  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [], allowedHosts: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
   // null = 显式停用，必须原样保留。
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [] })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [], allowedHosts: {} })
   // resetCards（v0.20 免次数）：provider 必填，label/expiresAt 可选，remaining 不再保留；id 缺失按原始位置合成。
   const withCards = parseQuotaConfigText(JSON.stringify({
     version: 1,
@@ -2796,4 +2796,374 @@ test('concurrent skills-note-save writes are serialized and both persist', async
     const notes = Object.values(index.entries).map((record) => record.note.description).sort()
     assert.deepEqual(notes, ['A 注释', 'B 注释'])
   })
+})
+
+// ─── v0.24 CLIProxyAPI 账号额度（cliproxy 管理面）───────────────────────────
+
+const CLIPROXY_CODEX_FIXTURE = {
+  rate_limit: {
+    primary_window: { used_percent: 42.6, reset_at: 1756000000, limit_window_seconds: 18000 },
+    secondary_window: { used_percent: 7, reset_at: 1756500000, limit_window_seconds: 604800 },
+  },
+  plan_type: 'team',
+}
+const CLIPROXY_GEMINI_BUCKETS_FIXTURE = {
+  buckets: [
+    { modelId: 'gemini-2.5-pro', remainingFraction: 0.9, resetTime: '2026-09-01T00:00:00Z' },
+    { modelId: 'gemini-2.5-flash', remainingFraction: 1, resetTime: '2026-09-01T00:00:00Z' },
+    { modelId: 'broken-no-fraction' },
+  ],
+}
+
+test('cliproxy upstream parsers fold codex/gemini/antigravity shapes into used-percent windows', () => {
+  // Codex：used_percent 已用口径 + unix 秒重置；缺字段的窗口跳过。
+  const codex = normalizeCodexRateLimit(CLIPROXY_CODEX_FIXTURE.rate_limit)
+  // 桶位由 limit_window_seconds 推导（18000→5h、604800→week），已用多的排前面。
+  assert.deepEqual(codex.map((w) => [w.kindKey, w.percent]), [['codex-5h', 43], ['codex-week', 7]])
+  assert.equal(codex[0].resetsAt, new Date(1756000000 * 1000).toISOString())
+  assert.equal(normalizeCodexRateLimit(null).length, 0)
+  assert.deepEqual(normalizeCodexRateLimit({ primary_window: { used_percent: 'NaN-ish' } }), [])
+  // 用户实测踩中的形状：主槽位本身就是周额度（604800s），secondary 为 null。
+  const weeklyPrimary = normalizeCodexRateLimit({ primary_window: { used_percent: 12, reset_at: 1756000000, limit_window_seconds: 604800 }, secondary_window: null })
+  assert.deepEqual(weeklyPrimary.map((w) => [w.id, w.kindKey, w.percent]), [['codex-week', 'codex-week', 12]])
+  // 缺窗口长度时回退位置命名。
+  assert.deepEqual(normalizeCodexRateLimit({ primary_window: { used_percent: 1 } }).map((w) => w.kindKey), ['codex-primary'])
+
+  // GeminiCLI：remainingFraction∈[0,1] 折算已用%（clamp 不启发式），剩得最少的排前面。
+  const gemini = normalizeGeminiBuckets(CLIPROXY_GEMINI_BUCKETS_FIXTURE.buckets)
+  assert.deepEqual(gemini.map((w) => [w.id, w.kindKey, w.percent]), [
+    ['gemini-2-5-pro', 'gemini-2.5-pro', 10],
+    ['gemini-2-5-flash', 'gemini-2.5-flash', 0],
+  ])
+  assert.equal(gemini[0].resetsAt, '2026-09-01T00:00:00.000Z')
+  // 越界 clamp：1.7 视为满、-0.5 视为空。
+  assert.deepEqual(normalizeGeminiBuckets([{ modelId: 'x', remainingFraction: 1.7 }]).map((w) => w.percent), [0])
+  assert.deepEqual(normalizeGeminiBuckets([{ modelId: 'x', remainingFraction: -0.5 }]).map((w) => w.percent), [100])
+  assert.equal(normalizeGeminiBuckets('nope').length, 0)
+
+  // Antigravity：models{}.quotaInfo（camel/snake 双形态），同样按剩余升序。
+  const antigravity = normalizeAntigravityModels({
+    'claude-sonnet-4-5': { quotaInfo: { remainingFraction: 0.25, resetTime: 1756000000 } },
+    'gpt-oss-120b-medium': { quota_info: { remaining_fraction: 0.5 } },
+    broken: {},
+  })
+  assert.deepEqual(antigravity.map((w) => [w.kindKey, w.percent]), [['claude-sonnet-4-5', 75], ['gpt-oss-120b-medium', 50]])})
+
+test('cliproxy api-call envelope and account plan builders follow the management contract', () => {
+  // 信封解包：body 字符串 / 对象 / 坏 JSON / 非对象。
+  assert.deepEqual(unwrapCliproxyApiCallEnvelope({ status_code: 200, body: '{"a":1}' }), { statusCode: 200, payload: { a: 1 } })
+  assert.deepEqual(unwrapCliproxyApiCallEnvelope({ status_code: '200', body: { a: 1 } }), { statusCode: 200, payload: { a: 1 } })
+  assert.deepEqual(unwrapCliproxyApiCallEnvelope({ status_code: 200, body: 'not-json{' }), { statusCode: 200, payload: null })
+  assert.deepEqual(unwrapCliproxyApiCallEnvelope({ status_code: 403, body: '"x"' }), { statusCode: 403, payload: null })
+  assert.deepEqual(unwrapCliproxyApiCallEnvelope(null), { statusCode: 0, payload: null })
+
+  // project 提取：条目字段优先，回落文件名 gemini-{email}-{project}.json。
+  assert.equal(cliproxyProjectFor({ project_id: ' direct-project ', name: 'gemini-x@gmail.com-file-name.json' }), 'direct-project')
+  assert.equal(cliproxyProjectFor({ name: 'gemini-user@gmail.com-focused-brace-480503-c1.json' }), 'focused-brace-480503-c1')
+  assert.equal(cliproxyProjectFor({ name: 'codex-something.json' }), '')
+  assert.equal(cliproxyProjectFor({ name: 'gemini-nodash@local' }), '')
+
+  // 计划构建：codex GET wham、antigravity 三候选带 UA、gemini 带 project、其余不支持。
+  const codexPlan = buildCliproxyAccountPlan({ provider: 'codex' })
+  assert.equal(codexPlan.calls.length, 1)
+  assert.equal(codexPlan.calls[0].method, 'GET')
+  assert.ok(codexPlan.calls[0].url.includes('chatgpt.com/backend-api/wham/usage'))
+  assert.equal(codexPlan.calls[0].header.Authorization, 'Bearer $TOKEN$')
+  const antigravityPlan = buildCliproxyAccountPlan({ type: 'antigravity' })
+  assert.equal(antigravityPlan.calls.length, 3)
+  assert.ok(antigravityPlan.calls.every((call) => call.method === 'POST' && call.data === '{}'))
+  assert.match(antigravityPlan.calls[0].header['User-Agent'], /antigravity\//)
+  const geminiPlan = buildCliproxyAccountPlan({ provider: 'gemini-cli', name: 'gemini-u@gmail.com-p1.json' })
+  assert.deepEqual(JSON.parse(geminiPlan.calls[0].data), { project: 'p1' })
+  assert.equal(buildCliproxyAccountPlan({ provider: 'gemini-cli', name: 'no-project.json' }), null)
+  assert.equal(buildCliproxyAccountPlan({ provider: 'claude' }), null)
+  assert.equal(buildCliproxyAccountPlan({}), null)
+})
+
+test('cliproxy origin guard and pin derivation reject unsafe baseURLs', () => {
+  // 钉住派生：HTTPS + DNS 域名 + 默认端口才收；IP/明文/自定义端口/userinfo 一律拒。
+  assert.equal(cliproxyPinHostFromBaseURL('https://cli.example.org/api'), 'cli.example.org')
+  assert.equal(cliproxyPinHostFromBaseURL('https://cli.example.org:443/'), 'cli.example.org')
+  assert.equal(cliproxyPinHostFromBaseURL('https://CLI.Example.Org./api'), 'cli.example.org')
+  assert.equal(cliproxyPinHostFromBaseURL('http://cli.example.org/api'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://127.0.0.1:8317'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://user:pass@cli.example.org'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://cli.example.org:8443'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('not a url'), undefined)
+
+  // origin 守卫：精确命中钉住表才放行；子域不算命中（不做子串猜测）。
+  const pinned = ['cli.example.org']
+  assert.equal(safeCliproxyOrigin('https://cli.example.org/api', pinned), 'https://cli.example.org')
+  assert.equal(safeCliproxyOrigin('https://evil.cli.example.org/api', pinned), undefined)
+  assert.equal(safeCliproxyOrigin('https://cli.example.org.attacker.example/', pinned), undefined)
+  assert.equal(safeCliproxyOrigin('https://cli.example.org', []), undefined)
+
+  // fetch 守卫：baseURL 缺失 → no-base-url；未钉/失配 → host-not-pinned；命中 → 放行。
+  assert.equal(cliproxyFetchGuard({ name: 'cpa', baseURL: '' }, {}), 'no-base-url')
+  assert.equal(cliproxyFetchGuard({ name: 'cpa', baseURL: 'https://cli.example.org' }, { allowedHosts: {} }), 'host-not-pinned')
+  assert.equal(cliproxyFetchGuard({ name: 'cpa', baseURL: 'https://other.example.org' }, { allowedHosts: { cpa: ['cli.example.org'] } }), 'host-not-pinned')
+  assert.equal(cliproxyFetchGuard({ name: 'cpa', baseURL: 'https://cli.example.org/x' }, { allowedHosts: { cpa: ['cli.example.org'] } }), null)
+})
+
+/** https.request 桩：按 URL/方法返回固定信封；记录全部请求供断言。
+ * 注意在请求创建时同步捕获条目：并发请求的 nextTick 回调乱序到达，事后取末尾元素会串话。 */
+function stubHttpsRequest(t, handler) {
+  const originalRequest = https.request
+  const requests = []
+  https.request = (url, options, callback) => {
+    const entry = { url: String(url), method: options.method || 'GET', auth: options.headers?.Authorization }
+    requests.push(entry)
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    request.write = (chunk) => { entry.body = String(chunk) }
+    request.end = () => {
+      process.nextTick(() => {
+        const outcome = handler(entry)
+        response.statusCode = outcome.status ?? 200
+        callback(response)
+        if (outcome.payload !== undefined) response.emit('data', JSON.stringify(outcome.payload))
+        response.emit('end')
+      })
+    }
+    return request
+  }
+  t.after(() => { https.request = originalRequest })
+  return requests
+}
+
+const CLIPROXY_FILES = {
+  files: [
+    { auth_index: 'idx-codex', provider: 'codex', email: 'codex-user@example.com', name: 'codex-user@example.com.json' },
+    { auth_index: 'idx-gemini', provider: 'gemini-cli', email: 'gm@gmail.com', name: 'gemini-gm@gmail.com-my-prj.json' },
+    { auth_index: 'idx-claude', provider: 'claude', email: 'cl@example.com' }, // 不支持 → 跳过
+    { auth_index: 'idx-qwen', provider: 'qwen', disabled: true },               // 禁用 → 跳过
+    { provider: 'antigravity' },                                                // 缺 auth_index → 跳过
+  ],
+}
+
+test('cliproxy RPC merges per-account windows via the management plane without touching the proxy key', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  const resolvedNames = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } } } : undefined) },
+      // 凭据服务按名字区分：管理密钥线索命中 mgmt-secret；代理 key 线索若被误试则记录下来。
+      credentials: { resolve: async (name) => {
+        resolvedNames.push(name)
+        return name === 'CPA_MANAGEMENT_KEY' ? { value: 'mgmt-secret' } : { value: 'proxy-key-value' }
+      } },
+    },
+  })
+  const requests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) return { payload: CLIPROXY_FILES }
+    const body = JSON.parse(request.body ?? '{}')
+    if (body.url === 'https://chatgpt.com/backend-api/wham/usage') {
+      return { payload: { status_code: 200, header: {}, body: JSON.stringify(CLIPROXY_CODEX_FIXTURE) } }
+    }
+    if (body.url === 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota') {
+      return { payload: { status_code: 200, body: CLIPROXY_GEMINI_BUCKETS_FIXTURE } } // 对象形态 body 也兼容
+    }
+    return { status: 500 }
+  })
+
+  const first = await host.handler('quota', {})
+  assert.equal(first.ok, true)
+  await waitFor(() => requests.filter((r) => r.url.endsWith('/api-call')).length >= 2, 'two api-calls')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  // 凭据发现只试管理密钥线索——代理 key（apiKeyEnv）绝不发往管理面（fail2ban 教训写进实现）。
+  assert.deepEqual(resolvedNames, ['CPA_MANAGEMENT_KEY'])
+  assert.ok(requests.length >= 3)
+  assert.ok(requests.every((request) => request.auth === 'Bearer mgmt-secret'))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'ok')
+  assert.equal(row.kind, 'cliproxy')
+  assert.equal(row.kindSource, 'config')
+  const byKind = new Map(row.windows.map((window) => [window.kindKey, window]))
+  assert.equal(byKind.get('codex-5h').percent, 43)
+  assert.equal(byKind.get('codex-5h').label, 'codex-user@example.com')
+  assert.equal(byKind.get('codex-5h').resetsAt, new Date(1756000000 * 1000).toISOString())
+  assert.deepEqual(row.windows.filter((window) => window.label === 'gm@gmail.com').map((window) => window.percent).sort(), [0, 10])
+  // api-call 请求体走管理契约：auth_index + $TOKEN$ 头由 CPA 代换。
+  const codexCall = JSON.parse(requests.find((request) => request.body?.includes('wham/usage'))?.body ?? '{}')
+  assert.equal(codexCall.auth_index, 'idx-codex')
+  assert.equal(codexCall.header.Authorization, 'Bearer $TOKEN$')
+})
+
+test('cliproxy RPC surfaces mgmt-disabled and host-not-pinned as stable error codes', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-err-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy', unpinned: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  let authFilesStatus = 404
+  const requests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) return { status: authFilesStatus }
+    return {}
+  })
+  const host = createHost(quotaHostOverrides(dshHome, {
+    cpa: { baseURL: 'https://cli.example.org' },
+    unpinned: { baseURL: 'https://moved.example.org' },
+  }, 'mgmt-secret'))
+  await host.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const rows = (await host.handler('quota', {})).value.providers
+  const cpaRow = rows.find((row) => row.provider === 'cpa')
+  assert.equal(cpaRow.status, 'error')
+  assert.equal(cpaRow.errorCode, 'mgmt-disabled') // secret-key 为空时 CPA 管理路由整体 404
+  const unpinnedRow = rows.find((row) => row.provider === 'unpinned')
+  assert.equal(unpinnedRow.status, 'error')
+  assert.equal(unpinnedRow.errorCode, 'host-not-pinned') // baseURL 与钉住域失配 → 明确提示重新适配
+  assert.ok(requests.every((request) => !request.url.includes('moved.example.org'))) // 未钉住的域从未被打
+})
+
+test('quota-config pins the cliproxy domain on save and clears it with the kind', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-pin-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost(quotaHostOverrides(dshHome, {
+    cpa: { baseURL: 'https://pin.example.org/base' },
+    plain: { baseURL: 'http://insecure.example.org' },
+    empty: { baseURL: '' },
+  }, 'k'))
+  const saved = await host.handler('quota-config', { provider: 'cpa', kind: 'cliproxy' })
+  assert.equal(saved.ok, true)
+  let config = JSON.parse(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.deepEqual(config.allowedHosts.cpa, ['pin.example.org']) // 服务端从 settings 派生，浏览器零输入
+
+  // 明文 http 与缺失 baseURL 分别拒绝，且不留半截钉住记录。
+  assert.equal((await host.handler('quota-config', { provider: 'plain', kind: 'cliproxy' })).error, 'unsafe-provider-endpoint')
+  assert.equal((await host.handler('quota-config', { provider: 'empty', kind: 'cliproxy' })).error, 'no-base-url')
+
+  // 显式停用摘除钉住记录；clear 同样摘除。
+  await host.handler('quota-config', { provider: 'cpa', kind: null })
+  config = JSON.parse(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.equal(config.allowedHosts.cpa, undefined)
+  await host.handler('quota-config', { provider: 'cpa', kind: 'cliproxy' })
+  await host.handler('quota-config', { provider: 'cpa', clear: true })
+  config = JSON.parse(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.equal(config.allowedHosts.cpa, undefined)
+  // 换成非管理面 kind 时旧钉住记录一并清理。
+  await host.handler('quota-config', { provider: 'cpa', kind: 'openrouter' }).catch(() => {})
+  config = JSON.parse(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.equal(config.allowedHosts.cpa, undefined)
+})
+
+test('fetchCliproxyUsage tolerates partial account failures and enforces the call budget', async (t) => {
+  const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
+  const context = { allowedHosts: { cpa: ['cli.example.org'] } }
+  const authorization = 'Bearer mgmt-secret'
+  const manyFiles = {
+    files: Array.from({ length: 12 }, (_, index) => ({
+      auth_index: `idx-${index}`,
+      provider: 'codex',
+      email: `u${index}@example.com`,
+    })),
+  }
+
+  // 全部上游失败：抛首个稳定错误码（upstream-status）。
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: manyFiles }
+    return { payload: { status_code: 500, body: 'boom' } }
+  })
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined }), (error) => quotaErrorCode(error) === 'upstream-status')
+
+  // 部分失败：一个账号上游 403，其余成功 → 返回成功账号窗口，不拖垮整行。
+  let firstCallSeen = false
+  const partialRequests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: { files: manyFiles.files.slice(0, 3) } }
+    const body = JSON.parse(request.body ?? '{}')
+    if (body.auth_index === 'idx-0' && !firstCallSeen) {
+      firstCallSeen = true
+      return { payload: { status_code: 403, body: '{}' } }
+    }
+    return { payload: { status_code: 200, body: JSON.stringify(CLIPROXY_CODEX_FIXTURE) } }
+  })
+  const windows = await fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined })
+  assert.ok(windows.length >= 4) // idx-1 与 idx-2 各两窗
+  assert.equal(new Set(windows.map((window) => window.label)).has('u0@example.com'), false)
+
+  // 预算上限：账号数截到 8、api-call 总次数 ≤12。
+  const budgetRequests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: manyFiles }
+    return { payload: { status_code: 200, body: JSON.stringify(CLIPROXY_CODEX_FIXTURE) } }
+  })
+  const okWindows = await fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined })
+  assert.equal(budgetRequests.filter((request) => request.url.endsWith('/api-call')).length <= 12, true)
+  assert.equal(okWindows.length <= 32, true)
+})
+
+test('quota credential hints and write endpoints round-trip through the DSH credentials store', async (t) => {
+  // 线索名清单：经典 kind = apiKeyEnv 在前、keyHints 殿后去重；管理面 kind 不含代理 key。
+  assert.deepEqual(quotaCredentialHintNames('opencode-go', { apiKeyEnv: 'OPENCODE_GO_API_KEY' }), ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'])
+  assert.deepEqual(quotaCredentialHintNames('cliproxy', { apiKeyEnv: 'CPA_API_KEY' }), ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'])
+
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cred-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' }, resetCards: [], allowedHosts: {} }))
+  const credCalls = []
+  const credentials = {
+    resolve: async () => undefined,
+    describe: async (name) => (name === 'OPENCODE_API_KEY' ? { configured: true, source: 'env', writable: false } : { configured: false }),
+    set: async (name, value) => { credCalls.push(['set', name, value]) },
+    unset: async (name) => { credCalls.push(['unset', name]) },
+  }
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { 'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1' } } } : undefined) },
+      credentials,
+    },
+  })
+  const snapshot = await host.handler('quota', {})
+  // 首拉在途时行还是 refreshing；等凭据缺失落定后取下一拍断言。
+  assert.equal(snapshot.value.providers.find((entry) => entry.provider === 'opencode-go').refreshing, true)
+  await host.handler('quota', {})
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve))
+  const settledSnapshot = await host.handler('quota', {})
+  const row = settledSnapshot.value.providers.find((entry) => entry.provider === 'opencode-go')
+  assert.equal(row.status, 'unconfigured')
+  // 快照只带配置状态/来源/可写位，绝不带值。
+  assert.deepEqual(row.credentialHints, [
+    { name: 'OPENCODE_GO_API_KEY', configured: false },
+    { name: 'OPENCODE_API_KEY', configured: true, source: 'env', writable: false },
+  ])
+
+  // 写入守卫：白名单外名字、空值、未知 provider 分别拒绝；合法值裁剪后落库。
+  assert.equal((await host.handler('quota-credential-set', { provider: 'opencode-go', name: 'EVIL_NAME', value: 'x' })).error, 'unknown-hint')
+  assert.equal((await host.handler('quota-credential-set', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY', value: '   ' })).error, 'invalid-value')
+  assert.equal((await host.handler('quota-credential-set', { provider: 'nope', name: 'X', value: 'x' })).error, 'unknown-provider')
+  const saved = await host.handler('quota-credential-set', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY', value: '  sk-live-1  ' })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(credCalls, [['set', 'OPENCODE_GO_API_KEY', 'sk-live-1']])
+  const cleared = await host.handler('quota-credential-unset', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY' })
+  assert.equal(cleared.ok, true)
+  assert.deepEqual(credCalls[1], ['unset', 'OPENCODE_GO_API_KEY'])
+
+  // set 抛错（如进程环境层遮蔽该名字）→ 稳定错误码 + 透出 detail。
+  credentials.set = async () => { throw new Error('ref is shadowed by a read-only source') }
+  const failed = await host.handler('quota-credential-set', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY', value: 'x' })
+  assert.equal(failed.error, 'credential-write-failed')
+  assert.match(failed.detail, /shadowed/)
+
+  // 凭据服务缺席（或只有 resolve 没有 describe/set）：快照行省略 credentialHints，写入报不可用。
+  const bare = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, null))
+  await bare.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const bareRow = (await bare.handler('quota', {})).value.providers.find((entry) => entry.provider === 'opencode-go')
+  assert.equal(bareRow.credentialHints, undefined)
+  assert.equal((await bare.handler('quota-credential-set', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY', value: 'x' })).error, 'credentials-unavailable')
 })

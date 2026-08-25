@@ -381,6 +381,10 @@ window.__ModuleLoader__.load({
       'quota.window.balance': '余额',
       'quota.window.weekly': '本周',
       'quota.window.monthly': '本月',
+      'quota.window.codex-5h': 'Codex 5 小时窗',
+      'quota.window.codex-day': 'Codex 日窗口',
+      'quota.window.codex-week': 'Codex 本周窗',
+      'quota.window.codex-month': 'Codex 本月窗口',
       'quota.panel.title': '额度用量',
       'quota.panel.used': '已用',
       'quota.panel.remaining': '剩余',
@@ -406,6 +410,7 @@ window.__ModuleLoader__.load({
       'quota.kind.openrouter': 'OpenRouter',
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': '硅基流动',
+      'quota.kind.cliproxy': 'CLIProxyAPI 账号额度',
       'quota.kindAuto': '自动识别',
       'quota.noAdapted': '暂无已适配的供应商，可在下方手动适配',
       'quota.disable': '停用查询',
@@ -423,6 +428,21 @@ window.__ModuleLoader__.load({
       'quota.error.network-transient': '网络不稳定（已自动重试）',
       'quota.error.timeout': '请求超时',
       'quota.error.bad-payload': '响应格式异常',
+      'quota.error.mgmt-disabled': 'CLIProxyAPI 管理面未启用（未设置 remote-management secret-key）',
+      'quota.error.host-not-pinned': 'baseURL 与适配时记录的域名不一致，请重新保存适配',
+      'quota.error.upstream-status': '上游官方接口返回错误状态',
+      'quota.credential.edit': '填写 API 密钥',
+      'quota.credential.nameLabel': '凭据名称',
+      'quota.credential.valueLabel': '密钥值',
+      'quota.credential.save': '保存',
+      'quota.credential.primary': '主名（别名存一即可）',
+      'quota.credential.clear': '清除已存',
+      'quota.credential.configured': '已配置',
+      'quota.credential.notConfigured': '未配置',
+      'quota.credential.saveFailed': '凭据保存失败：{error}',
+      'quota.credential.unknown-hint': '未知凭据名',
+      'quota.credential.invalid-value': '密钥值不能为空',
+      'quota.credential.credentials-unavailable': '凭据服务不可用',
       'quota.error.unknown': '未知错误',
       'quota.unadapted': '该供应商未适配，请先在下方选择类型',
       'quota.unit.day': '{count} 天',
@@ -802,6 +822,10 @@ window.__ModuleLoader__.load({
       'quota.window.balance': 'Balance',
       'quota.window.weekly': 'This week',
       'quota.window.monthly': 'This month',
+      'quota.window.codex-5h': 'Codex 5-hour window',
+      'quota.window.codex-day': 'Codex daily window',
+      'quota.window.codex-week': 'Codex weekly window',
+      'quota.window.codex-month': 'Codex monthly window',
       'quota.panel.title': 'Quota usage',
       'quota.panel.used': 'Used',
       'quota.panel.remaining': 'Remaining',
@@ -827,6 +851,7 @@ window.__ModuleLoader__.load({
       'quota.kind.openrouter': 'OpenRouter',
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': 'SiliconFlow',
+      'quota.kind.cliproxy': 'CLIProxyAPI accounts',
       'quota.kindAuto': 'Auto-detected',
       'quota.noAdapted': 'No adapted providers yet — adapt manually below',
       'quota.disable': 'Disable',
@@ -844,6 +869,21 @@ window.__ModuleLoader__.load({
       'quota.error.network-transient': 'Unstable network (auto-retried)',
       'quota.error.timeout': 'Request timed out',
       'quota.error.bad-payload': 'Unexpected response format',
+      'quota.error.mgmt-disabled': 'CLIProxyAPI management API disabled (remote-management secret-key not set)',
+      'quota.error.host-not-pinned': 'baseURL differs from the domain recorded when adapting; save the adapter again',
+      'quota.error.upstream-status': 'Upstream official API returned an error status',
+      'quota.credential.edit': 'Set API credential',
+      'quota.credential.nameLabel': 'Credential name',
+      'quota.credential.valueLabel': 'Secret value',
+      'quota.credential.save': 'Save',
+      'quota.credential.primary': 'primary (one alias is enough)',
+      'quota.credential.clear': 'Clear stored',
+      'quota.credential.configured': 'configured',
+      'quota.credential.notConfigured': 'not set',
+      'quota.credential.saveFailed': 'Failed to save credential: {error}',
+      'quota.credential.unknown-hint': 'Unknown credential name',
+      'quota.credential.invalid-value': 'Secret value must not be empty',
+      'quota.credential.credentials-unavailable': 'Credential service unavailable',
       'quota.error.unknown': 'Unknown error',
       'quota.unadapted': 'Not adapted: pick a provider kind below first',
       'quota.unit.day': '{count} d',
@@ -1629,7 +1669,7 @@ window.__ModuleLoader__.load({
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'cliproxy']
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
@@ -1791,6 +1831,25 @@ window.__ModuleLoader__.load({
         const byType = translate(`quota.window.${prefix}`)
         return byType === `quota.window.${prefix}` ? id : byType
       }
+      /** 窗口展示文案（v0.24 cliproxy 起支持两段式）：宿主下发 label（账号标识，纯数据）与
+       * kindKey（稳定代码），本地化拼接「<账号> · <窗口名>」在客户端完成——宿主不拼用户可见句子
+       * （双语教义）。无 kindKey 的旧窗口走 quotaWindowLabel 原解析链；kindKey 未收录时裸用
+       * 模型名兜底（比拼凑 id 可读）。 */
+      function quotaWindowDisplayLabel(window, translate) {
+        const hasKindKey = typeof window.kindKey === 'string' && window.kindKey !== ''
+        const kindSource = hasKindKey ? window.kindKey : window.id
+        let kindText = translate(`quota.window.${kindSource}`)
+        if (kindText === `quota.window.${kindSource}`) {
+          if (hasKindKey) {
+            const byId = translate(`quota.window.${window.id}`)
+            kindText = byId !== `quota.window.${window.id}` ? byId : kindSource
+          } else {
+            kindText = quotaWindowLabel(window.id, translate)
+          }
+        }
+        const account = typeof window.label === 'string' ? window.label.trim() : ''
+        return account !== '' ? `${account} · ${kindText}` : kindText
+      }
       function humanizeDuration(ms, translate) {
         // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
         const totalMinutes = Math.max(0, Math.floor(ms / 60000))
@@ -1860,16 +1919,19 @@ window.__ModuleLoader__.load({
        * testid 约定：面板 quota-text|quota-window-bar|quota-reset-<id>；卡片 quota-card-window|bar|text|reset-<provider>-<id>。 */
       function renderQuotaWindowRow(window, translate, provider) {
         const inCard = provider !== null && provider !== undefined
+        // 标签可能很长（cliproxy 是「账号 · 窗口名」两段式）：标签溢出省略，百分比整体不换行、不被挤压。
+        const labelStyle = { color: 'var(--dsw-alias-label-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+        const valueStyle = { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 }
         if (typeof window.text === 'string') {
           return React.createElement('div', {
             key: window.id,
             ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
             style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' },
           },
-          React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
+          React.createElement('span', { style: labelStyle }, quotaWindowDisplayLabel(window, translate)),
           React.createElement('span', {
             'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
-            style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' },
+            style: valueStyle,
           }, window.text))
         }
         let resetNode = null
@@ -1887,8 +1949,8 @@ window.__ModuleLoader__.load({
           ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
         },
         React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
-          React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, quotaWindowLabel(window.id, translate)),
-          React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums' } }, `${window.percent}%`)),
+          React.createElement('span', { style: labelStyle }, quotaWindowDisplayLabel(window, translate)),
+          React.createElement('span', { style: valueStyle }, `${window.percent}%`)),
         quotaBar(inCard ? `quota-card-bar-${provider}-${window.id}` : `quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
         resetNode)
       }
@@ -2560,6 +2622,51 @@ window.__ModuleLoader__.load({
           setCardEditor({ provider: row.provider })
           setCardDraft({ expiresAt: '', label: '' })
         }
+        // 凭据填写窗口（v0.24）：未配置行的「填写 API 密钥」内联表单；宿主写入凭据库后立即强制
+        // 重拉该 provider（清退避闸），密钥值只随保存请求发出、绝不回显。
+        const [credEditor, setCredEditor] = useState(null)
+        const [credDraft, setCredDraft] = useState({ name: '', value: '' })
+        const openCredEditor = (row) => {
+          const hints = Array.isArray(row.credentialHints) ? row.credentialHints : []
+          // 默认选中「已配置」的那个槽位（别名链里可能已有生效值）；全空才落回主名。
+          setCardEditor(null)
+          setCredEditor({ provider: row.provider })
+          setCredDraft({ name: (hints.find((hint) => hint.configured === true) ?? hints[0])?.name ?? '', value: '' })
+        }
+        const credentialFailCopy = (res) => {
+          const code = String(res?.error ?? '')
+          const known = ['unknown-hint', 'invalid-value', 'credentials-unavailable']
+          const reason = known.includes(code) ? translate(`quota.credential.${code}`) : `${code}${res?.detail ? ` (${res.detail})` : ''}`
+          return translate('quota.credential.saveFailed', { error: reason })
+        }
+        const saveCredential = async (providerName) => {
+          setConfigError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-credential-set', { provider: providerName, name: credDraft.name, value: credDraft.value })
+            if (res?.ok !== true) {
+              setConfigError(credentialFailCopy(res))
+              return
+            }
+            setCredEditor(null)
+            setCredDraft({ name: '', value: '' })
+            await refreshProvider(providerName)
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          }
+        }
+        const clearCredential = async (providerName, name) => {
+          setConfigError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-credential-unset', { provider: providerName, name })
+            if (res?.ok !== true) {
+              setConfigError(credentialFailCopy(res))
+              return
+            }
+            await refreshProvider(providerName)
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          }
+        }
         const saveResetCard = async () => {
           if (cardEditor === null) return
           setConfigError('')
@@ -2741,6 +2848,49 @@ window.__ModuleLoader__.load({
                           ? React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
                           : null)),
                     body,
+                    ...(row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
+                      ? (() => {
+                          const editingCred = credEditor !== null && credEditor.provider === row.provider
+                          const hints = row.credentialHints
+                          const selectedName = hints.some((hint) => hint.name === credDraft.name) ? credDraft.name : (hints[0]?.name ?? '')
+                          const selectedHint = hints.find((hint) => hint.name === selectedName)
+                          return [editingCred
+                            ? React.createElement('div', { key: 'cred-editor', 'data-testid': `quota-cred-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
+                                hints.length > 1
+                                  ? React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+                                      translate('quota.credential.nameLabel'),
+                                      React.createElement('select', {
+                                        'data-testid': 'quota-cred-name-select',
+                                        value: selectedName,
+                                        onChange: (event) => setCredDraft({ ...credDraft, name: event.target.value }),
+                                        style: quotaSelectStyle,
+                                      },
+                                      // 别名链说明：多个名字是同一密钥的备用存放槽（发现按序取第一个已配置的值），主名带「主名」标记。
+                                      hints.map((hint, hintIndex) => React.createElement('option', { key: hint.name, value: hint.name }, `${hint.name}${hintIndex === 0 ? ` · ${translate('quota.credential.primary')}` : ''} · ${hint.configured === true ? translate('quota.credential.configured') : translate('quota.credential.notConfigured')}`))))
+                                  : React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', alignSelf: 'center' } }, `${selectedName}${selectedHint?.configured === true ? ` · ${translate('quota.credential.configured')}` : ''}`),
+                                React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+                                  translate('quota.credential.valueLabel'),
+                                  React.createElement('input', {
+                                    type: 'password',
+                                    'data-testid': 'quota-cred-input-value',
+                                    value: credDraft.value,
+                                    onChange: (event) => setCredDraft({ ...credDraft, value: event.target.value }),
+                                    autoComplete: 'off',
+                                    style: inputStyle,
+                                  })),
+                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-save', onClick: () => saveCredential(row.provider), disabled: credDraft.value.trim() === '', style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: credDraft.value.trim() === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: credDraft.value.trim() === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: credDraft.value.trim() === '' ? 'default' : 'pointer', fontSize: '12px' } }, translate('quota.credential.save')),
+                                ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', onClick: () => clearCredential(row.provider, selectedName), style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.credential.clear'))] : []),
+                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: () => { setCredEditor(null); setCredDraft({ name: '', value: '' }) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
+                              )
+                            : React.createElement('div', { key: 'cred-entry', style: { display: 'flex' } },
+                                React.createElement('button', {
+                                  type: 'button',
+                                  'data-testid': `quota-cred-edit-${row.provider}`,
+                                  onClick: () => openCredEditor(row),
+                                  style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                                }, translate('quota.credential.edit')))]
+                        })()
+                      : []),
                     ...resetCardNodes,
                     ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),

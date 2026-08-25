@@ -2348,7 +2348,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'cliproxy'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 已适配卡片脚部下拉预选当前 kind。
@@ -3290,4 +3290,132 @@ test('factory-level adopt restores a host-side running batch badge without visit
   assert.match(renderer.text(), /技能 ⟳1\/3/)
   assert.ok(statusCalls >= 1)
   renderer.disposeFactory()
+})
+
+test('cliproxy windows render as「账号 · 本地化窗口名」and management errors have localized copy', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            {
+              provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+              refreshing: false, status: 'ok', fetchedAt: Date.now(),
+              windows: [
+                // 宿主下发 label（账号标识）+ kindKey（稳定代码）；词典收录的走本地化，未收录的裸模型名兜底。
+                { id: 'codex-user-example-com-0-codex-5h', kindKey: 'codex-5h', label: 'codex-user@example.com', percent: 43 },
+                { id: 'gm-gmail-com-1-gemini-2-5-pro', kindKey: 'gemini-2.5-pro', label: 'gm@gmail.com', percent: 10 },
+                { id: 'codex-user-example-com-0-codex-week', kindKey: 'codex-week', label: 'codex-user@example.com', percent: 7 },
+              ],
+            },
+            {
+              provider: 'cpa2', displayName: 'CPA 备用', adapted: true, kind: 'cliproxy', kindSource: 'config',
+              refreshing: false, status: 'error', errorCode: 'mgmt-disabled',
+            },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text()
+  // 两段式组合文案：账号（数据）· 本地化窗口名（词典）——宿主不拼用户可见句子。
+  assert.match(text, /codex-user@example\.com · Codex 5 小时窗/)
+  assert.match(text, /codex-user@example\.com · Codex 本周窗/)
+  assert.match(text, /gm@gmail\.com · gemini-2\.5-pro/) // 模型名未收录 → 裸模型名兜底
+  assert.match(text, /43%/)
+  // 稳定错误码 mgmt-disabled 的本地化文案。
+  assert.match(text, /CLIProxyAPI 管理面未启用/)
+})
+
+test('unconfigured quota rows offer an inline credential form that writes via the store RPC', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const rpcLog = []
+  let credentialConfigured = false
+  const buildProviders = () => [{
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    refreshing: false, status: 'unconfigured', errorCode: 'credential-missing',
+    nextAllowedAt: Date.now() - 1,
+    credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: credentialConfigured }],
+  }]
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    rpcLog.push([endpoint, payload])
+    if (endpoint === 'quota') return { ok: true, value: { providers: buildProviders(), serverTime: Date.now() } }
+    if (endpoint === 'quota-credential-set') {
+      credentialConfigured = true
+      return { ok: true }
+    }
+    if (endpoint === 'quota-refresh') return { ok: true }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // 未配置行：错误文案旁出现「填写 API 密钥」入口。
+  assert.match(renderer.text(), /凭据未配置/)
+  renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
+  await renderer.flush()
+  const input = renderer.findByTestId('quota-cred-input-value')
+  input.props.onChange({ target: { value: 'mgmt-secret' } })
+  await renderer.flush()
+  // 已配置=false 时没有「清除已存」按钮；保存后走 set → quota-refresh（强制清闸）→ 快照接续。
+  assert.equal(renderer.hasTest('quota-cred-clear'), false)
+  renderer.findByTestId('quota-cred-save').props.onClick()
+  await renderer.flush()
+  const setCall = rpcLog.find(([endpoint]) => endpoint === 'quota-credential-set')
+  assert.deepEqual(setCall[1], { provider: 'cpa', name: 'CPA_MANAGEMENT_KEY', value: 'mgmt-secret' })
+  assert.ok(rpcLog.some(([endpoint]) => endpoint === 'quota-refresh'))
+})
+
+test('credential form defaults to the configured alias and marks the primary name', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const buildProviders = () => [{
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    refreshing: false, status: 'unconfigured', errorCode: 'credential-missing', nextAllowedAt: Date.now() - 1,
+    // 别名链：主名未配置、别名已配置（用户先填错主名后改对别名的真实场景）。
+    credentialHints: [
+      { name: 'CPA_MANAGEMENT_KEY', configured: false },
+      { name: 'CLIPROXY_MANAGEMENT_KEY', configured: true },
+    ],
+  }]
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return { ok: true, value: { providers: buildProviders(), serverTime: Date.now() } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
+  await renderer.flush()
+  // 默认选中「已配置」的别名（不是主名）；下拉按发现顺序列出两个别名槽。
+  const selectNode = renderer.findByTestId('quota-cred-name-select')
+  assert.equal(selectNode.props.value, 'CLIPROXY_MANAGEMENT_KEY')
+  assert.deepEqual(selectNode.children.flat(Infinity).map((option) => option.props.value), ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'])
 })
