@@ -23,6 +23,33 @@ window.__ModuleLoader__.load({
       'features.skillManager': '技能管理',
       'features.readOnly': '当前设置不可写。',
       'tabs.skills': '技能',
+      'tabs.subagent': '子代理',
+      'features.subagentRoute': '子代理模型',
+      'subagent.title': '子代理模型',
+      'subagent.hint': '控制「未显式指定模型」的子代理委派使用哪个模型；显式指定了模型的派生（预设钉死、其他插件注入、调用参数携带）不受影响。',
+      'subagent.mode.label': '模式',
+      'subagent.mode.inherit': '初始（不干预）',
+      'subagent.mode.inherit.desc': '不注入任何路由，保持宿主原生继承行为：子代理使用会话创建时烘焙的默认模型。',
+      'subagent.mode.follow': '跟随主模型',
+      'subagent.mode.follow.desc': '每次派生时读取主对话当前实际使用的模型（最近一次请求的渠道）并注入。',
+      'subagent.mode.custom': '自定义',
+      'subagent.mode.custom.desc': '所有未显式指定模型的子代理固定使用下方选择的模型。',
+      'subagent.provider': '供应商',
+      'subagent.model': '模型',
+      'subagent.modelsEmpty': '模型清单为空：无法解析宿主 LLM 渠道。',
+      'subagent.save': '保存',
+      'subagent.saved': '已保存',
+      'subagent.reset': '重置回初始配置',
+      'subagent.saving': '保存中…',
+      'subagent.unavailable': '宿主未提供子代理注册表（subagents 服务缺席），配置不会生效。',
+      'subagent.navToggle': '设置页左列显示「子代理」入口',
+      'subagent.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示子代理模型快捷入口',
+      'subagent.error': '操作失败：{error}',
+      'subagent.error.feature-disabled': '子代理模型功能已在设置中关闭',
+      'subagent.error.llm-unavailable': '宿主 LLM 服务不可用',
+      'subagent.error.unknown-mode': '未知模式',
+      'subagent.error.invalid-model-route': '供应商或模型不在宿主清单内',
+      'subagent.error.network': '网络错误：无法连接宿主',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
       'skills.error.network': '网络错误，请稍后重试',
@@ -479,6 +506,33 @@ window.__ModuleLoader__.load({
       'features.skillManager': 'Skill manager',
       'features.readOnly': 'These settings are read-only.',
       'tabs.skills': 'Skills',
+      'tabs.subagent': 'Subagents',
+      'features.subagentRoute': 'Subagent model',
+      'subagent.title': 'Subagent model',
+      'subagent.hint': 'Controls which model a subagent delegation uses when no model was explicitly specified; delegations with an explicit route (pinned preset, another plugin, call arguments) are unaffected.',
+      'subagent.mode.label': 'Mode',
+      'subagent.mode.inherit': 'Default (no override)',
+      'subagent.mode.inherit.desc': 'Injects nothing and keeps the native inheritance: subagents use the model baked in when the session was created.',
+      'subagent.mode.follow': 'Follow main model',
+      'subagent.mode.follow.desc': 'Each delegation reads the model the main conversation actually uses right now (route of its latest request) and injects it.',
+      'subagent.mode.custom': 'Custom',
+      'subagent.mode.custom.desc': 'Every delegation without an explicit model uses the model selected below.',
+      'subagent.provider': 'Provider',
+      'subagent.model': 'Model',
+      'subagent.modelsEmpty': 'Model list is empty: host LLM channels cannot be resolved.',
+      'subagent.save': 'Save',
+      'subagent.saved': 'Saved',
+      'subagent.reset': 'Reset to default',
+      'subagent.saving': 'Saving…',
+      'subagent.unavailable': 'The host exposes no subagents registry (service missing); this configuration has no effect.',
+      'subagent.navToggle': 'Show "Subagents" entry in settings left nav',
+      'subagent.navToggleHint': 'Off by default; when enabled, a subagent-model entry appears at the bottom of the settings left navigation',
+      'subagent.error': 'Operation failed: {error}',
+      'subagent.error.feature-disabled': 'Subagent model is switched off in settings',
+      'subagent.error.llm-unavailable': 'Host LLM service is unavailable',
+      'subagent.error.unknown-mode': 'Unknown mode',
+      'subagent.error.invalid-model-route': 'Provider or model is not in the host catalog',
+      'subagent.error.network': 'Network error: cannot reach the host',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
       'skills.error.network': 'Network error, try again later',
@@ -936,6 +990,8 @@ window.__ModuleLoader__.load({
     const NAV_ICON_BODY_RESTART = '%3Cpath d=%27M12 2v10%27/%3E%3Cpath d=%27M18.4 6.6a9 9 0 1 1-12.77.04%27/%3E'
     // 技能 = 书本轮廓（lucide book 风格，16px 下可读）
     const NAV_ICON_BODY_SKILLS = '%3Cpath d=%27M4 19.5A2.5 2.5 0 0 1 6.5 17H20%27/%3E%3Cpath d=%27M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z%27/%3E'
+    // 子代理 = 机器人头（lucide bot 风格，16px 下可读）
+    const NAV_ICON_BODY_SUBAGENT = '%3Cpath d=%27M12 8V4H8%27/%3E%3Crect width=%2716%27 height=%2712%27 x=%274%27 y=%278%27 rx=%272%27/%3E%3Cpath d=%27M2 14h2%27/%3E%3Cpath d=%27M20 14h2%27/%3E%3Cpath d=%27M15 13v2%27/%3E%3Cpath d=%27M9 13v2%27/%3E'
 
     function markSettingsNavRows(rows) {
       if (typeof document === 'undefined' || !document.body) return () => {}
@@ -994,11 +1050,12 @@ window.__ModuleLoader__.load({
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
           // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
           // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
-          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-skills-nav]>svg:first-child{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-skills-nav]>svg:first-child,[data-dsh-service-subagent-nav]>svg:first-child{display:none}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before,[data-dsh-service-subagent-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
           '[data-dsh-service-skills-nav]::before{' + navIconMask(NAV_ICON_BODY_SKILLS) + '}',
+          '[data-dsh-service-subagent-nav]::before{' + navIconMask(NAV_ICON_BODY_SUBAGENT) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
         ].join('')
         document.head.appendChild(svcStyle)
@@ -1006,7 +1063,7 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
-      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true }
+      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -1023,6 +1080,7 @@ window.__ModuleLoader__.load({
           { attr: 'data-dsh-service-quota-nav', label: () => t('tabs.quota') },
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
           { attr: 'data-dsh-service-skills-nav', label: () => t('tabs.skills') },
+          { attr: 'data-dsh-service-subagent-nav', label: () => t('tabs.subagent') },
         ]),
         'dsh-service settings nav icons',
       )
@@ -1096,6 +1154,7 @@ window.__ModuleLoader__.load({
       const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
       const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
       const skillsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-skills-nav', sectionId: 'dsh-service-skills', order: 497, labelKey: 'tabs.skills', feature: 'skillManager', renderContent: () => React.createElement(SkillsSection, null) })
+      const subagentNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-subagent-nav', sectionId: 'dsh-service-subagent', order: 496, labelKey: 'tabs.subagent', feature: 'subagentRoute', renderContent: () => React.createElement(SubagentSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       let skillsBatchState = null       // 宿主状态快照
       let skillsBatchPlan = null        // 本端计划（含所选模型）
@@ -2374,10 +2433,151 @@ window.__ModuleLoader__.load({
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager'].map(row),
+          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute'].map(row),
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
           row('healthz'),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
+      }
+
+      // ─── 子代理模型（v0.27）：三态路由配置 ────────────────────────────────
+      function mapSubagentError(translate, code) {
+        if (code === 'feature-disabled') return translate('subagent.error.feature-disabled')
+        if (code === 'llm-unavailable') return translate('subagent.error.llm-unavailable')
+        if (code === 'unknown-mode') return translate('subagent.error.unknown-mode')
+        if (code === 'invalid-model-route') return translate('subagent.error.invalid-model-route')
+        if (code === 'network') return translate('subagent.error.network')
+        return code
+      }
+
+      const SUBAGENT_MODES = ['inherit', 'follow', 'custom']
+      function SubagentSection() {
+        const translate = useTranslation()
+        const { useState, useEffect } = React
+        const [navEnabled, setNavEnabled] = subagentNavToggle.useEnabled()
+        const [snapshot, setSnapshot] = useState(null)
+        const [mode, setMode] = useState('inherit')
+        const [provider, setProvider] = useState('')
+        const [model, setModel] = useState('')
+        const [loading, setLoading] = useState(true)
+        const [saving, setSaving] = useState(false)
+        const [savedTick, setSavedTick] = useState(0)
+        const [error, setError] = useState('')
+        const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
+        const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
+
+        const load = async () => {
+          setLoading(true)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'subagent-route', {})
+            if (res.ok) {
+              setSnapshot(res.value)
+              setMode(res.value.mode)
+              if (res.value.mode === 'custom') {
+                setProvider(typeof res.value.provider === 'string' ? res.value.provider : '')
+                setModel(typeof res.value.model === 'string' ? res.value.model : '')
+              }
+              setError('')
+            } else {
+              setError(res.error || 'unknown')
+            }
+          } catch (_) {
+            setError('network')
+          } finally {
+            setLoading(false)
+          }
+        }
+        useEffect(() => { void load() }, [])
+
+        const models = snapshot !== null && Array.isArray(snapshot.models) ? snapshot.models : []
+        // 供应商分组：清单顺序去重；模型下拉随供应商切换。
+        const providers = []
+        const providerName = {}
+        for (const item of models) {
+          if (providerName[item.provider] === undefined) {
+            providerName[item.provider] = item.providerName
+            providers.push(item.provider)
+          }
+        }
+        const providerModels = models.filter((item) => item.provider === provider)
+        // 换供应商时若当前模型不属于它，回落到该供应商首个模型。
+        useEffect(() => {
+          if (provider !== '' && !providerModels.some((item) => item.id === model)) {
+            setModel(providerModels[0]?.id ?? '')
+          }
+        }, [provider])
+        const effectiveProvider = providers.includes(provider) ? provider : providers[0] ?? ''
+        useEffect(() => { if (provider !== effectiveProvider) setProvider(effectiveProvider) }, [effectiveProvider, provider])
+
+        const save = async (nextMode) => {
+          setSaving(true)
+          setError('')
+          try {
+            const payload = nextMode === 'custom'
+              ? { mode: 'custom', provider: effectiveProvider, model }
+              : { mode: nextMode }
+            const res = await ctx.connection.rpc.call('/dsh-service', 'subagent-route-save', payload)
+            if (res.ok) {
+              setSavedTick((tick) => tick + 1)
+              await load()
+            } else {
+              setError(res.error || 'unknown')
+            }
+          } catch (_) {
+            setError('network')
+          } finally {
+            setSaving(false)
+          }
+        }
+
+        const cardStyle = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
+        const modeButton = (candidate) => React.createElement('button', {
+          type: 'button',
+          key: candidate,
+          'data-testid': 'subagent-mode-' + candidate,
+          'aria-pressed': String(mode === candidate),
+          disabled: loading,
+          onClick: () => setMode(candidate),
+          style: {
+            fontSize: '12.5px', padding: '5px 12px', borderRadius: '7px', cursor: loading ? 'default' : 'pointer',
+            border: mode === candidate ? '1px solid var(--dsw-alias-state-brand-primary)' : '1px solid var(--dsw-alias-border-l2)',
+            background: mode === candidate ? 'var(--dsh-svc-surface-bg)' : 'var(--dsw-alias-bg-layer-3)',
+            color: 'var(--dsw-alias-label-primary)',
+            opacity: loading ? 0.55 : 1,
+          },
+        }, translate('subagent.mode.' + candidate))
+
+        return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
+          React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
+          React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
+          snapshot !== null && snapshot.available === false ? React.createElement('p', { 'data-testid': 'subagent-unavailable', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.unavailable')) : null,
+          React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
+            SUBAGENT_MODES.map(modeButton)),
+          React.createElement('p', { 'data-testid': 'subagent-mode-desc', style: { ...hintStyle, marginTop: '8px' } }, translate('subagent.mode.' + mode + '.desc')),
+          mode === 'custom' ? React.createElement('div', { 'data-testid': 'subagent-custom', style: { marginTop: '10px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.provider')),
+            React.createElement('select', { 'data-testid': 'subagent-provider', value: effectiveProvider, disabled: providers.length === 0 || saving, onChange: (event) => setProvider(event.target.value), style: selectStyle },
+              providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
+            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.model')),
+            React.createElement('select', { 'data-testid': 'subagent-model', value: model, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
+              providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))) : null,
+          mode === 'custom' && models.length === 0 && !loading ? React.createElement('p', { 'data-testid': 'subagent-models-empty', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.modelsEmpty')) : null,
+          error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
+          savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
+          React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },
+            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
+            mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null),
+          React.createElement('div', { style: { marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+              React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.navToggle')),
+              React.createElement('span', { style: hintStyle }, translate('subagent.navToggleHint'))),
+            React.createElement('button', {
+              type: 'button',
+              role: 'switch',
+              'data-testid': 'subagent-nav-switch',
+              'aria-checked': String(navEnabled),
+              onClick: () => setNavEnabled(!navEnabled),
+              style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))))
       }
 
       // ─── 技能管理（v0.22）：三区列表 / 启停 / AI 补全 / 批量 ────────────────
@@ -4099,6 +4299,7 @@ window.__ModuleLoader__.load({
           ...(features.quotaLookup !== false ? [['quota', 'tabs.quota']] : []),
           ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),
           ...(features.skillManager !== false ? [['skills', 'tabs.skills']] : []),
+          ...(features.subagentRoute !== false ? [['subagent', 'tabs.subagent']] : []),
           ['restart', 'tabs.restart'],
         ]
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
@@ -4117,6 +4318,8 @@ window.__ModuleLoader__.load({
                   ? maintenanceBlock
                 : visibleActiveTab === 'skills'
                   ? React.createElement(SkillsSection, null)
+                : visibleActiveTab === 'subagent'
+                  ? React.createElement(SubagentSection, null)
                   : restartBlock
         return React.createElement('div', null,
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
@@ -4179,19 +4382,23 @@ window.__ModuleLoader__.load({
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」「额度查询」「技能」入口由各自标签内的开关控制，默认不注册
+        // 左列「重启」「额度查询」「技能」「子代理」入口由各自标签内的开关控制，默认不注册
         restartNavToggle.sync()
         quotaNavToggle.sync()
         skillsNavToggle.sync()
+        subagentNavToggle.sync()
         const unsubscribeFeatures = featureScope.subscribe(quotaNavToggle.sync)
         const unsubscribeFeaturesSkills = featureScope.subscribe(skillsNavToggle.sync)
+        const unsubscribeFeaturesSubagent = featureScope.subscribe(subagentNavToggle.sync)
         return () => {
           unsubscribeFeatures()
           unsubscribeFeaturesSkills()
+          unsubscribeFeaturesSubagent()
           disposePanel()
           restartNavToggle.disposeEntry()
           quotaNavToggle.disposeEntry()
           skillsNavToggle.disposeEntry()
+          subagentNavToggle.disposeEntry()
         }
       })
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(

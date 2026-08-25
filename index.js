@@ -24,6 +24,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   taskNotifications: true,
   healthz: true,
   skillManager: true,
+  subagentRoute: true,
 })
 const FeatureSettingsSchema = z.object({
   modelUsage: z.boolean().default(true),
@@ -32,6 +33,7 @@ const FeatureSettingsSchema = z.object({
   taskNotifications: z.boolean().default(true),
   healthz: z.boolean().default(true),
   skillManager: z.boolean().default(true),
+  subagentRoute: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -156,6 +158,15 @@ const MAX_QUOTA_CPA_ACCOUNTS = 8
 const MAX_QUOTA_CPA_CALLS = 12
 const QUOTA_CPA_CONCURRENCY = 3
 const MAX_QUOTA_CPA_WINDOWS = 32
+
+// 子代理路由（v0.27）：三态配置的常量。inherit=不干预（原生继承），
+// follow=派生时读父会话最近一次请求路由注入，custom=固定 provider/model。
+// 数值只在此处与 TODO.md 里程碑两处出现。
+const SUBAGENT_ROUTE_VERSION = 1
+const SUBAGENT_ROUTE_FILE = 'dsh-service-subagent-route.json'
+const SUBAGENT_ROUTE_MODES = ['inherit', 'follow', 'custom']
+const MAX_SUBAGENT_ROUTE_BYTES = 64 * 1024
+const MAX_SUBAGENT_ROUTE_FIELD = 256
 
 // 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
 // TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
@@ -2879,6 +2890,88 @@ async function listSkillModels(llm, agentDefaultModel) {
   return { models, ...(current !== undefined ? { current } : {}) }
 }
 
+/** 子代理路由配置的空档（inherit）：与未安装本功能的原生行为完全一致。 */
+function createEmptySubagentRoute() {
+  return { version: SUBAGENT_ROUTE_VERSION, mode: 'inherit' }
+}
+
+/** 解析磁盘上的子代理路由配置：损坏/版本不符/未知模式回退 inherit（零侵入，不因坏配置破坏派生）。 */
+function parseSubagentRouteText(text) {
+  const fallback = createEmptySubagentRoute()
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (_) {
+    return fallback
+  }
+  if (parsed?.version !== SUBAGENT_ROUTE_VERSION || !SUBAGENT_ROUTE_MODES.includes(parsed.mode)) return fallback
+  if (parsed.mode !== 'custom') return { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
+  const provider = typeof parsed.provider === 'string' ? parsed.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+  const model = typeof parsed.model === 'string' ? parsed.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+  if (provider === '' || model === '') return fallback
+  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model }
+}
+
+async function loadSubagentRoute(dshHome) {
+  try {
+    const target = join(dshHome, SUBAGENT_ROUTE_FILE)
+    const info = await stat(target)
+    if (info.size > MAX_SUBAGENT_ROUTE_BYTES) return createEmptySubagentRoute()
+    return parseSubagentRouteText(await readFile(target, 'utf8'))
+  } catch (_) {
+    return createEmptySubagentRoute()
+  }
+}
+
+async function saveSubagentRoute(dshHome, config) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, SUBAGENT_ROUTE_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(config), { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+/**
+ * 计算一次子代理派生应注入的 agentOptions（seam 核心，纯函数便于测试）：
+ * - 派生请求已显式携带 provider 或 model → 不干预（显式永远赢，含预设钉死与其他插件注入）；
+ * - follow → 读父会话最近一次 request header 的路由（= 主对话当前实际在用的渠道；空白
+ *   会话无 header 时回落继承，不注入）；
+ * - custom → 配置的 provider/model，且 llm 注册表当前可路由才注入（渠道被卸载后回落继承
+ *   而不是让派生失败）；
+ * - inherit / 其余一切 → undefined（原生继承父代理创建 options）。
+ * @param {object|null} request SubagentStartRequest（读 parent / agentOptions）。
+ * @param {object|null} config 当前生效的路由配置。
+ * @param {object} options isRoutable(provider) 与 readParentHeader(parent) 注入点（测试替身用）。
+ */
+function resolveSubagentInjection(request, config, options = {}) {
+  const agentOptions = request?.agentOptions
+  const explicitProvider = typeof agentOptions?.provider === 'string' && agentOptions.provider !== ''
+  const explicitModel = typeof agentOptions?.model === 'string' && agentOptions.model !== ''
+  if (explicitProvider || explicitModel) return undefined
+  if (config?.mode === 'follow') {
+    let header
+    try {
+      header = options.readParentHeader?.(request?.parent)
+    } catch (_) {
+      header = undefined
+    }
+    if (typeof header?.provider === 'string' && header.provider !== '' && typeof header?.model === 'string' && header.model !== '') {
+      return { provider: header.provider, model: header.model }
+    }
+    return undefined
+  }
+  if (config?.mode === 'custom' && typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== '') {
+    if (options.isRoutable !== undefined && !options.isRoutable(config.provider)) return undefined
+    return { provider: config.provider, model: config.model }
+  }
+  return undefined
+}
+
+
 function apply(ctx) {
   const dshHome = resolveDshHome()
   let featureSettings = DEFAULT_FEATURE_SETTINGS
@@ -2954,6 +3047,64 @@ function apply(ctx) {
     }
     skillsActiveControllers.clear()
   }, 'dsh-service skills batch teardown')
+  // ── 子代理路由（v0.27）：三态配置 + subagents seam ─────────────────────
+  // 内存态即 seam 读取的事实源：保存端点落盘成功后原地替换，派生路径零读盘。
+  let subagentRouteConfig = createEmptySubagentRoute()
+  const subagentRouteLoadPromise = Promise.resolve().then(async () => {
+    subagentRouteConfig = await loadSubagentRoute(dshHome)
+  })
+  // 配置写串行化（quota-config 同款）：所有写先等首次加载完成再从同一内存快照复制，
+  // 避免与启动加载竞态把磁盘回退成 inherit。
+  let subagentRouteWrites = Promise.resolve()
+  const serializeSubagentRouteWrite = (work) => {
+    const result = subagentRouteWrites.then(async () => {
+      await subagentRouteLoadPromise
+      const current = { ...subagentRouteConfig }
+      const outcome = await work(current)
+      if (outcome?.save === false) return outcome.value
+      await saveSubagentRoute(dshHome, current)
+      subagentRouteConfig = current
+      return outcome.value
+    })
+    subagentRouteWrites = result.then(() => undefined, () => undefined)
+    return result
+  }
+  // seam 是否已挂上（宿主 subagents 服务存在时由下面的 inject 置真）：快照端点据此告知客户端。
+  let subagentSeamInstalled = false
+  // 只包装宿主 subagents 注册表的两个入口（start / startContinuable，spawn/fork/acp 全走这
+  // 两个口）：未显式指定模型的派生按配置注入 agentOptions，其余原样透传。Fiber 销毁还原
+  // 原方法——包装挂在服务实例上，disposer 期间新派生恢复原生行为。
+  ctx.inject(['subagents'], (scope) => {
+    const subagents = scope.subagents
+    if (subagents === undefined || typeof subagents.start !== 'function' || typeof subagents.startContinuable !== 'function') return
+    const isRoutable = (provider) => {
+      const llm = ctx.get('llm')
+      if (llm === undefined || typeof llm.listProviders !== 'function') return false
+      try {
+        return llm.listProviders().some((entry) => entry?.id === provider)
+      } catch (_) {
+        return false
+      }
+    }
+    const readParentHeader = (parent) => parent?.session?.requestHeader?.()?.config
+    const decorate = (request) => {
+      if (!featureEnabled('subagentRoute')) return request
+      const injected = resolveSubagentInjection(request, subagentRouteConfig, { isRoutable, readParentHeader })
+      if (injected === undefined) return request
+      ctx.logger?.info?.(`dsh-service: subagent route seam applied ${injected.provider}/${injected.model} to a subagent without an explicit route`)
+      return { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...injected } }
+    }
+    const originalStart = subagents.start
+    const originalStartContinuable = subagents.startContinuable
+    subagents.start = (name, request) => originalStart.call(subagents, name, decorate(request))
+    subagents.startContinuable = (spec) => originalStartContinuable.call(subagents, { ...spec, request: decorate(spec.request) })
+    subagentSeamInstalled = true
+    scope.effect(() => () => {
+      subagents.start = originalStart
+      subagents.startContinuable = originalStartContinuable
+      subagentSeamInstalled = false
+    }, 'dsh-service subagent route seam teardown')
+  })
   let quotaConfig = createEmptyQuotaConfig()
   let quotaConfigLoaded = false
   let quotaConfigLoadPromise
@@ -3841,6 +3992,70 @@ function apply(ctx) {
       }
     }
 
+    // ── 子代理路由（v0.27）：快照 + 三态保存 ─────────────────────────────
+    if (endpoint === 'subagent-route') {
+      if (!featureEnabled('subagentRoute')) return { ok: false, error: 'feature-disabled' }
+      try {
+        await subagentRouteLoadPromise
+        const llm = ctx.get('llm')
+        // 模型清单沿用 skills-models 的白名单口径（llm.listProviders × listModels，单渠道失败跳过）；
+        // llm 服务缺席时清单为空——自定义模式在保存端也会被拒（llm-unavailable），快照仍可下发。
+        let models = []
+        let current
+        if (llm !== undefined && typeof llm.listProviders === 'function') {
+          const catalog = await listSkillModels(llm, ctx.get('agentDefaultModel'))
+          models = catalog.models
+          current = catalog.current
+        }
+        const config = subagentRouteConfig
+        return {
+          ok: true,
+          value: {
+            available: subagentSeamInstalled,
+            mode: config.mode,
+            ...(config.mode === 'custom' ? { provider: config.provider, model: config.model } : {}),
+            models,
+            ...(current !== undefined ? { current } : {}),
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'subagent-route-save') {
+      if (!featureEnabled('subagentRoute')) return { ok: false, error: 'feature-disabled' }
+      const mode = payload?.mode
+      if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
+      try {
+        if (mode === 'custom') {
+          const provider = typeof payload?.provider === 'string' ? payload.provider.trim() : ''
+          const model = typeof payload?.model === 'string' ? payload.model.trim() : ''
+          if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
+          const llm = ctx.get('llm')
+          if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
+          // 与 skills-describe 同一道闸：provider/model 必须命中运行时清单白名单。
+          const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
+          if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
+        }
+        return await serializeSubagentRouteWrite(async (config) => {
+          if (mode === 'custom') {
+            config.mode = 'custom'
+            config.provider = typeof payload?.provider === 'string' ? payload.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+            config.model = typeof payload?.model === 'string' ? payload.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+          } else {
+            // inherit / follow：不保留 custom 字段，重置回干净形状。
+            config.mode = mode
+            delete config.provider
+            delete config.model
+          }
+          return { value: { ok: true, mode: config.mode, ...(config.mode === 'custom' ? { provider: config.provider, model: config.model } : {}) } }
+        })
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
     return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
   }, { authority: 'loopback' })
 }
@@ -3874,11 +4089,13 @@ export {
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
+  parseSubagentRouteText,
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   resolveSkillInvocationState,
+  resolveSubagentInjection,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,
@@ -3916,11 +4133,13 @@ export default {
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
+  parseSubagentRouteText,
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
   resolveSkillInvocationState,
+  resolveSubagentInjection,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,

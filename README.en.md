@@ -8,9 +8,9 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 ## Features
 
-The Settings panel "Service Control" page has eight top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Restart**; the Restart, Quota lookup, and Skills tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
+The Settings panel "Service Control" page has nine top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Subagents, Restart**; the Restart, Quota lookup, Skills, and Subagents tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
-The plugin also appears under **Plugins → Plugin configuration**, with six host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All six switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+The plugin also appears under **Plugins → Plugin configuration**, with seven host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All seven switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
 
 ### Version and updates
 
@@ -36,6 +36,8 @@ The plugin also appears under **Plugins → Plugin configuration**, with six hos
 
 ### Model statistics
 
+![Model statistics](./screenshots/model-usage_en.png)
+
 - 7-day stacked bar chart of input/output/cache tokens with blue/orange/teal legend
 - Filter by project; hover for exact values
 - Model breakdown as horizontal stacked bars (same legend colors) with a "Today / Last 7 days / All time" toggle on the right of the list header (default: last 7 days): Today aggregates only the current day, Last 7 days ranks within the chart's window, and All time covers every date in the index (bounded by session retention); each row keeps `x times · Cache hit x% · Input xM token · Output xM token`
@@ -43,6 +45,8 @@ The plugin also appears under **Plugins → Plugin configuration**, with six hos
 - Last-24-hour model/tool error statistics, collapsed by default
 
 ### Quota lookup
+
+![Quota lookup](./screenshots/quota-lookup_en.png)
 
 - A dedicated "Quota lookup" tab shows adapted providers as separate cards, each window rendered as a percentage with its own bar and a reset countdown on its own line, plus a refresh icon beside the updated time that force-refreshes that provider on click (bypassing the poll interval); adapted card titles link to the provider's official usage page (DeepSeek Platform, Zhipu GLM Coding Plan, OpenCode Go) in a new tab; a "Reorder" toggle at the top-right of the card list (shown with two or more cards) reveals ↑/↓ buttons on each card header (auto-disabled at the ends), and clicking it again hides them; the order is remembered in this browser and newly seen providers append at the end; unadapted providers take no space — a "Manual adapt" row at the bottom enables one by picking its type, and each card's footer can switch type, fall back to auto-detect, or disable lookup at any time
 - A quota ring inside the conversation composer follows the provider selected by the current session and shows the tightest budget window as a percentage (green below 80%, amber at or above); clicking opens a panel headed by the provider name, with a bar and used percentage for each window and reset times on their own lines; on narrow viewports (phones) the panel switches to a viewport-centered floating layer — fully visible, scrolling internally when too tall — and rotates or resizing wider flips it back to the anchored placement above the ring
@@ -64,6 +68,8 @@ The plugin also appears under **Plugins → Plugin configuration**, with six hos
 
 ### Skills management
 
+![Skills management](./screenshots/skill-manager_en.png)
+
 - The "Skills" tab lists every local skill under three sections — **auto-loaded / manual-only / fully disabled** — scanning project `.dsh`, project `.agents`, user `~/.dsh/skills`, `$DSH_AGENTS_HOME`, and `$DSH_BUNDLED_SKILL_DIR` roots one level deep, with a name filter and source badges; same-name shadowing (lower rank wins) marks both winner and loser copies, bundled directories are shown read-only, and a physical directory hit by multiple root rules is counted once
 - Two per-entry switches edit the SKILL.md frontmatter directly: `disable-model-invocation` for "visible to model", `user-invocable` for "invocable via /"; switches use a two-click confirmation, changes go live within ~200 ms, active sessions receive a catalog-update notice on their next step, and toggling back and forth leaves no residue in the file
 - Entries carrying legacy camelCase invocation keys (e.g. `disableModelInvocation`) are dropped entirely by the official parser: the panel shows a ⚠ warning and a two-click confirmed fix that converts them to canonical keys semantically
@@ -71,7 +77,17 @@ The plugin also appears under **Plugins → Plugin configuration**, with six hos
 - One-click batch fill: automatically collects unannotated skills or ones whose body changed (read-only roots included; invalid entries and shadowed copies are skipped), shows candidate count / estimated payload and an expandable per-entry skip list first, then runs sequentially with live progress; individual failures never block the batch, and cancelling immediately interrupts the in-flight model call. Zero file modifications throughout, and the plugin never issues model calls autonomously
 - Batch runs in the Host background: switching tabs, closing the settings panel, or even refreshing the page never interrupts it; returning to the Skills tab restores progress and the cancel button, the Skills tab title shows a live `⟳done/total` badge while running, and planning a second batch mid-run is explicitly rejected
 
+### Subagent model
+
+![Subagent model](./screenshots/subagent-model_en.png)
+
+- The "Subagents" tab controls routing for delegations that **did not explicitly specify a model**, with three modes: **Default (no override)** injects nothing and preserves DSH's native inheritance; **Follow main model** reads the provider/model actually used by the main conversation's latest request at delegation time; **Custom** pins every unspecified subagent to the selected provider and model
+- A provider or model explicitly carried by the delegation always wins, so the plugin never overrides a pinned preset, call arguments, or a route already injected by another plugin. Custom choices come exclusively from the Host's live model catalog; if that provider is later removed, delegation safely falls back to native inheritance instead of failing
+- Configuration is stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, file mode `0600`); "Reset to default" clears the custom route and restores zero intervention. An optional "Subagents" quick entry can be enabled for the settings left navigation (off by default)
+
 ### Task notifications
+
+![Task notifications](./screenshots/task-notifications_en.png)
 
 - Notification settings live in the top-level Notifications tab: browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
 - Clicking a notification focuses the DSH page and closes the popup

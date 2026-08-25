@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
+import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -64,6 +64,7 @@ function createHost(overrides = {}) {
       taskNotifications: true,
       healthz: true,
       skillManager: true,
+      subagentRoute: true,
       ...overrides.featureSettings,
     }
     settingsService = {
@@ -116,6 +117,9 @@ function createHost(overrides = {}) {
   const ctx = {
     get settings() {
       return services.get('settings')
+    },
+    get subagents() {
+      return services.get('subagents')
     },
     connection: {
       rpc: {
@@ -637,7 +641,7 @@ test('feature settings namespace registers when the settings service appears aft
 test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
   const routes = []
   const { handler, registeredSettings, updateFeatureSettings } = createHost({
-    featureSettings: { modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false },
+    featureSettings: { modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false },
     services: {
       webServer: {
         register(route) {
@@ -657,6 +661,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     taskNotifications: true,
     healthz: true,
     skillManager: true,
+    subagentRoute: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     modelUsage: true,
@@ -665,11 +670,12 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     taskNotifications: true,
     healthz: true,
     skillManager: true,
+    subagentRoute: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import']) {
+  for (const endpoint of ['usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -3288,4 +3294,169 @@ test('quota credential hints and write endpoints round-trip through the DSH cred
   const bareRow = (await bare.handler('quota', {})).value.providers.find((entry) => entry.provider === 'opencode-go')
   assert.equal(bareRow.credentialHints, undefined)
   assert.equal((await bare.handler('quota-credential-set', { provider: 'opencode-go', name: 'OPENCODE_GO_API_KEY', value: 'x' })).error, 'credentials-unavailable')
+})
+
+// ─── 子代理路由（v0.27）────────────────────────────────────────────────
+
+/** 最小 subagents 注册表替身：记录两次入口的入参，可回读原始方法身份。 */
+function fakeSubagents() {
+  const calls = []
+  const registry = {
+    start(name, request) {
+      calls.push({ entry: 'start', name, request })
+      return Promise.resolve({ id: 'run-1' })
+    },
+    startContinuable(spec) {
+      calls.push({ entry: 'startContinuable', name: spec.provider, request: spec.request })
+      return Promise.resolve({ childId: 'child-1' })
+    },
+  }
+  return { registry, calls }
+}
+
+/** 最小 llm 服务替身：listProviders/listModels 提供白名单目录，stream 仅在位性检查用。 */
+function fakeLlm(providers) {
+  return {
+    listProviders: () => providers.map(([id, name]) => ({ id, name })),
+    listModels: async (provider) => (providers.find(([id]) => id === provider)?.[2] ?? []).map((modelId) => ({ id: modelId, name: modelId })),
+    stream: async function* () {},
+  }
+}
+
+test('parseSubagentRouteText：损坏/版本不符/未知模式/custom 缺字段回退 inherit，合法输入截断保留', () => {
+  const empty = { version: 1, mode: 'inherit' }
+  assert.deepEqual(parseSubagentRouteText('{oops'), empty)
+  assert.deepEqual(parseSubagentRouteText('null'), empty)
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 2, mode: 'custom', provider: 'a', model: 'b' })), empty)
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'pin' })), empty)
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom' })), empty)
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: '' })), empty)
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow' })), { version: 1, mode: 'follow' })
+  const custom = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: '  p  ', model: ' m ' }))
+  assert.deepEqual(custom, { version: 1, mode: 'custom', provider: 'p', model: 'm' })
+})
+
+test('resolveSubagentInjection：显式路由永远赢、follow 读父会话 header、custom 校验可路由、inherit 不注入', () => {
+  const explicit = { agentOptions: { provider: 'cpa' } }
+  assert.equal(resolveSubagentInjection(explicit, { mode: 'custom', provider: 'x', model: 'y' }, { isRoutable: () => true }), undefined)
+  assert.equal(resolveSubagentInjection({ agentOptions: { model: 'm1' } }, { mode: 'custom', provider: 'x', model: 'y' }, { isRoutable: () => true }), undefined)
+  // follow：父会话最近一次请求路由被注入。
+  const parent = { session: { requestHeader: () => ({ config: { provider: 'openrouter', model: 'ox-alpha' } }) } }
+  assert.deepEqual(resolveSubagentInjection({ parent }, { mode: 'follow' }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config }), { provider: 'openrouter', model: 'ox-alpha' })
+  // follow：空白会话无 header / header 缺字段 → 回落继承。
+  assert.equal(resolveSubagentInjection({ parent: { session: { requestHeader: () => undefined } } }, { mode: 'follow' }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config }), undefined)
+  assert.equal(resolveSubagentInjection({ parent: { session: { requestHeader: () => ({ config: { provider: 'p' } }) } } }, { mode: 'follow' }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config }), undefined)
+  // follow：读取抛错不炸派生。
+  assert.equal(resolveSubagentInjection({ parent: {} }, { mode: 'follow' }, { readParentHeader: () => { throw new Error('boom') } }), undefined)
+  // custom：可路由才注入。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' }, { isRoutable: () => true }), { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  assert.equal(resolveSubagentInjection({}, { mode: 'custom', provider: 'gone', model: 'm' }, { isRoutable: () => false }), undefined)
+  // inherit / 未配置：一律不注入。
+  assert.equal(resolveSubagentInjection({}, { mode: 'inherit' }, {}), undefined)
+  assert.equal(resolveSubagentInjection({}, null, {}), undefined)
+})
+
+test('subagent-route seam：包装 start/startContinuable 注入未显式路由的派生，disposer 还原原方法', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-seam-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash', 'deepseek-v4-pro']], ['cpa', 'CPA', ['gpt-5.6-sol']]])
+  const { registry, calls } = fakeSubagents()
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+
+  // 默认 inherit：零干预。
+  await registry.start('spawn', { label: 'a', parent: { session: { requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } } })
+  assert.equal(calls[0].request.agentOptions, undefined)
+
+  // follow：注入父会话最近一次请求的路由。
+  await host.handler('subagent-route-save', { mode: 'follow' })
+  await registry.startContinuable({ provider: 'spawn', label: 'b', request: { label: 'b', parent: { session: { requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } } } })
+  assert.deepEqual(calls[1].request.agentOptions, { provider: 'cpa', model: 'gpt-5.6-sol' })
+  // follow：显式路由派生不干预。
+  await registry.start('spawn', { label: 'c', parent: {}, agentOptions: { provider: 'cpa', model: 'gpt-5.6-sol' } })
+  assert.deepEqual(calls[2].request.agentOptions, { provider: 'cpa', model: 'gpt-5.6-sol' })
+
+  // custom：白名单校验 + 注入；不可路由渠道回落继承。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'nope', model: 'x' })).error, 'invalid-model-route')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'nope' })).error, 'invalid-model-route')
+  const saved = await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(saved, { ok: true, mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  await registry.start('spawn', { label: 'd', parent: {}, agentOptions: { maxTokens: 321 } })
+  assert.deepEqual(calls[3].request.agentOptions, { maxTokens: 321, provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+
+  // 功能开关关闭 → 热回落零干预（seam 仍在但不再注入）。
+  await host.updateFeatureSettings({ subagentRoute: false })
+  await registry.start('spawn', { label: 'e', parent: {} })
+  assert.equal(calls[4].request.agentOptions, undefined)
+  await host.updateFeatureSettings({ subagentRoute: true })
+
+  // 快照端点：available + 模式 + 模型目录。
+  const snapshot = await host.handler('subagent-route', {})
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.value.available, true)
+  assert.equal(snapshot.value.mode, 'custom')
+  assert.equal(snapshot.value.provider, 'deepseek-official')
+  assert.ok(snapshot.value.models.some((item) => item.provider === 'cpa' && item.id === 'gpt-5.6-sol'))
+
+  // disposer：还原两个入口为初始方法（自身恒等）。
+  const originalStart = registry.start
+  const originalStartContinuable = registry.startContinuable
+  host.dispose()
+  assert.notEqual(registry.start, originalStart)
+  assert.notEqual(registry.startContinuable, originalStartContinuable)
+  // 还原后行为回落原生（注入不再发生——此处用「可再调用」验证方法可用）。
+  await registry.start('spawn', { label: 'f', parent: {} })
+  assert.equal(calls[5].request.agentOptions, undefined)
+  const disposedSnapshot = await host.handler('subagent-route', {})
+  assert.equal(disposedSnapshot.ok, true)
+  assert.equal(disposedSnapshot.value.available, false)
+})
+
+test('subagent-route-save：unknown-mode 与功能门；follow/inherit 清干净 custom 字段并跨重启持久化', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-persist-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  const host = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+
+  assert.equal((await host.handler('subagent-route-save', { mode: 'pin' })).error, 'unknown-mode')
+  assert.equal((await host.handler('subagent-route-save', {})).error, 'unknown-mode')
+  // custom 缺 provider/model。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom' })).error, 'invalid-model-route')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official' })).error, 'invalid-model-route')
+
+  // 保存 custom → 重启后从磁盘恢复。
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  const rebooted = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+  const snapshot = await rebooted.handler('subagent-route', {})
+  assert.equal(snapshot.value.mode, 'custom')
+  assert.equal(snapshot.value.provider, 'deepseek-official')
+  assert.equal(snapshot.value.model, 'deepseek-v4-flash')
+
+  // follow 覆盖后 custom 字段不残留；重置回 inherit 落盘干净。
+  await rebooted.handler('subagent-route-save', { mode: 'follow' })
+  const afterFollow = await rebooted.handler('subagent-route', {})
+  assert.equal(afterFollow.value.mode, 'follow')
+  assert.equal(afterFollow.value.provider, undefined)
+  await rebooted.handler('subagent-route-save', { mode: 'inherit' })
+  const raw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(raw, { version: 1, mode: 'inherit' })
+
+  // 功能关闭：读写两端都被门住。
+  await rebooted.updateFeatureSettings({ subagentRoute: false })
+  assert.equal((await rebooted.handler('subagent-route', {})).error, 'feature-disabled')
+  assert.equal((await rebooted.handler('subagent-route-save', { mode: 'follow' })).error, 'feature-disabled')
+})
+
+test('subagent-route：宿主无 subagents/llm 服务时 available=false、模型清单为空、custom 保存被拒', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-bare-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome } })
+  const snapshot = await host.handler('subagent-route', {})
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.value.available, false)
+  assert.equal(snapshot.value.mode, 'inherit')
+  assert.deepEqual(snapshot.value.models, [])
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'p', model: 'm' })).error, 'llm-unavailable')
+  // follow 不需要 llm 目录，允许保存。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'follow' })).ok, true)
 })

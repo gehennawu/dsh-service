@@ -27,6 +27,7 @@ function createRenderer(rpcCall, options = {}) {
     taskNotifications: true,
     healthz: true,
     skillManager: true,
+    subagentRoute: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -3050,6 +3051,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
     navButton('服务控制'),
     navButton('额度查询'),
     navButton('重启'),
+    navButton('子代理'),
     navButton('通用设置'),
   ]
   const observers = []
@@ -3080,12 +3082,13 @@ test('settings nav rows get icon markers by localized label and follow text chan
     })
     await renderer.load()
 
-    // 首次同步：三行按本地化文案命中并打标；无关行不打。
+    // 首次同步：各行按本地化文案命中并打标；无关行不打。
     assert.ok(observers.length >= 1, 'expected a MutationObserver for settings nav marking')
     assert.equal(navButtons[0].attrs.has('data-dsh-service-nav'), true)
     assert.equal(navButtons[1].attrs.has('data-dsh-service-quota-nav'), true)
     assert.equal(navButtons[2].attrs.has('data-dsh-service-restart-nav'), true)
-    assert.equal(navButtons[3].attrs.size, 0)
+    assert.equal(navButtons[3].attrs.has('data-dsh-service-subagent-nav'), true)
+    assert.equal(navButtons[4].attrs.size, 0)
 
     // 外壳重渲染（观察器重跑 sync）：文案未变则标记幂等保留。
     for (const observer of observers) observer.callback([], undefined)
@@ -3097,10 +3100,10 @@ test('settings nav rows get icon markers by localized label and follow text chan
     for (const observer of observers) observer.callback([], undefined)
     assert.equal(navButtons[2].attrs.size, 0)
 
-    // CSS 已随 load 注入：齿轮隐藏规则 + 三条 data 标记的 mask 规则齐全。
+    // CSS 已随 load 注入：齿轮隐藏规则 + 各条 data 标记的 mask 规则齐全。
     const sheet = injectedStyles.join('')
     assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'gear-hiding rule missing')
-    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav']) {
+    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav', 'data-dsh-service-subagent-nav']) {
       assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
       assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
     }
@@ -3685,4 +3688,124 @@ test('clearing a stored credential requires a second confirming click', async ()
   const unsetCall = rpcLog.find(([endpoint]) => endpoint === 'quota-credential-unset')
   assert.deepEqual(unsetCall[1], { provider: 'cpa', name: 'CPA_MANAGEMENT_KEY' })
   assert.ok(rpcLog.some(([endpoint]) => endpoint === 'quota-refresh'))
+})
+
+// ─── v0.27 子代理模型路由 ────────────────────────────────────────────────────
+
+function createSubagentRenderer(options = {}) {
+  const state = {
+    route: options.route ?? { available: true, mode: 'inherit' },
+    models: options.models ?? [
+      { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+      { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      { provider: 'cpa', providerName: 'CPA', id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol' },
+    ],
+    saves: [],
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload = {}) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'subagent-route') {
+      if (options.loadError) return { ok: false, error: options.loadError }
+      return { ok: true, value: { ...state.route, models: state.models, current: { provider: 'cpa', model: 'gpt-5.6-sol' } } }
+    }
+    if (endpoint === 'subagent-route-save') {
+      state.saves.push(payload)
+      if (options.saveError) return { ok: false, error: options.saveError }
+      state.route = payload.mode === 'custom'
+        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model }
+        : { available: true, mode: payload.mode }
+      return { ok: true, ...state.route }
+    }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.26.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { featureSettings: options.featureSettings })
+  return { renderer, state }
+}
+
+test('subagent tab supports inherit/follow/custom, provider-model selection, save/reset, and optional nav entry', async () => {
+  const { renderer, state } = createSubagentRenderer()
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('subagent-section'), true)
+  assert.equal(renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
+  assert.match(renderer.findByTestId('subagent-mode-desc').children.join(''), /不注入任何路由/)
+
+  // follow 保存：无需供应商/模型字段。
+  renderer.findByTestId('subagent-mode-follow').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('subagent-mode-desc').children.join(''), /当前实际使用的模型/)
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'follow' })
+  assert.equal(renderer.hasTest('subagent-saved'), true)
+
+  // custom 默认选目录首项；切换 provider 后模型自动联动到该 provider 首项。
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-provider').props.value, 'deepseek-official')
+  assert.equal(renderer.findByTestId('subagent-model').props.value, 'deepseek-v4-flash')
+  renderer.findByTestId('subagent-provider').props.onChange({ target: { value: 'cpa' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-model').props.value, 'gpt-5.6-sol')
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol' })
+
+  // 重置按钮直接保存 inherit，并清除 custom 路由。
+  renderer.findByTestId('subagent-reset').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[2], { mode: 'inherit' })
+  assert.equal(renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
+
+  // 左列快捷入口默认关闭，开关后注册 order=496 的独立 settings.section。
+  assert.equal(renderer.findByTestId('subagent-nav-switch').props['aria-checked'], 'false')
+  renderer.findByTestId('subagent-nav-switch').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-nav-switch').props['aria-checked'], 'true')
+  assert.ok((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent' && entry.order === 496))
+})
+
+test('subagent tab is feature-gated and renders host errors/unavailable status in localized text', async () => {
+  const disabled = createSubagentRenderer({ featureSettings: { subagentRoute: false } }).renderer
+  await disabled.load()
+  disabled.mount('settings.section')
+  assert.doesNotMatch(disabled.text(disabled.findByTestId('tab-list')), /子代理/)
+  assert.equal((disabled.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
+
+  const unavailable = createSubagentRenderer({ route: { available: false, mode: 'inherit' } }).renderer
+  await unavailable.load()
+  unavailable.mount('settings.section')
+  unavailable.findButton('子代理').props.onClick()
+  await unavailable.flush()
+  await unavailable.flush()
+  assert.match(unavailable.findByTestId('subagent-unavailable').children.join(''), /subagents 服务缺席/)
+
+  const failed = createSubagentRenderer({ saveError: 'invalid-model-route' }).renderer
+  await failed.load()
+  failed.mount('settings.section')
+  failed.findButton('子代理').props.onClick()
+  await failed.flush()
+  await failed.flush()
+  failed.findByTestId('subagent-mode-custom').props.onClick()
+  await failed.flush()
+  await failed.flush()
+  failed.findByTestId('subagent-save').props.onClick()
+  await failed.flush()
+  assert.match(failed.findByTestId('subagent-error').children.join(''), /不在宿主清单内/)
 })
