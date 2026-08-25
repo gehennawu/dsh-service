@@ -42,7 +42,6 @@ window.__ModuleLoader__.load({
       'skills.note.stale': '正文已变更，待重新补全',
       'skills.note.remove': '移除 AI 注释',
       'skills.log.title': '运行日志',
-      'skills.usage.empty': '（无用法说明）',
       'skills.invalid.legacy': '存在旧版调用键，已从模型目录剔除',
       'skills.invalid.other': '无效条目：{reason}',
       'skills.fix.legacy': '一键修复旧键',
@@ -413,7 +412,6 @@ window.__ModuleLoader__.load({
       'skills.note.stale': 'Body changed; refill needed',
       'skills.note.remove': 'Remove AI note',
       'skills.log.title': 'Run log',
-      'skills.usage.empty': '(no usage notes)',
       'skills.invalid.legacy': 'Legacy invocation keys present; excluded from the model catalog',
       'skills.invalid.other': 'Invalid entry: {reason}',
       'skills.fix.legacy': 'Fix legacy keys',
@@ -2203,16 +2201,21 @@ window.__ModuleLoader__.load({
             !entry.writable ? badge(translate('skills.badge.readonly'), 'danger') : null,
             entry.annotated ? badge(translate('skills.badge.annotated')) : null)
           const descLine = React.createElement('div', { style: { fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', marginTop: '3px', lineHeight: 1.45, overflowWrap: 'anywhere' } }, entry.description)
-          const usageLine = React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px', lineHeight: 1.45, overflowWrap: 'anywhere' } },
-            entry.usage === '' ? translate('skills.usage.empty') : translate('skills.apply.usage') + '：' + entry.usage)
+          // 原文无 whenToUse 就不渲染该行，不放占位文案。
+          const usageLine = entry.usage === '' ? null : React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px', lineHeight: 1.45, overflowWrap: 'anywhere' } },
+            translate('skills.apply.usage') + '：' + entry.usage)
           // AI 注释块：只存插件侧车索引、只在面板展示；正文变更后自动标记过期。
           const noteLine = entry.note !== undefined ? React.createElement('div', { 'data-testid': 'skill-note-' + entry.name, style: { marginTop: '5px', padding: '6px 9px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-secondary)', display: 'flex', gap: '8px', alignItems: 'flex-start' } },
             React.createElement('div', { style: { minWidth: 0, flex: 1 } },
-              React.createElement('div', null,
+              React.createElement('div', { style: { marginBottom: '3px' } },
                 React.createElement('span', { style: { fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('skills.note.title')),
                 entry.note.stale === true ? React.createElement('span', { style: { marginLeft: '6px', color: 'var(--dsw-alias-state-warn-primary)' } }, '⚠ ' + translate('skills.note.stale')) : null),
-              React.createElement('div', { style: { overflowWrap: 'anywhere' } }, translate('skills.apply.description') + '：' + entry.note.description),
-              entry.note.usage === '' ? null : React.createElement('div', { style: { overflowWrap: 'anywhere' } }, translate('skills.apply.usage') + '：' + entry.note.usage)),
+              React.createElement('div', { style: { overflowWrap: 'anywhere', marginTop: '3px' } },
+                React.createElement('span', { style: { fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('skills.apply.description') + '：'),
+                React.createElement('span', null, entry.note.description)),
+              entry.note.usage === '' ? null : React.createElement('div', { style: { overflowWrap: 'anywhere', marginTop: '3px' } },
+                React.createElement('span', { style: { fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('skills.apply.usage') + '：'),
+                React.createElement('span', null, entry.note.usage))),
             React.createElement('button', { type: 'button', 'data-testid': 'skill-note-remove-' + entry.name, onClick: () => void clearNote(entry), title: translate('skills.note.remove'), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '13px', flexShrink: 0, lineHeight: 1 } }, '✕')) : null
           const invalidLine = entry.invalid !== undefined ? React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
             '⚠ ', invalidLegacy ? translate('skills.invalid.legacy') : translate('skills.invalid.other', { reason: entry.invalid }),
