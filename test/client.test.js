@@ -2830,6 +2830,7 @@ function createSkillsRpcFixture() {
     describes: [],
     batchPlans: [],
     batchRuns: [],
+    adoptPlanned: false,
     listCalls: 0,
   }
   const clone = (entry) => JSON.parse(JSON.stringify(entry))
@@ -2881,6 +2882,9 @@ function createSkillsRpcFixture() {
       return { ok: true, value: { started: true, total: 1 } }
     }
     if (endpoint === 'skills-batch-status') {
+      if (state.adoptPlanned === true && state.batchRuns.length === 0) {
+        return { ok: true, value: { phase: 'planned', total: 2, done: 0, failures: [], current: null, estBytes: 1024, logs: [] } }
+      }
       if (state.batchRuns.length === 0) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [], current: null, estBytes: 0, logs: [] } }
       return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048, logs: ['[00:00:03] [beta] 解析成功，草稿就绪'] } }
     }
@@ -3048,4 +3052,26 @@ test('batch card plans, starts, and settles through the status poll with a refre
   // 落定后列表自动刷新拿最新 annotated 标记；选择已写入 localStorage。
   assert.ok(fixture.state.listCalls > listCallsAfterLoad)
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
+})
+
+test('an adopted planned batch without a local plan recovers through the plan button', async () => {
+  const fixture = createSkillsRpcFixture()
+  fixture.state.adoptPlanned = true
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  await renderer.flush()
+
+  // 宿主停在 planned 但本端无计划：不显示开始按钮，而是回到空闲态给出「生成计划」。
+  assert.equal(renderer.hasTest('skills-batch-start'), false)
+  const planButton = renderer.findByTestId('skills-batch-plan')
+  assert.equal(planButton.props.disabled, false)
+  planButton.props.onClick()
+  await renderer.flush()
+  // 重新计划后恢复正常两段流程。
+  assert.match(renderer.text(), /候选 1 项/)
+  assert.equal(renderer.hasTest('skills-batch-start'), true)
 })
