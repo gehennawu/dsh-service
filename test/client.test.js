@@ -2828,6 +2828,7 @@ function createSkillsRpcFixture() {
     toggles: [],
     applies: [],
     describes: [],
+    batchPlans: [],
     batchRuns: [],
     listCalls: 0,
   }
@@ -2855,15 +2856,24 @@ function createSkillsRpcFixture() {
       state.describes.push(payload)
       return { ok: true, value: { draft: { description: 'AI 描述', usage: 'AI 用法' } } }
     }
-    if (endpoint === 'skills-apply') {
+    if (endpoint === 'skills-note-save') {
       state.applies.push(payload)
       const entry = state.entries.find((candidate) => candidate.id === payload.id)
-      entry.description = payload.patch.description
-      entry.usage = payload.patch.usage
+      entry.note = { description: payload.patch.description, usage: payload.patch.usage, stale: false }
       entry.annotated = true
       return { ok: true, value: { entry: clone(entry) } }
     }
+    if (endpoint === 'skills-describe-log') {
+      return { ok: true, value: { logs: ['[00:00:01] 第 1/2 次生成：调用 p/m1', '[00:00:02] 解析成功，草稿就绪'] } }
+    }
+    if (endpoint === 'skills-note-clear') {
+      const entry = state.entries.find((candidate) => candidate.id === payload.id)
+      delete entry.note
+      entry.annotated = false
+      return { ok: true, value: { entry: clone(entry) } }
+    }
     if (endpoint === 'skills-batch-plan') {
+      state.batchPlans.push(payload)
       return { ok: true, value: { planId: 'plan-1', candidates: [{ id: 'id-beta', name: 'beta', source: 'user-agents' }], skipped: [{ id: 'id-alpha', name: 'alpha', reason: 'annotated-current' }], estBytes: 2048 } }
     }
     if (endpoint === 'skills-batch-run') {
@@ -2871,7 +2881,7 @@ function createSkillsRpcFixture() {
       return { ok: true, value: { started: true, total: 1 } }
     }
     if (endpoint === 'skills-batch-status') {
-      return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048 } }
+      return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048, logs: ['[00:00:03] [beta] 解析成功，草稿就绪'] } }
     }
     if (endpoint === 'skills-batch-cancel') return { ok: true, value: { phase: 'cancelled' } }
     return null
@@ -2966,6 +2976,14 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   await renderer.flush()
   assert.deepEqual(fixture.state.applies, [{ id: 'id-alpha', patch: { description: 'AI 描述', usage: 'AI 用法' }, model: 'p/m1' }])
   assert.equal(renderer.hasTest('skill-apply-done'), true)
+  // 注释以独立块展示在条目下方（仅面板展示语义）。
+  assert.equal(renderer.hasTest('skill-note-alpha'), true)
+  assert.match(renderer.text(), /AI 注释（仅面板展示，不改技能文件）/)
+  // 运行日志盒保留最后一次生成的过程记录。
+  console.log('DEBUG-TIDS:', renderer.findAllByTestIdPrefix('skill-').map((n) => n.props['data-testid']).join(','))
+  console.log('DEBUG-BUSY-PRESENT:', renderer.text().includes('生成中'))
+  assert.equal(renderer.hasTest('skill-describe-log'), true)
+  assert.match(renderer.text(), /解析成功，草稿就绪/)
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
 })
 
@@ -2977,7 +2995,16 @@ test('batch card plans, starts, and settles through the status poll with a refre
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
+  await renderer.flush()
   const listCallsAfterLoad = fixture.state.listCalls
+
+  // 批量卡片自带模型下拉：默认取会话默认模型（fixture current = p/m2），可改选。
+  const batchSelect = renderer.findByTestId('skills-batch-model')
+  assert.equal(batchSelect.props.value.startsWith('p\u0000'), true)
+  assert.equal(batchSelect.props.disabled, false)
+  batchSelect.props.onChange({ target: { value: 'p\u0000m1' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('skills-batch-model').props.value, 'p\u0000m1')
 
   renderer.findByTestId('skills-batch-plan').props.onClick()
   await renderer.flush()
@@ -2989,9 +3016,12 @@ test('batch card plans, starts, and settles through the status poll with a refre
   await renderer.flush()
   await renderer.flush()
   await renderer.flush()
+  assert.deepEqual(fixture.state.batchPlans, [{ provider: 'p', model: 'm1' }])
   assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1' }])
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
-  // 落定后列表自动刷新拿最新 annotated 标记。
+  assert.equal(renderer.hasTest('skills-batch-log'), true)
+  // 落定后列表自动刷新拿最新 annotated 标记；选择已写入 localStorage。
   assert.ok(fixture.state.listCalls > listCallsAfterLoad)
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
 })

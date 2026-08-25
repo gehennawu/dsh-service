@@ -2503,17 +2503,29 @@ test('skills-describe validates the model whitelist and applies a sanitized draf
     assert.match(streamOptions.system, /STRICT JSON/)
     assert.match(streamOptions.messages[0].content[0].text, /Beta body/)
 
-    const applied = await handler('skills-apply', { id: beta.id, patch: { description: described.value.draft.description, usage: described.value.draft.usage }, model: 'prov/m1' })
-    assert.equal(applied.ok, true)
-    assert.equal(applied.value.entry.annotated, true)
-    const text = await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8')
-    assert.match(text, /description: "新的描述句子"/)
-    assert.match(text, /whenToUse: "新的用法说明"/)
-    assert.doesNotMatch(text, /Beta skill/)
-    // 正文（frontmatter 之后）未变 → 再次批量规划时按「已注释」跳过。
+    // 运行日志可回读：包含调用路由与解析成功标记。
+    const logs = await handler('skills-describe-log', { id: beta.id })
+    assert.equal(logs.ok, true)
+    assert.match(logs.value.logs.join('\n'), /调用 prov\/m1/)
+    assert.match(logs.value.logs.join('\n'), /解析成功，草稿就绪/)
+
+    const saved = await handler('skills-note-save', { id: beta.id, patch: { description: described.value.draft.description, usage: described.value.draft.usage }, model: 'prov/m1' })
+    assert.equal(saved.ok, true)
+    assert.equal(saved.value.entry.annotated, true)
+    assert.deepEqual(saved.value.entry.note, { description: '新的描述句子', usage: '新的用法说明', stale: false })
+    // 注释只进侧车索引：技能文件必须保持原样。
+    assert.equal(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), SKILL_FILE_BETA)
     const index = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
-    assert.equal(index.version, 1)
-    assert.equal(Object.keys(index.entries).length, 1)
+    assert.equal(index.version, 2)
+    const record = Object.values(index.entries)[0]
+    assert.deepEqual(record.note, { description: '新的描述句子', usage: '新的用法说明' })
+    assert.equal(record.model, 'prov/m1')
+    // 清除注释后回到未注释态，文件依旧原样。
+    const cleared = await handler('skills-note-clear', { id: beta.id })
+    assert.equal(cleared.ok, true)
+    assert.equal(cleared.value.entry.annotated, false)
+    assert.equal(cleared.value.entry.note, undefined)
+    assert.equal(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), SKILL_FILE_BETA)
   })
 })
 
@@ -2544,9 +2556,11 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
 
     const run = await handler('skills-batch-run', { planId: planned.value.planId })
     assert.equal(run.value.started, true)
+    let finalStatus = null
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const status = await handler('skills-batch-status', {})
       if (status.value.phase !== 'running') {
+        finalStatus = status.value
         assert.equal(status.value.phase, 'done')
         assert.equal(status.value.done, 2)
         assert.equal(status.value.failures.length, 0)
@@ -2554,12 +2568,24 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
       }
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
-    // 按调用顺序：第一条候选 alpha、第二条 beta；各自写入对应草稿。
+    // 批量日志随状态返回：含逐条目与模型路由信息。
+    assert.notEqual(finalStatus, null)
+    assert.ok(finalStatus.logs.length > 0)
+    assert.match(finalStatus.logs.join('\n'), /\[alpha\]/)
+    assert.match(finalStatus.logs.join('\n'), /prov\/m1/)
+    // 按调用顺序：第一条候选 alpha、第二条 beta；草稿只进侧车索引，技能文件零改动。
     assert.equal(llmState.streamCalls.length, 2)
     assert.match(llmState.streamCalls[0].messages[0].content[0].text, /Alpha body/)
     assert.match(llmState.streamCalls[1].messages[0].content[0].text, /Beta body/)
-    assert.match(await readFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), 'utf8'), /description: "Delta desc"/)
-    assert.match(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), /description: "Gamma desc"/)
+    assert.equal(await readFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), 'utf8'), SKILL_FILE_ALPHA)
+    assert.equal(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), SKILL_FILE_BETA)
+    const index = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
+    assert.equal(index.version, 2)
+    assert.equal(Object.keys(index.entries).length, 2)
+    for (const record of Object.values(index.entries)) {
+      assert.match(record.note.description, /(Delta|Gamma) desc/)
+      assert.equal(typeof record.bodyHash, 'string')
+    }
     // 二次规划：两条都已注释，不再出现候选。
     const replanned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
     assert.equal(replanned.value.candidates.length, 0)
@@ -2583,4 +2609,32 @@ test('skill pure helpers: loose booleans, draft sanitizing, and multi-line descr
   assert.match(spliced, /description: "flat now"/)
   assert.match(spliced, /keepme: yes/)
   assert.match(spliced, /body/)
+})
+
+test('a directory hit by both the workspace and user root rules is scanned once under the higher-priority source', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-skills-dup-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-skills-dup-ws-'))
+  t.after(() => Promise.all([
+    rm(dshHome, { recursive: true, force: true }),
+    rm(workspace, { recursive: true, force: true }),
+  ]))
+  await mkdir(join(workspace, '.agents', 'skills'), { recursive: true })
+  await writeFile(join(workspace, '.agents', 'skills', 'beta.md'), SKILL_FILE_BETA)
+  const { handler } = createHost({
+    services: { workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  // HOME 指向工作区父目录的部署里，~/.agents/skills 与 <workspace>/.agents/skills 是同一目录：
+  // 必须只出一组候选（project-agents 赢），而不是双份互标遮蔽。
+  await withAgentsHome(join(workspace, '.agents'), async () => {
+    const listed = await handler('skills-list', {})
+    assert.equal(listed.ok, true)
+    const betas = listed.value.entries.filter((entry) => entry.name === 'beta')
+    assert.equal(betas.length, 1)
+    assert.equal(betas[0].source, 'project-agents')
+    assert.equal(betas[0].shadowed, false)
+    const agentRoots = listed.value.roots.filter((root) => root.source === 'project-agents' || root.source === 'user-agents')
+    assert.equal(agentRoots.length, 1)
+    assert.equal(agentRoots[0].source, 'project-agents')
+  })
 })
