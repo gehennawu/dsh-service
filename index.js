@@ -51,6 +51,7 @@ const SKILLS_INDEX_FILE = 'dsh-service-skills-index.json'
 const MAX_SKILL_FILE_BYTES = 512 * 1024
 const SKILL_DESCRIBE_TIMEOUT_MS = 90 * 1000
 const SKILL_DESCRIBE_MAX_TOKENS = 2000
+const SKILL_DESCRIBE_ATTEMPTS = 3
 const SKILL_DESCRIPTION_MAX_CHARS = 200
 const SKILL_USAGE_MAX_CHARS = 300
 const skillsIdSecret = randomBytes(32)
@@ -2302,18 +2303,18 @@ function createSkillDescribeMessage(prompt) {
 async function describeSkillDraft(llm, entryName, rawContent, provider, model, onEvent) {
   const prompt = 'Skill name: ' + entryName + '\n\nSkill file content:\n' + rawContent.slice(0, 16000)
   let lastError
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < SKILL_DESCRIBE_ATTEMPTS; attempt += 1) {
     try {
-      onEvent?.('第 ' + (attempt + 1) + '/2 次生成：调用 ' + provider + '/' + model)
-      // 重试时把输出预算放大：推理型模型首跑可能耗尽配额却产不出正文。
-      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: attempt === 0 ? SKILL_DESCRIBE_MAX_TOKENS : SKILL_DESCRIBE_MAX_TOKENS * 4 })
+      onEvent?.('第 ' + (attempt + 1) + '/' + SKILL_DESCRIBE_ATTEMPTS + ' 次生成：调用 ' + provider + '/' + model)
+      // 重试时逐级放大输出预算：推理型模型可能耗尽配额却产不出正文。
+      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: SKILL_DESCRIBE_MAX_TOKENS * Math.pow(4, attempt) })
       onEvent?.('输出接收完成（' + text.length + ' 字符），解析 JSON…')
       const draft = extractSkillDraftJson(text)
       onEvent?.('解析成功，草稿就绪')
       return draft
     } catch (error) {
       const message = String((error && error.message) || error).slice(0, 120)
-      onEvent?.('失败：' + message + (attempt === 0 ? '，自动重试一次' : ''))
+      onEvent?.('失败：' + message + (attempt < SKILL_DESCRIBE_ATTEMPTS - 1 ? '，自动重试' : ''))
       lastError = error
     }
   }

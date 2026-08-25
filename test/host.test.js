@@ -2675,7 +2675,7 @@ test('skills-describe surfaces empty-output finish reasons and recovers via bigg
   const { handler } = createHost({
     services: {
       workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] },
-      llm: buildLlm(['__REASONING_TRUNCATED__', '{"description":"恢复后的中文描述","whenToUse":"恢复后的用法"}']),
+      llm: buildLlm(['__REASONING_TRUNCATED__', '__REASONING_TRUNCATED__', '{"description":"恢复后的中文描述","whenToUse":"恢复后的用法"}']),
       agentDefaultModel: { currentSelection: () => ({ provider: 'prov', model: 'm1' }) },
     },
     env: { DSH_HOME: dshHome },
@@ -2688,7 +2688,9 @@ test('skills-describe surfaces empty-output finish reasons and recovers via bigg
     assert.deepEqual(described.value.draft, { description: '恢复后的中文描述', usage: '恢复后的用法' })
     const joined = (await handler('skills-describe-log', { id: beta.id })).value.logs.join('\n')
     assert.match(joined, /模型结束：max-tokens（仅推理 \d+ 字符，未产出正文）/)
-    assert.match(joined, /失败：empty-output:max-tokens，自动重试一次/)
+    assert.equal(llmState.streamCalls.length, 3)
+    assert.match(joined, /第 3\/3 次生成/)
+    assert.match(joined, /失败：empty-output:max-tokens，自动重试/)
     assert.match(joined, /解析成功，草稿就绪/)
 
     // 整块兜底：适配器不发 text-delta 时从 block-end 提取。
