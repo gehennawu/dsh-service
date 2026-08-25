@@ -742,23 +742,29 @@ const QUOTA_RUNTIME_CHANNEL_KINDS = {
   'deepseek-official': 'deepseek',
 }
 
-/** 运行时 llm 服务已注册渠道 → 合成 provider 行（runtimeKind 标记别名来源）。服务缺席/异常返回空表。 */
+/** 运行时 llm 服务已注册渠道 → 合成 provider 行（runtimeKind 标记别名来源）。服务缺席/异常返回空表。
+ * 注意 listProviders() 的真实契约（dsh-llm 源码核实）：下发 [{id,name,…}] 对象数组、注册顺序，
+ * 不是字符串——v0.25 首版按字符串过滤导致全部条目被静默跳过（测试假桩喂字符串掩盖了 bug）。 */
 function readRuntimeQuotaChannels(llm) {
   if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') return []
-  let ids
+  let providers
   try {
-    ids = llm.listProviders()
+    providers = llm.listProviders()
   } catch (_) {
     return []
   }
-  if (!Array.isArray(ids)) return []
+  if (!Array.isArray(providers)) return []
   const channels = []
-  for (const id of ids) {
+  for (const entry of providers) {
+    const id = typeof entry === 'string' ? entry : entry !== null && typeof entry === 'object' ? entry.id : undefined
     if (typeof id !== 'string' || id.length === 0 || id.length > MAX_QUOTA_PROVIDER_NAME) continue
     if (!Object.prototype.hasOwnProperty.call(QUOTA_RUNTIME_CHANNEL_KINDS, id)) continue
     const kind = QUOTA_RUNTIME_CHANNEL_KINDS[id]
     if (KIND_REGISTRY[kind] === undefined) continue
-    channels.push({ name: id, displayName: id, baseURL: '', apiKeyEnv: '', runtimeKind: kind })
+    const displayName = typeof entry === 'object' && entry !== null && typeof entry.name === 'string' && entry.name.trim() !== ''
+      ? entry.name.trim().slice(0, 128)
+      : id
+    channels.push({ name: id, displayName, baseURL: '', apiKeyEnv: '', runtimeKind: kind })
   }
   return channels
 }

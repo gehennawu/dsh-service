@@ -1955,7 +1955,8 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
     env: { DSH_HOME: dshHome },
     services: {
       settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' } } } : undefined) },
-      llm: { listProviders: () => ['pi-catalog-noise', 'deepseek-official', 'openrouter'] },
+      // 真实契约：listProviders() 下发 [{id,name}] 对象数组（dsh-llm 源码核实）；字符串条目兼容容忍。
+      llm: { listProviders: () => [{ id: 'pi-catalog-noise', name: 'Noise' }, { id: 'deepseek-official', name: 'DeepSeek' }, 'legacy-string'] },
     },
   })
 
@@ -1968,8 +1969,9 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   assert.equal(dsRow.adapted, true)
   assert.equal(dsRow.kind, 'deepseek')
   assert.equal(dsRow.kindSource, 'auto')
+  assert.equal(dsRow.displayName, 'DeepSeek') // 渠道对象的 name 作展示名
   assert.equal(byProvider.has('pi-catalog-noise'), false)
-  assert.equal(byProvider.get('openrouter').adapted, false)
+  assert.equal(byProvider.has('legacy-string'), false)
 
   // 显式停用（kind:null）优先于别名自动适配；clear 回退后恢复。
   const saved = await host.handler('quota-config', { provider: 'deepseek-official', kind: null })
