@@ -3021,8 +3021,16 @@ test('batch card plans, starts, and settles through the status poll with a refre
   assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1' }])
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
+  // 落定后运行日志自动折叠：只留开关行；点击展开回看过程记录。
+  const logToggle = renderer.findByTestId('skills-batch-log-toggle')
+  assert.match(String(logToggle.children[0]), /^▸ /)
+  assert.equal(renderer.hasTest('skills-batch-log'), false)
+  logToggle.props.onClick()
+  await renderer.flush()
   assert.equal(renderer.hasTest('skills-batch-log'), true)
+  assert.match(renderer.text(), /解析成功，草稿就绪/)
   // 后台语义：切走再切回，进度不丢（状态在工厂作用域，不随组件卸载）。
+  // 日志盒为组件局部状态：重新挂载后回到默认折叠，与真实 React 卸载重置行为一致。
   renderer.findButton('概览').props.onClick()
   await renderer.flush()
   renderer.findButton('技能').props.onClick()
@@ -3030,6 +3038,13 @@ test('batch card plans, starts, and settles through the status poll with a refre
   await renderer.flush()
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
+  // 折叠开关在重挂载后依然有效（测试桩复用同名组件的局部状态，展开/收起都可能，
+  // 因此只断言点击切换有效，不断言具体初值——真实 React 卸载即重置为折叠）。
+  const remountToggle = renderer.findByTestId('skills-batch-log-toggle')
+  const expandedBefore = renderer.hasTest('skills-batch-log')
+  remountToggle.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-batch-log'), !expandedBefore)
   // 落定后列表自动刷新拿最新 annotated 标记；选择已写入 localStorage。
   assert.ok(fixture.state.listCalls > listCallsAfterLoad)
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })

@@ -2106,8 +2106,14 @@ window.__ModuleLoader__.load({
         const [describe, setDescribe] = useState(null)   // {entry, models, modelItem, draft, busy, error, applied}
         const [batchBusy, setBatchBusy] = useState(false)
         const [describeLogs, setDescribeLogs] = useState([])
+        // 运行日志盒：生成中自动展开；落定自动折叠为一行开关，可手动展开回看。
+        // 初值恒为折叠（此时 batch 尚未解构），挂载后的阶段 effect 会立即校正。
+        const [batchLogOpen, setBatchLogOpen] = useState(false)
         // 批量进度/计划/模型来自工厂共享作用域：跨标签与设置面板开关存活。
         const { batch, plan: batchPlan, models: batchModels, modelItem: batchModelItem, error: batchError } = useSkillsBatch()
+        // 运行日志盒：生成中自动展开；落定自动折叠为一行开关，可手动展开回看。
+        const batchPhaseForLog = batch !== null ? batch.phase : null
+        useEffect(() => { setBatchLogOpen(batchPhaseForLog === 'running') }, [batchPhaseForLog])
 
         const load = async () => {
           setLoading(true)
@@ -2279,8 +2285,8 @@ window.__ModuleLoader__.load({
             switches)
         }
 
-        const renderLogBox = (testid, lines) => lines.length === 0 ? null : React.createElement('div', { 'data-testid': testid, style: { marginTop: '9px', padding: '7px 10px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l2)', maxHeight: '130px', overflowY: 'auto' } },
-          React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: 'var(--dsw-alias-label-secondary)', marginBottom: '3px' } }, translate('skills.log.title')),
+        const renderLogBox = (testid, lines, showHeader) => lines.length === 0 ? null : React.createElement('div', { 'data-testid': testid, style: { marginTop: '9px', padding: '7px 10px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l2)', maxHeight: '130px', overflowY: 'auto' } },
+          showHeader ? React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: 'var(--dsw-alias-label-secondary)', marginBottom: '3px' } }, translate('skills.log.title')) : null,
           ...lines.map((line, index) => React.createElement('div', { key: index, style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflowWrap: 'anywhere' } }, line)))
 
         const renderGroups = () => {
@@ -2345,14 +2351,22 @@ window.__ModuleLoader__.load({
               batch !== null && batch.phase === 'running' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-cancel', onClick: () => void cancelBatch(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' } }, translate('skills.batch.cancel')) : null,
               batch !== null ? React.createElement('span', { 'data-testid': 'skills-batch-phase', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('skills.batch.phase.' + phaseLabel)) : null),
             batchPlan !== null && batchPlan.candidates.length === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
-            batch !== null && batch.total > 0 ? React.createElement('div', { style: { marginTop: '10px' } },
-              React.createElement('div', { 'data-testid': 'skills-batch-progress', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } },
-                translate('skills.batch.progress', { done: batch.done, total: batch.total }) + (batch.current !== null ? ' · ' + translate('skills.batch.current', { name: batch.current }) : '')),
-              React.createElement('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--dsw-alias-bg-layer-3)', overflow: 'hidden' } },
-                React.createElement('div', { style: { height: '100%', width: progress + '%', background: 'var(--dsw-alias-state-success-primary)', transition: 'width .3s' } })),
-              Array.isArray(batch.failures) && batch.failures.length > 0 ? React.createElement('div', { 'data-testid': 'skills-batch-failures', style: { marginTop: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)', lineHeight: 1.5 } },
-                translate('skills.batch.failures', { count: batch.failures.length }) + '：' + batch.failures.map((failure) => failure.name + '(' + failure.reason + ')').join('、')) : null,
-              renderLogBox('skills-batch-log', Array.isArray(batch.logs) ? batch.logs.slice(-8) : [])) : null)
+            batch !== null && batch.total > 0 ? (() => {
+              const failuresNode = Array.isArray(batch.failures) && batch.failures.length > 0 ? React.createElement('div', { 'data-testid': 'skills-batch-failures', style: { marginTop: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)', lineHeight: 1.5 } },
+                translate('skills.batch.failures', { count: batch.failures.length }) + '：' + batch.failures.map((failure) => failure.name + '(' + failure.reason + ')').join('、')) : null
+              const logLines = Array.isArray(batch.logs) ? batch.logs : []
+              const logNode = logLines.length === 0 ? null : React.createElement('div', null,
+                React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-log-toggle', onClick: () => setBatchLogOpen((value) => !value), style: { marginTop: '7px', border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '11.5px', padding: 0 } },
+                  (batchLogOpen ? '▾ ' : '▸ ') + translate('skills.log.title') + '（' + logLines.length + '）'),
+                batchLogOpen ? renderLogBox('skills-batch-log', logLines.slice(-30), false) : null)
+              return React.createElement('div', { style: { marginTop: '10px' } },
+                React.createElement('div', { 'data-testid': 'skills-batch-progress', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '4px' } },
+                  translate('skills.batch.progress', { done: batch.done, total: batch.total }) + (batch.current !== null ? ' · ' + translate('skills.batch.current', { name: batch.current }) : '')),
+                React.createElement('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--dsw-alias-bg-layer-3)', overflow: 'hidden' } },
+                  React.createElement('div', { style: { height: '100%', width: progress + '%', background: 'var(--dsw-alias-state-success-primary)', transition: 'width .3s' } })),
+                failuresNode,
+                logNode)
+            })() : null)
         }
 
         const [skillsNav, setSkillsNav] = useSkillsNavEnabled()
