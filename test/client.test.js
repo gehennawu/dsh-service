@@ -2881,6 +2881,7 @@ function createSkillsRpcFixture() {
       return { ok: true, value: { started: true, total: 1 } }
     }
     if (endpoint === 'skills-batch-status') {
+      if (state.batchRuns.length === 0) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [], current: null, estBytes: 0, logs: [] } }
       return { ok: true, value: { phase: 'done', total: 1, done: 1, failures: [], current: null, estBytes: 2048, logs: ['[00:00:03] [beta] 解析成功，草稿就绪'] } }
     }
     if (endpoint === 'skills-batch-cancel') return { ok: true, value: { phase: 'cancelled' } }
@@ -3021,6 +3022,14 @@ test('batch card plans, starts, and settles through the status poll with a refre
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
   assert.equal(renderer.hasTest('skills-batch-log'), true)
+  // 后台语义：切走再切回，进度不丢（状态在工厂作用域，不随组件卸载）。
+  renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.match(renderer.text(), /已完成/)
+  assert.match(renderer.text(), /进度 1\/1/)
   // 落定后列表自动刷新拿最新 annotated 标记；选择已写入 localStorage。
   assert.ok(fixture.state.listCalls > listCallsAfterLoad)
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })

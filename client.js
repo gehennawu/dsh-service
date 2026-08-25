@@ -42,6 +42,7 @@ window.__ModuleLoader__.load({
       'skills.note.stale': '正文已变更，待重新补全',
       'skills.note.remove': '移除 AI 注释',
       'skills.log.title': '运行日志',
+      'skills.batch.already': '已有批量任务在进行中，请等待完成或先取消',
       'skills.invalid.legacy': '存在旧版调用键，已从模型目录剔除',
       'skills.invalid.other': '无效条目：{reason}',
       'skills.fix.legacy': '一键修复旧键',
@@ -412,6 +413,7 @@ window.__ModuleLoader__.load({
       'skills.note.stale': 'Body changed; refill needed',
       'skills.note.remove': 'Remove AI note',
       'skills.log.title': 'Run log',
+      'skills.batch.already': 'A batch is already running; wait for it or cancel first',
       'skills.invalid.legacy': 'Legacy invocation keys present; excluded from the model catalog',
       'skills.invalid.other': 'Invalid entry: {reason}',
       'skills.fix.legacy': 'Fix legacy keys',
@@ -971,6 +973,109 @@ window.__ModuleLoader__.load({
           return () => skillsNavListeners.delete(update)
         }, [])
         return [enabled, setSkillsNavEnabled]
+      }
+      // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
+      let skillsBatchState = null       // 宿主状态快照
+      let skillsBatchPlan = null        // 本端计划（含所选模型）
+      let skillsBatchModels = null      // 模型清单缓存（null=未拉取，[]=不可用）
+      let skillsBatchModelItem = null   // 批量选中的模型
+      let skillsBatchError = ''
+      let skillsBatchListDirty = false  // 落定后请挂载中的列表自刷新
+      let skillsBatchPollHandle = null
+      const skillsBatchListeners = new Set()
+      const publishSkillsBatch = () => { for (const listener of skillsBatchListeners) listener() }
+      const skillsBatchPollStop = () => {
+        if (skillsBatchPollHandle !== null) { clearInterval(skillsBatchPollHandle); skillsBatchPollHandle = null }
+      }
+      const syncSkillsBatchPolling = () => {
+        const shouldPoll = skillsBatchState !== null && skillsBatchState.phase === 'running'
+        if (shouldPoll && skillsBatchPollHandle === null) {
+          const tick = async () => {
+            try {
+              const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-status', {})
+              if (!res.ok) return
+              const previousPhase = skillsBatchState !== null ? skillsBatchState.phase : null
+              skillsBatchState = res.value
+              if (previousPhase === 'running' && res.value.phase !== 'running') {
+                // 落定：停止轮询，请挂载中的列表刷新 annotated 标记。
+                skillsBatchPollStop()
+                skillsBatchListDirty = true
+              }
+              publishSkillsBatch()
+            } catch (_) {}
+          }
+          void tick()
+          skillsBatchPollHandle = setInterval(() => void tick(), 2000)
+        }
+      }
+      const fetchSkillsBatchModels = async () => {
+        if (skillsBatchModels !== null) return skillsBatchModels
+        try {
+          const res = await ctx.connection.rpc.call('/dsh-service', 'skills-models', {})
+          if (!res.ok) { skillsBatchModels = []; return skillsBatchModels }
+          skillsBatchModels = res.value.models ?? []
+          if (skillsBatchModelItem === null) {
+            let item = pickSkillModel(skillsBatchModels, readStoredSkillModel())
+            if (item === null && res.value.current !== undefined) {
+              item = skillsBatchModels.find((candidate) => candidate.provider === res.value.current.provider && candidate.id === res.value.current.model) ?? null
+            }
+            skillsBatchModelItem = item
+          }
+        } catch (_) { skillsBatchModels = [] }
+        return skillsBatchModels
+      }
+      const changeSkillsBatchModel = (key) => {
+        const item = (skillsBatchModels ?? []).find((candidate) => skillModelKey(candidate) === key) ?? null
+        skillsBatchModelItem = item
+        if (item !== null) {
+          try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: item.provider, model: item.id })) } catch (_) {}
+        }
+        publishSkillsBatch()
+      }
+      const adoptSkillsBatchStatus = async () => {
+        try {
+          const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-status', {})
+          if (res.ok && res.value.phase !== 'idle') {
+            skillsBatchState = res.value
+            syncSkillsBatchPolling()
+            publishSkillsBatch()
+          }
+        } catch (_) {}
+      }
+      const planSkillsBatchShared = async () => {
+        skillsBatchError = ''
+        publishSkillsBatch()
+        const models = await fetchSkillsBatchModels()
+        if (models.length === 0 || skillsBatchModelItem === null) { skillsBatchError = 'models-empty'; publishSkillsBatch(); return false }
+        try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })) } catch (_) {}
+        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-plan', { provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })
+        if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
+        skillsBatchPlan = { ...res.value, modelItem: skillsBatchModelItem }
+        skillsBatchState = { phase: 'planned', total: res.value.candidates.length, done: 0, failures: [], current: null, estBytes: res.value.estBytes, logs: [] }
+        syncSkillsBatchPolling()
+        publishSkillsBatch()
+        return true
+      }
+      const startSkillsBatchShared = async () => {
+        if (skillsBatchPlan === null || skillsBatchState === null) return false
+        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', { planId: skillsBatchPlan.planId })
+        if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
+        skillsBatchState = { ...skillsBatchState, phase: 'running' }
+        syncSkillsBatchPolling()
+        publishSkillsBatch()
+        return true
+      }
+      const cancelSkillsBatchShared = async () => {
+        try { await ctx.connection.rpc.call('/dsh-service', 'skills-batch-cancel', {}) } catch (_) {}
+      }
+      const useSkillsBatch = () => {
+        const [, bump] = useState(0)
+        useEffect(() => {
+          const update = () => bump((v) => v + 1)
+          skillsBatchListeners.add(update)
+          return () => skillsBatchListeners.delete(update)
+        }, [])
+        return { batch: skillsBatchState, plan: skillsBatchPlan, models: skillsBatchModels, modelItem: skillsBatchModelItem, error: skillsBatchError }
       }
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
@@ -1985,6 +2090,14 @@ window.__ModuleLoader__.load({
         return models[0] ?? null
       }
 
+      function mapSkillErrorMessage(code) {
+        if (code === 'feature-disabled') return translate('features.skillManager') + '：off'
+        if (code === 'llm-unavailable') return translate('skills.llm.unavailable')
+        if (code === 'models-empty') return translate('skills.describe.models.empty')
+        if (code === 'batch-already-running') return translate('skills.batch.already')
+        return translate('skills.error', { error: code })
+      }
+
       function SkillsSection() {
         const translate = useTranslation()
         const [data, setData] = useState(null)
@@ -1993,12 +2106,10 @@ window.__ModuleLoader__.load({
         const [filterText, setFilterText] = useState('')
         const [confirmingKey, setConfirmingKey] = useState(null)
         const [describe, setDescribe] = useState(null)   // {entry, models, modelItem, draft, busy, error, applied}
-        const [batch, setBatch] = useState(null)         // 宿主批量状态快照（null=未计划）
-        const [batchPlan, setBatchPlan] = useState(null) // skills-batch-plan 返回的计划（含所选模型）
         const [batchBusy, setBatchBusy] = useState(false)
-        const [batchModels, setBatchModels] = useState(null)     // 批量卡片的模型清单（llm 可用即拉取一次）
-        const [batchModelItem, setBatchModelItem] = useState(null)
         const [describeLogs, setDescribeLogs] = useState([])
+        // 批量进度/计划/模型来自工厂共享作用域：跨标签与设置面板开关存活。
+        const { batch, plan: batchPlan, models: batchModels, modelItem: batchModelItem, error: batchError } = useSkillsBatch()
 
         const load = async () => {
           setLoading(true)
@@ -2007,52 +2118,18 @@ window.__ModuleLoader__.load({
             if (res.ok) { setData(res.value); setError('') } else setError(res.error || 'unknown')
           } finally { setLoading(false) }
         }
-        useEffect(() => { void load() }, [])
-        // 批量进行中每 2s 轮询；进入 running 先立即取一次，落定后刷新列表拿最新 annotated 标记。
         useEffect(() => {
-          if (batch === null || batch.phase !== 'running') return undefined
-          let alive = true
-          const tick = async () => {
-            try {
-              const res = await SKILL_RPC('skills-batch-status', {})
-              if (!alive || !res.ok) return
-              setBatch(res.value)
-              if (res.value.phase === 'done' || res.value.phase === 'cancelled') void load()
-            } catch (_) {}
+          void load()
+          void adoptSkillsBatchStatus()
+          void fetchSkillsBatchModels().then(publishSkillsBatch)
+        }, [])
+        // 落定后刷新列表拿最新注释标记；订阅回调里消费脏标记。
+        useEffect(() => {
+          if (batch !== null && (batch.phase === 'done' || batch.phase === 'cancelled') && skillsBatchListDirty) {
+            skillsBatchListDirty = false
+            void load()
           }
-          void tick()
-          const handle = setInterval(() => void tick(), 2000)
-          return () => { alive = false; clearInterval(handle) }
         }, [batch !== null && batch.phase])
-        // 批量卡片的模型下拉：llm 可用即拉取一次清单，默认取上次使用 → 会话默认模型 → 首个。
-        useEffect(() => {
-          if (data === null || !data.llmAvailable || batchModels !== null) return undefined
-          let alive = true
-          const fetchModels = async () => {
-            try {
-              const res = await SKILL_RPC('skills-models', {})
-              if (!alive) return
-              if (!res.ok) { setBatchModels([]); return }
-              const models = res.value.models ?? []
-              let item = pickSkillModel(models, readStoredSkillModel())
-              if (item === null && res.value.current !== undefined) {
-                item = models.find((candidate) => candidate.provider === res.value.current.provider && candidate.id === res.value.current.model) ?? null
-              }
-              setBatchModels(models)
-              setBatchModelItem(item)
-            } catch (_) { if (alive) setBatchModels([]) }
-          }
-          void fetchModels()
-          return () => { alive = false }
-        }, [data !== null && data.llmAvailable])
-        const onBatchModelChange = (event) => {
-          const item = (batchModels ?? []).find((candidate) => skillModelKey(candidate) === event.target.value) ?? null
-          setBatchModelItem(item)
-          if (item !== null) {
-            try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: item.provider, model: item.id })) } catch (_) {}
-          }
-        }
-
         // 「生成中」800ms 轮询运行日志；落定后单次补拉，接住最后一条「解析成功/失败原因」。
         // 成功路径不做 alive 门控：完成渲染的清理可能先于在途响应执行，迟到结果正是我们要的尾巴。
         useEffect(() => {
@@ -2144,38 +2221,13 @@ window.__ModuleLoader__.load({
 
         const planBatch = async () => {
           setBatchBusy(true)
-          try {
-            let modelItem = batchModelItem
-            if (modelItem === null) {
-              // 下拉尚未就绪（清单拉取失败等）时的兜底：现拉一次再选。
-              const modelsRes = await SKILL_RPC('skills-models', {})
-              if (!modelsRes.ok) { setError(modelsRes.error || 'unknown'); return }
-              const models = modelsRes.value.models ?? []
-              modelItem = pickSkillModel(models, readStoredSkillModel())
-              if (modelItem === null && modelsRes.value.current !== undefined) {
-                modelItem = models.find((candidate) => candidate.provider === modelsRes.value.current.provider && candidate.id === modelsRes.value.current.model) ?? null
-              }
-              if (modelItem === null) { setError('models-empty'); return }
-              setBatchModels(models)
-              setBatchModelItem(modelItem)
-            }
-            try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: modelItem.provider, model: modelItem.id })) } catch (_) {}
-            const res = await SKILL_RPC('skills-batch-plan', { provider: modelItem.provider, model: modelItem.id })
-            if (!res.ok) { setError(res.error || 'unknown'); return }
-            setBatchPlan({ ...res.value, modelItem })
-            setBatch({ phase: 'planned', total: res.value.candidates.length, done: 0, failures: [], current: null, estBytes: res.value.estBytes })
-          } finally { setBatchBusy(false) }
+          try { await planSkillsBatchShared() } finally { setBatchBusy(false) }
         }
         const startBatch = async () => {
-          if (batchPlan === null) return
           setBatchBusy(true)
-          try {
-            const res = await SKILL_RPC('skills-batch-run', { planId: batchPlan.planId })
-            if (res.ok) setBatch((prev) => prev === null ? prev : { ...prev, phase: 'running' })
-            else setError(res.error || 'unknown')
-          } finally { setBatchBusy(false) }
+          try { await startSkillsBatchShared() } finally { setBatchBusy(false) }
         }
-        const cancelBatch = async () => { await SKILL_RPC('skills-batch-cancel', {}) }
+        const cancelBatch = async () => { await cancelSkillsBatchShared() }
 
         // ── 渲染 ──
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
@@ -2288,7 +2340,7 @@ window.__ModuleLoader__.load({
             React.createElement('p', { style: { ...hint, marginTop: '4px' } }, translate('skills.batch.hint')),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '9px', flexWrap: 'wrap' } },
               batchModels !== null && batchModels.length > 0 ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.batch.model'),
-                React.createElement('select', { 'data-testid': 'skills-batch-model', value: batchModelItem === null ? '' : skillModelKey(batchModelItem), disabled: batchBusy || (batch !== null && batch.phase === 'running'), onChange: onBatchModelChange, style: { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' } },
+                React.createElement('select', { 'data-testid': 'skills-batch-model', value: batchModelItem === null ? '' : skillModelKey(batchModelItem), disabled: batchBusy || (batch !== null && batch.phase === 'running'), onChange: (event) => changeSkillsBatchModel(event.target.value), style: { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' } },
                   batchModels.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name)))) : null,
               batch === null || batch.phase === 'idle' || batch.phase === 'done' || batch.phase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: { fontSize: '12.5px', padding: '5px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.plan')) : null,
               batchPlan !== null ? React.createElement('span', { 'data-testid': 'skills-batch-candidates', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
@@ -2313,7 +2365,7 @@ window.__ModuleLoader__.load({
             React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsh-service-skip, var(--dsw-alias-border-l2))', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
             React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻')),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
-          error !== '' ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error === 'feature-disabled' ? translate('features.skillManager') + '：off' : error === 'llm-unavailable' ? translate('skills.llm.unavailable') : error === 'models-empty' ? translate('skills.describe.models.empty') : translate('skills.error', { error })) : null,
+          (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(error !== '' ? error : batchError)) : null,
           renderDescribeDialog(),
           data !== null && data.llmAvailable ? renderBatchCard() : null,
           renderGroups(),
@@ -3429,6 +3481,9 @@ window.__ModuleLoader__.load({
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
+        // 批量进行中在「技能」标签标题上显示进度角标（⟳done/total）。
+        const { batch: skillsBadgeBatch } = useSkillsBatch()
+        const skillsBadge = skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running' ? ' ⟳' + skillsBadgeBatch.done + '/' + skillsBadgeBatch.total : ''
         const tabWarnings = {
           overview: false,
           notify: false,
@@ -3469,7 +3524,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
           React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '10px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, visibleActiveTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}`))),
+            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, visibleActiveTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}${id === 'skills' ? skillsBadge : ''}`))),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 

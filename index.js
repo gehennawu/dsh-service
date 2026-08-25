@@ -2914,6 +2914,8 @@ function apply(ctx) {
 
     if (endpoint === 'skills-batch-plan') {
       if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+      // 覆盖竞态守卫：运行中生成新计划会让在途循环错位到新清单，直接拒绝。
+      if (skillsBatch !== null && (skillsBatch.running || skillsBatch.phase === 'running')) return { ok: false, error: 'batch-already-running' }
       const provider = typeof payload?.provider === 'string' ? payload.provider : ''
       const model = typeof payload?.model === 'string' ? payload.model : ''
       if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
