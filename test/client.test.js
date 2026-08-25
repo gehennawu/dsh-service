@@ -3419,3 +3419,45 @@ test('credential form defaults to the configured alias and marks the primary nam
   assert.equal(selectNode.props.value, 'CLIPROXY_MANAGEMENT_KEY')
   assert.deepEqual(selectNode.children.flat(Infinity).map((option) => option.props.value), ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'])
 })
+
+test('clearing a stored credential requires a second confirming click', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const rpcLog = []
+  const buildProviders = () => [{
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    refreshing: false, status: 'unconfigured', errorCode: 'credential-missing', nextAllowedAt: Date.now() - 1,
+    credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: true }],
+  }]
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    rpcLog.push([endpoint, payload])
+    if (endpoint === 'quota') return { ok: true, value: { providers: buildProviders(), serverTime: Date.now() } }
+    if (endpoint === 'quota-credential-unset') return { ok: true }
+    if (endpoint === 'quota-refresh') return { ok: true }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
+  await renderer.flush()
+  // 已配置槽位 → 出现「清除已存」；第一击只武装（文案切换为确认态），不发任何 RPC。
+  const clearButton = renderer.findByTestId('quota-cred-clear')
+  assert.equal(clearButton.children.join(''), '清除已存')
+  clearButton.props.onClick()
+  await renderer.flush()
+  assert.equal(rpcLog.some(([endpoint]) => endpoint === 'quota-credential-unset'), false)
+  assert.equal(renderer.findByTestId('quota-cred-clear').children.join(''), '再次点击清除')
+  // 第二击才真正下发清除，并随后强制重拉。
+  renderer.findByTestId('quota-cred-clear').props.onClick()
+  await renderer.flush()
+  const unsetCall = rpcLog.find(([endpoint]) => endpoint === 'quota-credential-unset')
+  assert.deepEqual(unsetCall[1], { provider: 'cpa', name: 'CPA_MANAGEMENT_KEY' })
+  assert.ok(rpcLog.some(([endpoint]) => endpoint === 'quota-refresh'))
+})

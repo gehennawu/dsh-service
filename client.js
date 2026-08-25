@@ -437,6 +437,7 @@ window.__ModuleLoader__.load({
       'quota.credential.save': '保存',
       'quota.credential.primary': '主名（别名存一即可）',
       'quota.credential.clear': '清除已存',
+      'quota.credential.clearConfirm': '再次点击清除',
       'quota.credential.configured': '已配置',
       'quota.credential.notConfigured': '未配置',
       'quota.credential.saveFailed': '凭据保存失败：{error}',
@@ -878,6 +879,7 @@ window.__ModuleLoader__.load({
       'quota.credential.save': 'Save',
       'quota.credential.primary': 'primary (one alias is enough)',
       'quota.credential.clear': 'Clear stored',
+      'quota.credential.clearConfirm': 'Click again to clear',
       'quota.credential.configured': 'configured',
       'quota.credential.notConfigured': 'not set',
       'quota.credential.saveFailed': 'Failed to save credential: {error}',
@@ -2626,12 +2628,25 @@ window.__ModuleLoader__.load({
         // 重拉该 provider（清退避闸），密钥值只随保存请求发出、绝不回显。
         const [credEditor, setCredEditor] = useState(null)
         const [credDraft, setCredDraft] = useState({ name: '', value: '' })
+        // 清除已存凭据的两段式确认武装态（skill 开关同款）：3 秒无第二击自动复位。
+        const [credClearArmed, setCredClearArmed] = useState(false)
+        useEffect(() => {
+          if (!credClearArmed) return undefined
+          const handle = setTimeout(() => setCredClearArmed(false), 3000)
+          return () => clearTimeout(handle)
+        }, [credClearArmed])
+        const closeCredEditor = () => {
+          setCredEditor(null)
+          setCredDraft({ name: '', value: '' })
+          setCredClearArmed(false)
+        }
         const openCredEditor = (row) => {
           const hints = Array.isArray(row.credentialHints) ? row.credentialHints : []
           // 默认选中「已配置」的那个槽位（别名链里可能已有生效值）；全空才落回主名。
           setCardEditor(null)
           setCredEditor({ provider: row.provider })
           setCredDraft({ name: (hints.find((hint) => hint.configured === true) ?? hints[0])?.name ?? '', value: '' })
+          setCredClearArmed(false)
         }
         const credentialFailCopy = (res) => {
           const code = String(res?.error ?? '')
@@ -2647,8 +2662,7 @@ window.__ModuleLoader__.load({
               setConfigError(credentialFailCopy(res))
               return
             }
-            setCredEditor(null)
-            setCredDraft({ name: '', value: '' })
+            closeCredEditor()
             await refreshProvider(providerName)
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
@@ -2862,7 +2876,7 @@ window.__ModuleLoader__.load({
                                       React.createElement('select', {
                                         'data-testid': 'quota-cred-name-select',
                                         value: selectedName,
-                                        onChange: (event) => setCredDraft({ ...credDraft, name: event.target.value }),
+                                        onChange: (event) => { setCredDraft({ ...credDraft, name: event.target.value }); setCredClearArmed(false) },
                                         style: quotaSelectStyle,
                                       },
                                       // 别名链说明：多个名字是同一密钥的备用存放槽（发现按序取第一个已配置的值），主名带「主名」标记。
@@ -2879,8 +2893,8 @@ window.__ModuleLoader__.load({
                                     style: inputStyle,
                                   })),
                                 React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-save', onClick: () => saveCredential(row.provider), disabled: credDraft.value.trim() === '', style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: credDraft.value.trim() === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: credDraft.value.trim() === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: credDraft.value.trim() === '' ? 'default' : 'pointer', fontSize: '12px' } }, translate('quota.credential.save')),
-                                ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', onClick: () => clearCredential(row.provider, selectedName), style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.credential.clear'))] : []),
-                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: () => { setCredEditor(null); setCredDraft({ name: '', value: '' }) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
+                                ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', title: credClearArmed ? translate('quota.credential.clearConfirm') : undefined, onClick: () => { if (!credClearArmed) { setCredClearArmed(true); return } setCredClearArmed(false); void clearCredential(row.provider, selectedName) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: credClearArmed ? 'var(--dsw-alias-state-error-primary)' : 'transparent', color: credClearArmed ? '#fff' : 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' } }, translate(credClearArmed ? 'quota.credential.clearConfirm' : 'quota.credential.clear'))] : []),
+                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: closeCredEditor, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
                               )
                             : React.createElement('div', { key: 'cred-entry', style: { display: 'flex' } },
                                 React.createElement('button', {

@@ -2887,6 +2887,14 @@ test('cliproxy origin guard and pin derivation reject unsafe baseURLs', () => {
   assert.equal(cliproxyPinHostFromBaseURL('https://CLI.Example.Org./api'), 'cli.example.org')
   assert.equal(cliproxyPinHostFromBaseURL('http://cli.example.org/api'), undefined)
   assert.equal(cliproxyPinHostFromBaseURL('https://127.0.0.1:8317'), undefined)
+  // IP 字面量的非十进制编码：十六进制（整体/逐段）、纯整数、八进制标签都能被 getaddrinfo
+  // 解析成 IP（实测 0x7f000001 → 127.0.0.1），钉住派生与外呼守卫一律拒收。
+  assert.equal(cliproxyPinHostFromBaseURL('https://0x7f000001'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://0x7f.0.0.1/api'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://2130706433'), undefined)
+  assert.equal(cliproxyPinHostFromBaseURL('https://0177.0.0.1'), undefined)
+  // 数字标签混在真域名里不是 IP（nip.io 这类通配 DNS 服务仍可用）。
+  assert.equal(cliproxyPinHostFromBaseURL('https://127.0.0.1.nip.io'), '127.0.0.1.nip.io')
   assert.equal(cliproxyPinHostFromBaseURL('https://user:pass@cli.example.org'), undefined)
   assert.equal(cliproxyPinHostFromBaseURL('https://cli.example.org:8443'), undefined)
   assert.equal(cliproxyPinHostFromBaseURL('not a url'), undefined)
@@ -2897,6 +2905,8 @@ test('cliproxy origin guard and pin derivation reject unsafe baseURLs', () => {
   assert.equal(safeCliproxyOrigin('https://evil.cli.example.org/api', pinned), undefined)
   assert.equal(safeCliproxyOrigin('https://cli.example.org.attacker.example/', pinned), undefined)
   assert.equal(safeCliproxyOrigin('https://cli.example.org', []), undefined)
+  // 守卫同样拒收十六进制 IP 编码（即使手工把这种条目写进钉住表也不放行）。
+  assert.equal(safeCliproxyOrigin('https://0x7f000001', ['0x7f000001']), undefined)
 
   // fetch 守卫：baseURL 缺失 → no-base-url；未钉/失配 → host-not-pinned；命中 → 放行。
   assert.equal(cliproxyFetchGuard({ name: 'cpa', baseURL: '' }, {}), 'no-base-url')
@@ -3104,6 +3114,27 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
   const okWindows = await fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined })
   assert.equal(budgetRequests.filter((request) => request.url.endsWith('/api-call')).length <= 12, true)
   assert.equal(okWindows.length <= 32, true)
+})
+
+test('fetchCliproxyUsage keeps window ids unique when codex windows collide on the same bucket code', async (t) => {
+  const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
+  const context = { allowedHosts: { cpa: ['cli.example.org'] } }
+  // 两窗恰好同秒长度（都折算 codex-5h 桶码）：解析器会产出同码窗口，合并器必须保 id 唯一
+  // ——重复 id 会复制 React key/testid；kindKey 不动，展示名仍按窗口码本地化。
+  const colliding = {
+    rate_limit: {
+      primary_window: { used_percent: 40, reset_at: 1756000000, limit_window_seconds: 18000 },
+      secondary_window: { used_percent: 10, reset_at: 1756500000, limit_window_seconds: 18000 },
+    },
+  }
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: { files: [{ auth_index: 'idx-0', provider: 'codex', email: 'u@example.com' }] } }
+    return { payload: { status_code: 200, body: JSON.stringify(colliding) } }
+  })
+  const windows = await fetchCliproxyUsage({ profile, config: context, authorization: 'Bearer k', signal: undefined })
+  assert.equal(windows.length, 2)
+  assert.deepEqual(windows.map((window) => window.id), ['u-example-com-0-codex-5h', 'u-example-com-0-codex-5h~'])
+  assert.deepEqual(windows.map((window) => window.kindKey), ['codex-5h', 'codex-5h'])
 })
 
 test('quota credential hints and write endpoints round-trip through the DSH credentials store', async (t) => {

@@ -586,7 +586,11 @@ function normalizeQuotaHostname(value) {
   if (typeof value !== 'string') return undefined
   const host = value.trim().toLowerCase().replace(/\.$/, '')
   if (host.length === 0 || host.length > 253) return undefined
-  if (/^[\d.]+$/.test(host) || host.includes(':')) return undefined
+  if (host.includes(':')) return undefined
+  // IP 字面量的全部数值编码一并拒收：getaddrinfo 对十六进制（0x7f000001 / 0x7f.0.0.1）、纯整数
+  // （2130706433）、八进制（0177.0.0.1）标签都会解析成 IP——「每个标签都是纯数字或 0x 十六进制」
+  // 即按 IP 对待；数字标签混在真域名里（如 127.0.0.1.nip.io）不受影响。
+  if (host.split('.').every((label) => /^(0x[0-9a-f]+|\d+)$/.test(label))) return undefined
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/.test(host)) return undefined
   return host
 }
@@ -1153,6 +1157,7 @@ async function fetchCliproxyUsage({ profile, config, authorization, signal }) {
 
   const windows = []
   const failures = []
+  const seenWindowIds = new Set()
   let callBudget = MAX_QUOTA_CPA_CALLS
   const runAccount = async (account) => {
     for (const call of account.calls) {
@@ -1175,8 +1180,14 @@ async function fetchCliproxyUsage({ profile, config, authorization, signal }) {
       if (parsed.length > 0) {
         for (const window of parsed) {
           if (windows.length >= MAX_QUOTA_CPA_WINDOWS) return
+          // 窗口 id 必须全局唯一：同账号两窗撞码（如 codex primary/secondary 恰好同秒长度折算同桶）
+          // 或不同模型名 slug 化撞名，都会复制出重复的 React key/testid——后缀 ~ 保持唯一；
+          // kindKey 不动，展示名仍按窗口码本地化。
+          let windowId = `${account.slug}-${window.id}`
+          while (seenWindowIds.has(windowId)) windowId += '~'
+          seenWindowIds.add(windowId)
           windows.push({
-            id: `${account.slug}-${window.id}`,
+            id: windowId,
             kindKey: window.kindKey ?? window.id,
             ...(account.label !== '' ? { label: account.label } : {}),
             percent: window.percent,

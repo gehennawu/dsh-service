@@ -9,6 +9,10 @@ pnpm-debug.log*
 !.env.example
 *.log
 
+# Real-machine test secrets (management keys etc.) — never commit
+cpa_mgmt_key.txt
+*_mgmt_key.txt
+
 # Local agent planning documents
 AGENTS.md
 TODO.md
