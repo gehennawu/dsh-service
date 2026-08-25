@@ -2563,30 +2563,24 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.equal(stateNode.props['data-in-peak'], 'true')
     const nextNode = renderer.findByTestId('quota-peak-next')
     assert.match(String(nextNode.children[0]), /12点转空闲（1 小时 30 分钟后）/)
-    // 刻度 = 区段边界时刻、两行交错（用户点名：不标均匀整点，9点/12点不相邻）。
-    const axisLabels = renderer.findAllByTestIdPrefix('quota-peak-axis-').map((node) => node.children[0])
-    assert.deepEqual(axisLabels, ['0点', '12点', '18点', '9点', '14点', '24点'])
-    const axis9 = renderer.findByTestId('quota-peak-axis-540')
-    assert.equal(axis9.props.style.left, '37.5%')
-    assert.equal(axis9.props.style.top, '13px') // 第二行，与第一行的 12 点错开
-    assert.equal(renderer.findByTestId('quota-peak-axis-720').props.style.top, '0')
-    assert.equal(renderer.findByTestId('quota-peak-axis-1440').props.style.right, 0)
-    // 色带五个分段：idle/peak/idle/peak/idle，位置与官方时段一致（9-12、14-18 为橙）。
+    // 色带只画「当前 → 当天结束」（用户点名：过去不显示）：周三 10:30 → 域 810 分钟，
+    // 四段可见（首段是 9-12 的剩余部分），范围文字内嵌段中；左缘细标线即当前时刻。
     const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
-    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['false', 'true', 'false', 'true', 'false'])
+    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['true', 'false', 'true', 'false'])
     assert.equal(segments[0].props.style.left, '0%')
-    assert.equal(segments[0].props.style.width, '37.5%')
-    assert.equal(segments[1].props.style.left, '37.5%')
-    assert.equal(segments[1].props.style.width, '12.5%')
-    assert.equal(segments[2].props.style.left, '50%')
-    assert.equal(segments[2].props.style.width, '8.3333%')
-    assert.equal(segments[3].props.style.left, '58.3333%')
-    assert.equal(segments[3].props.style.width, '16.6667%')
-    assert.equal(segments[4].props.style.left, '75%')
-    assert.equal(segments[4].props.style.width, '25%')
-    // 圆点跟随北京时间当前时刻：10:30 → 43.75%。
-    const dotNode = renderer.findByTestId('quota-peak-dot')
-    assert.equal(dotNode.props['data-value'], '43.75')
+    assert.equal(segments[0].props.style.width, '11.1111%') // 10:30–12:00 剩余 90 分钟
+    assert.equal(segments[1].props.style.left, '11.1111%')
+    assert.equal(segments[1].props.style.width, '14.8148%')
+    assert.equal(segments[2].props.style.left, '25.9259%')
+    assert.equal(segments[2].props.style.width, '29.6296%')
+    assert.equal(segments[3].props.style.left, '55.5556%')
+    assert.equal(segments[3].props.style.width, '44.4444%')
+    // 段内嵌各自的范围文字（小时区间）。
+    assert.deepEqual(segments.map((segment) => segment.children[0] ? String(segment.children[0].children[0]) : ''), ['10-12', '12-14', '14-18', '18-24'])
+    // 左缘「当前」标线取代旧移动圆点（now 起点域下圆点恒在左缘）。
+    assert.ok(renderer.hasTest('quota-peak-now'))
+    assert.equal(renderer.hasTest('quota-peak-dot'), false)
+    assert.equal(renderer.findAllByTestIdPrefix('quota-peak-axis-').length, 0)
     // 卡片内带规则说明行（时间措辞为「9点–12点」式，用户点名）。
     assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。/)
 
@@ -2598,7 +2592,8 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     const weekendSegments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
     assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false'])
     assert.equal(weekendSegments[0].props.style.width, '100%')
-    assert.equal(renderer.findByTestId('quota-peak-dot').props['data-value'], '62.5')
+    // 周末整条空闲不内嵌范围文字。
+    assert.deepEqual(weekendSegments[0].children.filter(Boolean), [])
     assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /9点转高峰（1 天 18 小时后）/)
   } finally {
     Date.now = realNow

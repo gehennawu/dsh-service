@@ -456,12 +456,12 @@ window.__ModuleLoader__.load({
       'quota.peak.nowPeak': '当前高峰时段 · 标准价',
       'quota.peak.untilIdle': '{time}转空闲（{dur}后）',
       'quota.peak.untilPeak': '{time}转高峰（{dur}后）',
-      'quota.peak.axis.0': '0点',
-      'quota.peak.axis.540': '9点',
-      'quota.peak.axis.720': '12点',
-      'quota.peak.axis.840': '14点',
-      'quota.peak.axis.1080': '18点',
-      'quota.peak.axis.1440': '24点',
+      'quota.peak.boundary.0': '0点',
+      'quota.peak.boundary.540': '9点',
+      'quota.peak.boundary.720': '12点',
+      'quota.peak.boundary.840': '14点',
+      'quota.peak.boundary.1080': '18点',
+      'quota.peak.boundary.1440': '24点',
       'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 9点–12点、14点–18点；其余时间为空闲时段，周六和周日全天空闲。',
     }
     const en = {
@@ -912,12 +912,12 @@ window.__ModuleLoader__.load({
       'quota.peak.nowPeak': 'Peak now · standard price',
       'quota.peak.untilIdle': 'Half price from {time} (in {dur})',
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
-      'quota.peak.axis.0': '12am',
-      'quota.peak.axis.540': '9am',
-      'quota.peak.axis.720': '12pm',
-      'quota.peak.axis.840': '2pm',
-      'quota.peak.axis.1080': '6pm',
-      'quota.peak.axis.1440': '12am',
+      'quota.peak.boundary.0': '12am',
+      'quota.peak.boundary.540': '9am',
+      'quota.peak.boundary.720': '12pm',
+      'quota.peak.boundary.840': '2pm',
+      'quota.peak.boundary.1080': '6pm',
+      'quota.peak.boundary.1440': '12am',
       'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 9am–12pm and 2pm–6pm. All other times are off-peak, including all day Saturday and Sunday.',
     }
 
@@ -1913,16 +1913,9 @@ window.__ModuleLoader__.load({
       const DEEPSEEK_PEAK_COLOR = '#f0952f'
       const DEEPSEEK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
       const DEEPSEEK_PEAK_TICK_MS = 30000
-      // 色带刻度 = 区段边界时刻（而非均匀整点），两行交错避免相邻标签挤在一起（用户点名）。
-      // 文案走词典 quota.peak.axis.<分钟数>（zh「9点」/en「9am」），换挡倒计时复用同一组键。
-      const DEEPSEEK_PEAK_AXIS = [
-        { minute: 0, row: 0, align: 'start' },
-        { minute: 720, row: 0, align: 'center' },
-        { minute: 1080, row: 0, align: 'center' },
-        { minute: 540, row: 1, align: 'center' },
-        { minute: 840, row: 1, align: 'center' },
-        { minute: 1440, row: 1, align: 'end' },
-      ]
+      // 换挡倒计时的边界时刻命名走词典 quota.peak.boundary.<分钟数>（zh「9点」/en「9am」）。
+      // 色带本体不再有外部刻度：v0.25 打磨后只画「当前 → 当天结束」的剩余区间（左缘即当前，
+      // 用户点名隐藏过去时间），各区段范围文字直接内嵌在色带里。
       function beijingCivilParts(nowMs) {
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
@@ -1931,18 +1924,20 @@ window.__ModuleLoader__.load({
         if (dayIndex === 0 || dayIndex === 6) return false
         return DEEPSEEK_PEAK_SEGMENTS.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
       }
-      /** 当前时刻的当日色带分段：周末整条空闲；工作日按峰谷边界切分（首尾相接铺满 24h）。 */
-      function deepseekDaySegments(dayIndex) {
-        if (dayIndex === 0 || dayIndex === 6) return [{ start: 0, end: 1440, peak: false }]
-        const segments = []
-        let cursor = 0
-        for (const [start, end] of DEEPSEEK_PEAK_SEGMENTS) {
-          if (cursor < start) segments.push({ start: cursor, end: start, peak: false })
-          segments.push({ start, end, peak: true })
-          cursor = end
+      /** 当前时刻起的当日色带分段（用户点名：过去的时间不显示，左缘即当前）。
+ * start 已裁到当前分钟；周末整条空闲；工作日按峰谷边界切分到当天结束。 */
+      function deepseekDaySegments(dayIndex, minutesOfDay) {
+        const pieces = []
+        const push = (start, end, peak) => { if (end > start) pieces.push({ start, end, peak }) }
+        if (dayIndex === 0 || dayIndex === 6) { push(minutesOfDay, 1440, false); return pieces }
+        let cursor = minutesOfDay
+        for (const [segStart, segEnd] of DEEPSEEK_PEAK_SEGMENTS) {
+          if (cursor < segStart) push(cursor, segStart, false)
+          push(Math.max(cursor, segStart), segEnd, true)
+          cursor = Math.max(cursor, segEnd)
         }
-        if (cursor < 1440) segments.push({ start: cursor, end: 1440, peak: false })
-        return segments
+        push(cursor, 1440, false)
+        return pieces
       }
       /** 下一次峰谷切换时刻（毫秒）：逐日扫描工作日的四个边界点，取第一个状态翻转点。
        * 最坏情形是周五 18:00 后——下一个翻转是周一 09:00，扫 5 天必然覆盖。找不到返回 null。 */
@@ -1973,7 +1968,7 @@ window.__ModuleLoader__.load({
       /** 边界时刻 → 本地化短语（zh「9点」/en「9am」，复用色带刻度词典）；键缺失回落数字钟格式。 */
       function deepseekBoundaryLabel(ts, translate) {
         const minute = beijingCivilParts(ts).minutesOfDay
-        const key = `quota.peak.axis.${minute}`
+        const key = `quota.peak.boundary.${minute}`
         const text = translate(key)
         return text !== key ? text : formatBeijingClockTime(ts)
       }
@@ -2006,6 +2001,8 @@ window.__ModuleLoader__.load({
         const inPeak = deepseekIsPeakMinute(civil.dayIndex, civil.minutesOfDay)
         const nextFlip = deepseekNextPeakFlip(now)
         const accentColor = inPeak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR
+        // 色带域 = [当前分钟, 1440]；pctOf 复用 /1440 归一：传入「相对当前的分段宽」即可。
+        const domainMinutes = 1440 - civil.minutesOfDay
         const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
         return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', minHeight: '16px' } },
@@ -2026,34 +2023,26 @@ window.__ModuleLoader__.load({
             })) : null),
           React.createElement('div', {
             'data-testid': 'quota-peak-bar',
-            style: { position: 'relative', height: '10px', borderRadius: 999, overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
+            style: { position: 'relative', height: '14px', borderRadius: 999, overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
           },
-          deepseekDaySegments(civil.dayIndex).map((segment, index) => React.createElement('span', {
-            key: index,
-            'data-testid': `quota-peak-segment-${index}`,
-            'data-peak': String(segment.peak),
-            style: { position: 'absolute', top: 0, bottom: 0, left: `${pctOf(segment.start)}%`, width: `${pctOf(segment.end - segment.start)}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR },
-          })),
+          // 域 = [当前分钟, 1440]：过去不显示，剩余区段足够宽，范围文字直接内嵌（用户点名）。
+          deepseekDaySegments(civil.dayIndex, civil.minutesOfDay).map((segment, index) => {
+            const leftPct = pctOf((segment.start - civil.minutesOfDay) / domainMinutes * 1440)
+            const widthPct = pctOf((segment.end - segment.start) / domainMinutes * 1440)
+            const showRange = civil.dayIndex !== 0 && civil.dayIndex !== 6 && widthPct >= 11
+            return React.createElement('span', {
+              key: index,
+              'data-testid': `quota-peak-segment-${index}`,
+              'data-peak': String(segment.peak),
+              style: { position: 'absolute', top: 0, bottom: 0, left: `${leftPct}%`, width: `${widthPct}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR, overflow: 'hidden' },
+            },
+            showRange ? React.createElement('span', { style: { position: 'absolute', inset: 0, textAlign: 'center', fontSize: '9px', lineHeight: '14px', fontWeight: 500, color: 'rgba(255,255,255,0.95)', fontVariantNumeric: 'tabular-nums' } }, `${Math.floor(segment.start / 60)}-${Math.floor(segment.end / 60)}`) : null)
+          }),
+          // 左缘细标线即「当前」时刻（原移动圆点在 now 起点域下恒在左缘，退化为标线）。
           React.createElement('span', {
-            'data-testid': 'quota-peak-dot',
-            'data-value': String(pctOf(civil.minutesOfDay)),
-            style: { position: 'absolute', top: '50%', left: `${pctOf(civil.minutesOfDay)}%`, transform: 'translate(-50%, -50%)', width: '12px', height: '12px', borderRadius: '50%', background: accentColor, border: '2px solid var(--dsw-specific-menu)', boxSizing: 'border-box' },
+            'data-testid': 'quota-peak-now',
+            style: { position: 'absolute', top: 0, bottom: 0, left: 0, width: '3px', borderRadius: '3px', background: 'var(--dsw-specific-menu)' },
           })),
-          React.createElement('div', { 'data-testid': 'quota-peak-axis', style: { position: 'relative', height: '26px', marginTop: '1px' } },
-            DEEPSEEK_PEAK_AXIS.map(({ minute, row, align }) => React.createElement('span', {
-              key: minute,
-              'data-testid': `quota-peak-axis-${minute}`,
-              style: {
-                position: 'absolute',
-                top: row === 0 ? '0' : '13px',
-                ...(align === 'start' ? { left: 0 } : align === 'end' ? { right: 0 } : { left: `${pctOf(minute)}%`, transform: 'translateX(-50%)' }),
-                fontSize: '10px',
-                lineHeight: '13px',
-                color: 'var(--dsw-alias-label-tertiary)',
-                whiteSpace: 'nowrap',
-                fontVariantNumeric: 'tabular-nums',
-              },
-            }, translate(`quota.peak.axis.${minute}`)))),
           showCaption === true ? React.createElement('div', {
             'data-testid': 'quota-peak-caption',
             style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
