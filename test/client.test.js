@@ -3282,7 +3282,7 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
 
   renderer.findByTestId('skill-describe-run').props.onClick()
   await renderer.flush()
-  assert.deepEqual(fixture.state.describes, [{ id: 'id-alpha', provider: 'p', model: 'm1' }])
+  assert.deepEqual(fixture.state.describes, [{ id: 'id-alpha', provider: 'p', model: 'm1', lang: 'zh' }])
   assert.match(renderer.text(), /AI 描述/)
   assert.match(renderer.text(), /Alpha desc/)
   assert.equal(renderer.hasTest('skill-diff-usage'), true)
@@ -3335,7 +3335,7 @@ test('batch card plans, starts, and settles through the status poll with a refre
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(fixture.state.batchPlans, [{ provider: 'p', model: 'm1' }])
-  assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1' }])
+  assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1', lang: 'zh' }])
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
   // 落定后运行日志自动折叠：只留开关行；点击展开回看过程记录。
@@ -3442,6 +3442,34 @@ test('skills batch plan shows an expandable skipped list with per-entry reasons 
   await renderer.flush()
   assert.equal(renderer.hasTest('skills-batch-skipped-item'), true)
   assert.match(renderer.text(), /alpha：已注释/)
+})
+
+test('AI completion requests carry the active UI language so host prompts follow the DSH locale', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // 英文环境发起补全：请求带 lang:'en'；切回中文另开一条补全：lang 跟随切换。
+  renderer.findByTestId('skill-describe-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.setLocale('en')
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-run').props.onClick()
+  await renderer.flush()
+  assert.equal(fixture.state.describes.length, 1)
+  renderer.setLocale('zh')
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-beta').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-run').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(fixture.state.describes.map((payload) => payload.lang), ['en', 'zh'])
 })
 
 test('describe dialog shows the panel-only disclaimer before saving a note', async () => {

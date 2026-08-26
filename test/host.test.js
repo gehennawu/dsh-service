@@ -2599,6 +2599,21 @@ test('skills-describe validates the model whitelist and applies a sanitized draf
     const streamOptions = llmState.streamCalls[0]
     assert.match(streamOptions.system, /STRICT JSON/)
     assert.match(streamOptions.messages[0].content[0].text, /Beta body/)
+    // 补全输出语言跟随界面语言：请求未带 lang 时按英文兜底（与 DSH locale 的 en fallback 一致）。
+    assert.match(streamOptions.system, /MUST be written in English/)
+    assert.doesNotMatch(streamOptions.system, /Simplified Chinese/)
+    // 显式 lang:'zh' 切到简体中文规则，其余 JSON 约定保持不变。
+    llmState.responses.push('{"description":"中文描述","whenToUse":"中文用法"}')
+    const describedZh = await handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1', lang: 'zh' })
+    assert.equal(describedZh.ok, true)
+    assert.deepEqual(describedZh.value.draft, { description: '中文描述', usage: '中文用法' })
+    assert.match(llmState.streamCalls[1].system, /MUST be written in Simplified Chinese/)
+    assert.doesNotMatch(llmState.streamCalls[1].system, /written in English/)
+    assert.match(llmState.streamCalls[1].system, /STRICT JSON/)
+    // 语言是白名单枚举：伪造值绝不进 prompt，一律落回英文模板。
+    await handler('skills-describe', { id: beta.id, provider: 'prov', model: 'm1', lang: 'en\ndefinitely-not' })
+    assert.doesNotMatch(llmState.streamCalls[2].system, /Simplified Chinese/)
+    assert.match(llmState.streamCalls[2].system, /MUST be written in English/)
 
     // 运行日志可回读：包含调用路由与解析成功标记。
     const logs = await handler('skills-describe-log', { id: beta.id })
@@ -2654,7 +2669,7 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
     assert.equal(planned.value.skipped.some((item) => item.reason === 'shadowed'), true)
     assert.equal(planned.value.skipped.some((item) => item.reason.startsWith('legacy-invocation-key:')), true)
 
-    const run = await handler('skills-batch-run', { planId: planned.value.planId })
+    const run = await handler('skills-batch-run', { planId: planned.value.planId, lang: 'zh' })
     assert.equal(run.value.started, true)
     let finalStatus = null
     for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -2678,6 +2693,9 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
     assert.equal(llmState.streamCalls.length, 2)
     assert.match(llmState.streamCalls[0].messages[0].content[0].text, /Alpha body/)
     assert.match(llmState.streamCalls[1].messages[0].content[0].text, /Beta body/)
+    // run 时刻下发的 lang 定格整批补全语言：两条都走简体中文模板。
+    assert.match(llmState.streamCalls[0].system, /MUST be written in Simplified Chinese/)
+    assert.match(llmState.streamCalls[1].system, /MUST be written in Simplified Chinese/)
     assert.equal(await readFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), 'utf8'), SKILL_FILE_ALPHA)
     assert.equal(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), SKILL_FILE_BETA)
     const index = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
@@ -2871,6 +2889,8 @@ test('skills-batch-cancel interrupts the in-flight LLM call and settles without 
     assert.equal(settled.done, 0)
     assert.equal(settled.failures.length, 0)
     assert.equal(streamCalls.length, 1)
+    // 未带 lang 的批量运行按英文模板兜底。
+    assert.match(streamCalls[0].system, /MUST be written in English/)
   })
 })
 

@@ -2734,12 +2734,23 @@ async function mutateSkillEntryById(ctx, dshHome, index, id, allowInvalid, mutat
   return { ok: true, entry: publicSkillEntry(fresh, index), entryPath: entry.path }
 }
 
-function skillDescribeSystemPrompt() {
+// 补全输出语言白名单：只认 'zh'，其余一切输入（含缺省/伪造）一律按 'en' 处理——
+// 与 DSH locale 服务的 en 兜底语义一致；语言是枚举开关，浏览器永远送不进自由文本。
+function normalizeSkillDescribeLang(value) {
+  return value === 'zh' ? 'zh' : 'en'
+}
+
+function skillDescribeSystemPrompt(lang) {
+  // 输出语言跟随 DSH 界面语言（客户端下发 effective locale 枚举）：中文环境出简体中文，
+  // 英文环境出英文；无论哪种，都不跟随技能正文自身的语言。
+  const languageRule = lang === 'zh'
+    ? '"description" and "whenToUse" MUST be written in Simplified Chinese regardless of the skill body language'
+    : '"description" and "whenToUse" MUST be written in English regardless of the skill body language'
   return [
     'You write catalog metadata for agent-harness skills.',
     'Reply with STRICT JSON only, no markdown fences, no extra keys, no commentary:',
     '{"description":"...","whenToUse":"..."}',
-    'Rules: "description" and "whenToUse" MUST be written in Simplified Chinese regardless of the skill body language; "description" is ONE routing sentence (max ' + SKILL_DESCRIPTION_MAX_CHARS + ' characters) saying what the skill does and when to pick it; "whenToUse" is short usage guidance (max ' + SKILL_USAGE_MAX_CHARS + ' characters); never use line breaks inside either value.',
+    'Rules: ' + languageRule + '; "description" is ONE routing sentence (max ' + SKILL_DESCRIPTION_MAX_CHARS + ' characters) saying what the skill does and when to pick it; "whenToUse" is short usage guidance (max ' + SKILL_USAGE_MAX_CHARS + ' characters); never use line breaks inside either value.',
   ].join(' ')
 }
 
@@ -2784,7 +2795,7 @@ async function collectLlmText(llm, options) {
     const stream = llm.stream({
       provider: options.provider,
       model: options.model,
-      system: skillDescribeSystemPrompt(),
+      system: skillDescribeSystemPrompt(normalizeSkillDescribeLang(options.lang)),
       messages: [createSkillDescribeMessage(options.prompt)],
       maxTokens: options.maxTokens ?? SKILL_DESCRIBE_MAX_TOKENS,
       signal: controller.signal,
@@ -2848,7 +2859,7 @@ async function describeSkillDraft(llm, entryName, rawContent, provider, model, o
     try {
       onEvent?.('attempt', { n: attempt + 1, total: SKILL_DESCRIBE_ATTEMPTS, route: provider + '/' + model })
       // 重试时逐级放大输出预算：推理型模型可能耗尽配额却产不出正文。
-      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: SKILL_DESCRIBE_MAX_TOKENS * Math.pow(4, attempt), signal: options.signal })
+      const text = await collectLlmText(llm, { provider, model, prompt, onEvent, maxTokens: SKILL_DESCRIBE_MAX_TOKENS * Math.pow(4, attempt), signal: options.signal, lang: options.lang })
       onEvent?.('received', { chars: text.length })
       const draft = extractSkillDraftJson(text)
       onEvent?.('parsed')
@@ -3595,7 +3606,7 @@ function apply(ctx) {
         // 注册进活动调用表：Fiber 销毁时立即中断，不再僵尸到 90s 超时。
         const call = registerSkillCall()
         try {
-          const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model, (code, params) => job.push(code, params), { signal: call.signal })
+          const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model, (code, params) => job.push(code, params), { signal: call.signal, lang: normalizeSkillDescribeLang(payload?.lang) })
           return { ok: true, value: { draft } }
         } finally {
           call.done()
@@ -3682,6 +3693,8 @@ function apply(ctx) {
       if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
       skillsBatch.phase = 'running'
       skillsBatch.running = true
+      // 补全语言在 run 时刻定格（而非 plan 时刻）：计划确认前切换界面语言，按新语言补全。
+      skillsBatch.lang = normalizeSkillDescribeLang(payload?.lang)
       // 批量级 AbortController：取消/销毁时立即中断在途 LLM 调用（不只等当前条目自然结束）。
       const batchCall = registerSkillCall()
       // 有意不 await：批量在后台顺序执行，客户端轮询 skills-batch-status 取进度。
@@ -3715,7 +3728,7 @@ function apply(ctx) {
             const evaluated = evaluateSkillFile(raw)
             if (evaluated.invalid !== undefined) throw new Error('entry-changed')
             const located = locateSkillFrontmatter(raw)
-            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model, batchLog, { signal: batchCall.signal })
+            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model, batchLog, { signal: batchCall.signal, lang: skillsBatch.lang })
             // 注释只进侧车索引：文件零改动，正文哈希取当前内容（正文再变更即自动回到待补全）。
             await serializeSkillsIndexWrite((current) => {
               current[entry.path] = { bodyHash: bodyHashOf(raw, located?.bodyStart ?? 0), note: { description: draft.description, usage: draft.usage }, model: skillsBatch.provider + '/' + skillsBatch.model, at: Date.now() }

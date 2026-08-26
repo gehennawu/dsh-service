@@ -1063,6 +1063,9 @@ window.__ModuleLoader__.load({
       ctx.effect(() => () => { if (svcStyle) svcStyle.remove() }, 'dsh-service theme styles')
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-service dictionaries')
       const t = ctx.locale.bind(NS)
+      // 当前生效界面语言（显式设置 > 浏览器语言 > en 兜底，locale 快照已折算）：'zh' | 'en'。
+      // 供 AI 补全等宿主侧语言相关动作取用；宿主只收枚举，不收自由文本。
+      const currentUiLocale = () => ((ctx.locale?.getSnapshot?.()?.active) === 'zh' ? 'zh' : 'en')
       const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
@@ -1234,7 +1237,7 @@ window.__ModuleLoader__.load({
       }
       const startSkillsBatchShared = async () => {
         if (skillsBatchPlan === null || skillsBatchState === null) return false
-        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', { planId: skillsBatchPlan.planId })
+        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', { planId: skillsBatchPlan.planId, lang: currentUiLocale() })
         if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
         skillsBatchState = { ...skillsBatchState, phase: 'running' }
         syncSkillsBatchPolling()
@@ -2774,7 +2777,7 @@ window.__ModuleLoader__.load({
           if (describe === null || describe.modelItem === null) return
           const { entry, modelItem } = describe
           setDescribe((prev) => ({ ...prev, busy: true, error: '' }))
-          const res = await SKILL_RPC('skills-describe', { id: entry.id, provider: modelItem.provider, model: modelItem.id })
+          const res = await SKILL_RPC('skills-describe', { id: entry.id, provider: modelItem.provider, model: modelItem.id, lang: currentUiLocale() })
           if (res.ok) {
             try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: modelItem.provider, model: modelItem.id })) } catch (_) {}
             setDescribe((prev) => ({ ...prev, draft: res.value.draft, busy: false }))
