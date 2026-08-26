@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
       'features.subagentRoute': '子代理模型',
       'features.mobileAdaptation': '移动端适配',
       'mobile.fab.label': '打开侧栏菜单',
+      'mobile.fab.close': '关闭侧栏菜单',
       'mobile.debug.title': '移动端诊断',
       'mobile.debug.viewport': '视口',
       'mobile.debug.drawer': '抽屉',
@@ -528,6 +529,7 @@ window.__ModuleLoader__.load({
       'features.subagentRoute': 'Subagent model',
       'features.mobileAdaptation': 'Mobile adaptation',
       'mobile.fab.label': 'Open sidebar menu',
+      'mobile.fab.close': 'Close sidebar menu',
       'mobile.debug.title': 'Mobile diagnostics',
       'mobile.debug.viewport': 'Viewport',
       'mobile.debug.drawer': 'Drawer',
@@ -4513,15 +4515,17 @@ html[data-dshsvc-mobile] [data-dshsvc-frame] { grid-template-columns: 0px minmax
 html[data-dshsvc-mobile] [data-dshsvc-sidebar] { grid-column: 1 !important; grid-row: 1 !important; }
 html[data-dshsvc-mobile] [data-dshsvc-center] { grid-column: 2 !important; grid-row: 1 !important; }
 html[data-dshsvc-mobile] [data-dshsvc-details] { grid-column: 3 !important; grid-row: 1 !important; }
-/* 侧栏/详情列 → overlay 抽屉。注意：隐藏一律用 left/right 百分比偏移、
-   绝不用 transform —— 设置模态（未 portal，注册在 sidebar.settings 槽内）
-   就长在本列子树里，transform 会让抽屉盒成为其 fixed 定位的包含块，
-   模态会被锁进抽屉宽度（真机：设置页右侧大片空白）。 */
+/* 侧栏/详情列 → overlay 抽屉。两条铁律：
+   ① 隐藏禁用 transform —— 设置模态（未 portal）长在本列子树里，
+      transform 会成为其 fixed 定位的包含块；
+   ② 离屏偏移必须用 vw 长度而非百分比 —— 这些列带显式 grid-column 钉位
+      （修中列黑屏所需），绝对定位子项的包含块会变成那格 grid area（0px 宽），
+      百分比对 0 取值全变 0，元素被超约束解算推回屏内盖住会话。 */
 html[data-dshsvc-mobile] [data-dshsvc-sidebar] {
   position: absolute !important;
   top: 0 !important;
   bottom: 0 !important;
-  left: -105% !important;
+  left: calc(-100vw - 24px) !important;
   width: min(84vw, 320px) !important;
   z-index: 32;
   transition: left var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
@@ -4530,19 +4534,17 @@ html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-sidebar-collapsed]) [data
   left: 0 !important;
   box-shadow: 8px 0 32px rgba(0, 0, 0, .22);
 }
-/* 详情列（预览/文件树）→ 右侧 overlay，不再挤压会话区 */
+/* 详情列（预览/文件树）→ 移动端永久离屏。官方 computeColumns 在窄视口恒为
+   0 宽（原生手机本就不显示该列），抽屉化只会用空态盖住会话且关闭路径
+   与 backdrop/抽屉状态纠缠（真机反馈）。引擎在激活与属性观察时会自愈式
+   closeDetails()，保证 store 也是干净的关闭态。 */
 html[data-dshsvc-mobile] [data-dshsvc-details] {
   position: absolute !important;
   top: 0 !important;
   bottom: 0 !important;
-  right: -105% !important;
+  right: calc(-100vw - 24px) !important;
   width: min(92vw, 420px) !important;
   z-index: 30;
-  transition: right var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
-}
-html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-details-collapsed]) [data-dshsvc-details] {
-  right: 0 !important;
-  box-shadow: -8px 0 32px rgba(0, 0, 0, .22);
 }
 /* 模态 → 全屏面板：外壳 portal 根是 fixed inset:0 flex 容器（无 transform，
    无 containing-block 陷阱），dialog 改 absolute 四边拉满即可。
@@ -4572,14 +4574,15 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] {
    独占面板（其自有 CSS：[role=dialog]:has([data-dsh-market-root])>nav），
    手机上会把用户困在市场分区 —— 用更高优先级把横滑标签条顶回来。 */
 html[data-dshsvc-mobile] [role="dialog"]:has([data-dsh-market-root]) > nav { display: flex !important; }
-/* 设置页标签条：nav 从 188px 竖列变顶部横滑条（宽度与列向必须显式推翻） */
+/* 设置页标签条：nav 从 188px 竖列变顶部横滑条（宽度与列向必须显式推翻）。
+   右侧留 52px 给钉到角落的关闭钮。 */
 html[data-dshsvc-mobile] [role="dialog"] nav {
   flex-direction: row !important;
   align-items: center !important;
   gap: 6px !important;
   width: auto !important;
   flex: none !important;
-  padding: 8px 12px 0 !important;
+  padding: 8px 52px 0 12px !important;
   overflow-x: auto !important;
   overflow-y: hidden !important;
   border-right: none !important;
@@ -4588,6 +4591,45 @@ html[data-dshsvc-mobile] [role="dialog"] nav {
 html[data-dshsvc-mobile] [role="dialog"] nav > div { flex: none !important; }
 html[data-dshsvc-mobile] [role="dialog"] [class*="navList"] { flex-direction: row !important; }
 html[data-dshsvc-mobile] [role="dialog"] [class*="navCell"] { white-space: nowrap !important; flex: none !important; }
+/* 关闭钮钉到设置页右上角并压到面板顶层（原生在内容区头行、导航条下方，
+   会被横滑条/内容重叠遮挡——用户点名要顶层）。面板 position:relative，
+   类哈希 VOzbGW_ 取自 dsh-client-ui-settings-general SettingsRoot.module.css（rc.2），升级需复核 */
+html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_close"] {
+  position: absolute !important;
+  top: calc(env(safe-area-inset-top, 0px) + 9px) !important;
+  right: 10px !important;
+  z-index: 60;
+}
+/* 设置/任意模态打开时藏抽屉钮：抽屉列自带 z-index:32 层叠上下文会把模态的
+   z1000 封顶在 32，body 级 z33 的钮反而浮在设置页上（真机实测）。:has 不支持时
+   退化为旧行为（钮仍显示），无副作用。 */
+html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab] {
+  display: none !important;
+}
+/* composer 底行单行紧凑：外壳原生 flex-wrap:wrap 在窄屏把图标/模型名折成两行。
+   收紧间距 + 禁换行 + 最宽触发钮限宽省略。类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自
+   dsh-client-ui-conversation composer（rc.2），升级需复核。 */
+html[data-dshsvc-mobile] [class*="uV2eYG_row"] {
+  flex-wrap: nowrap !important;
+  column-gap: 4px !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+html[data-dshsvc-mobile] [class*="uV2eYG_row"] > * { min-width: 0 !important; }
+html[data-dshsvc-mobile] [class*="uV2eYG_tools"],
+html[data-dshsvc-mobile] [class*="uV2eYG_modes"],
+html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-width: 0 !important; }
+html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { margin-left: auto !important; }
+html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"] { max-width: 38vw !important; }
+html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }
+/* 工作区侧板（fixed z25 层内的 nArs4W_panel z40）开屏后会盖住它自己的外部
+   开关钮（tab bar 行 nArs4W_toggleButton）——手机上抽屉一开就再没有任何
+   可点的关闭入口（真机反馈「关不上」本体）。把开关钮提到面板之上，
+   恢复「同一颗钮开/关」语义。 */
+html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
+  position: relative !important;
+  z-index: 45 !important;
+}
 /* 会话底部统计条：外壳原生 white-space:nowrap + ellipsis 截断（StatsLine），
    改横向滑动查看全文。类哈希 FJxK0a_ 取自 dsh-client-ui-conversation/
    StatsLine.module.css（0.1.1-rc.2），外壳升级后需复核。 */
@@ -4632,6 +4674,7 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           mqHandler: null,
           frameObserver: null,
           mountObserver: null,
+          workspaceObserver: null,
           sidebarClickHandler: null,
           errorHandler: null,
           resizeHandler: null,
@@ -4643,6 +4686,10 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           errorCount: 0,
           drawerOpen: false,
           detailsOpen: false,
+          workspaceOpen: false,
+          lastFabDisplay: null,
+          lastFabIcon: null,
+          lastBackdropDisplay: null,
         }
 
         const layoutService = () => {
@@ -4650,17 +4697,82 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
         }
 
         const syncSurfaces = () => {
-          const overlayVisible = state.drawerOpen || state.detailsOpen
-          if (state.backdrop !== null) state.backdrop.style.display = overlayVisible ? 'block' : 'none'
-          if (state.fab !== null) state.fab.style.display = state.drawerOpen ? 'none' : 'flex'
+          // 详情列移动端永久离屏（CSS），backdrop 只服务侧栏抽屉；
+          // 若外部把详情打开（openDetails），这里自愈式收掉，避免空态盖屏。
+          if (state.detailsOpen) {
+            const layout = layoutService()
+            if (layout !== undefined) {
+              try { layout.closeDetails() } catch (_) {}
+            }
+            state.detailsOpen = false
+          }
+          // FAB 语义随抽屉态翻转：关=开抽屉钮；开=✕ 关闭钮（真机反馈：
+          // 开着时把唯一的关闭入口藏掉，用户以为「再点无法关闭」）。
+          // 工作区侧板开着时整颗让位隐藏，避免误操作另一套抽屉。
+          // 三个输出全部「变化才写」——innerHTML 重写本身是 DOM 变更，
+          // 无条件写会被 body 级 MutationObserver 自激成死循环打满主线程。
+          const fab = state.fab
+          if (fab !== null) {
+            const nextDisplay = state.workspaceOpen ? 'none' : 'flex'
+            const nextIcon = state.workspaceOpen ? null : (state.drawerOpen ? FAB_CLOSE_ICON : FAB_OPEN_ICON)
+            const nextLabel = state.workspaceOpen ? null : t(state.drawerOpen ? 'mobile.fab.close' : 'mobile.fab.label')
+            if (state.lastFabDisplay !== nextDisplay) {
+              state.lastFabDisplay = nextDisplay
+              fab.style.display = nextDisplay
+            }
+            if (nextIcon !== null && state.lastFabIcon !== nextIcon) {
+              state.lastFabIcon = nextIcon
+              fab.innerHTML = nextIcon
+              fab.setAttribute('aria-label', nextLabel)
+            }
+          }
+          const backdropNext = state.drawerOpen ? 'block' : 'none'
+          if (state.backdrop !== null && state.lastBackdropDisplay !== backdropNext) {
+            state.lastBackdropDisplay = backdropNext
+            state.backdrop.style.display = backdropNext
+          }
           if (state.debugEnabled && state.debugChip !== null) updateDebugChip()
+        }
+
+        /** body 级监听的节流入口：同帧多次变更合并为一次读改（脏标记 + 单发调度），
+            回调内严格「无变化不写 DOM」，杜绝 观察器→写DOM→再触发 的自激循环。 */
+        let syncScheduled = false
+        const scheduleSync = () => {
+          if (syncScheduled || !state.active) return
+          syncScheduled = true
+          // 定时器可能活过宿主环境/测试清理期——回调整体兜底，绝不外抛
+          setTimeout(() => {
+            syncScheduled = false
+            if (!state.active) return
+            try {
+              readOverlayState()
+              syncSurfaces()
+            } catch (_) {}
+          }, 50)
         }
 
         const readOverlayState = () => {
           const frame = document.querySelector('[data-dshsvc-frame]')
           state.drawerOpen = frame !== null && !frame.hasAttribute('data-sidebar-collapsed')
           state.detailsOpen = frame !== null && !frame.hasAttribute('data-details-collapsed')
+          // 工作区侧板（外壳 tab 系统 nArs4W_panel，与三栏骨架无关）：可见 = 在视口内
+          const wsPanel = document.querySelector('[class*="nArs4W_panel"]')
+          state.workspaceOpen = false
+          if (wsPanel !== null) {
+            try {
+              const rect = wsPanel.getBoundingClientRect()
+              state.workspaceOpen = rect.left < window.innerWidth - 2 && getComputedStyle(wsPanel).visibility !== 'hidden'
+            } catch (_) { state.workspaceOpen = false }
+          }
         }
+
+        const FAB_OPEN_ICON =
+          '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+          '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.5"/>' +
+          '<line x1="6.25" y1="3.5" x2="6.25" y2="12.5" stroke="currentColor" stroke-width="1.5"/></svg>'
+        const FAB_CLOSE_ICON =
+          '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+          '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
 
         const updateDebugChip = () => {
           const chip = state.debugChip
@@ -4718,7 +4830,6 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
             const layout = layoutService()
             if (layout === undefined) return
             if (state.drawerOpen) layout.toggleSidebar()
-            else if (state.detailsOpen) layout.closeDetails()
           })
           document.body.appendChild(state.backdrop)
 
@@ -4764,6 +4875,17 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
             sidebarEl.addEventListener('click', state.sidebarClickHandler)
           }
 
+          // 工作区侧板（nArs4W_panel，fixed z25 层）不受三栏属性驱动；
+          // body 级监听只置脏标记、单发调度处理（绝不在回调里同步写 DOM，
+          // 否则 写DOM→再触发→再写 的自激循环会打满主线程，页面永久转圈）
+          try {
+            state.workspaceObserver = new MutationObserver(() => { scheduleSync() })
+            state.workspaceObserver.observe(document.body, { attributes: true, childList: true, subtree: true })
+          } catch (_) {
+            state.workspaceObserver = null
+          }
+
+          // frame 属性观察是抽屉状态主驱动：同步处理（监听范围受控、无自激风险）
           state.frameObserver = new MutationObserver(() => {
             readOverlayState()
             syncSurfaces()
@@ -4843,6 +4965,7 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           state.detailsOpen = false
           document.documentElement.removeAttribute('data-dshsvc-mobile')
           if (state.frameObserver !== null) { state.frameObserver.disconnect(); state.frameObserver = null }
+          if (state.workspaceObserver !== null) { state.workspaceObserver.disconnect(); state.workspaceObserver = null }
           if (state.mountObserver !== null) { state.mountObserver.disconnect(); state.mountObserver = null }
           const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
           if (sidebarEl !== null && state.sidebarClickHandler !== null) sidebarEl.removeEventListener('click', state.sidebarClickHandler)

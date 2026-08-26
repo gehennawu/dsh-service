@@ -4097,10 +4097,20 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
     // （transform 会造包含块把 fixed 模态锁进抽屉宽度），一律用 left/right 偏移。
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-(sidebar|details)\]\s*\{[^}]*transform/s)
-    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*left: -105% !important/s)
-    assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{[^}]*right: -105% !important/s)
+    // 真机第六轮：钉位使 abs 子项包含块=0px grid area，百分比偏移对 0 宽取值失效、
+    // 元素被超约束解算推回屏内盖住会话 —— 离屏偏移必须用 vw 长度。
+    assert.doesNotMatch(styleTag.textContent, /-105%|translateX/)
+    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*left: calc\(-100vw - 24px\) !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{[^}]*right: calc\(-100vw - 24px\) !important/s)
+    // 真机第五轮：详情列移动端永久离屏（官方窄屏本就 0 宽），不得存在「打开态」规则
+    assert.doesNotMatch(styleTag.textContent, /:not\(\[data-details-collapsed\]\) \[data-dshsvc-details\]/)
     assert.match(styleTag.textContent, /:not\(\[data-sidebar-collapsed\]\) \[data-dshsvc-sidebar\] \{[^}]*left: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
+    // 真机第七轮：模态打开藏抽屉钮、关闭钮钉右上角（导航条让位）、composer 底行禁换行
+    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
+    assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
+    assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)
@@ -4114,13 +4124,15 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.equal(backdrop.style.display, 'none')
     assert.equal(fab.style.display, 'flex')
 
-    // FAB 点击走官方 layout 服务开抽屉；观察者同步状态面
+    // FAB 点击走官方 layout 服务开抽屉；开着时不藏钮而是变 ✕ 关闭入口
     fab.dispatch('click')
     assert.equal(layoutCalls.toggleSidebar, 1)
     frame.removeAttribute('data-sidebar-collapsed')
     observerInstance([], () => {})
     assert.equal(backdrop.style.display, 'block')
-    assert.equal(fab.style.display, 'none')
+    assert.equal(fab.style.display, 'flex', 'drawer open must keep the toggle visible as the close entry')
+    assert.match(fab.getAttribute('aria-label'), /关闭/)
+    assert.ok(fab.innerHTML.includes('M4 4l8 8'), 'open drawer must swap the icon to an ✕')
 
     // 抽屉开着时点侧栏内任意处收起
     sidebarCol.dispatch('click')
@@ -4138,13 +4150,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     backdrop.dispatch('click')
     assert.equal(layoutCalls.toggleSidebar, 3)
 
-    // 只有详情列开着时 backdrop 点击改走 closeDetails
+    // 只有详情列场景：移动端详情列永久离屏，引擎自愈式 closeDetails，backdrop 不参与
     frame.setAttribute('data-sidebar-collapsed', '')
     frame.removeAttribute('data-details-collapsed')
     observerInstance([], () => {})
-    assert.equal(backdrop.style.display, 'block')
-    backdrop.dispatch('click')
     assert.equal(layoutCalls.closeDetails, 1)
+    assert.equal(backdrop.style.display, 'none')
 
     // 功能开关热关闭：全量卸载
     await renderer.setFeature?.('mobileAdaptation', false)
@@ -4339,12 +4350,13 @@ test('mobile adaptation survives cold narrow load before the shell frame mounts'
     assert.equal(fab.style.display, 'flex')
     assert.equal(backdrop.style.display, 'none')
 
-    // 补建后的交互件功能完整：FAB 开抽屉 → 状态面翻转
+    // 补建后的交互件功能完整：FAB 开抽屉 → 开着时变 ✕ 关闭入口（不藏钮）
     fab.dispatch('click')
     assert.equal(toggles, 1)
     frame.removeAttribute('data-sidebar-collapsed')
     for (const observer of observers) observer.callback([], () => {})
-    assert.equal(fab.style.display, 'none')
+    assert.equal(fab.style.display, 'flex')
+    assert.match(fab.getAttribute('aria-label'), /关闭/)
     assert.equal(backdrop.style.display, 'block')
   } finally {
     delete globalThis.document
