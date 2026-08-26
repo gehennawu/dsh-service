@@ -444,6 +444,13 @@ window.__ModuleLoader__.load({
       'quota.kind.siliconflow': '硅基流动',
       'quota.kind.deepseek': 'DeepSeek 开放平台',
       'quota.kind.cliproxy': 'CLIProxyAPI 账号额度',
+      'quota.kind.xiaomi-token-plan-cn': '小米 MiMo Token Plan',
+      'quota.window.total_token': '套餐总额度',
+      'quota.window.compensation_total_token': '补偿积分',
+      'quota.window.plan-name': '订阅套餐',
+      'quota.error.no-subscription': '当前账号没有生效中的 Token Plan 订阅',
+      'quota.error.credential-rejected': '控制台 Cookie 已失效，请重新从浏览器复制',
+      'quota.credential.editCookie': '填写控制台 Cookie（网页登录态）',
       'quota.kindAuto': '自动识别',
       'quota.noAdapted': '暂无已适配的供应商，可在下方手动适配',
       'quota.disable': '停用查询',
@@ -928,6 +935,13 @@ window.__ModuleLoader__.load({
       'quota.kind.siliconflow': 'SiliconFlow',
       'quota.kind.cliproxy': 'CLIProxyAPI accounts',
       'quota.kind.deepseek': 'DeepSeek Platform',
+      'quota.kind.xiaomi-token-plan-cn': 'Xiaomi MiMo Token Plan',
+      'quota.window.total_token': 'Plan total quota',
+      'quota.window.compensation_total_token': 'Compensation credits',
+      'quota.window.plan-name': 'Subscription plan',
+      'quota.error.no-subscription': 'No active Token Plan subscription on this account',
+      'quota.error.credential-rejected': 'Console cookie expired; copy it from the browser again',
+      'quota.credential.editCookie': 'Set console cookie (web session)',
       'quota.kindAuto': 'Auto-detected',
       'quota.noAdapted': 'No adapted providers yet — adapt manually below',
       'quota.disable': 'Disable',
@@ -1763,7 +1777,7 @@ window.__ModuleLoader__.load({
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'cliproxy']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'xiaomi-token-plan-cn', 'cliproxy']
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
@@ -1965,6 +1979,25 @@ window.__ModuleLoader__.load({
         }
         const account = typeof window.label === 'string' ? window.label.trim() : ''
         return account !== '' ? `${account} · ${kindText}` : kindText
+      }
+      /** 额度绝对数缩写（小米 Token Plan 等）：与模型统计 tok 缩写同族的十进制档位，B 档覆盖
+       * 十亿级 Credits。数字不是文案：宿主下发原始数值，客户端只做显示折算（双语教义）。 */
+      function formatCreditCount(value) {
+        const number = Number(value)
+        if (!Number.isFinite(number)) return ''
+        if (number >= 1e9) return `${Math.round(number / 1e8) / 10}B`
+        if (number >= 1e6) return `${Math.round(number / 1e5) / 10}M`
+        if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
+        return number.toLocaleString()
+      }
+      /** 百分比窗口的数值文本：percent 必显；窗口带 used/limit（原始数值）时追加「已用 / 总量」figure，
+       * 与控制台「{{used}} / {{limit}}」口径一致——只有比例没有绝对数会丢掉最关键的剩余信息。 */
+      function quotaWindowValueText(window) {
+        const percent = `${window.percent}%`
+        const used = Number(window.used)
+        const limit = Number(window.limit)
+        if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return percent
+        return `${percent} · ${formatCreditCount(used)} / ${formatCreditCount(limit)}`
       }
       function humanizeDuration(ms, translate) {
         // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
@@ -2196,7 +2229,7 @@ window.__ModuleLoader__.load({
         },
         React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
           React.createElement('span', { style: labelStyle }, quotaWindowDisplayLabel(window, translate)),
-          React.createElement('span', { style: valueStyle }, `${window.percent}%`)),
+          React.createElement('span', { style: valueStyle }, quotaWindowValueText(window))),
         quotaBar(inCard ? `quota-card-bar-${provider}-${window.id}` : `quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
         resetNode)
       }
@@ -3358,7 +3391,13 @@ window.__ModuleLoader__.load({
                                   'data-testid': `quota-cred-edit-${row.provider}`,
                                   onClick: () => openCredEditor(row),
                                   style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
-                                }, translate(row.kind === 'cliproxy' ? 'quota.credential.editManagement' : 'quota.credential.edit')))]
+                                // 入口文案按 kind 分流（cliproxy 是管理密钥、小米是控制台 Cookie，其余是 API 密钥）：
+                                // 错标签会诱导用户把 tp- 推理密钥填进 Cookie 槽位。
+                                }, translate(row.kind === 'cliproxy'
+                                  ? 'quota.credential.editManagement'
+                                  : row.kind === 'xiaomi-token-plan-cn'
+                                    ? 'quota.credential.editCookie'
+                                    : 'quota.credential.edit')))]
                         })()
                       : []),
                     ...resetCardNodes,

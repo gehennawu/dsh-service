@@ -136,6 +136,18 @@ const KIND_REGISTRY = {
     hosts: [],
     managementPlane: true,
   },
+  // 小米 MiMo Token Plan（v0.29）：推理网关（token-plan-cn.xiaomimimo.com）只有 /v1 推理路径，
+  // 无任何 API-key 形态的额度查询端点（逐路径探测 404；OpenClaw 官方插件的 fetchUsageSnapshot
+  // 是空窗口占位）。额度数据只在控制台同源 API（platform.xiaomimimo.com/api/v1/tokenPlan/*），
+  // 认证是网页登录态 Cookie——consoleCookie:true 表示凭据按裸值下发、由 fetcher 放进 Cookie 头，
+  // settings 的 apiKeyEnv（tp- 推理密钥）绝不发往控制台平面。hosts 仅供 baseURL 自动推断。
+  'xiaomi-token-plan-cn': {
+    fetcher: fetchXiaomiTokenPlanUsage,
+    keyHints: ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'],
+    hosts: ['token-plan-cn.xiaomimimo.com'],
+    usageUrl: 'https://platform.xiaomimimo.com/console/usage',
+    consoleCookie: true,
+  },
 }
 const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
@@ -936,10 +948,12 @@ function normalizeResetTimestamp(value) {
  */
 function quotaCredentialHintNames(kind, profile) {
   const names = []
-  // 管理面 kind（cliproxy）的凭据独立于模型代理 key：settings 的 apiKeyEnv 指向代理 key，
-  // 发去管理面等于拿错钥匙撞 fail2ban（CPA 错 5 次封 IP 30 分钟）——不尝试、不回退。
-  if (KIND_REGISTRY[kind]?.managementPlane !== true && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
-  for (const name of KIND_REGISTRY[kind]?.keyHints ?? []) {
+  // 管理面 kind（cliproxy）与控制台 Cookie kind（小米 Token Plan）的凭据都独立于模型代理
+  // key：settings 的 apiKeyEnv 指向推理 key——发去管理面等于拿错钥匙撞 fail2ban（CPA 错 5 次
+  // 封 IP 30 分钟），发去控制台则毫无作用还扩大 tp- 密钥泄露面。不尝试、不回退。
+  const registered = KIND_REGISTRY[kind]
+  if (registered?.managementPlane !== true && registered?.consoleCookie !== true && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
+  for (const name of registered?.keyHints ?? []) {
     if (!names.includes(name)) names.push(name)
   }
   return names
@@ -953,13 +967,18 @@ function quotaCredentialHintNames(kind, profile) {
  */
 async function discoverQuotaCredential(ctx, kind, profile) {
   const attempted = quotaCredentialHintNames(kind, profile)
+  // consoleCookie kind（小米）的凭据按裸值下发——fetcher 自己放进 Cookie 头；
+  // 其余 kind 一律包成 Bearer。两条路径都不改写凭据内容本身。
+  const rawValue = KIND_REGISTRY[kind]?.consoleCookie === true
   const envHas = (name) => typeof process.env[name] === 'string' && process.env[name].trim() !== ''
   const credentials = ctx.get('credentials')
   if (credentials !== undefined && typeof credentials.resolve === 'function') {
     for (const name of attempted) {
       try {
         const hit = await Promise.resolve(credentials.resolve(name))
-        if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') return `Bearer ${hit.value}`
+        if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
+          return rawValue ? hit.value : `Bearer ${hit.value}`
+        }
       } catch (_) {}
     }
   } else if (profile.apiKeyEnv !== '' && !attempted.some(envHas)) {
@@ -967,7 +986,7 @@ async function discoverQuotaCredential(ctx, kind, profile) {
   }
   for (const name of attempted) {
     const value = process.env[name]
-    if (typeof value === 'string' && value.trim() !== '') return `Bearer ${value.trim()}`
+    if (typeof value === 'string' && value.trim() !== '') return rawValue ? value.trim() : `Bearer ${value.trim()}`
   }
   return undefined
 }
@@ -1083,6 +1102,90 @@ function deepseekMoneyText(amount, currency) {
   const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
   return symbol === '' ? `${amount} ${currency}` : `${symbol}${amount}`
 }
+
+// ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）控制台查询 ─────────────────
+// 数据源是控制台同源 API（platform.xiaomimimo.com SPA bundle 核实）：前端统一走
+// `/api/v1` 前缀 + same-origin Cookie，无任何 API-key 查询端点。两个 GET 都是宿主常量，
+// Cookie 凭据只发往这两个固定地址。「套餐使用情况」页 = detail（套餐名/有效期）+ usage（额度桶）。
+const XIAOMI_TOKEN_PLAN_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail'
+const XIAOMI_TOKEN_PLAN_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage'
+
+/** 控制台信封解包：{code,message,data}，code∈{0,200} 视为成功（与控制台前端同一口径）。
+ * code=401（登录态失效）→ 稳定错误码 credential-rejected；其余非零码 → bad-payload 并透出 message。 */
+function unwrapXiaomiConsoleEnvelope(payload) {
+  if (payload === null || typeof payload !== 'object') throw new Error('bad-payload')
+  const code = Number(payload.code)
+  if (!Number.isFinite(code)) throw new Error('bad-payload')
+  if (code === 0 || code === 200) return payload.data !== null && typeof payload.data === 'object' ? payload.data : {}
+  const detail = sanitizeQuotaErrorDetail(typeof payload.message === 'string' ? payload.message : undefined)
+  const error = new Error(code === 401 ? 'credential-rejected' : 'bad-payload')
+  if (detail !== undefined) error.detail = detail
+  throw error
+}
+
+/**
+ * usage.items[] → 统一窗口：每项 {name, percent(0..1 小数), used, limit}，与控制台
+ * 「套餐使用情况」进度条同源。percent×100 截断（控制台同款 min(100,max(0,100p))），
+ * 缺 percent 的桶跳过（控制台对非法 percent 显示「—」，我们宁可少一行也不显示假进度）；
+ * compensation_total_token 在 limit===0 时控制台不渲染（账号无补偿积分），同样丢弃。
+ * used/limit 原始数值随窗口下发、由客户端做 K/M/B 缩写——数字不是文案，宿主不拼句子。
+ * detail.planName 有值时输出一个文本窗口置顶；currentPeriodEnd 解析成功且未过期时作为
+ * resetsAt 附到百分比窗口（订阅有效期即额度清零点；已失效套餐不再挂未来时刻误导倒计时）。
+ */
+function normalizeXiaomiTokenPlanUsage(detailData, usageData) {
+  const windows = []
+  const planName = typeof detailData?.planName === 'string' ? detailData.planName.trim().slice(0, MAX_QUOTA_PROVIDER_NAME) : ''
+  if (planName !== '') windows.push({ id: 'plan', kindKey: 'plan-name', text: planName })
+  const periodEnd = detailData?.expired === true ? undefined : normalizeResetTimestamp(detailData?.currentPeriodEnd)
+  const items = Array.isArray(usageData?.usage?.items) ? usageData.usage.items : []
+  const seenNames = new Set()
+  for (const item of items) {
+    if (item === null || typeof item !== 'object') continue
+    const name = typeof item.name === 'string' ? item.name.trim() : ''
+    if (name === '' || seenNames.has(name)) continue
+    if (name === 'compensation_total_token' && Number(item.limit) === 0) continue
+    const fraction = Number(item.percent)
+    if (!Number.isFinite(fraction)) continue
+    seenNames.add(name)
+    const used = Number(item.used)
+    const limit = Number(item.limit)
+    windows.push({
+      id: name,
+      kindKey: name,
+      percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
+      ...(Number.isFinite(used) && used >= 0 ? { used } : {}),
+      ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+      ...(periodEnd !== undefined ? { resetsAt: periodEnd } : {}),
+    })
+  }
+  return windows
+}
+
+/**
+ * 小米 Token Plan 编排：detail + usage 两次固定 GET，Cookie 认证（无候选链、无钉住域——
+ * 查询平面与 settings baseURL 完全无关）。authorization 是 discoverQuotaCredential 对
+ * consoleCookie kind 下发的裸值；容错处理粘贴带入的 `Cookie:` 前缀；HTTP 401/403 与
+ * 信封 code:401 都归一为 credential-rejected（Cookie 失效是唯一常见故障，别让用户猜状态码）。
+ */
+async function fetchXiaomiTokenPlanUsage({ authorization, signal }) {
+  const cookie = String(authorization ?? '').trim().replace(/^cookie:\s*/i, '')
+  if (cookie === '') throw new Error('credential-missing')
+  const fetchEnvelope = async (url) => {
+    try {
+      return unwrapXiaomiConsoleEnvelope(await requestQuotaJson(url, { cookie, signal }))
+    } catch (error) {
+      if (error?.message === 'http-status:401' || error?.message === 'http-status:403') throw new Error('credential-rejected')
+      throw error
+    }
+  }
+  const detailData = await fetchEnvelope(XIAOMI_TOKEN_PLAN_DETAIL_URL)
+  const usageData = await fetchEnvelope(XIAOMI_TOKEN_PLAN_USAGE_URL)
+  const hasPlan = typeof detailData?.planCode === 'string' && detailData.planCode.trim() !== ''
+  const windows = normalizeXiaomiTokenPlanUsage(detailData, usageData)
+  if (!hasPlan && windows.length === 0) throw new Error('no-subscription')
+  return windows
+}
+
 
 // ─── CLIProxyAPI（cliproxy）管理面编排 ──────────────────────────────────────
 // 上游官方额度端点注册表（经 CPA api-call 代调，header 的 $TOKEN$ 由 CPA 替换为对应账号凭据）。
@@ -1452,6 +1555,7 @@ async function fetchProviderUsage(endpoint, authorization, options = {}) {
 /**
  * 单次 JSON 请求（GET/POST，POST 带 JSON body）：CLIProxyAPI 管理面专用（GET auth-files +
  * POST api-call）。与 GET 版同样的 15s 超时、64KB 上限、瞬时错误白名单；body 只接受已序列化字符串。
+ * options.cookie（v0.29 小米控制台）：按 Cookie 头直发登录态，与 Authorization 互斥使用。
  */
 function requestQuotaJsonOnce(endpoint, options = {}) {
   return new Promise((resolve, reject) => {
@@ -1474,6 +1578,7 @@ function requestQuotaJsonOnce(endpoint, options = {}) {
         'user-agent': `dsh-service/${pluginVersion} (DeepSeek Harness plugin)`,
         ...(body === '' ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }),
         ...(options.authorization === undefined || options.authorization === '' ? {} : { Authorization: options.authorization }),
+        ...(typeof options.cookie === 'string' && options.cookie !== '' ? { Cookie: options.cookie } : {}),
       },
     }, (response) => {
       const status = response.statusCode || 0
@@ -3908,7 +4013,11 @@ function apply(ctx) {
               }
               config.allowedHosts[providerName] = [host]
             } else {
-              if (kind !== null && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
+              // consoleCookie kind（小米）查询平面是宿主常量、与 baseURL 无关，跳过端点检查——
+              // 用户经中转域接入推理时同样能凭 Cookie 查控制台额度，不该被 baseURL 拦下适配。
+              if (kind !== null && KIND_REGISTRY[kind]?.consoleCookie !== true
+                && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false
+                && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
                 return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
               }
               // 非管理面 kind（含显式停用/清除）不保留钉住记录，避免陈旧域残留。
@@ -4092,6 +4201,7 @@ export {
   extractSkillDraftJson,
   fetchCliproxyUsage,
   fetchProviderUsage,
+  fetchXiaomiTokenPlanUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
@@ -4105,6 +4215,7 @@ export {
   normalizeOpencodeUsage,
   normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
+  normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
@@ -4122,6 +4233,7 @@ export {
   setSkillInvocationKey,
   skillIdFor,
   unwrapCliproxyApiCallEnvelope,
+  unwrapXiaomiConsoleEnvelope,
 }
 export default {
   SKILL_SOURCE_RANK,
@@ -4136,6 +4248,7 @@ export default {
   extractSkillDraftJson,
   fetchCliproxyUsage,
   fetchProviderUsage,
+  fetchXiaomiTokenPlanUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
@@ -4149,6 +4262,7 @@ export default {
   normalizeOpencodeUsage,
   normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
+  normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
   parseSkillFrontmatterData,
@@ -4166,4 +4280,5 @@ export default {
   setSkillInvocationKey,
   skillIdFor,
   unwrapCliproxyApiCallEnvelope,
+  unwrapXiaomiConsoleEnvelope,
 }

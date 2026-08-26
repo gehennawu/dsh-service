@@ -10,7 +10,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope } from '../index.js'
+import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -3045,7 +3045,7 @@ function stubHttpsRequest(t, handler) {
   const originalRequest = https.request
   const requests = []
   https.request = (url, options, callback) => {
-    const entry = { url: String(url), method: options.method || 'GET', auth: options.headers?.Authorization }
+    const entry = { url: String(url), method: options.method || 'GET', auth: options.headers?.Authorization, cookie: options.headers?.Cookie }
     requests.push(entry)
     const response = new EventEmitter()
     response.statusCode = 200
@@ -3260,6 +3260,175 @@ test('fetchCliproxyUsage keeps window ids unique when codex windows collide on t
   assert.deepEqual(windows.map((window) => window.id), ['u-example-com-0-codex-5h', 'u-example-com-0-codex-5h~'])
   assert.deepEqual(windows.map((window) => window.kindKey), ['codex-5h', 'codex-5h'])
 })
+
+// ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）────────────────────────────
+// 形状来源：platform.xiaomimimo.com 控制台 SPA bundle（2026-09 核实）——信封 {code,message,data}、
+// usage.items[] 每项 {name, percent(0..1 小数), used, limit}，与「套餐使用情况」页同源。
+
+const XIAOMI_DETAIL_FIXTURE = {
+  code: 200,
+  message: 'ok',
+  data: {
+    planCode: 'tp_pro_monthly',
+    planName: 'Pro 月度套餐',
+    expired: false,
+    currentPeriodEnd: '2026-06-27T23:59:59Z',
+    enableAutoRenew: false,
+    hasAutoRenewSubscribed: false,
+    clawEnabled: false,
+  },
+}
+
+const XIAOMI_USAGE_FIXTURE = {
+  code: 0,
+  message: 'ok',
+  data: {
+    usage: {
+      items: [
+        { name: 'total_token', percent: 0.1234, used: 1357400000, limit: 11000000000 },
+        { name: 'compensation_total_token', percent: 0.05, used: 164213564, limit: 3284271284 },
+      ],
+    },
+  },
+}
+
+test('normalizeXiaomiTokenPlanUsage maps console usage buckets into unified windows', () => {
+  const windows = normalizeXiaomiTokenPlanUsage(XIAOMI_DETAIL_FIXTURE.data, XIAOMI_USAGE_FIXTURE.data)
+  assert.deepEqual(windows, [
+    // 套餐名是纯数据：文本窗口置顶，本地化标签在客户端词典。
+    { id: 'plan', kindKey: 'plan-name', text: 'Pro 月度套餐' },
+    // percent 是 0..1 小数（×100 截断取整）；used/limit 原始数值透传；resetsAt = 订阅有效期。
+    { id: 'total_token', kindKey: 'total_token', percent: 12, used: 1357400000, limit: 11000000000, resetsAt: new Date('2026-06-27T23:59:59Z').toISOString() },
+    { id: 'compensation_total_token', kindKey: 'compensation_total_token', percent: 5, used: 164213564, limit: 3284271284, resetsAt: new Date('2026-06-27T23:59:59Z').toISOString() },
+  ])
+
+  // 控制台同款规则：补偿积分 limit===0 不渲染；缺 percent 的桶跳过；重复 name 去重。
+  const partial = normalizeXiaomiTokenPlanUsage(
+    { planCode: 'x', planName: ' Standard ', expired: true, currentPeriodEnd: '2020-01-01T00:00:00Z' },
+    { usage: { items: [
+      { name: 'total_token', percent: 0.5, used: 5, limit: 10 },
+      { name: 'compensation_total_token', percent: 0.5, used: 1, limit: 0 }, // 无补偿积分 → 丢弃
+      { name: 'mystery_bucket', used: 1, limit: 2 },                          // 缺 percent → 跳过
+      { name: 'total_token', percent: 0.9, used: 9, limit: 10 },              // 重复 → 去重
+      'junk',                                                                  // 非对象 → 跳过
+    ] } },
+  )
+  assert.deepEqual(partial, [
+    { id: 'plan', kindKey: 'plan-name', text: 'Standard' },
+    // 已失效套餐不挂 resetsAt（避免误导性的未来倒计时）。
+    { id: 'total_token', kindKey: 'total_token', percent: 50, used: 5, limit: 10 },
+  ])
+  assert.deepEqual(normalizeXiaomiTokenPlanUsage(undefined, undefined), [])
+  assert.deepEqual(normalizeXiaomiTokenPlanUsage({}, { usage: { items: 'nope' } }), [])
+})
+
+test('unwrapXiaomiConsoleEnvelope accepts success codes and rejects login/business errors stably', () => {
+  assert.deepEqual(unwrapXiaomiConsoleEnvelope({ code: 0, data: { a: 1 } }), { a: 1 })
+  assert.deepEqual(unwrapXiaomiConsoleEnvelope({ code: 200, data: null }), {})
+  assert.throws(() => unwrapXiaomiConsoleEnvelope({ code: 401, message: 'login required' }),
+    (error) => quotaErrorCode(error) === 'credential-rejected' && error.detail === 'login required')
+  assert.throws(() => unwrapXiaomiConsoleEnvelope({ code: 50001, message: 'inner error' }),
+    (error) => quotaErrorCode(error) === 'bad-payload' && error.detail === 'inner error')
+  for (const bad of [null, 'str', {}, { data: {} }]) {
+    assert.throws(() => unwrapXiaomiConsoleEnvelope(bad), (error) => quotaErrorCode(error) === 'bad-payload')
+  }
+})
+
+test('fetchXiaomiTokenPlanUsage sends the session cookie to fixed endpoints only', async (t) => {
+  // 成功路径：两个固定 GET 都带裸 Cookie（无 Authorization），detail 先于 usage。
+  const okRequests = stubHttpsRequest(t, (request) => {
+    if (request.url === 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail') return { payload: XIAOMI_DETAIL_FIXTURE }
+    if (request.url === 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage') return { payload: XIAOMI_USAGE_FIXTURE }
+    return { status: 404 }
+  })
+  const windows = await fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc; userId=42', signal: undefined })
+  assert.equal(windows.length, 3)
+  assert.ok(okRequests.every((request) => request.auth === undefined))
+  assert.deepEqual(okRequests.map((request) => request.cookie), ['sid=abc; userId=42', 'sid=abc; userId=42'])
+
+  // 粘贴带入的「Cookie:」前缀（带或不带空格）剥掉再上头。
+  const prefixRequests = stubHttpsRequest(t, () => ({ payload: XIAOMI_DETAIL_FIXTURE }))
+  await fetchXiaomiTokenPlanUsage({ authorization: 'Cookie: sid=xyz', signal: undefined })
+  assert.ok(prefixRequests.every((request) => request.cookie === 'sid=xyz'))
+
+  // 空 Cookie（凭据链全落空后不该发生，仍防御）→ credential-missing。
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: '', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-missing')
+})
+
+test('fetchXiaomiTokenPlanUsage normalizes login failures and missing subscriptions', async (t) => {
+  // HTTP 401（登录态失效）→ credential-rejected，别让用户对着状态码猜。
+  stubHttpsRequest(t, () => ({ status: 401 }))
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-rejected')
+
+  // HTTP 200 但信封 code:401 同样归一。
+  stubHttpsRequest(t, () => ({ payload: { code: 401, message: 'not logged in' } }))
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-rejected')
+
+  // 无订阅（detail 无 planCode 且无可用额度桶）→ 独立稳定错误码。
+  stubHttpsRequest(t, (request) => request.url.endsWith('/detail')
+    ? { payload: { code: 200, data: {} } }
+    : { payload: { code: 200, data: { usage: { items: [] } } } })
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'no-subscription')
+
+  // 上游 500 维持 http-status 稳定码。
+  stubHttpsRequest(t, () => ({ status: 500 }))
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'http-status')
+})
+
+test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps the tp- key off the console plane', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-mimo-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const resolvedNames = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { mimo: { displayName: 'MiMo', baseURL: 'https://token-plan-cn.xiaomimimo.com/v1', apiKeyEnv: 'MIMO_TP_KEY' } } } : undefined) },
+      credentials: { resolve: async (name) => {
+        resolvedNames.push(name)
+        return { value: 'session-cookie-value' }
+      } },
+    },
+  })
+  const requests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/tokenPlan/detail')) return { payload: XIAOMI_DETAIL_FIXTURE }
+    if (request.url.endsWith('/tokenPlan/usage')) return { payload: XIAOMI_USAGE_FIXTURE }
+    return { status: 404 }
+  })
+
+  assert.equal(await host.handler('quota', {}).then((res) => res.ok), true)
+  await waitFor(() => requests.length >= 2, 'two console calls')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  // 凭据发现只试控制台 Cookie 线索——apiKeyEnv（tp- 推理密钥）绝不发往控制台平面。
+  assert.deepEqual(resolvedNames, ['XIAOMI_MIMO_CONSOLE_COOKIE'])
+  assert.ok(requests.every((request) => request.auth === undefined))
+  assert.ok(requests.every((request) => request.cookie === 'session-cookie-value'))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'mimo')
+  assert.equal(row.status, 'ok')
+  assert.equal(row.kind, 'xiaomi-token-plan-cn')
+  assert.equal(row.kindSource, 'auto') // baseURL 宿主唯一命中自动推断
+  assert.equal(row.usageUrl, 'https://platform.xiaomimimo.com/console/usage')
+  const byId = new Map(row.windows.map((window) => [window.id, window]))
+  assert.equal(byId.get('plan').text, 'Pro 月度套餐')
+  assert.equal(byId.get('total_token').percent, 12)
+  assert.equal(byId.get('total_token').used, 1357400000)
+  assert.equal(byId.get('compensation_total_token').percent, 5)
+  assert.equal(row.credentialHints, undefined) // 已配置成功的行不带凭据窗口
+
+  // 手动适配不受 baseURL 端点检查拦截（查询平面固定，中转域/空 baseURL 也能凭 Cookie 查额度）。
+  const relayHost = createHost(quotaHostOverrides(dshHome, { relay: { baseURL: '' } }, 'sid=abc'))
+  const adapted = await relayHost.handler('quota-config', { provider: 'relay', kind: 'xiaomi-token-plan-cn' })
+  assert.equal(adapted.ok, true)
+  const config = JSON.parse(await readFile(join(dshHome, 'dsh-service-quota.json'), 'utf8'))
+  assert.equal(config.kinds.relay, 'xiaomi-token-plan-cn')
+})
+
 
 test('quota credential hints and write endpoints round-trip through the DSH credentials store', async (t) => {
   // 线索名清单：经典 kind = apiKeyEnv 在前、keyHints 殿后去重；管理面 kind 不含代理 key。

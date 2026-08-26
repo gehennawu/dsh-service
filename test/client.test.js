@@ -2345,6 +2345,66 @@ test('balance-only providers show remaining wording and skip the fake percent in
   assert.match(text, /¥110\.00/)
 })
 
+test('xiaomi token plan card shows console buckets with absolute figures and the cookie credential entry', async () => {
+  // 小米 Token Plan（v0.29）：套餐名文本窗口置顶 + 额度桶带 used/limit 原始数值（客户端缩写）；
+  // 未配置行的凭据入口必须是「控制台 Cookie」文案——错标签会诱导把 tp- 推理密钥填进 Cookie 槽位。
+  const now = Date.now()
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const quotaResponse = {
+    ok: true,
+    value: {
+      serverTime: now,
+      providers: [
+        {
+          provider: 'mimo', displayName: 'MiMo', adapted: true, kind: 'xiaomi-token-plan-cn', refreshing: false, status: 'ok',
+          windows: [
+            { id: 'plan', kindKey: 'plan-name', text: 'Pro 月度套餐' },
+            { id: 'total_token', kindKey: 'total_token', percent: 12, used: 1357400000, limit: 11000000000, resetsAt: new Date(now + 3600_000).toISOString() },
+          ],
+          fetchedAt: now,
+          usageUrl: 'https://platform.xiaomimimo.com/console/usage',
+        },
+        {
+          provider: 'mimo2', displayName: 'MiMo relay', adapted: true, kind: 'xiaomi-token-plan-cn', refreshing: false, status: 'unconfigured',
+          errorCode: 'credential-missing', nextAllowedAt: null,
+          credentialHints: [
+            { name: 'XIAOMI_MIMO_CONSOLE_COOKIE', configured: false },
+            { name: 'MIMO_CONSOLE_COOKIE', configured: false },
+          ],
+        },
+      ],
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.29.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.29.0', latest: '0.29.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return quotaResponse
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 卡片标题链到用户点名的控制台用量页。
+  assert.equal(renderer.findByTestId('quota-usage-link-mimo').props.href, 'https://platform.xiaomimimo.com/console/usage')
+  // 套餐名文本窗口 + 总额度桶：百分比与绝对数 figure 同行（「{{used}} / {{limit}}」控制台口径）。
+  assert.match(text, /订阅套餐/)
+  assert.match(text, /Pro 月度套餐/)
+  assert.match(text, /套餐总额度/)
+  assert.match(text, /12% · 1\.4B \/ 11B/)
+  // 有效期作为 resetsAt → 重置倒计时行（时长随执行耗时漂移，只断行存在与文案前缀）。
+  const resetLine = renderer.findByTestId('quota-card-reset-mimo-total_token')
+  assert.match(String(resetLine.children[0]), /^重置于 /)
+  // 未配置行的凭据入口文案按 kind 分流为 Cookie 版。
+  assert.ok(renderer.hasTest('quota-cred-edit-mimo2'))
+  assert.match(text, /填写控制台 Cookie（网页登录态）/)
+})
+
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
@@ -2445,7 +2505,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'cliproxy'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'xiaomi-token-plan-cn', 'cliproxy'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 已适配卡片脚部下拉预选当前 kind。
