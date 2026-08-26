@@ -26,6 +26,15 @@ window.__ModuleLoader__.load({
       'tabs.skills': '技能',
       'tabs.subagent': '子代理',
       'features.subagentRoute': '子代理模型',
+      'features.mobileAdaptation': '移动端适配',
+      'mobile.fab.label': '打开侧栏菜单',
+      'mobile.debug.title': '移动端诊断',
+      'mobile.debug.viewport': '视口',
+      'mobile.debug.drawer': '抽屉',
+      'mobile.debug.details': '预览列',
+      'mobile.debug.errors': 'JS 错误',
+      'mobile.debug.stateOn': '开',
+      'mobile.debug.stateOff': '关',
       'subagent.title': '子代理模型',
       'subagent.hint': '控制「未显式指定模型」的子代理委派使用哪个模型；显式指定了模型的派生（预设钉死、其他插件注入、调用参数携带）不受影响。',
       'subagent.mode.label': '模式',
@@ -517,6 +526,15 @@ window.__ModuleLoader__.load({
       'tabs.skills': 'Skills',
       'tabs.subagent': 'Subagents',
       'features.subagentRoute': 'Subagent model',
+      'features.mobileAdaptation': 'Mobile adaptation',
+      'mobile.fab.label': 'Open sidebar menu',
+      'mobile.debug.title': 'Mobile diagnostics',
+      'mobile.debug.viewport': 'Viewport',
+      'mobile.debug.drawer': 'Drawer',
+      'mobile.debug.details': 'Details',
+      'mobile.debug.errors': 'JS errors',
+      'mobile.debug.stateOn': 'on',
+      'mobile.debug.stateOff': 'off',
       'subagent.title': 'Subagent model',
       'subagent.hint': 'Controls which model a subagent delegation uses when no model was explicitly specified; delegations with an explicit route (pinned preset, another plugin, call arguments) are unaffected.',
       'subagent.mode.label': 'Mode',
@@ -1091,7 +1109,7 @@ window.__ModuleLoader__.load({
         if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
         return number.toLocaleString()
       }
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -2470,7 +2488,7 @@ window.__ModuleLoader__.load({
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute'].map(row),
+          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute', 'mobileAdaptation'].map(row),
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
           row('healthz'),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
@@ -4481,6 +4499,359 @@ window.__ModuleLoader__.load({
         const unsubscribe = featureScope.subscribe(sync)
         return () => { unsubscribe(); if (dispose !== null) dispose() }
       })
+
+      // ─── 移动端适配引擎（v0.30）─────────────────────────────────────────
+      // 断点与官方外壳一致取 <1024px（AppFrame 的 SIDEBAR_AUTO_COLLAPSE）。
+      // 全部规则作用域于 html[data-dshsvc-mobile] 属性下；抽屉开合走官方
+      // ctx.layout 服务，不重挂宿主 DOM。桌面 ≥1024px 或功能关闭时零效果。
+      const MOBILE_ACTIVE_QUERY = '(max-width: 1023px)'
+      const MOBILE_DEBUG_PARAM = 'dshsvc-mobile-debug'
+      const MOBILE_CSS = `
+html[data-dshsvc-mobile] [data-dshsvc-frame] { grid-template-columns: 0px minmax(0, 1fr) 0px !important; }
+/* 侧栏 → overlay 抽屉：官方 rail 整体离屏，data-sidebar-collapsed 缺席 = 展开 */
+html[data-dshsvc-mobile] [data-dshsvc-sidebar] {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: min(84vw, 320px) !important;
+  z-index: 32;
+  transform: translateX(-104%);
+  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+}
+html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-sidebar-collapsed]) [data-dshsvc-sidebar] {
+  transform: translateX(0);
+  box-shadow: 8px 0 32px rgba(0, 0, 0, .22);
+}
+/* 详情列（预览/文件树）→ 右侧 overlay，不再挤压会话区 */
+html[data-dshsvc-mobile] [data-dshsvc-details] {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  right: 0 !important;
+  width: min(92vw, 420px) !important;
+  z-index: 30;
+  transform: translateX(104%);
+  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+}
+html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-details-collapsed]) [data-dshsvc-details] {
+  transform: translateX(0);
+  box-shadow: -8px 0 32px rgba(0, 0, 0, .22);
+}
+/* 模态 → 底部 sheet：外壳 portal 根是 fixed inset:0 flex 容器（无 transform，
+   无 containing-block 陷阱），dialog 改 absolute 底部锚定即可。
+   设置页 panel 本身就是 [role=dialog]（800px flex row：188px nav 列 + 内容区），
+   转列向让导航条横在顶部、内容区占其余高度。 */
+html[data-dshsvc-mobile] div[role="presentation"]:has(> [role="dialog"][aria-modal="true"]) {
+  padding: 0 !important;
+  align-items: flex-end !important;
+}
+html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] {
+  position: absolute !important;
+  top: auto !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  max-width: 100vw !important;
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 48px) !important;
+  border-radius: 16px 16px 0 0 !important;
+  overflow: hidden auto !important;
+  flex-direction: column !important;
+}
+/* 设置页标签条：nav 从 188px 竖列变顶部横滑条（宽度与列向必须显式推翻） */
+html[data-dshsvc-mobile] [role="dialog"] nav {
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 6px !important;
+  width: auto !important;
+  flex: none !important;
+  padding: 8px 12px 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  border-right: none !important;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+html[data-dshsvc-mobile] [role="dialog"] nav > div { flex: none !important; }
+html[data-dshsvc-mobile] [class*="navList"] { flex-direction: row !important; }
+html[data-dshsvc-mobile] [class*="navCell"] { white-space: nowrap !important; flex: none !important; }
+/* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */
+html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
+html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
+html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding-left: 46px !important; }
+/* 刘海安全区：viewport-fit=cover 后由 env() 补回遮挡区 */
+html[data-dshsvc-mobile] body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-sizing: border-box;
+}
+/* 双击缩放与 iOS 聚焦放大 */
+html[data-dshsvc-mobile] button,
+html[data-dshsvc-mobile] a,
+html[data-dshsvc-mobile] [role="button"],
+html[data-dshsvc-mobile] input,
+html[data-dshsvc-mobile] textarea,
+html[data-dshsvc-mobile] select { touch-action: manipulation; }
+html[data-dshsvc-mobile] input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+html[data-dshsvc-mobile] textarea { font-size: max(16px, 1em) !important; }
+/* composer 防挤压：保守规则，真机反馈后迭代 */
+html[data-dshsvc-mobile] [class*="toolbar" i] { flex-wrap: wrap !important; min-width: 0 !important; max-width: 100% !important; }
+html[data-dshsvc-mobile] [class*="composer" i] { min-width: 0 !important; max-width: 100% !important; }
+html[data-dshsvc-mobile] [class*="inputTriggers" i] > *,
+html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
+`
+
+      function createMobileAdaptation() {
+        const state = {
+          active: false,
+          mq: null,
+          mqHandler: null,
+          frameObserver: null,
+          sidebarClickHandler: null,
+          errorHandler: null,
+          resizeHandler: null,
+          styleTag: null,
+          backdrop: null,
+          fab: null,
+          debugChip: null,
+          debugEnabled: false,
+          errorCount: 0,
+          drawerOpen: false,
+          detailsOpen: false,
+        }
+
+        const layoutService = () => {
+          try { return typeof ctx.get === 'function' ? ctx.get('layout') : undefined } catch (_) { return undefined }
+        }
+
+        const syncSurfaces = () => {
+          const overlayVisible = state.drawerOpen || state.detailsOpen
+          if (state.backdrop !== null) state.backdrop.style.display = overlayVisible ? 'block' : 'none'
+          if (state.fab !== null) state.fab.style.display = state.drawerOpen ? 'none' : 'flex'
+          if (state.debugEnabled && state.debugChip !== null) updateDebugChip()
+        }
+
+        const readOverlayState = () => {
+          const frame = document.querySelector('[data-dshsvc-frame]')
+          state.drawerOpen = frame !== null && !frame.hasAttribute('data-sidebar-collapsed')
+          state.detailsOpen = frame !== null && !frame.hasAttribute('data-details-collapsed')
+        }
+
+        const updateDebugChip = () => {
+          const chip = state.debugChip
+          if (chip === null) return
+          const onOff = (value) => (value ? t('mobile.debug.stateOn') : t('mobile.debug.stateOff'))
+          chip.textContent = [
+            `${t('mobile.debug.viewport')} ${window.innerWidth}×${window.innerHeight}`,
+            `≤1023 ${onOff(state.active)}`,
+            `${t('mobile.debug.drawer')} ${onOff(state.drawerOpen)}`,
+            `${t('mobile.debug.details')} ${onOff(state.detailsOpen)}`,
+            `${t('mobile.debug.errors')} ${state.errorCount}`,
+          ].join(' · ')
+        }
+
+        /** 给外壳三栏骨架打自有标记属性；找不到骨架（异常布局）时返回 false 跳过抽屉件。 */
+        const tagShellFrame = () => {
+          // overlayLayer 是 frame 的子元素且带官方 data-shell-overlay 属性（源码核实）
+          const overlayLayer = document.querySelector('[data-shell-overlay]')
+          const frame = overlayLayer !== null ? overlayLayer.parentNode : null
+          if (frame === null || frame === document.documentElement) return false
+          frame.setAttribute('data-dshsvc-frame', '')
+          let sawSidebar = false
+          let sawDetails = false
+          for (const child of frame.children) {
+            const className = typeof child.className === 'string' ? child.className : ''
+            if (!sawSidebar && /sidebarCol/.test(className)) {
+              child.setAttribute('data-dshsvc-sidebar', '')
+              sawSidebar = true
+            } else if (!sawDetails && /detailsCol/.test(className)) {
+              child.setAttribute('data-dshsvc-details', '')
+              sawDetails = true
+            }
+          }
+          return true
+        }
+
+        const ensureViewportCover = () => {
+          for (const meta of document.querySelectorAll('meta[name="viewport"]')) {
+            const content = meta.getAttribute('content') || ''
+            if (/(^|,)\s*viewport-fit\s*=/.test(content)) continue
+            meta.setAttribute('content', content.trim() === '' ? 'viewport-fit=cover' : content.trim() + ', viewport-fit=cover')
+          }
+        }
+
+        const activate = () => {
+          if (state.active) return
+          if (layoutService() === undefined) return // 无官方 layout 服务时不出交互件，避免不可收起的抽屉
+          state.active = true
+          // 全部规则的作用域开关：CSS 与 DOM 标记都以它为门
+          document.documentElement.setAttribute('data-dshsvc-mobile', '')
+          ensureViewportCover()
+          state.styleTag = document.createElement('style')
+          state.styleTag.dataset.plugin = '@gehennawu/dsh-service'
+          state.styleTag.dataset.pluginCss = '@gehennawu/dsh-service/mobile.css'
+          state.styleTag.textContent = MOBILE_CSS
+          document.head.appendChild(state.styleTag)
+          if (tagShellFrame()) {
+            state.backdrop = document.createElement('div')
+            state.backdrop.setAttribute('data-dshsvc-backdrop', '')
+            state.backdrop.setAttribute('aria-hidden', 'true')
+            Object.assign(state.backdrop.style, {
+              position: 'fixed', inset: '0', zIndex: '31', display: 'none',
+              background: 'rgba(0,0,0,.42)', backdropFilter: 'blur(1px)',
+            })
+            state.backdrop.addEventListener('click', () => {
+              const layout = layoutService()
+              if (layout === undefined) return
+              if (state.drawerOpen) layout.toggleSidebar()
+              else if (state.detailsOpen) layout.closeDetails()
+            })
+            document.body.appendChild(state.backdrop)
+
+            state.fab = document.createElement('button')
+            state.fab.type = 'button'
+            state.fab.setAttribute('data-dshsvc-fab', '')
+            state.fab.setAttribute('aria-label', t('mobile.fab.label'))
+            // 样式对齐外壳幽灵图标钮（设置关闭钮同族：28px 圆形、透明底、主题色），
+            // 位置钉会话头部左上角（safe-area 感知），图标为侧栏面板开关。
+            Object.assign(state.fab.style, {
+              position: 'fixed',
+              left: 'calc(env(safe-area-inset-left, 0px) + 10px)',
+              top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+              width: '32px', height: '32px', borderRadius: '16px', zIndex: '33', display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-primary)',
+              padding: '0', cursor: 'pointer', touchAction: 'manipulation',
+            })
+            state.fab.innerHTML =
+              '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+              '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.5"/>' +
+              '<line x1="6.25" y1="3.5" x2="6.25" y2="12.5" stroke="currentColor" stroke-width="1.5"/></svg>'
+            state.fab.addEventListener('click', () => {
+              const layout = layoutService()
+              if (layout !== undefined) layout.toggleSidebar()
+            })
+            document.body.appendChild(state.fab)
+          }
+          readOverlayState()
+
+          // 抽屉开着时点击侧栏内任意位置即收起（会话行/新建按钮等操作照常发生）
+          const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
+          if (sidebarEl !== null) {
+            state.sidebarClickHandler = () => {
+              if (!state.drawerOpen) return
+              const layout = layoutService()
+              if (layout !== undefined) layout.toggleSidebar()
+            }
+            sidebarEl.addEventListener('click', state.sidebarClickHandler)
+          }
+
+          state.frameObserver = new MutationObserver(() => {
+            readOverlayState()
+            syncSurfaces()
+          })
+          const frame = document.querySelector('[data-dshsvc-frame]')
+          if (frame !== null) state.frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed', 'data-details-collapsed'] })
+
+          let debugRequested = false
+          try { debugRequested = new URLSearchParams(window.location.search).has(MOBILE_DEBUG_PARAM) } catch (_) {}
+          if (debugRequested) {
+            state.debugEnabled = true
+            state.errorHandler = () => {
+              state.errorCount += 1
+              updateDebugChip()
+            }
+            window.addEventListener('error', state.errorHandler)
+            state.resizeHandler = () => updateDebugChip()
+            window.addEventListener('resize', state.resizeHandler)
+            state.debugChip = document.createElement('div')
+            state.debugChip.setAttribute('data-dshsvc-debug', '')
+            Object.assign(state.debugChip.style, {
+              position: 'fixed', left: '8px', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)',
+              zIndex: '60', maxWidth: '94vw', padding: '4px 8px', borderRadius: '8px',
+              font: '11px/1.5 var(--ds-font-family-code, monospace)',
+              background: 'var(--dsw-alias-bg-layer-2, #333)', color: 'var(--dsw-alias-label-primary, #eee)',
+              pointerEvents: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            })
+            state.debugChip.title = t('mobile.debug.title')
+            document.body.appendChild(state.debugChip)
+            updateDebugChip()
+          }
+          syncSurfaces()
+        }
+
+        const deactivate = () => {
+          if (!state.active) return
+          state.active = false
+          state.drawerOpen = false
+          state.detailsOpen = false
+          document.documentElement.removeAttribute('data-dshsvc-mobile')
+          if (state.frameObserver !== null) { state.frameObserver.disconnect(); state.frameObserver = null }
+          const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
+          if (sidebarEl !== null && state.sidebarClickHandler !== null) sidebarEl.removeEventListener('click', state.sidebarClickHandler)
+          state.sidebarClickHandler = null
+          if (state.errorHandler !== null) window.removeEventListener('error', state.errorHandler)
+          if (state.resizeHandler !== null) window.removeEventListener('resize', state.resizeHandler)
+          state.errorHandler = null
+          state.resizeHandler = null
+          for (const el of [state.styleTag, state.backdrop, state.fab, state.debugChip]) {
+            if (el !== null && el.isConnected) el.remove()
+          }
+          for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-details]')) {
+            el.removeAttribute('data-dshsvc-frame')
+            el.removeAttribute('data-dshsvc-sidebar')
+            el.removeAttribute('data-dshsvc-details')
+          }
+          state.styleTag = null
+          state.backdrop = null
+          state.fab = null
+          state.debugChip = null
+          state.debugEnabled = false
+        }
+
+        const evaluate = () => {
+          const want = featureEnabled('mobileAdaptation') && state.mmqMatches()
+          if (want) activate()
+          else deactivate()
+        }
+
+        const dispose = () => {
+          deactivate()
+          if (state.mq !== null && state.mqHandler !== null) {
+            if (typeof state.mq.removeEventListener === 'function') state.mq.removeEventListener('change', state.mqHandler)
+            else if (typeof state.mq.removeListener === 'function') state.mq.removeListener('change', state.mqHandler)
+          }
+          state.mqHandler = null
+        }
+
+        // matchMedia 惰性创建：测试环境可能只提供最小桩
+        try {
+          state.mq = window.matchMedia(MOBILE_ACTIVE_QUERY)
+        } catch (_) {
+          state.mq = null
+        }
+        state.mmqMatches = () => {
+          try { return state.mq !== null && state.mq.matches === true } catch (_) { return false }
+        }
+        if (state.mq !== null) {
+          state.mqHandler = () => evaluate()
+          if (typeof state.mq.addEventListener === 'function') state.mq.addEventListener('change', state.mqHandler)
+          else if (typeof state.mq.addListener === 'function') state.mq.addListener(state.mqHandler)
+        }
+
+        return { evaluate, dispose }
+      }
+
+      const mobileEngine = createMobileAdaptation()
+      ctx.effect(() => {
+        const unsubscribeFeatures = featureScope.subscribe(() => mobileEngine.evaluate())
+        mobileEngine.evaluate()
+        return () => {
+          unsubscribeFeatures()
+          mobileEngine.dispose()
+        }
+      }, 'dsh-service mobile adaptation')
     }
 
     exports.inject = inject

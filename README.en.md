@@ -10,7 +10,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 The Settings panel "Service Control" page has nine top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Subagents, Restart**; the Restart, Quota lookup, Skills, and Subagents tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
-The plugin also appears under **Plugins → Plugin configuration**, with eight host-level switches enabled by default: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview and Restart remain available. All eight switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+The plugin also appears under **Plugins → Plugin configuration**, with nine host-level switches enabled by default: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Mobile adaptation, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview and Restart remain available. All nine switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
 
 ### Version and updates
 
@@ -96,6 +96,16 @@ The plugin also appears under **Plugins → Plugin configuration**, with eight h
 - Three toggle switches: master switch, task completion, and approvals & questions, each controlled independently
 - Bell icon in the conversation input bar toggles the master switch quickly
 - All toggles persist across page reloads
+
+### Mobile adaptation
+
+- On by default; active only on phones or narrow windows (viewport <1024px, matching the official shell's sidebar collapse breakpoint). Desktop widths are completely unaffected
+- Sidebar becomes a drawer: the official sidebar slides into a left overlay drawer — a translucent floating button on the left edge toggles it, and tapping the backdrop or any session row closes it automatically. The preview/file-tree details column becomes a right overlay instead of squeezing the conversation area. Open/close goes through DSH's official `layout` service; no host DOM reparenting
+- Modals become bottom sheets: settings dialogs turn into bottom sheets (rounded top corners, internal scrolling), and the settings left navigation becomes a horizontally scrollable top strip
+- Touch details: adds `viewport-fit=cover` automatically and respects notch safe areas; double-tap no longer zooms the page; text inputs stay ≥16px so iOS no longer auto-zooms on focus
+- Transparent large-JSON compression: the host compresses JSON responses ≥4KB with gzip/brotli chosen from the browser's `Accept-Encoding` (long session histories can reach tens of MB — compression noticeably speeds up first paint). Small payloads and other content types pass through byte-identical; SSE streams are untouched
+- The "Mobile adaptation" switch in "Plugins → Plugin configuration" turns everything off: the host compression patch is restored and all UI enhancements unmount, returning to the native layout immediately without a restart
+- Debug mode: append `?dshsvc-mobile-debug=1` to the URL to show a floating diagnostics chip (viewport size / breakpoint state / drawer & details state / JS error count). For debugging only
 
 ### External liveness probe
 

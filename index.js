@@ -9,6 +9,8 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import https from 'node:https'
+import { brotliCompress, constants as zlibConstants, gzip } from 'node:zlib'
+import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 
 const require = createRequire(import.meta.url)
@@ -26,6 +28,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   healthz: true,
   skillManager: true,
   subagentRoute: true,
+  mobileAdaptation: true,
 })
 const FeatureSettingsSchema = z.object({
   healthDiagnostics: z.boolean().default(true),
@@ -36,6 +39,7 @@ const FeatureSettingsSchema = z.object({
   healthz: z.boolean().default(true),
   skillManager: z.boolean().default(true),
   subagentRoute: z.boolean().default(true),
+  mobileAdaptation: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -3103,6 +3107,261 @@ function resolveSubagentInjection(request, config, options = {}) {
 }
 
 
+// ── 移动端适配·宿主半（v0.30）：大 JSON 响应透明压缩 ─────────────────────────
+// 长会话的 history JSON 可达数十 MB，手机网络下首屏极慢。给 http.ServerResponse.prototype
+// 打补丁：JSON 响应延迟到 end 收尾，按请求 Accept-Encoding 选 br > gzip 异步压缩；
+// 小体积与其他 content-type 字节级透传。插件卸载或功能关闭时经 disposer 还原原型。
+// 设计边界：ndjson / event-stream 这类增量流即使带 json 字样也绝不缓冲；
+// 不经 writeHead 显式带头对象的响应（statusCode + setHeader、Node 隐式头）识别不到，
+// 一律透传。
+
+/** 不值得压缩的下限：更小的 JSON 按原始头字节级回放。 */
+const MOBILE_COMPRESS_MIN_BYTES = 4 * 1024
+/** 超过该体积跳过压缩：避免「原文 + 压缩结果」双份内存尖峰。 */
+const MOBILE_COMPRESS_MAX_BYTES = 64 * 1024 * 1024
+const MOBILE_BROTLI_QUALITY = 5
+const MOBILE_GZIP_LEVEL = 6
+
+/**
+ * content-type 是否值得走延迟压缩路径：JSON 且非增量流。
+ * @param {unknown} contentType - 响应头 content-type 原始值（可空）。
+ * @returns {boolean} true 表示可以缓冲到 end 再决定。
+ */
+export function isCompressibleJsonType(contentType) {
+  const value = String(contentType ?? '').toLowerCase()
+  if (!value.includes('json')) return false
+  // ndjson / event-stream 是持续增量流，整体缓冲会破坏消费语义。
+  return !value.includes('ndjson') && !value.includes('event-stream')
+}
+
+/**
+ * 从 Accept-Encoding 请求头选编解码器；br 优先于 gzip。
+ * @param {unknown} acceptEncoding - 请求头原值（可空）。
+ * @returns {'br'|'gzip'|null} 客户端不接受的编码时返回 null（透传）。
+ */
+export function pickCompressionEncoding(acceptEncoding) {
+  const accepted = String(acceptEncoding ?? '').toLowerCase()
+  if (/\bbr\b/.test(accepted)) return 'br'
+  if (/\bgzip\b/.test(accepted)) return 'gzip'
+  return null
+}
+
+/**
+ * 向既有 Vary 值追加一个 token；已有（大小写不敏感）则原样返回。
+ * @param {unknown} existing - 现有 Vary 头值。
+ * @param {string} token - 要追加的 token。
+ * @returns {string} 合并后的 Vary 值。
+ */
+export function appendVaryToken(existing, token) {
+  const current = existing === null || existing === undefined ? '' : String(existing)
+  if (current.toLowerCase().includes(token.toLowerCase())) return current
+  return current === '' ? token : `${current}, ${token}`
+}
+
+/**
+ * 用 zlib 异步压缩一个完整 body（不阻塞事件循环）。
+ * @param {Buffer} body - 待压缩字节。
+ * @param {'br'|'gzip'} encoding - 目标编码。
+ * @returns {Promise<Buffer>} 压缩结果。
+ */
+function compressBodyAsync(body, encoding) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const settle = (error, result) => (error ? rejectPromise(error) : resolvePromise(result))
+    if (encoding === 'br') {
+      brotliCompress(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: MOBILE_BROTLI_QUALITY } }, settle)
+    } else {
+      gzip(body, { level: MOBILE_GZIP_LEVEL }, settle)
+    }
+  })
+}
+
+/**
+ * 把 write/end 缓冲期收到的 chunk 归一化为 Buffer 追加进 pending。
+ * @param {{chunks: Buffer[]}} pending - 延迟响应状态。
+ * @param {unknown} chunk - write/end 的 chunk 参数。
+ * @param {string|undefined} encoding - Node 流编码参数（字符串 chunk 时生效）。
+ * @returns {void}
+ */
+function bufferPendingChunk(pending, chunk, encoding) {
+  if (chunk === null || chunk === undefined) return
+  if (Buffer.isBuffer(chunk)) pending.chunks.push(chunk)
+  else if (ArrayBuffer.isView(chunk)) pending.chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+  else if (typeof chunk === 'string') pending.chunks.push(Buffer.from(chunk, encoding || 'utf8'))
+  else pending.chunks.push(Buffer.from(String(chunk)))
+}
+
+/**
+ * 解析 Node write/end 的可选参数序列（encoding 字符串 / callback）。
+ * @param {unknown[]} rest - 除 chunk 外的剩余参数。
+ * @returns {{encoding?: string, callbacks: Function[]}} 解析结果。
+ */
+function parseStreamRestArgs(rest) {
+  const parsed = { callbacks: [] }
+  for (const item of rest) {
+    if (typeof item === 'string') parsed.encoding = item
+    else if (typeof item === 'function') parsed.callbacks.push(item)
+  }
+  return parsed
+}
+
+/**
+ * 以暂存的原始实参回放 writeHead（透传路径：头集合与调用方所写完全一致）。
+ * @param {import('node:http').ServerResponse} res - 目标响应。
+ * @param {Function} originalWriteHead - 未打补丁的 writeHead。
+ * @param {unknown[]} storedArgs - 首次 writeHead 的实参副本。
+ * @returns {import('node:http').ServerResponse} writeHead 返回值。
+ */
+function replayStoredWriteHead(res, originalWriteHead, storedArgs) {
+  if (storedArgs.length === 0) return originalWriteHead.call(res, 200)
+  return originalWriteHead.apply(res, storedArgs)
+}
+
+/**
+ * 回放 writeHead，但把头集合替换为压缩路径的最终头对象。
+ * @param {import('node:http').ServerResponse} res - 目标响应。
+ * @param {Function} originalWriteHead - 未打补丁的 writeHead。
+ * @param {unknown[]} storedArgs - 首次 writeHead 的实参副本。
+ * @param {Record<string, unknown>} headers - 最终头集合（含压缩相关头）。
+ * @returns {import('node:http').ServerResponse} writeHead 返回值。
+ */
+function replayStoredWriteHeadWithHeaders(res, originalWriteHead, storedArgs, headers) {
+  const args = storedArgs.slice()
+  if (typeof args[1] === 'string') args[2] = headers
+  else args[1] = headers
+  return originalWriteHead.apply(res, args)
+}
+
+/**
+ * 安装大 JSON 响应透明压缩补丁。进程内单例：重复安装返回既有 disposer。
+ * @returns {() => void} 还原原型方法的 disposer（身份校验，只摘自己的补丁）。
+ */
+export function installMobileResponseCompression() {
+  const proto = NodeServerResponse.prototype
+  // 已装补丁的守卫放在 ensure 层；此处仍做二次防御，避免测试直调时叠加。
+  if (proto.writeHead?.name === 'mobileCompressWriteHead') return () => {}
+  const originalWriteHead = proto.writeHead
+  const originalWrite = proto.write
+  const originalEnd = proto.end
+
+  /** @type {WeakMap<import('node:http').ServerResponse, object>} 每响应延迟状态，仅 JSON 响应收尾前存在。 */
+  const pendingByResponse = new WeakMap()
+
+  function mobileCompressWriteHead(...args) {
+    try {
+      const headerArg = typeof args[1] === 'string' ? args[2] : args[1]
+      // 只有「显式携带头对象」的 writeHead 才考虑延迟：Node 的隐式头路径
+      // (_implicitHeader → writeHead(statusCode)) 也走这里，若延迟会让原始
+      // end 在未发头的 socket 上直写 body，破坏线上的帧结构。
+      // setHeader 风格的响应因此保持透传（fail-open）。
+      if (headerArg === undefined || headerArg === null || typeof headerArg !== 'object') {
+        return originalWriteHead.apply(this, args)
+      }
+      // 判定用头集合 = 当前已 setHeader 的 + 本次 writeHead 实参里的（后者覆盖前者），
+      // 让「setHeader 后再 writeHead(200, {…})」这类写法也能被识别。
+      const merged = { ...this.getHeaders(), ...headerArg }
+      const encoding = pickCompressionEncoding(this.req?.headers?.['accept-encoding'])
+      if (
+        encoding === null ||
+        merged['content-encoding'] !== undefined ||
+        !isCompressibleJsonType(merged['content-type'])
+      ) return originalWriteHead.apply(this, args)
+      // 延迟收尾：先不发头、不落盘，等 end 时按实际体积决定压缩还是原样回放。
+      pendingByResponse.set(this, { writeHeadArgs: args.slice(), chunks: [], encoding })
+      return this
+    } catch (_) {
+      // 判定阶段的任何意外都退回透传，不影响宿主原有响应行为。
+      return originalWriteHead.apply(this, args)
+    }
+  }
+
+  function mobileCompressWrite(chunk, ...rest) {
+    const pending = pendingByResponse.get(this)
+    if (pending === undefined) return originalWrite.call(this, chunk, ...rest)
+    const { encoding, callbacks } = parseStreamRestArgs(rest)
+    bufferPendingChunk(pending, chunk, encoding)
+    // 缓冲期的 write 回调立即以成功触发：这些 JSON 路由无人依赖背压/drain 时序，
+    // 与其让调用方挂在一个永不触发的回调上，不如语义上视作「已接收」。
+    for (const callback of callbacks) {
+      try { callback(null) } catch (_) {}
+    }
+    return true
+  }
+
+  function mobileCompressEnd(chunk, ...rest) {
+    const pending = pendingByResponse.get(this)
+    if (pending === undefined) {
+      return chunk === undefined
+        ? originalEnd.apply(this, rest)
+        : originalEnd.call(this, chunk, ...rest)
+    }
+    pendingByResponse.delete(this)
+    if (chunk !== undefined) bufferPendingChunk(pending, chunk, parseStreamRestArgs(rest).encoding)
+    const [endCallback] = parseStreamRestArgs(rest).callbacks
+    const body = Buffer.concat(pending.chunks)
+
+    // 透传收尾：原始 writeHead 实参 + 原始 body，字节级等价于未打补丁的行为。
+    const finishPassthrough = () => {
+      replayStoredWriteHead(this, originalWriteHead, pending.writeHeadArgs)
+      if (body.length === 0) return originalEnd.call(this, endCallback)
+      return originalEnd.call(this, body, endCallback)
+    }
+
+    if (body.length < MOBILE_COMPRESS_MIN_BYTES || body.length > MOBILE_COMPRESS_MAX_BYTES) return finishPassthrough()
+
+    // 最终头集合 = 已 setHeader 的 + 暂存 writeHead 实参里的（后者覆盖前者，符合
+    // Node writeHead 语义）。注意补丁延迟了原始 writeHead，getHeaders() 里不会有
+    // 实参头的身影，必须显式并进来；writeHead 之后又 setHeader 的路径同样兼容。
+    const storedHeaderArg = typeof pending.writeHeadArgs[1] === 'string' ? pending.writeHeadArgs[2] : pending.writeHeadArgs[1]
+    const finalHeaders = {
+      ...this.getHeaders(),
+      ...(storedHeaderArg && typeof storedHeaderArg === 'object' ? storedHeaderArg : {}),
+    }
+    if (!isCompressibleJsonType(finalHeaders['content-type'])) return finishPassthrough()
+
+    finalHeaders['content-encoding'] = pending.encoding
+    delete finalHeaders['content-length']
+    finalHeaders.vary = appendVaryToken(finalHeaders.vary, 'Accept-Encoding')
+
+    compressBodyAsync(body, pending.encoding).then((compressed) => {
+      finalHeaders['content-length'] = compressed.length
+      replayStoredWriteHeadWithHeaders(this, originalWriteHead, pending.writeHeadArgs, finalHeaders)
+      originalWrite.call(this, compressed)
+      originalEnd.call(this, endCallback)
+    }, finishPassthrough)
+    return this
+  }
+
+  proto.writeHead = mobileCompressWriteHead
+  proto.write = mobileCompressWrite
+  proto.end = mobileCompressEnd
+  return () => {
+    if (proto.writeHead === mobileCompressWriteHead) proto.writeHead = originalWriteHead
+    if (proto.write === mobileCompressWrite) proto.write = originalWrite
+    if (proto.end === mobileCompressEnd) proto.end = originalEnd
+  }
+}
+
+let activeMobileCompressionDispose = null
+
+/**
+ * 进程内单例入口：确保压缩补丁处于安装状态，返回用于还原的 disposer。
+ * 每次调用都返回独立的托管包装：任一包装释放都会真正还原补丁并清掉单例标记，
+ * 后续再 ensure 会重新安装（绝不出现「标记还在、补丁已摘」的假活状态）。
+ * @returns {() => void} disposer。
+ */
+export function ensureMobileResponseCompression() {
+  if (activeMobileCompressionDispose === null) activeMobileCompressionDispose = installMobileResponseCompression()
+  const inner = activeMobileCompressionDispose
+  let released = false
+  return () => {
+    if (released || activeMobileCompressionDispose === null) return
+    released = true
+    activeMobileCompressionDispose = null
+    inner()
+  }
+}
+
+
 function apply(ctx) {
   const dshHome = resolveDshHome()
   let featureSettings = DEFAULT_FEATURE_SETTINGS
@@ -3398,6 +3657,27 @@ function apply(ctx) {
     for (const controller of quotaAbortControllers) controller.abort()
     quotaAbortControllers.clear()
   }, 'dsh-service quota upstream disposal')
+  // ── 移动端适配（v0.30）：大 JSON 响应压缩随功能开关热挂卸 ────────────────
+  let mobileCompressionDispose = null
+  const syncMobileCompression = () => {
+    if (featureEnabled('mobileAdaptation')) {
+      if (mobileCompressionDispose === null) mobileCompressionDispose = ensureMobileResponseCompression()
+    } else if (mobileCompressionDispose !== null) {
+      mobileCompressionDispose()
+      mobileCompressionDispose = null
+    }
+  }
+  ctx.effect(() => {
+    featureSettingsListeners.add(syncMobileCompression)
+    syncMobileCompression()
+    return () => {
+      featureSettingsListeners.delete(syncMobileCompression)
+      if (mobileCompressionDispose !== null) {
+        mobileCompressionDispose()
+        mobileCompressionDispose = null
+      }
+    }
+  }, 'dsh-service mobile response compression')
   const commands = ctx.get('commands')
   if (commands !== undefined) {
     ctx.effect(() => commands.register({

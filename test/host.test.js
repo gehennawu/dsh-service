@@ -6,11 +6,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
+import http from 'node:http'
 import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -664,6 +665,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    mobileAdaptation: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     healthDiagnostics: true,
@@ -674,6 +676,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    mobileAdaptation: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
@@ -3657,4 +3660,178 @@ test('subagent-route：宿主无 subagents/llm 服务时 available=false、模�
   assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'p', model: 'm' })).error, 'llm-unavailable')
   // follow 不需要 llm 目录，允许保存。
   assert.equal((await host.handler('subagent-route-save', { mode: 'follow' })).ok, true)
+})
+
+// ── v0.30 移动端适配·宿主半：大 JSON 响应透明压缩 ──────────────────────────
+
+test('mobile compression pure helpers classify content types, encodings and vary tokens', () => {
+  assert.equal(isCompressibleJsonType('application/json'), true)
+  assert.equal(isCompressibleJsonType('application/json; charset=utf-8'), true)
+  assert.equal(isCompressibleJsonType('APPLICATION/JSON'), true)
+  assert.equal(isCompressibleJsonType('application/x-ndjson'), false)
+  assert.equal(isCompressibleJsonType('text/event-stream'), false)
+  assert.equal(isCompressibleJsonType('text/html'), false)
+  assert.equal(isCompressibleJsonType(undefined), false)
+
+  assert.equal(pickCompressionEncoding('br, gzip, deflate'), 'br')
+  assert.equal(pickCompressionEncoding('gzip, deflate'), 'gzip')
+  assert.equal(pickCompressionEncoding('deflate'), null)
+  assert.equal(pickCompressionEncoding(undefined), null)
+  // 子串不算协商命中：brotli/gzip 必须是独立 token
+  assert.equal(pickCompressionEncoding('gzipper'), null)
+
+  assert.equal(appendVaryToken(undefined, 'Accept-Encoding'), 'Accept-Encoding')
+  assert.equal(appendVaryToken('User-Agent', 'Accept-Encoding'), 'User-Agent, Accept-Encoding')
+  assert.equal(appendVaryToken('accept-encoding', 'Accept-Encoding'), 'accept-encoding')
+})
+
+test('mobile compression patches a real http server: gzip/br large JSON, verbatim small JSON, untouched html and SSE', async (t) => {
+  const { createServer } = await import('node:http')
+  const { gunzipSync, brotliDecompressSync } = await import('node:zlib')
+  const dispose = ensureMobileResponseCompression()
+  t.after(() => dispose())
+
+  const bigJson = JSON.stringify({ history: Array.from({ length: 800 }, (_, i) => ({ role: 'user', text: `message-${i}-` + 'x'.repeat(40) })) })
+  assert.ok(bigJson.length > 4 * 1024, 'fixture should exceed the compress threshold')
+
+  const server = createServer((req, res) => {
+    if (req.url === '/json') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(bigJson)
+    } else if (req.url === '/small') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+    } else if (req.url === '/html') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<html>' + 'y'.repeat(64 * 1024) + '</html>')
+    } else if (req.url === '/sse') {
+      res.writeHead(200, { 'content-type': 'text/event-stream; content-type-ish-json=1' })
+      res.end('data: '.repeat(2048))
+    } else if (req.url === '/setheader') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.setHeader('x-extra', 'kept')
+      res.end(bigJson)
+    } else if (req.url === '/no-args-writehead') {
+      res.statusCode = 200
+      res.setHeader('content-type', 'application/json')
+      res.end(bigJson)
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  t.after(() => new Promise((resolvePromise) => server.close(() => resolvePromise())))
+  const port = server.address().port
+
+  const request = ({ path, acceptEncoding = 'gzip, deflate, br', method = 'GET' }) => new Promise((resolvePromise, rejectPromise) => {
+    const request_ = http.request({ host: '127.0.0.1', port, path, method, headers: acceptEncoding === undefined ? {} : { 'accept-encoding': acceptEncoding } }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => resolvePromise({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }))
+    })
+    request_.on('error', rejectPromise)
+    request_.end()
+  })
+
+  // 大 JSON + 仅 gzip：压缩生效、解压相等、长度头与实际字节一致、Vary 追加
+  const gzipped = await request({ path: '/json', acceptEncoding: 'gzip, deflate' })
+  assert.equal(gzipped.status, 200)
+  assert.equal(gzipped.headers['content-encoding'], 'gzip')
+  assert.ok(String(gzipped.headers.vary).toLowerCase().includes('accept-encoding'))
+  assert.equal(gzipped.body.length, Number(gzipped.headers['content-length']))
+  assert.equal(gunzipSync(gzipped.body).toString('utf8'), bigJson)
+
+  // br 优先
+  const brotlied = await request({ path: '/json', acceptEncoding: 'br, gzip' })
+  assert.equal(brotlied.headers['content-encoding'], 'br')
+  assert.equal(brotliDecompressSync(brotlied.body).toString('utf8'), bigJson)
+
+  // 客户端不接受压缩 → 原样透传
+  const identity = await request({ path: '/json', acceptEncoding: 'identity' })
+  assert.equal(identity.headers['content-encoding'], undefined)
+  assert.equal(identity.body.toString('utf8'), bigJson)
+  assert.equal(identity.headers.vary, undefined)
+
+  // 小 JSON：不压缩，body 字节级一致
+  const small = await request({ path: '/small' })
+  assert.equal(small.headers['content-encoding'], undefined)
+  assert.equal(small.body.toString('utf8'), '{"ok":true}')
+
+  // HTML 与 SSE：即便体积大也字节级透传（SSE 的 content-type 里含 "json" 样式子串也不行）
+  const html = await request({ path: '/html' })
+  assert.equal(html.headers['content-encoding'], undefined)
+  const sse = await request({ path: '/sse' })
+  assert.equal(sse.headers['content-encoding'], undefined)
+
+  // writeHead 之后 setHeader：最终头集合保留后设的头
+  const withExtra = await request({ path: '/setheader', acceptEncoding: 'gzip' })
+  assert.equal(withExtra.headers['content-encoding'], 'gzip')
+  assert.equal(withExtra.headers['x-extra'], 'kept')
+
+  // 无实参 writeHead 路径（statusCode + setHeader）：设计上识别不到，透传不压缩
+  const implicit = await request({ path: '/no-args-writehead' })
+  assert.equal(implicit.headers['content-encoding'], undefined)
+  assert.equal(implicit.body.toString('utf8'), bigJson)
+
+  // HEAD：响应头应与 GET 同语义（含协商出的压缩头），body 本就不上线
+  const head = await request({ path: '/json', method: 'HEAD', acceptEncoding: 'gzip' })
+  assert.equal(head.status, 200)
+  assert.equal(head.headers['content-encoding'], 'gzip')
+  assert.equal(head.body.length, 0)
+})
+
+test('mobile compression disposer restores the original prototype methods and keeps serving responses', async (t) => {
+  const { createServer } = await import('node:http')
+  const proto = (await import('node:http')).ServerResponse.prototype
+  const beforeWriteHead = proto.writeHead
+  const beforeWrite = proto.write
+  const beforeEnd = proto.end
+
+  const dispose = installMobileResponseCompression()
+  assert.notEqual(proto.writeHead, beforeWriteHead)
+  dispose()
+  assert.equal(proto.writeHead, beforeWriteHead)
+  assert.equal(proto.write, beforeWrite)
+  assert.equal(proto.end, beforeEnd)
+
+  // 还原后服务器照常工作（补丁期间建立的连接不受影响）
+  const dispose2 = ensureMobileResponseCompression()
+  const disposeAgain = ensureMobileResponseCompression() // 单例：同一份 disposer
+  disposeAgain()
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"after":"dispose"}')
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  t.after(() => new Promise((resolvePromise) => server.close(() => resolvePromise())))
+  const port = server.address().port
+  const payload = await new Promise((resolvePromise, rejectPromise) => {
+    const request_ = http.request({ host: '127.0.0.1', port, path: '/' , headers: { 'accept-encoding': 'gzip' } }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => resolvePromise({ headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }))
+    })
+    request_.on('error', rejectPromise)
+    request_.end()
+  })
+  assert.equal(payload.headers['content-encoding'], undefined)
+  assert.equal(payload.body, '{"after":"dispose"}')
+})
+
+test('mobileAdaptation feature gate installs and restores response compression hot', async (t) => {
+  const proto = (await import('node:http')).ServerResponse.prototype
+  const beforeWriteHead = proto.writeHead
+  t.after(() => {
+    if (proto.writeHead !== beforeWriteHead) proto.writeHead = beforeWriteHead
+  })
+
+  const host = createHost({ featureSettings: { mobileAdaptation: false } })
+  assert.equal(proto.writeHead, beforeWriteHead, 'patch must stay off when the feature starts disabled')
+
+  await host.updateFeatureSettings({ mobileAdaptation: true })
+  assert.notEqual(proto.writeHead, beforeWriteHead, 'enabling the feature must install the patch without restart')
+
+  await host.updateFeatureSettings({ mobileAdaptation: false })
+  assert.equal(proto.writeHead, beforeWriteHead, 'disabling the feature must restore the prototype')
 })

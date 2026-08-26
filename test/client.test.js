@@ -308,13 +308,15 @@ function createRenderer(rpcCall, options = {}) {
         // 圆环路径专用：提供 modelDirectories 时模拟 cordis 的嵌套 inject 等待语义 +
         // ctx.get 惰性取值（插件 apply 时已挂载则立即注册）；
         // 不提供时两者都不存在，插件应保持无圆环（老版本 DSH 兼容分支）。
-        ...(options.modelDirectories ? {
+        // options.services：其他可选服务桩（如移动端适配的 layout 服务）走同一惰性 get。
+        ...(options.modelDirectories || options.services ? {
           inject(deps, callback) {
             callback({ modelDirectories: options.modelDirectories })
             return () => {}
           },
           get(service) {
-            return service === 'modelDirectories' ? options.modelDirectories : undefined
+            if (service === 'modelDirectories') return options.modelDirectories
+            return options.services?.[service]
           },
         } : {}),
         effect(callback) {
@@ -3944,4 +3946,277 @@ test('subagent tab is feature-gated and renders host errors/unavailable status i
   failed.findByTestId('subagent-save').props.onClick()
   await failed.flush()
   assert.match(failed.findByTestId('subagent-error').children.join(''), /不在宿主清单内/)
+})
+
+// ── v0.30 移动端适配·客户端引擎 ─────────────────────────────────────────────
+
+test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires official layout service, and tears down symmetrically', async () => {
+  // 最小可用假 DOM：支持属性选择器查询、父子树与事件分发
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag
+      this.children = []
+      this.attributes = new Map()
+      this.style = {}
+      this.dataset = {}
+      this.parentNode = null
+      this.className = ''
+      this.listeners = new Map()
+    }
+    get isConnected() {
+      let node = this
+      while (node.parentNode !== null) node = node.parentNode
+      return node === root
+    }
+    appendChild(child) { child.parentNode = this; this.children.push(child); return child }
+    remove() {
+      if (this.parentNode === null) return
+      const index = this.parentNode.children.indexOf(this)
+      if (index >= 0) this.parentNode.children.splice(index, 1)
+      this.parentNode = null
+    }
+    setAttribute(name, value) { this.attributes.set(name, String(value)) }
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null }
+    hasAttribute(name) { return this.attributes.has(name) }
+    removeAttribute(name) { this.attributes.delete(name) }
+    addEventListener(type, handler) { (this.listeners.get(type) || this.listeners.set(type, new Set()).get(type)).add(handler) }
+    removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler) }
+    dispatch(type) { for (const handler of this.listeners.get(type) || []) handler({}) }
+  }
+  const matchesSelector = (el, selector) => {
+    for (const part of selector.split(',')) {
+      const trimmed = part.trim()
+      const match = /^\[([a-z-]+)\]$/i.exec(trimmed)
+      if (match && el.attributes.has(match[1])) return true
+    }
+    return false
+  }
+  const walk = (node, visit_) => { visit_(node); for (const child of node.children) walk(child, visit_) }
+
+  const root = new FakeElement('#root')
+  const head = new FakeElement('head'); root.appendChild(head)
+  const bodyEl = new FakeElement('body'); root.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); root.appendChild(htmlEl)
+
+  // 外壳骨架：frame（含官方 data-shell-overlay 子层）+ 三栏
+  const frame = new FakeElement('div')
+  frame.className = 'pI_x6G_frame'
+  frame.setAttribute('data-sidebar-collapsed', '')
+  frame.setAttribute('data-details-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'pI_x6G_sidebarCol'
+  const centerCol = new FakeElement('div'); centerCol.className = 'pI_x6G_centerCol'
+  const detailsCol = new FakeElement('div'); detailsCol.className = 'pI_x6G_detailsCol'
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', '')
+  for (const el of [sidebarCol, centerCol, detailsCol, overlayLayer]) frame.appendChild(el)
+  bodyEl.appendChild(frame)
+
+  let observerInstance = null
+  class FakeMutationObserver {
+    constructor(callback) { observerInstance = callback }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl,
+    head,
+    body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      for (const tree of [htmlEl, head, bodyEl]) {
+        walk(tree, (el) => { if (found === null && el !== tree ? false : false) {} })
+      }
+      walk(root, (el) => { if (found === null && matchesSelector(el, selector)) found = el })
+      return found
+    },
+    querySelectorAll(selector) {
+      const found = []
+      walk(root, (el) => { if (matchesSelector(el, selector)) found.push(el) })
+      return found
+    },
+  }
+
+  const layoutCalls = { toggleSidebar: 0, closeDetails: 0 }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+
+  try {
+    const renderer = createRenderer(rpc, { services: { layout: {
+      toggleSidebar() { layoutCalls.toggleSidebar += 1 },
+      closeDetails() { layoutCalls.closeDetails += 1 },
+    } } })
+    // createRenderer 会重置 window，matchMedia 桩必须在其后、load 之前装上。
+  const mediaListeners = new Set()
+  let narrowViewport = false
+  globalThis.window.matchMedia = (query) => ({
+    media: query,
+    get matches() { return narrowViewport },
+    addEventListener(type, listener) { mediaListeners.add(listener) },
+    removeEventListener(type, listener) { mediaListeners.delete(listener) },
+  })
+
+    await renderer.load()
+
+    // 宽视口：零挂载（head 里可能有插件自带的导航图标样式，只断言引擎产物不存在）
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(head.children.some((el) => el.textContent?.includes('data-dshsvc-mobile')), false)
+    assert.equal(frame.attributes.has('data-dshsvc-frame'), false)
+
+    // 进入窄视口 → 引擎激活：作用域属性、样式表、三栏标记、backdrop/FAB 全部就位
+    narrowViewport = true
+    for (const listener of mediaListeners) listener()
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
+    assert.equal(frame.attributes.has('data-dshsvc-frame'), true)
+    assert.equal(sidebarCol.attributes.has('data-dshsvc-sidebar'), true)
+    assert.equal(detailsCol.attributes.has('data-dshsvc-details'), true)
+    const styleTag = head.children.find((el) => el.textContent.includes('data-dshsvc-mobile'))
+    assert.notEqual(styleTag, undefined)
+    // 真机反馈两处：抽屉钮钉左上角（头部预留位），设置标签条横滑
+    assert.match(styleTag.textContent, /data-dshsvc-fab\]:hover/)
+    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding-left: 46px/)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*flex-direction: column/s)
+    assert.match(styleTag.textContent, /\[class\*="navList"\] \{ flex-direction: row/)
+    const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
+    const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
+    assert.notEqual(backdrop, undefined)
+    assert.notEqual(fab, undefined)
+    assert.equal(fab.getAttribute('aria-label'), '打开侧栏菜单')
+    assert.match(fab.style.left, /safe-area-inset-left/)
+    assert.match(fab.style.top, /safe-area-inset-top/)
+    assert.equal(fab.style.width, '32px')
+    assert.ok(fab.innerHTML.includes('<svg'), 'drawer toggle must render an icon, not text')
+    // 初始折叠：抽屉关 → backdrop 藏、FAB 显
+    assert.equal(backdrop.style.display, 'none')
+    assert.equal(fab.style.display, 'flex')
+
+    // FAB 点击走官方 layout 服务开抽屉；观察者同步状态面
+    fab.dispatch('click')
+    assert.equal(layoutCalls.toggleSidebar, 1)
+    frame.removeAttribute('data-sidebar-collapsed')
+    observerInstance([], () => {})
+    assert.equal(backdrop.style.display, 'block')
+    assert.equal(fab.style.display, 'none')
+
+    // 抽屉开着时点侧栏内任意处收起
+    sidebarCol.dispatch('click')
+    assert.equal(layoutCalls.toggleSidebar, 2)
+
+    // backdrop 点击：抽屉开着时收抽屉
+    frame.removeAttribute('data-sidebar-collapsed')
+    observerInstance([], () => {})
+    backdrop.dispatch('click')
+    assert.equal(layoutCalls.toggleSidebar, 3)
+
+    // 只有详情列开着时 backdrop 点击改走 closeDetails
+    frame.setAttribute('data-sidebar-collapsed', '')
+    frame.removeAttribute('data-details-collapsed')
+    observerInstance([], () => {})
+    assert.equal(backdrop.style.display, 'block')
+    backdrop.dispatch('click')
+    assert.equal(layoutCalls.closeDetails, 1)
+
+    // 功能开关热关闭：全量卸载
+    await renderer.setFeature?.('mobileAdaptation', false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(head.children.some((el) => el.textContent.includes('data-dshsvc-mobile')), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-backdrop')), false)
+    assert.equal(frame.attributes.has('data-dshsvc-frame'), false)
+    assert.equal(sidebarCol.attributes.has('data-dshsvc-sidebar'), false)
+
+    // 热重开即时恢复
+    await renderer.setFeature?.('mobileAdaptation', true)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), true)
+    assert.equal(frame.attributes.has('data-dshsvc-frame'), true)
+
+    // 回到宽视口 → 再次卸载
+    narrowViewport = false
+    for (const listener of mediaListeners) listener()
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('mobile adaptation debug chip renders diagnostics and counts JS errors only with the debug param', async () => {
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.attributes = new Map()
+      this.style = {}; this.dataset = {}; this.parentNode = null; this.className = ''; this.listeners = new Map()
+    }
+    get isConnected() { let n = this; while (n.parentNode !== null) n = n.parentNode; return n === rootNode }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c }
+    remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null } }
+    setAttribute(k, v) { this.attributes.set(k, String(v)) }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null }
+    hasAttribute(k) { return this.attributes.has(k) }
+    removeAttribute(k) { this.attributes.delete(k) }
+    addEventListener(t, h) { (this.listeners.get(t) || this.listeners.set(t, new Set()).get(t)).add(h) }
+    removeEventListener(t, h) { this.listeners.get(t)?.delete(h) }
+    dispatch(t) { for (const h of this.listeners.get(t) || []) h({}) }
+  }
+  const rootNode = new FakeElement('#root')
+  const head = new FakeElement('head'); rootNode.appendChild(head)
+  const bodyEl = new FakeElement('body'); rootNode.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); rootNode.appendChild(htmlEl)
+  const frame = new FakeElement('div'); frame.className = 'pI_x6G_frame'; frame.setAttribute('data-sidebar-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'sidebarCol'; frame.appendChild(sidebarCol)
+  const centerCol = new FakeElement('div'); centerCol.className = 'centerCol'; frame.appendChild(centerCol)
+  const detailsCol = new FakeElement('div'); detailsCol.className = 'detailsCol'; frame.appendChild(detailsCol)
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', ''); frame.appendChild(overlayLayer)
+  bodyEl.appendChild(frame)
+
+  class FakeMutationObserver { constructor() {} observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  const windowListeners = new Map()
+  globalThis.document = {
+    documentElement: htmlEl, head, body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      const scan = (node) => { if (found === null && node.attributes?.has?.(selector.replace(/[[\]]/g, ''))) found = node; for (const c of node.children || []) scan(c) }
+      scan(rootNode)
+      return found
+    },
+    querySelectorAll() { return [] },
+  }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+  try {
+    const renderer = createRenderer(rpc, { services: { layout: { toggleSidebar() {}, closeDetails() {} } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    globalThis.window.addEventListener = (type, handler) => { (windowListeners.get(type) || windowListeners.set(type, new Set()).get(type)).add(handler) }
+    globalThis.window.removeEventListener = (type, handler) => { windowListeners.get(type)?.delete(handler) }
+    globalThis.window.location = { search: '?dshsvc-mobile-debug=1', reload() {} }
+    await renderer.load()
+    const chip = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-debug'))
+    assert.notEqual(chip, undefined, 'debug param must mount the diagnostics chip')
+    assert.equal(chip.title, '移动端诊断')
+    assert.match(chip.textContent, /视口/)
+    assert.match(chip.textContent, /JS 错误 0/)
+
+    windowListeners.get('error').forEach((handler) => handler(new Error('boom')))
+    windowListeners.get('error').forEach((handler) => handler(new Error('boom again')))
+    assert.match(chip.textContent, /JS 错误 2/)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+    delete globalThis.window.location.search
+  }
 })
