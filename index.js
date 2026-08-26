@@ -18,6 +18,7 @@ const DSH_PACKAGE = '@deepseek-ai/dsh'
 const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
 const SETTINGS_NAMESPACE = 'dsh-service'
 const DEFAULT_FEATURE_SETTINGS = Object.freeze({
+  healthDiagnostics: true,
   modelUsage: true,
   quotaLookup: true,
   backupMaintenance: true,
@@ -27,6 +28,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   subagentRoute: true,
 })
 const FeatureSettingsSchema = z.object({
+  healthDiagnostics: z.boolean().default(true),
   modelUsage: z.boolean().default(true),
   quotaLookup: z.boolean().default(true),
   backupMaintenance: z.boolean().default(true),
@@ -3406,6 +3408,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'diagnostics') {
+      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
       try {
         return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
       } catch (error) {
@@ -3435,6 +3438,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'permissions-plan') {
+      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
       try {
         return { ok: true, value: await permissionSnapshot(ctx, dshHome, permissionPlans) }
       } catch (error) {
@@ -3443,6 +3447,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'permissions-deep') {
+      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
@@ -3453,6 +3458,7 @@ function apply(ctx) {
     }
 
     if (endpoint === 'permissions-repair') {
+      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
       try {
         const value = await repairPermissions(ctx, dshHome, permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }

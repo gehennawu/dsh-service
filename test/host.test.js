@@ -58,6 +58,7 @@ function createHost(overrides = {}) {
   let settingsService
   if (overrides.featureSettings !== undefined) {
     let current = {
+      healthDiagnostics: true,
       modelUsage: true,
       quotaLookup: true,
       backupMaintenance: true,
@@ -641,7 +642,7 @@ test('feature settings namespace registers when the settings service appears aft
 test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
   const routes = []
   const { handler, registeredSettings, updateFeatureSettings } = createHost({
-    featureSettings: { modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false },
+    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false },
     services: {
       webServer: {
         register(route) {
@@ -655,6 +656,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(registeredSettings.length, 1)
   assert.equal(registeredSettings[0].namespace, 'dsh-service')
   assert.deepEqual(registeredSettings[0].options?.base, {
+    healthDiagnostics: true,
     modelUsage: true,
     quotaLookup: true,
     backupMaintenance: true,
@@ -664,6 +666,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     subagentRoute: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
+    healthDiagnostics: true,
     modelUsage: true,
     quotaLookup: true,
     backupMaintenance: true,
@@ -675,11 +678,15 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
-  await updateFeatureSettings({ modelUsage: true, quotaLookup: true, backupMaintenance: true })
+  await updateFeatureSettings({ healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true })
+  assert.notDeepEqual(await handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('permissions-plan', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('permissions-deep', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('permissions-repair', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('usage', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('quota', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('backup-list', {}), { ok: false, error: 'feature-disabled' })

@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
       'features.cardHint': '控制可选功能和外部能力。开关立即生效，无需重启；详细状态与操作位于左侧「服务控制」。',
       'features.optional': '可选功能',
       'features.external': '外部能力',
+      'features.healthDiagnostics': '健康诊断',
       'features.modelUsage': '模型统计',
       'features.quotaLookup': '额度查询',
       'features.backupMaintenance': '备份维护',
@@ -498,6 +499,7 @@ window.__ModuleLoader__.load({
       'features.cardHint': 'Control optional features and external capabilities. Changes take effect immediately without a restart; detailed status and actions remain in Service Control.',
       'features.optional': 'Optional features',
       'features.external': 'External capabilities',
+      'features.healthDiagnostics': 'Health diagnostics',
       'features.modelUsage': 'Model statistics',
       'features.quotaLookup': 'Quota lookup',
       'features.backupMaintenance': 'Backup maintenance',
@@ -1066,7 +1068,7 @@ window.__ModuleLoader__.load({
       // 当前生效界面语言（显式设置 > 浏览器语言 > en 兜底，locale 快照已折算）：'zh' | 'en'。
       // 供 AI 补全等宿主侧语言相关动作取用；宿主只收枚举，不收自由文本。
       const currentUiLocale = () => ((ctx.locale?.getSnapshot?.()?.active) === 'zh' ? 'zh' : 'en')
-      const DEFAULT_FEATURES = { modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -2436,7 +2438,7 @@ window.__ModuleLoader__.load({
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute'].map(row),
+          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute'].map(row),
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
           row('healthz'),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
@@ -3483,6 +3485,8 @@ window.__ModuleLoader__.load({
           return () => { active = false }
         }, [])
         useEffect(() => {
+          // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
+          if (!featureEnabled('healthDiagnostics')) return () => {}
           let active = true
           ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then((res) => {
             if (!active) return
@@ -3492,7 +3496,7 @@ window.__ModuleLoader__.load({
             if (active) setPermissionError(translate('permissions.error'))
           })
           return () => { active = false }
-        }, [])
+        }, [features.healthDiagnostics])
         useEffect(() => {
           if (!featureEnabled('modelUsage')) return () => {}
           let active = true
@@ -3546,6 +3550,7 @@ window.__ModuleLoader__.load({
         }, [])
 
         const runDiagnostics = async (force = false) => {
+          if (!featureEnabled('healthDiagnostics')) return
           if (!force && diagnosticsLoadedAt > 0 && Date.now() - diagnosticsLoadedAt <= 30000) return
           setDiagnosticsBusy(true)
           try {
@@ -4297,7 +4302,7 @@ window.__ModuleLoader__.load({
         const tabs = [
           ['overview', 'tabs.overview'],
           ...(features.taskNotifications !== false ? [['notify', 'tabs.notify']] : []),
-          ['health', 'tabs.health'],
+          ...(features.healthDiagnostics !== false ? [['health', 'tabs.health']] : []),
           ...(features.modelUsage !== false ? [['usage', 'tabs.usage']] : []),
           ...(features.quotaLookup !== false ? [['quota', 'tabs.quota']] : []),
           ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),

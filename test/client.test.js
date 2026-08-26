@@ -509,7 +509,7 @@ test('plugin configuration card saves feature switches and disabled features dis
   featureCardToggle.props.onClick()
   await renderer.flush()
   assert.equal(renderer.findByTestId('feature-card-toggle').props['aria-expanded'], 'true')
-  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*可选功能.*模型统计.*额度查询.*备份维护.*任务通知.*外部能力.*\/healthz 探活端点/)
+  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*可选功能.*健康诊断.*模型统计.*额度查询.*备份维护.*任务通知.*外部能力.*\/healthz 探活端点/)
   assert.doesNotMatch(renderer.text('settings.section'), /模型统计|额度查询|备份维护|通知/)
   assert.equal(renderer.hasSlot('conversation.input.left'), false)
   assert.equal(renderer.hasSlot('conversation.input.right'), false)
@@ -539,6 +539,54 @@ test('plugin configuration card saves feature switches and disabled features dis
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   assert.equal(calls.includes('quota'), true)
+})
+
+test('health diagnostics switch hides the tab, gates diagnostics RPCs, and hot-restores', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, days: {}, totals: {}, errors: {}, projects: [], indexedSessions: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { featureSettings: { healthDiagnostics: false } })
+
+  await renderer.load()
+  // 关闭态：健康诊断标签不渲染，权限浅检查与完整诊断都不发请求（真门控，不是只隐藏）。
+  renderer.mount('settings.section')
+  assert.doesNotMatch(renderer.text('settings.section'), /健康诊断/)
+  assert.equal(calls.includes('permissions-plan'), false)
+  assert.equal(calls.includes('diagnostics'), false)
+
+  // 插件配置卡的胶囊开关：默认关，点击立即恢复标签并发起权限浅检查。
+  renderer.mount('settings.plugin.item')
+  renderer.findByTestId('feature-card-toggle').props.onClick()
+  await renderer.flush()
+  const healthSwitch = renderer.findByTestId('feature-switch-healthDiagnostics')
+  assert.equal(healthSwitch.props['aria-checked'], 'false')
+  healthSwitch.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.featureSettings().healthDiagnostics, true)
+  assert.match(renderer.text('settings.section'), /健康诊断/)
+  assert.equal(calls.includes('permissions-plan'), true)
+
+  // 进入健康诊断标签自动跑一次完整诊断。
+  renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.includes('diagnostics'), true)
+
+  // 再次关闭：标签即时消失；概览的运行指标轮询不受本开关影响。
+  await renderer.setFeature('healthDiagnostics', false)
+  assert.doesNotMatch(renderer.text('settings.section'), /健康诊断/)
+  assert.equal(calls.filter((endpoint) => endpoint === 'health').length > 0, true)
 })
 
 test('plugin registers balanced zh and en dictionaries', async () => {

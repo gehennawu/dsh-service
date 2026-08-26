@@ -10,7 +10,7 @@ A service-control and operations plugin for self-hosted DSH Web. Provides safe r
 
 The Settings panel "Service Control" page has nine top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Subagents, Restart**; the Restart, Quota lookup, Skills, and Subagents tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
 
-The plugin also appears under **Plugins → Plugin configuration**, with seven host-level switches enabled by default: **Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview, Health diagnostics, and Restart remain available. All seven switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+The plugin also appears under **Plugins → Plugin configuration**, with eight host-level switches enabled by default: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, and the `/healthz` liveness endpoint**. Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview and Restart remain available. All eight switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
 
 ### Version and updates
 
@@ -33,6 +33,7 @@ The plugin also appears under **Plugins → Plugin configuration**, with seven h
 - Full diagnostics check session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node runtime version; a manual launch is marked with a yellow inline caution (no restart assurance) that does not trigger the health alert banner, the service-control reminder, or the tab ⚠; an unrecognized environment and an empty backup list are informational only — all can be declared explicitly via `DSH_SERVICE_RUNTIME_ENV`
 - Having no backups is an informational note, not a warning, and does not light the Health tab ⚠
 - File-permission deep scan and repair: checks whether the Agent can read/write DSH_HOME and workspaces; repair requires two-step confirmation
+- The **Health diagnostics** switch under Plugins → Plugin configuration hides this whole tab: full diagnostics and file-permission requests stop immediately and the Host rejects the corresponding RPCs; the overview metrics (5-second polling) are unaffected
 
 ### Model statistics
 
