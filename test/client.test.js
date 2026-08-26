@@ -4047,6 +4047,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     throw new Error(`unexpected endpoint ${endpoint}`)
   }
 
+  const realDateNow = Date.now
   try {
     const renderer = createRenderer(rpc, { services: { layout: {
       toggleSidebar() { layoutCalls.toggleSidebar += 1 },
@@ -4101,6 +4102,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 元素被超约束解算推回屏内盖住会话 —— 离屏偏移必须用 vw 长度。
     assert.doesNotMatch(styleTag.textContent, /-105%|translateX/)
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*left: calc\(-100vw - 24px\) !important/s)
+    // 真机第九轮：外壳侧栏内容原生固定 280px；外层拉到 320px 会在右侧造出 40px 空带。
+    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*width: min\(100vw, 280px\) !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*border-right: none !important/s)
     assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{[^}]*right: calc\(-100vw - 24px\) !important/s)
     // 真机第五轮：详情列移动端永久离屏（官方窄屏本就 0 宽），不得存在「打开态」规则
     assert.doesNotMatch(styleTag.textContent, /:not\(\[data-details-collapsed\]\) \[data-dshsvc-details\]/)
@@ -4111,6 +4115,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
+    // 真机第八轮：设置关闭钮圆形底衬随钮置顶；工作区侧板开关浮在面板上方。
+    assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*border-radius: 999px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="nArs4W_toggleButton"\] \{[^}]*z-index: 45 !important/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)
@@ -4124,31 +4131,31 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.equal(backdrop.style.display, 'none')
     assert.equal(fab.style.display, 'flex')
 
-    // FAB 点击走官方 layout 服务开抽屉；开着时不藏钮而是变 ✕ 关闭入口
-    fab.dispatch('click')
+    // 真机触屏短按会派发 pointerdown → pointerup → click；无论 click 延迟多久，
+    // 同一手势都只能翻转一次。旧实现以 350ms 时间窗区分回声，主线程忙时 click
+    // 晚到就二次翻转，短按看起来打不开、长按取消 click 反而能打开。
+    let now = 10_000
+    Date.now = () => now
+    fab.dispatch('pointerdown', { pointerType: 'touch', button: 0 })
+    now += 500
+    fab.dispatch('click', { detail: 1 })
     assert.equal(layoutCalls.toggleSidebar, 1)
     frame.removeAttribute('data-sidebar-collapsed')
     observerInstance([], () => {})
     assert.equal(backdrop.style.display, 'block')
-    assert.equal(fab.style.display, 'flex', 'drawer open must keep the toggle visible as the close entry')
-    assert.match(fab.getAttribute('aria-label'), /关闭/)
-    assert.ok(fab.innerHTML.includes('M4 4l8 8'), 'open drawer must swap the icon to an ✕')
+    assert.equal(fab.style.display, 'none', 'open drawer must hide the fab (close via native toggle / scrim tap)')
+    assert.equal(fab.getAttribute('aria-label'), '打开侧栏菜单')
 
-    // 抽屉开着时点侧栏内任意处收起
+    // 侧栏内容层不得再代理关闭。原生右上角按钮自身先 toggle，若事件冒泡到
+    // sidebarCol 又 toggle 一次，就会关闭后立即重开；普通条目点击也不该被劫持。
     sidebarCol.dispatch('click')
-    assert.equal(layoutCalls.toggleSidebar, 2)
-
-    // 设置模态等 overlay 渲染在本列子树内（未 portal）：其内部点击不算「点抽屉」，
-    // 否则点一下设置标签抽屉就连着模态一起滑走（真机第三轮反馈）
-    const beforeModalTap = layoutCalls.toggleSidebar
-    sidebarCol.dispatch('click', { target: { closest: (sel) => (sel.includes('presentation') ? {} : null) } })
-    assert.equal(layoutCalls.toggleSidebar, beforeModalTap)
+    assert.equal(layoutCalls.toggleSidebar, 1)
 
     // backdrop 点击：抽屉开着时收抽屉
     frame.removeAttribute('data-sidebar-collapsed')
     observerInstance([], () => {})
     backdrop.dispatch('click')
-    assert.equal(layoutCalls.toggleSidebar, 3)
+    assert.equal(layoutCalls.toggleSidebar, 2)
 
     // 只有详情列场景：移动端详情列永久离屏，引擎自愈式 closeDetails，backdrop 不参与
     frame.setAttribute('data-sidebar-collapsed', '')
@@ -4179,6 +4186,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
   } finally {
+    Date.now = realDateNow
     delete globalThis.document
     delete globalThis.MutationObserver
   }
@@ -4350,13 +4358,13 @@ test('mobile adaptation survives cold narrow load before the shell frame mounts'
     assert.equal(fab.style.display, 'flex')
     assert.equal(backdrop.style.display, 'none')
 
-    // 补建后的交互件功能完整：FAB 开抽屉 → 开着时变 ✕ 关闭入口（不藏钮）
+    // 补建后的交互件功能完整：FAB 开抽屉 → 开着时 FAB 收起（关闭走原生钮/遮罩）
     fab.dispatch('click')
     assert.equal(toggles, 1)
     frame.removeAttribute('data-sidebar-collapsed')
     for (const observer of observers) observer.callback([], () => {})
-    assert.equal(fab.style.display, 'flex')
-    assert.match(fab.getAttribute('aria-label'), /关闭/)
+    assert.equal(fab.style.display, 'none')
+    assert.equal(fab.getAttribute('aria-label'), '打开侧栏菜单')
     assert.equal(backdrop.style.display, 'block')
   } finally {
     delete globalThis.document
