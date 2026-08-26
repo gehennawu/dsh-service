@@ -2155,7 +2155,7 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   assert.equal(quotaCalls, callsBeforeClose)
 })
 
-test('quota ring panel centers via body portal on narrow viewports and reverts when widened', async () => {
+test('quota ring panel centers lower in the conversation area via body portal on mobile viewports and reverts when widened', async () => {
   const storeListeners = new Set()
   const store = {
     snapshot: { current: { provider: 'opencode-go' } },
@@ -2185,16 +2185,20 @@ test('quota ring panel centers via body portal on narrow viewports and reverts w
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { modelDirectories })
-  // 窄视口模拟：matchMedia 480px 断点命中（matches 用 getter 保持活值），document.body 存在。
+  // 移动视口模拟：与整体适配同用 1023px 断点（matches 用 getter 保持活值），document.body 存在。
   // createRenderer 会重置 window，所以 mock 必须在其后、load 之前装上。
   const mediaListeners = new Set()
+  const mediaQueries = []
   let narrow = true
-  globalThis.window.matchMedia = (query) => ({
+  globalThis.window.matchMedia = (query) => {
+    mediaQueries.push(query)
+    return {
     media: query,
     get matches() { return narrow },
     addEventListener(type, listener) { mediaListeners.add(listener) },
     removeEventListener(type, listener) { mediaListeners.delete(listener) },
-  })
+    }
+  }
   const body = {}
   // querySelector 返回 null 让设置导航标记逻辑走「无 dialog 早退」路径（真实外壳里同理）；
   // MutationObserver 提供空实现（标记逻辑在无 dialog 时不会真正 observe）。
@@ -2222,13 +2226,15 @@ test('quota ring panel centers via body portal on narrow viewports and reverts w
     await renderer.flush()
     renderer.findByTestId('quota-ring-trigger').props.onClick()
     await renderer.flush()
-    // 窄视口几何：fixed 视口居中（left/top 50% + translate 回半宽半高），不再锚定圆环上方。
+    // 手机几何：跟整体移动端统一到 1023px 断点；水平居中，垂直中心位于屏幕高度 75%。
     const panel = renderer.findByTestId('quota-ring-panel')
+    assert.ok(mediaQueries.includes('(max-width: 1023px)'))
     assert.equal(panel.props.style.position, 'fixed')
     assert.equal(panel.props.style.left, '50%')
-    assert.equal(panel.props.style.top, '50%')
+    assert.equal(panel.props.style.top, '75%')
     assert.equal(panel.props.style.transform, 'translate(-50%, -50%)')
     assert.match(panel.props.style.width, /^min\(280px/)
+    assert.equal(panel.props.style.maxHeight, 'min(560px, calc(100dvh - 176px))')
     // portal 生效：面板经 #portal 节点挂到 document.body，脱离圆环 span 子树。
     const portal = findPortal()
     assert.ok(portal, 'panel should render through a portal node')

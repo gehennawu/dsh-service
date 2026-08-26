@@ -2267,15 +2267,15 @@ window.__ModuleLoader__.load({
         quotaCreatePortal = null
       }
 
-      /** 窄视口判定：matchMedia 优先（可订阅变化），缺席时 innerWidth 兜底；
-       * 无 window（SSR/测试）一律宽视口，维持圆环上方锚定弹层。断点 480px 与外壳窄容器一致。 */
+      /** 移动视口判定：与 v0.30 整体适配共用 1023px 断点；matchMedia 优先，
+       * 缺席时 innerWidth 兜底。无 window（SSR/测试）一律宽视口，维持圆环上方锚定。 */
       function quotaNarrowViewport() {
         if (typeof window === 'undefined' || window === null) return false
         if (typeof window.matchMedia === 'function') {
-          const query = window.matchMedia('(max-width: 480px)')
+          const query = window.matchMedia('(max-width: 1023px)')
           return typeof query.matches === 'boolean' ? query.matches : false
         }
-        return typeof window.innerWidth === 'number' && window.innerWidth <= 480
+        return typeof window.innerWidth === 'number' && window.innerWidth <= 1023
       }
 
       function QuotaRing(props) {
@@ -2302,12 +2302,12 @@ window.__ModuleLoader__.load({
         const [open, setOpen] = useState(false)
         const rootRef = useRef(null)
         const panelRef = useRef(null)
-        // 窄视口（手机竖屏）：弹层 portal 到 body 视口居中；宽视口保持圆环上方锚定。
+        // 移动视口：弹层 portal 到 body，在对话区域下半部保持水平居中；宽视口保持圆环上方锚定。
         // matchMedia change 订阅让旋转/拖宽窗口时弹层几何实时迁移，open 态不丢。
         const [narrow, setNarrow] = useState(quotaNarrowViewport)
         useEffect(() => {
           if (typeof window === 'undefined' || window === null || typeof window.matchMedia !== 'function') return undefined
-          const query = window.matchMedia('(max-width: 480px)')
+          const query = window.matchMedia('(max-width: 1023px)')
           const sync = () => setNarrow(query.matches)
           sync()
           if (typeof query.addEventListener === 'function') query.addEventListener('change', sync)
@@ -2379,8 +2379,8 @@ window.__ModuleLoader__.load({
           ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
               row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
           : null
-        // 面板先构造、再决定挂载方式：窄视口 portal 到 document.body 后 fixed 视口居中
-        // （根因见 quotaCreatePortal 处注释）；宽视口或 react-dom 缺席时锚定圆环上方（原行为）。
+        // 面板先构造、再决定挂载方式：移动视口 portal 到 document.body 后 fixed，
+        // 水平居中、垂直中心下移到屏幕高度 75%；宽视口或 react-dom 缺席时锚定圆环上方。
         const centered = open && narrow && quotaCreatePortal !== null
           && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
         const triggerNode = React.createElement('button', {
@@ -2411,7 +2411,7 @@ window.__ModuleLoader__.load({
           'aria-label': translate('quota.panel.title'),
           'data-testid': 'quota-ring-panel',
           style: centered
-            ? { position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 96px)', overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
+            ? { position: 'fixed', left: '50%', top: '75%', transform: 'translate(-50%, -50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: 'min(560px, calc(100dvh - 176px))', overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
             : { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
         },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
