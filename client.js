@@ -1082,6 +1082,15 @@ window.__ModuleLoader__.load({
       // 当前生效界面语言（显式设置 > 浏览器语言 > en 兜底，locale 快照已折算）：'zh' | 'en'。
       // 供 AI 补全等宿主侧语言相关动作取用；宿主只收枚举，不收自由文本。
       const currentUiLocale = () => ((ctx.locale?.getSnapshot?.()?.active) === 'zh' ? 'zh' : 'en')
+      /** 十进制数量缩写共用实现：模型统计沿用 K/M，额度绝对数可额外启用 B；非法值由调用方指定兜底。 */
+      const formatCompactCount = (value, options = {}) => {
+        const number = Number(value)
+        if (!Number.isFinite(number)) return options.invalid ?? ''
+        if (options.billions === true && number >= 1e9) return `${Math.round(number / 1e8) / 10}B`
+        if (number >= 1e6) return `${Math.round(number / 1e5) / 10}M`
+        if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
+        return number.toLocaleString()
+      }
       const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
@@ -1980,16 +1989,6 @@ window.__ModuleLoader__.load({
         const account = typeof window.label === 'string' ? window.label.trim() : ''
         return account !== '' ? `${account} · ${kindText}` : kindText
       }
-      /** 额度绝对数缩写（小米 Token Plan 等）：与模型统计 tok 缩写同族的十进制档位，B 档覆盖
-       * 十亿级 Credits。数字不是文案：宿主下发原始数值，客户端只做显示折算（双语教义）。 */
-      function formatCreditCount(value) {
-        const number = Number(value)
-        if (!Number.isFinite(number)) return ''
-        if (number >= 1e9) return `${Math.round(number / 1e8) / 10}B`
-        if (number >= 1e6) return `${Math.round(number / 1e5) / 10}M`
-        if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
-        return number.toLocaleString()
-      }
       /** 百分比窗口的数值文本：percent 必显；窗口带 used/limit（原始数值）时追加「已用 / 总量」figure，
        * 与控制台「{{used}} / {{limit}}」口径一致——只有比例没有绝对数会丢掉最关键的剩余信息。 */
       function quotaWindowValueText(window) {
@@ -1997,7 +1996,7 @@ window.__ModuleLoader__.load({
         const used = Number(window.used)
         const limit = Number(window.limit)
         if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return percent
-        return `${percent} · ${formatCreditCount(used)} / ${formatCreditCount(limit)}`
+        return `${percent} · ${formatCompactCount(used, { billions: true })} / ${formatCompactCount(limit, { billions: true })}`
       }
       function humanizeDuration(ms, translate) {
         // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
@@ -3391,13 +3390,8 @@ window.__ModuleLoader__.load({
                                   'data-testid': `quota-cred-edit-${row.provider}`,
                                   onClick: () => openCredEditor(row),
                                   style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
-                                // 入口文案按 kind 分流（cliproxy 是管理密钥、小米是控制台 Cookie，其余是 API 密钥）：
-                                // 错标签会诱导用户把 tp- 推理密钥填进 Cookie 槽位。
-                                }, translate(row.kind === 'cliproxy'
-                                  ? 'quota.credential.editManagement'
-                                  : row.kind === 'xiaomi-token-plan-cn'
-                                    ? 'quota.credential.editCookie'
-                                    : 'quota.credential.edit')))]
+                                // 宿主按 kind registry 下发凭据入口语义键；客户端只本地化，避免新增 kind 时复制分支。
+                                }, translate(`quota.credential.${typeof row.credentialEntryKey === 'string' && row.credentialEntryKey !== '' ? row.credentialEntryKey : 'edit'}`)))]
                         })()
                       : []),
                     ...resetCardNodes,
@@ -3892,12 +3886,7 @@ window.__ModuleLoader__.load({
          const usageValue = (totals, metricName) => metricName === 'cacheTokens'
           ? totals.cacheReadTokens + totals.cacheWriteTokens
           : totals[metricName] || 0
-        const formatTokenValue = (value) => {
-          const number = Number(value) || 0
-          if (number >= 1000000) return `${Math.round(number / 100000) / 10}M`
-          if (number >= 1000) return `${Math.round(number / 100) / 10}K`
-          return number.toLocaleString()
-        }
+        const formatTokenValue = (value) => formatCompactCount(value, { invalid: '0' })
         const formatUsageValue = (value, metricName) => metricName === 'cacheHitRate'
           ? (Number(value) * 100).toFixed(1) + '%'
           : metricName === 'steps'

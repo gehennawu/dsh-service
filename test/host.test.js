@@ -3125,6 +3125,7 @@ test('cliproxy RPC merges per-account windows via the management plane without t
   assert.equal(row.status, 'ok')
   assert.equal(row.kind, 'cliproxy')
   assert.equal(row.kindSource, 'config')
+  assert.equal(row.credentialEntryKey, 'editManagement')
   const byKind = new Map(row.windows.map((window) => [window.kindKey, window]))
   assert.equal(byKind.get('codex-5h').percent, 43)
   assert.equal(byKind.get('codex-5h').label, 'codex-user@example.com')
@@ -3199,7 +3200,7 @@ test('quota-config pins the cliproxy domain on save and clears it with the kind'
 test('fetchCliproxyUsage tolerates partial account failures and enforces the call budget', async (t) => {
   const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
   const context = { allowedHosts: { cpa: ['cli.example.org'] } }
-  const authorization = 'Bearer mgmt-secret'
+  const credential = 'Bearer mgmt-secret'
   const manyFiles = {
     files: Array.from({ length: 12 }, (_, index) => ({
       auth_index: `idx-${index}`,
@@ -3213,7 +3214,7 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
     if (request.url.endsWith('/auth-files')) return { payload: manyFiles }
     return { payload: { status_code: 500, body: 'boom' } }
   })
-  await assert.rejects(fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined }), (error) => quotaErrorCode(error) === 'upstream-status')
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) => quotaErrorCode(error) === 'upstream-status')
 
   // 部分失败：一个账号上游 403，其余成功 → 返回成功账号窗口，不拖垮整行。
   let firstCallSeen = false
@@ -3226,7 +3227,7 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
     }
     return { payload: { status_code: 200, body: JSON.stringify(CLIPROXY_CODEX_FIXTURE) } }
   })
-  const windows = await fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined })
+  const windows = await fetchCliproxyUsage({ profile, config: context, credential, signal: undefined })
   assert.ok(windows.length >= 4) // idx-1 与 idx-2 各两窗
   assert.equal(new Set(windows.map((window) => window.label)).has('u0@example.com'), false)
 
@@ -3235,7 +3236,7 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
     if (request.url.endsWith('/auth-files')) return { payload: manyFiles }
     return { payload: { status_code: 200, body: JSON.stringify(CLIPROXY_CODEX_FIXTURE) } }
   })
-  const okWindows = await fetchCliproxyUsage({ profile, config: context, authorization, signal: undefined })
+  const okWindows = await fetchCliproxyUsage({ profile, config: context, credential, signal: undefined })
   assert.equal(budgetRequests.filter((request) => request.url.endsWith('/api-call')).length <= 12, true)
   assert.equal(okWindows.length <= 32, true)
 })
@@ -3255,7 +3256,7 @@ test('fetchCliproxyUsage keeps window ids unique when codex windows collide on t
     if (request.url.endsWith('/auth-files')) return { payload: { files: [{ auth_index: 'idx-0', provider: 'codex', email: 'u@example.com' }] } }
     return { payload: { status_code: 200, body: JSON.stringify(colliding) } }
   })
-  const windows = await fetchCliproxyUsage({ profile, config: context, authorization: 'Bearer k', signal: undefined })
+  const windows = await fetchCliproxyUsage({ profile, config: context, credential: 'Bearer k', signal: undefined })
   assert.equal(windows.length, 2)
   assert.deepEqual(windows.map((window) => window.id), ['u-example-com-0-codex-5h', 'u-example-com-0-codex-5h~'])
   assert.deepEqual(windows.map((window) => window.kindKey), ['codex-5h', 'codex-5h'])
@@ -3341,42 +3342,42 @@ test('fetchXiaomiTokenPlanUsage sends the session cookie to fixed endpoints only
     if (request.url === 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage') return { payload: XIAOMI_USAGE_FIXTURE }
     return { status: 404 }
   })
-  const windows = await fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc; userId=42', signal: undefined })
+  const windows = await fetchXiaomiTokenPlanUsage({ credential: 'sid=abc; userId=42', signal: undefined })
   assert.equal(windows.length, 3)
   assert.ok(okRequests.every((request) => request.auth === undefined))
   assert.deepEqual(okRequests.map((request) => request.cookie), ['sid=abc; userId=42', 'sid=abc; userId=42'])
 
   // 粘贴带入的「Cookie:」前缀（带或不带空格）剥掉再上头。
   const prefixRequests = stubHttpsRequest(t, () => ({ payload: XIAOMI_DETAIL_FIXTURE }))
-  await fetchXiaomiTokenPlanUsage({ authorization: 'Cookie: sid=xyz', signal: undefined })
+  await fetchXiaomiTokenPlanUsage({ credential: 'Cookie: sid=xyz', signal: undefined })
   assert.ok(prefixRequests.every((request) => request.cookie === 'sid=xyz'))
 
   // 空 Cookie（凭据链全落空后不该发生，仍防御）→ credential-missing。
-  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: '', signal: undefined }),
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: '', signal: undefined }),
     (error) => quotaErrorCode(error) === 'credential-missing')
 })
 
 test('fetchXiaomiTokenPlanUsage normalizes login failures and missing subscriptions', async (t) => {
   // HTTP 401（登录态失效）→ credential-rejected，别让用户对着状态码猜。
   stubHttpsRequest(t, () => ({ status: 401 }))
-  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
     (error) => quotaErrorCode(error) === 'credential-rejected')
 
   // HTTP 200 但信封 code:401 同样归一。
   stubHttpsRequest(t, () => ({ payload: { code: 401, message: 'not logged in' } }))
-  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
     (error) => quotaErrorCode(error) === 'credential-rejected')
 
   // 无订阅（detail 无 planCode 且无可用额度桶）→ 独立稳定错误码。
   stubHttpsRequest(t, (request) => request.url.endsWith('/detail')
     ? { payload: { code: 200, data: {} } }
     : { payload: { code: 200, data: { usage: { items: [] } } } })
-  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
     (error) => quotaErrorCode(error) === 'no-subscription')
 
   // 上游 500 维持 http-status 稳定码。
   stubHttpsRequest(t, () => ({ status: 500 }))
-  await assert.rejects(fetchXiaomiTokenPlanUsage({ authorization: 'sid=abc', signal: undefined }),
+  await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
     (error) => quotaErrorCode(error) === 'http-status')
 })
 
@@ -3413,6 +3414,7 @@ test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps th
   assert.equal(row.status, 'ok')
   assert.equal(row.kind, 'xiaomi-token-plan-cn')
   assert.equal(row.kindSource, 'auto') // baseURL 宿主唯一命中自动推断
+  assert.equal(row.credentialEntryKey, 'editCookie')
   assert.equal(row.usageUrl, 'https://platform.xiaomimimo.com/console/usage')
   const byId = new Map(row.windows.map((window) => [window.id, window]))
   assert.equal(byId.get('plan').text, 'Pro 月度套餐')

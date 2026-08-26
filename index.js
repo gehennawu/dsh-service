@@ -126,27 +126,29 @@ const KIND_REGISTRY = {
   // CLIProxyAPI（router-for-me/CLIProxyAPI）管理面：查它托管的 OAuth 上游账号官方额度。
   // 无固定 endpoints / 全局 hosts——每个部署一个域名，保存适配时把 settings baseURL 的
   // hostname 钉进配置 allowedHosts[provider]（见 quota-config 写入口），外呼前复验精确命中。
-  // managementPlane:true 表示凭据是 remote-management.secret-key（线索 CPA_MANAGEMENT_KEY），
-  // 绝不使用也不回退 settings 的 apiKeyEnv——那是代理 key，发去管理面等于拿错钥匙撞 fail2ban
-  // （CPA 内建：管理面错 key 满 5 次封 IP 30 分钟，源码核实）。
+  // credentialPolicy 把「凭据从哪里取、是否包 Bearer、客户端入口文案」收进 kind 注册；
+  // configEndpointPolicy:'pinned' 表示保存适配时把 settings baseURL 主机钉入 allowedHosts。
+  // CLIProxyAPI 的 remote-management.secret-key 绝不使用 settings apiKeyEnv（代理 key），避免撞 fail2ban。
   cliproxy: {
     fetcher: fetchCliproxyUsage,
     fetcherGuard: cliproxyFetchGuard,
     keyHints: ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'],
     hosts: [],
-    managementPlane: true,
+    credentialPolicy: { includeProfileHint: false, format: 'bearer', entryKey: 'editManagement' },
+    configEndpointPolicy: 'pinned',
   },
   // 小米 MiMo Token Plan（v0.29）：推理网关（token-plan-cn.xiaomimimo.com）只有 /v1 推理路径，
   // 无任何 API-key 形态的额度查询端点（逐路径探测 404；OpenClaw 官方插件的 fetchUsageSnapshot
   // 是空窗口占位）。额度数据只在控制台同源 API（platform.xiaomimimo.com/api/v1/tokenPlan/*），
-  // 认证是网页登录态 Cookie——consoleCookie:true 表示凭据按裸值下发、由 fetcher 放进 Cookie 头，
-  // settings 的 apiKeyEnv（tp- 推理密钥）绝不发往控制台平面。hosts 仅供 baseURL 自动推断。
+  // 认证是网页登录态 Cookie：凭据按裸值交给 fetcher，settings apiKeyEnv（tp- 推理密钥）绝不进入
+  // 控制台凭据链；configEndpointPolicy:'fixed' 表示查询平面由宿主常量固定、与 baseURL 无关。
   'xiaomi-token-plan-cn': {
     fetcher: fetchXiaomiTokenPlanUsage,
     keyHints: ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'],
     hosts: ['token-plan-cn.xiaomimimo.com'],
     usageUrl: 'https://platform.xiaomimimo.com/console/usage',
-    consoleCookie: true,
+    credentialPolicy: { includeProfileHint: false, format: 'raw', entryKey: 'editCookie' },
+    configEndpointPolicy: 'fixed',
   },
 }
 const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
@@ -946,13 +948,24 @@ function normalizeResetTimestamp(value) {
  * 凭据填写窗口（quota-credential-set/unset）只接受这份清单里的名字——零输入拼接：浏览器传来的
  * 名字必须命中宿主派生的白名单，顺带保证 CredentialRef 文法（POSIX shell 标识符）合法。
  */
+function quotaCredentialPolicy(kind) {
+  const registered = KIND_REGISTRY[kind]
+  return {
+    includeProfileHint: registered?.credentialPolicy?.includeProfileHint !== false,
+    format: registered?.credentialPolicy?.format === 'raw' ? 'raw' : 'bearer',
+    entryKey: typeof registered?.credentialPolicy?.entryKey === 'string' && registered.credentialPolicy.entryKey !== ''
+      ? registered.credentialPolicy.entryKey
+      : 'edit',
+  }
+}
+
 function quotaCredentialHintNames(kind, profile) {
   const names = []
-  // 管理面 kind（cliproxy）与控制台 Cookie kind（小米 Token Plan）的凭据都独立于模型代理
-  // key：settings 的 apiKeyEnv 指向推理 key——发去管理面等于拿错钥匙撞 fail2ban（CPA 错 5 次
-  // 封 IP 30 分钟），发去控制台则毫无作用还扩大 tp- 密钥泄露面。不尝试、不回退。
   const registered = KIND_REGISTRY[kind]
-  if (registered?.managementPlane !== true && registered?.consoleCookie !== true && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
+  const policy = quotaCredentialPolicy(kind)
+  // 独立管理面/控制台面的 kind 通过 policy 排除 settings apiKeyEnv；那通常是代理/推理 key，
+  // 不属于额度查询凭据，错误回退既无效也扩大泄露面。
+  if (policy.includeProfileHint && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
   for (const name of registered?.keyHints ?? []) {
     if (!names.includes(name)) names.push(name)
   }
@@ -967,9 +980,8 @@ function quotaCredentialHintNames(kind, profile) {
  */
 async function discoverQuotaCredential(ctx, kind, profile) {
   const attempted = quotaCredentialHintNames(kind, profile)
-  // consoleCookie kind（小米）的凭据按裸值下发——fetcher 自己放进 Cookie 头；
-  // 其余 kind 一律包成 Bearer。两条路径都不改写凭据内容本身。
-  const rawValue = KIND_REGISTRY[kind]?.consoleCookie === true
+  const policy = quotaCredentialPolicy(kind)
+  const formatCredential = (value) => policy.format === 'raw' ? value : `Bearer ${value}`
   const envHas = (name) => typeof process.env[name] === 'string' && process.env[name].trim() !== ''
   const credentials = ctx.get('credentials')
   if (credentials !== undefined && typeof credentials.resolve === 'function') {
@@ -977,7 +989,7 @@ async function discoverQuotaCredential(ctx, kind, profile) {
       try {
         const hit = await Promise.resolve(credentials.resolve(name))
         if (hit !== undefined && typeof hit.value === 'string' && hit.value !== '') {
-          return rawValue ? hit.value : `Bearer ${hit.value}`
+          return formatCredential(hit.value)
         }
       } catch (_) {}
     }
@@ -986,7 +998,7 @@ async function discoverQuotaCredential(ctx, kind, profile) {
   }
   for (const name of attempted) {
     const value = process.env[name]
-    if (typeof value === 'string' && value.trim() !== '') return rawValue ? value.trim() : `Bearer ${value.trim()}`
+    if (typeof value === 'string' && value.trim() !== '') return formatCredential(value.trim())
   }
   return undefined
 }
@@ -1163,12 +1175,12 @@ function normalizeXiaomiTokenPlanUsage(detailData, usageData) {
 
 /**
  * 小米 Token Plan 编排：detail + usage 两次固定 GET，Cookie 认证（无候选链、无钉住域——
- * 查询平面与 settings baseURL 完全无关）。authorization 是 discoverQuotaCredential 对
- * consoleCookie kind 下发的裸值；容错处理粘贴带入的 `Cookie:` 前缀；HTTP 401/403 与
- * 信封 code:401 都归一为 credential-rejected（Cookie 失效是唯一常见故障，别让用户猜状态码）。
+ * 查询平面与 settings baseURL 完全无关）。credential 是 discoverQuotaCredential 按 kind policy
+ * 下发的裸 Cookie；容错处理粘贴带入的 `Cookie:` 前缀；HTTP 401/403 与信封 code:401 都归一为
+ * credential-rejected（Cookie 失效是唯一常见故障，别让用户猜状态码）。
  */
-async function fetchXiaomiTokenPlanUsage({ authorization, signal }) {
-  const cookie = String(authorization ?? '').trim().replace(/^cookie:\s*/i, '')
+async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
+  const cookie = String(credential ?? '').trim().replace(/^cookie:\s*/i, '')
   if (cookie === '') throw new Error('credential-missing')
   const fetchEnvelope = async (url) => {
     try {
@@ -1346,7 +1358,8 @@ function parseCliproxyUpstream(provider, payload) {
  * 预算：账号 ≤8、api-call 总次数 ≤12、并发 3、窗口总数 ≤32；部分账号失败不拖垮整行
  * （有成功窗口即返回），全部失败抛首个稳定错误码。守卫与凭据由 kickQuotaRefresh 先行完成。
  */
-async function fetchCliproxyUsage({ profile, config, authorization, signal }) {
+async function fetchCliproxyUsage({ profile, config, credential, signal }) {
+  const authorization = credential
   const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
   const origin = safeCliproxyOrigin(profile.baseURL, pinned)
   if (origin === undefined) throw new Error('host-not-pinned')
@@ -3305,14 +3318,14 @@ function apply(ctx) {
           // 编排类 kind（cliproxy）：端点守卫 → 凭据 → fetcher 合并多账号窗口，无候选链。
           const guard = registered.fetcherGuard?.(profile, config) ?? null
           if (guard !== null) throw new Error(guard)
-          const authorization = await discoverQuotaCredential(ctx, kind, profile)
-          if (authorization === undefined) throw new Error('credential-missing')
+          const credential = await discoverQuotaCredential(ctx, kind, profile)
+          if (credential === undefined) throw new Error('credential-missing')
           const controller = new AbortController()
           quotaAbortControllers.add(controller)
           const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
           let produced
           try {
-            produced = await registered.fetcher({ profile, config, authorization, signal: controller.signal })
+            produced = await registered.fetcher({ profile, config, credential, signal: controller.signal })
           } finally {
             clearTimeout(deadline)
             quotaAbortControllers.delete(controller)
@@ -3956,6 +3969,8 @@ function apply(ctx) {
             nextAllowedAt: view.nextAllowedAt,
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
             ...(credentialHints !== undefined ? { credentialHints } : {}),
+            // 凭据入口语义由 kind registry 下发稳定键，客户端只负责本地化，不再对 kind 重复分支。
+            credentialEntryKey: quotaCredentialPolicy(kind).entryKey,
             // 官网用户页余额网址（宿主常量白名单随 kind 下发；无则缺省）。
             ...(typeof KIND_REGISTRY[kind].usageUrl === 'string' && KIND_REGISTRY[kind].usageUrl !== '' ? { usageUrl: KIND_REGISTRY[kind].usageUrl } : {}),
           })
@@ -4004,8 +4019,9 @@ function apply(ctx) {
           } else {
             const kind = payload?.kind
             if (kind !== null && !QUOTA_KINDS.includes(kind)) return { save: false, value: { ok: false, error: 'unknown-kind' } }
-            if (kind !== null && KIND_REGISTRY[kind]?.managementPlane === true) {
-              // 管理面 kind：把 settings baseURL 的 host 钉进本条目（服务端派生，浏览器零输入）。
+            const endpointPolicy = kind === null ? 'dynamic' : (KIND_REGISTRY[kind]?.configEndpointPolicy ?? 'dynamic')
+            if (endpointPolicy === 'pinned') {
+              // 钉住查询面 kind：把 settings baseURL 的 host 钉进本条目（服务端派生，浏览器零输入）。
               // 外呼时复验同一张表——之后改 baseURL 必须重新保存适配才恢复外呼。
               const host = cliproxyPinHostFromBaseURL(profileForProvider.baseURL)
               if (host === undefined) {
@@ -4013,14 +4029,13 @@ function apply(ctx) {
               }
               config.allowedHosts[providerName] = [host]
             } else {
-              // consoleCookie kind（小米）查询平面是宿主常量、与 baseURL 无关，跳过端点检查——
-              // 用户经中转域接入推理时同样能凭 Cookie 查控制台额度，不该被 baseURL 拦下适配。
-              if (kind !== null && KIND_REGISTRY[kind]?.consoleCookie !== true
+              // fixed 查询面由宿主常量决定、与 baseURL 无关；dynamic 则必须能从注册表/baseURL 解出安全端点。
+              if (kind !== null && endpointPolicy !== 'fixed'
                 && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false
                 && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
                 return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
               }
-              // 非管理面 kind（含显式停用/清除）不保留钉住记录，避免陈旧域残留。
+              // 非 pinned kind（含显式停用/清除）不保留钉住记录，避免陈旧域残留。
               delete config.allowedHosts[providerName]
             }
             config.kinds[providerName] = kind

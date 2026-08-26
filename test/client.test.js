@@ -2356,7 +2356,7 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
       serverTime: now,
       providers: [
         {
-          provider: 'mimo', displayName: 'MiMo', adapted: true, kind: 'xiaomi-token-plan-cn', refreshing: false, status: 'ok',
+          provider: 'mimo', displayName: 'MiMo', adapted: true, kind: 'xiaomi-token-plan-cn', credentialEntryKey: 'editCookie', refreshing: false, status: 'ok',
           windows: [
             { id: 'plan', kindKey: 'plan-name', text: 'Pro 月度套餐' },
             { id: 'total_token', kindKey: 'total_token', percent: 12, used: 1357400000, limit: 11000000000, resetsAt: new Date(now + 3600_000).toISOString() },
@@ -2365,7 +2365,7 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
           usageUrl: 'https://platform.xiaomimimo.com/console/usage',
         },
         {
-          provider: 'mimo2', displayName: 'MiMo relay', adapted: true, kind: 'xiaomi-token-plan-cn', refreshing: false, status: 'unconfigured',
+          provider: 'mimo2', displayName: 'MiMo relay', adapted: true, kind: 'xiaomi-token-plan-cn', credentialEntryKey: 'editCookie', refreshing: false, status: 'unconfigured',
           errorCode: 'credential-missing', nextAllowedAt: null,
           credentialHints: [
             { name: 'XIAOMI_MIMO_CONSOLE_COOKIE', configured: false },
@@ -3684,7 +3684,7 @@ test('unconfigured quota rows offer an inline credential form that writes via th
   const rpcLog = []
   let credentialConfigured = false
   const buildProviders = () => [{
-    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', credentialEntryKey: 'editManagement',
     refreshing: false, status: 'unconfigured', errorCode: 'credential-missing',
     nextAllowedAt: Date.now() - 1,
     credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: credentialConfigured }],
@@ -3730,7 +3730,7 @@ test('unconfigured quota rows offer an inline credential form that writes via th
 test('credential form defaults to the configured alias and marks the primary name', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const buildProviders = () => [{
-    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', credentialEntryKey: 'editManagement',
     refreshing: false, status: 'unconfigured', errorCode: 'credential-missing', nextAllowedAt: Date.now() - 1,
     // 别名链：主名未配置、别名已配置（用户先填错主名后改对别名的真实场景）。
     credentialHints: [
@@ -3788,7 +3788,7 @@ test('clearing a stored credential requires a second confirming click', async ()
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const rpcLog = []
   const buildProviders = () => [{
-    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', credentialEntryKey: 'editManagement',
     refreshing: false, status: 'unconfigured', errorCode: 'credential-missing', nextAllowedAt: Date.now() - 1,
     credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: true }],
   }]
