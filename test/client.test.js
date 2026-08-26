@@ -3981,7 +3981,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     removeAttribute(name) { this.attributes.delete(name) }
     addEventListener(type, handler) { (this.listeners.get(type) || this.listeners.set(type, new Set()).get(type)).add(handler) }
     removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler) }
-    dispatch(type) { for (const handler of this.listeners.get(type) || []) handler({}) }
+    dispatch(type, event) { for (const handler of this.listeners.get(type) || []) handler(event || {}) }
   }
   const matchesSelector = (el, selector) => {
     for (const part of selector.split(',')) {
@@ -4075,14 +4075,32 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
     assert.equal(frame.attributes.has('data-dshsvc-frame'), true)
     assert.equal(sidebarCol.attributes.has('data-dshsvc-sidebar'), true)
+    assert.equal(centerCol.attributes.has('data-dshsvc-center'), true)
     assert.equal(detailsCol.attributes.has('data-dshsvc-details'), true)
     const styleTag = head.children.find((el) => el.textContent.includes('data-dshsvc-mobile'))
     assert.notEqual(styleTag, undefined)
     // 真机反馈两处：抽屉钮钉左上角（头部预留位），设置标签条横滑
     assert.match(styleTag.textContent, /data-dshsvc-fab\]:hover/)
     assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding-left: 46px/)
+    // 真机反馈第二轮根因：左右列 absolute 后退出 grid 流，三列必须显式钉位防中列掉进 0px 轨
+    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{ grid-column: 1 !important; grid-row: 1 !important; \}/)
+    assert.match(styleTag.textContent, /\[data-dshsvc-center\] \{ grid-column: 2 !important; grid-row: 1 !important; \}/)
+    assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{ grid-column: 3 !important; grid-row: 1 !important; \}/)
+    // 真机反馈第二轮：模态顶部贴顶不留空（全屏面板），市场分区不吞标签条，统计条横滑
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*flex-direction: column/s)
-    assert.match(styleTag.textContent, /\[class\*="navList"\] \{ flex-direction: row/)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*top: 0 !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*max-height: none !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="FJxK0a_root"\] \{[^}]*overflow-x: auto !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{ flex-direction: row/)
+    // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
+    // （transform 会造包含块把 fixed 模态锁进抽屉宽度），一律用 left/right 偏移。
+    assert.doesNotMatch(styleTag.textContent, /data-dshsvc-(sidebar|details)\]\s*\{[^}]*transform/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*left: -105% !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{[^}]*right: -105% !important/s)
+    assert.match(styleTag.textContent, /:not\(\[data-sidebar-collapsed\]\) \[data-dshsvc-sidebar\] \{[^}]*left: 0 !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)
@@ -4108,6 +4126,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     sidebarCol.dispatch('click')
     assert.equal(layoutCalls.toggleSidebar, 2)
 
+    // 设置模态等 overlay 渲染在本列子树内（未 portal）：其内部点击不算「点抽屉」，
+    // 否则点一下设置标签抽屉就连着模态一起滑走（真机第三轮反馈）
+    const beforeModalTap = layoutCalls.toggleSidebar
+    sidebarCol.dispatch('click', { target: { closest: (sel) => (sel.includes('presentation') ? {} : null) } })
+    assert.equal(layoutCalls.toggleSidebar, beforeModalTap)
+
     // backdrop 点击：抽屉开着时收抽屉
     frame.removeAttribute('data-sidebar-collapsed')
     observerInstance([], () => {})
@@ -4130,6 +4154,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-backdrop')), false)
     assert.equal(frame.attributes.has('data-dshsvc-frame'), false)
     assert.equal(sidebarCol.attributes.has('data-dshsvc-sidebar'), false)
+    assert.equal(centerCol.attributes.has('data-dshsvc-center'), false)
 
     // 热重开即时恢复
     await renderer.setFeature?.('mobileAdaptation', true)
@@ -4218,5 +4243,111 @@ test('mobile adaptation debug chip renders diagnostics and counts JS errors only
     delete globalThis.document
     delete globalThis.MutationObserver
     delete globalThis.window.location.search
+  }
+})
+
+test('mobile adaptation survives cold narrow load before the shell frame mounts', async () => {
+  // 真机反馈第二轮根因：手机直接窄屏冷加载时 AppFrame 尚未挂载，
+  // 引擎激活那一刻找不到 [data-shell-overlay] → 抽屉件全没建、官方 rail 残留。
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.attributes = new Map()
+      this.style = {}; this.dataset = {}; this.parentNode = null; this.className = ''; this.listeners = new Map()
+    }
+    get isConnected() { let n = this; while (n.parentNode !== null) n = n.parentNode; return n === rootNode }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c }
+    remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null } }
+    setAttribute(k, v) { this.attributes.set(k, String(v)) }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null }
+    hasAttribute(k) { return this.attributes.has(k) }
+    removeAttribute(k) { this.attributes.delete(k) }
+    addEventListener(t, h) { (this.listeners.get(t) || this.listeners.set(t, new Set()).get(t)).add(h) }
+    dispatch(t) { for (const h of this.listeners.get(t) || []) h({}) }
+  }
+  const rootNode = new FakeElement('#root')
+  const head = new FakeElement('head'); rootNode.appendChild(head)
+  const bodyEl = new FakeElement('body'); rootNode.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); rootNode.appendChild(htmlEl)
+  // 注意：故意不放外壳骨架 —— 模拟冷加载瞬间
+
+  const observers = []
+  class FakeMutationObserver {
+    constructor(callback) { this.callback = callback; observers.push(this) }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl, head, body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      const bare = selector.replace(/[[\]]/g, '')
+      let found = null
+      const scan = (node) => {
+        if (found === null && node.attributes?.has?.(bare)) found = node
+        for (const c of node.children || []) scan(c)
+      }
+      scan(rootNode)
+      return found
+    },
+    querySelectorAll() { return [] },
+  }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+  try {
+    let toggles = 0
+    const renderer = createRenderer(rpc, { services: { layout: { toggleSidebar() { toggles += 1 }, closeDetails() {} } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    await renderer.load()
+
+    // 作用域属性与样式表立即生效，但抽屉件必须缺席、等待骨架
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
+    const styleTag = head.children.find((el) => el.textContent.includes('data-dshsvc-mobile'))
+    assert.notEqual(styleTag, undefined)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-backdrop')), false)
+    assert.ok(observers.length >= 1, 'engine must watch for the late shell mount')
+
+    // 外壳此刻才挂载 → 重试观察者补建全部抽屉件并打齐标记
+    const frame = new FakeElement('div'); frame.className = 'pI_x6G_frame'
+    frame.setAttribute('data-sidebar-collapsed', '')
+    frame.setAttribute('data-details-collapsed', '')
+    const sidebarCol = new FakeElement('div'); sidebarCol.className = 'pI_x6G_sidebarCol'
+    const centerCol = new FakeElement('div'); centerCol.className = 'pI_x6G_centerCol'
+    const detailsCol = new FakeElement('div'); detailsCol.className = 'pI_x6G_detailsCol'
+    const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', '')
+    for (const el of [sidebarCol, centerCol, detailsCol, overlayLayer]) frame.appendChild(el)
+    bodyEl.appendChild(frame)
+
+    for (const observer of observers) observer.callback([], () => {})
+
+    assert.equal(frame.attributes.has('data-dshsvc-frame'), true)
+    assert.equal(sidebarCol.attributes.has('data-dshsvc-sidebar'), true)
+    assert.equal(centerCol.attributes.has('data-dshsvc-center'), true)
+    assert.equal(detailsCol.attributes.has('data-dshsvc-details'), true)
+    const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
+    const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
+    assert.notEqual(backdrop, undefined)
+    assert.notEqual(fab, undefined)
+    assert.equal(fab.getAttribute('aria-label'), '打开侧栏菜单')
+    assert.equal(fab.style.display, 'flex')
+    assert.equal(backdrop.style.display, 'none')
+
+    // 补建后的交互件功能完整：FAB 开抽屉 → 状态面翻转
+    fab.dispatch('click')
+    assert.equal(toggles, 1)
+    frame.removeAttribute('data-sidebar-collapsed')
+    for (const observer of observers) observer.callback([], () => {})
+    assert.equal(fab.style.display, 'none')
+    assert.equal(backdrop.style.display, 'block')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
   }
 })

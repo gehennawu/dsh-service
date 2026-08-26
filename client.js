@@ -4507,20 +4507,27 @@ window.__ModuleLoader__.load({
       const MOBILE_ACTIVE_QUERY = '(max-width: 1023px)'
       const MOBILE_DEBUG_PARAM = 'dshsvc-mobile-debug'
       const MOBILE_CSS = `
+/* 侧栏/详情列改 absolute 后会退出 grid 排版流，中列会被自动放置进第 1 轨
+   （0px）而整屏变黑 —— 三列必须用 grid-column 显式钉位，绝不依赖子元素顺序。 */
 html[data-dshsvc-mobile] [data-dshsvc-frame] { grid-template-columns: 0px minmax(0, 1fr) 0px !important; }
-/* 侧栏 → overlay 抽屉：官方 rail 整体离屏，data-sidebar-collapsed 缺席 = 展开 */
+html[data-dshsvc-mobile] [data-dshsvc-sidebar] { grid-column: 1 !important; grid-row: 1 !important; }
+html[data-dshsvc-mobile] [data-dshsvc-center] { grid-column: 2 !important; grid-row: 1 !important; }
+html[data-dshsvc-mobile] [data-dshsvc-details] { grid-column: 3 !important; grid-row: 1 !important; }
+/* 侧栏/详情列 → overlay 抽屉。注意：隐藏一律用 left/right 百分比偏移、
+   绝不用 transform —— 设置模态（未 portal，注册在 sidebar.settings 槽内）
+   就长在本列子树里，transform 会让抽屉盒成为其 fixed 定位的包含块，
+   模态会被锁进抽屉宽度（真机：设置页右侧大片空白）。 */
 html[data-dshsvc-mobile] [data-dshsvc-sidebar] {
   position: absolute !important;
   top: 0 !important;
   bottom: 0 !important;
-  left: 0 !important;
+  left: -105% !important;
   width: min(84vw, 320px) !important;
   z-index: 32;
-  transform: translateX(-104%);
-  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+  transition: left var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
 }
 html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-sidebar-collapsed]) [data-dshsvc-sidebar] {
-  transform: translateX(0);
+  left: 0 !important;
   box-shadow: 8px 0 32px rgba(0, 0, 0, .22);
 }
 /* 详情列（预览/文件树）→ 右侧 overlay，不再挤压会话区 */
@@ -4528,38 +4535,43 @@ html[data-dshsvc-mobile] [data-dshsvc-details] {
   position: absolute !important;
   top: 0 !important;
   bottom: 0 !important;
-  right: 0 !important;
+  right: -105% !important;
   width: min(92vw, 420px) !important;
   z-index: 30;
-  transform: translateX(104%);
-  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+  transition: right var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
 }
 html[data-dshsvc-mobile] [data-dshsvc-frame]:not([data-details-collapsed]) [data-dshsvc-details] {
-  transform: translateX(0);
+  right: 0 !important;
   box-shadow: -8px 0 32px rgba(0, 0, 0, .22);
 }
-/* 模态 → 底部 sheet：外壳 portal 根是 fixed inset:0 flex 容器（无 transform，
-   无 containing-block 陷阱），dialog 改 absolute 底部锚定即可。
-   设置页 panel 本身就是 [role=dialog]（800px flex row：188px nav 列 + 内容区），
-   转列向让导航条横在顶部、内容区占其余高度。 */
+/* 模态 → 全屏面板：外壳 portal 根是 fixed inset:0 flex 容器（无 transform，
+   无 containing-block 陷阱），dialog 改 absolute 四边拉满即可。
+   真机反馈：底部 sheet 顶部留空难看 → 顶部贴顶、圆角归零；
+   刘海/home 条遮挡由 dialog 自身 env() padding 补回。 */
 html[data-dshsvc-mobile] div[role="presentation"]:has(> [role="dialog"][aria-modal="true"]) {
   padding: 0 !important;
-  align-items: flex-end !important;
 }
 html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] {
   position: absolute !important;
-  top: auto !important;
+  top: 0 !important;
+  right: 0 !important;
   bottom: 0 !important;
   left: 0 !important;
-  right: 0 !important;
   margin: 0 !important;
   width: 100% !important;
-  max-width: 100vw !important;
-  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 48px) !important;
-  border-radius: 16px 16px 0 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  height: 100% !important;
+  border-radius: 0 !important;
   overflow: hidden auto !important;
   flex-direction: column !important;
+  padding-top: env(safe-area-inset-top, 0px) !important;
+  padding-bottom: env(safe-area-inset-bottom, 0px) !important;
 }
+/* 插件市场（dshmarket）在 ≤560px 媒体查询里把设置导航 display:none 藏掉
+   独占面板（其自有 CSS：[role=dialog]:has([data-dsh-market-root])>nav），
+   手机上会把用户困在市场分区 —— 用更高优先级把横滑标签条顶回来。 */
+html[data-dshsvc-mobile] [role="dialog"]:has([data-dsh-market-root]) > nav { display: flex !important; }
 /* 设置页标签条：nav 从 188px 竖列变顶部横滑条（宽度与列向必须显式推翻） */
 html[data-dshsvc-mobile] [role="dialog"] nav {
   flex-direction: row !important;
@@ -4574,8 +4586,19 @@ html[data-dshsvc-mobile] [role="dialog"] nav {
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
 html[data-dshsvc-mobile] [role="dialog"] nav > div { flex: none !important; }
-html[data-dshsvc-mobile] [class*="navList"] { flex-direction: row !important; }
-html[data-dshsvc-mobile] [class*="navCell"] { white-space: nowrap !important; flex: none !important; }
+html[data-dshsvc-mobile] [role="dialog"] [class*="navList"] { flex-direction: row !important; }
+html[data-dshsvc-mobile] [role="dialog"] [class*="navCell"] { white-space: nowrap !important; flex: none !important; }
+/* 会话底部统计条：外壳原生 white-space:nowrap + ellipsis 截断（StatsLine），
+   改横向滑动查看全文。类哈希 FJxK0a_ 取自 dsh-client-ui-conversation/
+   StatsLine.module.css（0.1.1-rc.2），外壳升级后需复核。 */
+html[data-dshsvc-mobile] [class*="FJxK0a_root"] {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  text-overflow: clip !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none !important;
+}
+html[data-dshsvc-mobile] [class*="FJxK0a_root"]::-webkit-scrollbar { display: none !important; }
 /* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */
 html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
 html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
@@ -4608,6 +4631,7 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           mq: null,
           mqHandler: null,
           frameObserver: null,
+          mountObserver: null,
           sidebarClickHandler: null,
           errorHandler: null,
           resizeHandler: null,
@@ -4659,18 +4683,108 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           if (frame === null || frame === document.documentElement) return false
           frame.setAttribute('data-dshsvc-frame', '')
           let sawSidebar = false
+          let sawCenter = false
           let sawDetails = false
           for (const child of frame.children) {
             const className = typeof child.className === 'string' ? child.className : ''
             if (!sawSidebar && /sidebarCol/.test(className)) {
               child.setAttribute('data-dshsvc-sidebar', '')
               sawSidebar = true
+            } else if (!sawCenter && /centerCol/.test(className)) {
+              child.setAttribute('data-dshsvc-center', '')
+              sawCenter = true
             } else if (!sawDetails && /detailsCol/.test(className)) {
               child.setAttribute('data-dshsvc-details', '')
               sawDetails = true
             }
           }
           return true
+        }
+
+        /** 建 backdrop/FAB 并接上抽屉状态观察。外壳骨架就绪才算成功；
+            手机直接窄屏冷加载时骨架往往还没挂载（真机反馈：抽屉钮缺失 +
+            官方 rail 残留，就是这个竞态），失败则由 watchForShell 重试。 */
+        const buildSurfaces = () => {
+          if (state.fab !== null) return true
+          if (!tagShellFrame()) return false
+          state.backdrop = document.createElement('div')
+          state.backdrop.setAttribute('data-dshsvc-backdrop', '')
+          state.backdrop.setAttribute('aria-hidden', 'true')
+          Object.assign(state.backdrop.style, {
+            position: 'fixed', inset: '0', zIndex: '31', display: 'none',
+            background: 'rgba(0,0,0,.42)', backdropFilter: 'blur(1px)',
+          })
+          state.backdrop.addEventListener('click', () => {
+            const layout = layoutService()
+            if (layout === undefined) return
+            if (state.drawerOpen) layout.toggleSidebar()
+            else if (state.detailsOpen) layout.closeDetails()
+          })
+          document.body.appendChild(state.backdrop)
+
+          state.fab = document.createElement('button')
+          state.fab.type = 'button'
+          state.fab.setAttribute('data-dshsvc-fab', '')
+          state.fab.setAttribute('aria-label', t('mobile.fab.label'))
+          // 样式对齐外壳幽灵图标钮（设置关闭钮同族：28px 圆形、透明底、主题色），
+          // 位置钉会话头部左上角（safe-area 感知），图标为侧栏面板开关。
+          Object.assign(state.fab.style, {
+            position: 'fixed',
+            left: 'calc(env(safe-area-inset-left, 0px) + 10px)',
+            top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+            width: '32px', height: '32px', borderRadius: '16px', zIndex: '33', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-primary)',
+            padding: '0', cursor: 'pointer', touchAction: 'manipulation',
+          })
+          state.fab.innerHTML =
+            '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+            '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.5"/>' +
+            '<line x1="6.25" y1="3.5" x2="6.25" y2="12.5" stroke="currentColor" stroke-width="1.5"/></svg>'
+          state.fab.addEventListener('click', () => {
+            const layout = layoutService()
+            if (layout !== undefined) layout.toggleSidebar()
+          })
+          document.body.appendChild(state.fab)
+          readOverlayState()
+
+          // 抽屉开着时点击侧栏内任意位置即收起（会话行/新建按钮等操作照常发生）；
+          // 例外：设置模态等 overlay 就渲染在本列子树里（未 portal），其内部
+          // 点击不能当「点抽屉」处理，否则点一下设置标签抽屉就整个滑走。
+          const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
+          if (sidebarEl !== null) {
+            state.sidebarClickHandler = (event) => {
+              if (!state.drawerOpen) return
+              const target = event && event.target
+              if (target !== null && target !== undefined && typeof target.closest === 'function'
+                && target.closest('[role="presentation"]') !== null) return
+              const layout = layoutService()
+              if (layout !== undefined) layout.toggleSidebar()
+            }
+            sidebarEl.addEventListener('click', state.sidebarClickHandler)
+          }
+
+          state.frameObserver = new MutationObserver(() => {
+            readOverlayState()
+            syncSurfaces()
+          })
+          const frame = document.querySelector('[data-dshsvc-frame]')
+          if (frame !== null) state.frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed', 'data-details-collapsed'] })
+
+          if (state.mountObserver !== null) { state.mountObserver.disconnect(); state.mountObserver = null }
+          syncSurfaces()
+          return true
+        }
+
+        /** 外壳骨架晚挂载的重试观察：AppFrame 一进 DOM 就补建抽屉件。 */
+        const watchForShell = () => {
+          if (state.mountObserver !== null || typeof MutationObserver !== 'function') return
+          try {
+            state.mountObserver = new MutationObserver(() => { buildSurfaces() })
+            state.mountObserver.observe(document.documentElement, { childList: true, subtree: true })
+          } catch (_) {
+            state.mountObserver = null
+          }
         }
 
         const ensureViewportCover = () => {
@@ -4693,66 +4807,7 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           state.styleTag.dataset.pluginCss = '@gehennawu/dsh-service/mobile.css'
           state.styleTag.textContent = MOBILE_CSS
           document.head.appendChild(state.styleTag)
-          if (tagShellFrame()) {
-            state.backdrop = document.createElement('div')
-            state.backdrop.setAttribute('data-dshsvc-backdrop', '')
-            state.backdrop.setAttribute('aria-hidden', 'true')
-            Object.assign(state.backdrop.style, {
-              position: 'fixed', inset: '0', zIndex: '31', display: 'none',
-              background: 'rgba(0,0,0,.42)', backdropFilter: 'blur(1px)',
-            })
-            state.backdrop.addEventListener('click', () => {
-              const layout = layoutService()
-              if (layout === undefined) return
-              if (state.drawerOpen) layout.toggleSidebar()
-              else if (state.detailsOpen) layout.closeDetails()
-            })
-            document.body.appendChild(state.backdrop)
-
-            state.fab = document.createElement('button')
-            state.fab.type = 'button'
-            state.fab.setAttribute('data-dshsvc-fab', '')
-            state.fab.setAttribute('aria-label', t('mobile.fab.label'))
-            // 样式对齐外壳幽灵图标钮（设置关闭钮同族：28px 圆形、透明底、主题色），
-            // 位置钉会话头部左上角（safe-area 感知），图标为侧栏面板开关。
-            Object.assign(state.fab.style, {
-              position: 'fixed',
-              left: 'calc(env(safe-area-inset-left, 0px) + 10px)',
-              top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
-              width: '32px', height: '32px', borderRadius: '16px', zIndex: '33', display: 'flex',
-              alignItems: 'center', justifyContent: 'center',
-              border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-primary)',
-              padding: '0', cursor: 'pointer', touchAction: 'manipulation',
-            })
-            state.fab.innerHTML =
-              '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-              '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.5"/>' +
-              '<line x1="6.25" y1="3.5" x2="6.25" y2="12.5" stroke="currentColor" stroke-width="1.5"/></svg>'
-            state.fab.addEventListener('click', () => {
-              const layout = layoutService()
-              if (layout !== undefined) layout.toggleSidebar()
-            })
-            document.body.appendChild(state.fab)
-          }
-          readOverlayState()
-
-          // 抽屉开着时点击侧栏内任意位置即收起（会话行/新建按钮等操作照常发生）
-          const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
-          if (sidebarEl !== null) {
-            state.sidebarClickHandler = () => {
-              if (!state.drawerOpen) return
-              const layout = layoutService()
-              if (layout !== undefined) layout.toggleSidebar()
-            }
-            sidebarEl.addEventListener('click', state.sidebarClickHandler)
-          }
-
-          state.frameObserver = new MutationObserver(() => {
-            readOverlayState()
-            syncSurfaces()
-          })
-          const frame = document.querySelector('[data-dshsvc-frame]')
-          if (frame !== null) state.frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed', 'data-details-collapsed'] })
+          if (!buildSurfaces()) watchForShell()
 
           let debugRequested = false
           try { debugRequested = new URLSearchParams(window.location.search).has(MOBILE_DEBUG_PARAM) } catch (_) {}
@@ -4788,6 +4843,7 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           state.detailsOpen = false
           document.documentElement.removeAttribute('data-dshsvc-mobile')
           if (state.frameObserver !== null) { state.frameObserver.disconnect(); state.frameObserver = null }
+          if (state.mountObserver !== null) { state.mountObserver.disconnect(); state.mountObserver = null }
           const sidebarEl = document.querySelector('[data-dshsvc-sidebar]')
           if (sidebarEl !== null && state.sidebarClickHandler !== null) sidebarEl.removeEventListener('click', state.sidebarClickHandler)
           state.sidebarClickHandler = null
@@ -4798,9 +4854,10 @@ html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
           for (const el of [state.styleTag, state.backdrop, state.fab, state.debugChip]) {
             if (el !== null && el.isConnected) el.remove()
           }
-          for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-details]')) {
+          for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-center],[data-dshsvc-details]')) {
             el.removeAttribute('data-dshsvc-frame')
             el.removeAttribute('data-dshsvc-sidebar')
+            el.removeAttribute('data-dshsvc-center')
             el.removeAttribute('data-dshsvc-details')
           }
           state.styleTag = null
