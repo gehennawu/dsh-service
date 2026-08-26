@@ -400,6 +400,7 @@ window.__ModuleLoader__.load({
       'notification.kind.question': '等待选择答案',
       'notification.bellOn': '通知开启',
       'notification.bellOff': '通知关闭',
+      'notification.bellShow': '显示输入框旁的铃铛图标',
       'quota.cardTitle': '额度查询',
       'quota.navToggle': '设置页左列显示「额度查询」入口',
       'quota.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示「额度查询」快捷入口',
@@ -900,6 +901,7 @@ window.__ModuleLoader__.load({
       'notification.kind.question': 'answer requested',
       'notification.bellOn': 'Notifications on',
       'notification.bellOff': 'Notifications off',
+      'notification.bellShow': 'Show composer bell icon',
       'quota.cardTitle': 'Quota lookup',
       'quota.navToggle': 'Show "Quota lookup" entry in settings left nav',
       'quota.navToggleHint': 'Off by default; when enabled, a "Quota lookup" entry appears at the bottom of the settings left navigation',
@@ -1109,7 +1111,8 @@ window.__ModuleLoader__.load({
         if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
         return number.toLocaleString()
       }
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: true }
+      // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: false }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -1139,26 +1142,41 @@ window.__ModuleLoader__.load({
       let notifyEnabled = false
       let notifyDone = true
       let notifyInput = true
+      // 输入框铃铛图标的显隐（v0.31 用户点名）：默认显示，独立于通知行为开关——
+      // 藏掉铃铛只是收起快捷入口，通知照常按既有三档工作。
+      let notifyBellVisible = true
       try { notifyEnabled = localStorage.getItem('dsh-service-notify') === 'true' } catch (_) {}
       try { notifyDone = localStorage.getItem('dsh-service-notify-done') !== 'false' } catch (_) {}
       try { notifyInput = localStorage.getItem('dsh-service-notify-input') !== 'false' } catch (_) {}
+      try { notifyBellVisible = localStorage.getItem('dsh-service-notify-bell') !== 'false' } catch (_) {}
       const notifyListeners = new Set()
+      const bellListeners = new Set()
       const persistNotify = (key, value) => { try { localStorage.setItem(key, value ? 'true' : 'false') } catch (_) {} }
       const publishNotify = () => { for (const listener of notifyListeners) listener() }
+      const publishBell = () => { for (const listener of bellListeners) listener() }
       const setNotifyEnabled = (value) => { notifyEnabled = value; persistNotify('dsh-service-notify', value); publishNotify() }
       const setNotifyDone = (value) => { notifyDone = value; persistNotify('dsh-service-notify-done', value); publishNotify() }
       const setNotifyInput = (value) => { notifyInput = value; persistNotify('dsh-service-notify-input', value); publishNotify() }
+      const setNotifyBellVisible = (value) => {
+        notifyBellVisible = value === true
+        persistNotify('dsh-service-notify-bell', notifyBellVisible)
+        publishBell()
+      }
+      /** 槽位注入回调用：铃铛显隐变化时重挂 conversation.input.left 条目。 */
+      const subscribeBellVisible = (listener) => { bellListeners.add(listener); return () => bellListeners.delete(listener) }
       const useNotifyState = () => {
         const [, setTick] = useState(0)
         const [enabled, setEnabled] = useState(notifyEnabled)
         const [done, setDone] = useState(notifyDone)
         const [input, setInput] = useState(notifyInput)
+        const [bell, setBell] = useState(notifyBellVisible)
         React.useEffect(() => {
-          const update = () => { setEnabled(notifyEnabled); setDone(notifyDone); setInput(notifyInput); setTick((t) => t + 1) }
+          const update = () => { setEnabled(notifyEnabled); setDone(notifyDone); setInput(notifyInput); setBell(notifyBellVisible); setTick((t) => t + 1) }
           notifyListeners.add(update)
-          return () => notifyListeners.delete(update)
+          bellListeners.add(update)
+          return () => { notifyListeners.delete(update); bellListeners.delete(update) }
         }, [])
-        return { enabled, done, input, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v) }
+        return { enabled, done, input, bell, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v), setBell: setNotifyBellVisible }
       }
       // 设置页左列入口开关的通用实现（重启/额度/技能三个入口共用，不再三套复制）：
       // localStorage 持久化、默认关；开启才注册 settings.section 条目、关闭即注销——
@@ -2873,7 +2891,9 @@ window.__ModuleLoader__.load({
           onClick: opts.onClick,
           style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', cursor: opts.disabled ? 'default' : 'pointer', lineHeight: 0, border: '1px solid ' + (opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: opts.armed ? 'transparent' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: opts.disabled ? 0.5 : 1 },
         }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: checked && !opts.armed ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
-        const entryCard = { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px', display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' }
+        // v0.31 用户点名：描述/用法/注释/无效行移出「名称|开关」双栏约束，整行占满技能展示区，
+        // 利用原开关列右侧的空余宽度。头部行只保留名称徽标与右侧开关列。
+        const entryCard = { border: '1px solid var(--dsh-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px' }
 
         const renderEntry = (entry) => {
           const invalidLegacy = typeof entry.invalid === 'string' && entry.invalid.startsWith('legacy-invocation-key:')
@@ -2908,8 +2928,13 @@ window.__ModuleLoader__.load({
               pillSwitch(entry.invocation.user, { testid: 'skill-switch-user-' + entry.name, disabled: !entry.writable, armed: confirmingKey === entry.id + ':user', title: confirmingKey === entry.id + ':user' ? translate('skills.switch.confirm') : undefined, onClick: () => void toggleSkill(entry, 'user') })),
             data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-' + entry.name, onClick: () => void openDescribe(entry), style: { fontSize: '11px', padding: '3px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-interactive-bg-hover)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' } }, '✨ ' + translate('skills.describe.button')) : null) : null
           return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
-            React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine, descLine, usageLine, noteLine, invalidLine),
-            switches)
+            React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' } },
+              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine),
+              switches),
+            descLine,
+            usageLine,
+            noteLine,
+            invalidLine)
         }
 
         const renderLogBox = (testid, lines, showHeader) => lines.length === 0 ? null : React.createElement('div', { 'data-testid': testid, style: { marginTop: '9px', padding: '7px 10px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l2)', maxHeight: '130px', overflowY: 'auto' } },
@@ -3505,8 +3530,8 @@ window.__ModuleLoader__.load({
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
-        // 模型列表口径：today=仅今日 / week=近 7 天（默认，保持既有视图）/ all=宿主索引内全部日期累计。
-        const [modelScope, setModelScope] = useState('week')
+        // 模型列表口径：today=仅今日（默认，v0.31 用户点名）/ week=近 7 天 / all=宿主索引内全部日期累计。
+        const [modelScope, setModelScope] = useState('today')
         const [activeTab, setActiveTab] = useState('overview')
         // 版本详情行内展开（不用浮层：弹层会被设置模态盖住）
         const [channelOpen, setChannelOpen] = useState(false)
@@ -4294,7 +4319,7 @@ window.__ModuleLoader__.load({
         // 重启区块复用共享组件（「重启」标签还承载设置页左列入口的显示开关；左侧入口默认关闭）
         const restartBlock = React.createElement(RestartSection, { showNavToggle: true })
 
-        const { enabled: notifyOn, done: notifyDoneOn, input: notifyInputOn, setEnabled: setNotifyOn, setDone: setNotifyDoneOn, setInput: setNotifyInputOn } = useNotifyState()
+        const { enabled: notifyOn, done: notifyDoneOn, input: notifyInputOn, bell: notifyBellOn, setEnabled: setNotifyOn, setDone: setNotifyDoneOn, setInput: setNotifyInputOn, setBell: setNotifyBellOn } = useNotifyState()
         const notifSupported = typeof Notification !== 'undefined'
         const notifPermission = notifSupported ? Notification.permission : 'denied'
         const notifySwitch = (on, onChange, disabled) => React.createElement('button', {
@@ -4327,7 +4352,9 @@ window.__ModuleLoader__.load({
                   : React.createElement('div', { style: { marginTop: '8px', display: 'flex', flexDirection: 'column' } },
                       notifyRow('notify-row-master', translate('notification.master'), null, notifyOn, setNotifyOn, false),
                       notifyRow('notify-row-done', translate('notification.done'), null, notifyDoneOn, setNotifyDoneOn, !notifyOn),
-                      notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn))))
+                      notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn),
+                      // 铃铛显隐独立于通知总开关：藏掉只是收起输入框旁的快捷入口（v0.31 用户点名）。
+                      notifyRow('notify-row-bell', translate('notification.bellShow'), null, notifyBellOn, setNotifyBellOn, false))))
         const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
         // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
         const notifyBlock = React.createElement('div', null, notificationBlock)
@@ -4413,7 +4440,8 @@ window.__ModuleLoader__.load({
         let dispose = null
         const sync = () => {
           if (dispose !== null) { dispose(); dispose = null }
-          if (!featureEnabled('taskNotifications')) return
+          // 铃铛显隐开关关闭时整条注销（v0.31 用户点名），通知行为不受影响。
+          if (!featureEnabled('taskNotifications') || !notifyBellVisible) return
           dispose = ctx.slots.register(
             { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
             () => React.createElement(InlineNotifyBell, null),
@@ -4421,7 +4449,8 @@ window.__ModuleLoader__.load({
         }
         sync()
         const unsubscribe = featureScope.subscribe(sync)
-        return () => { unsubscribe(); if (dispose !== null) dispose() }
+        const unsubscribeBell = subscribeBellVisible(sync)
+        return () => { unsubscribe(); unsubscribeBell(); if (dispose !== null) dispose() }
       })
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
         { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },

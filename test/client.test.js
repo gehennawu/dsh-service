@@ -745,14 +745,15 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.match(text, /deepseek\/deepseek-chat.*openai\/gpt-5.*anthropic\/claude/)
   assert.doesNotMatch(text, /google\/gemini/)
   assert.match(text, /▸ 展开其余 1 个模型/)
-  assert.match(text, /按近 7 天 token 从多到少排列/)
-  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
-  assert.equal(renderer.findByTestId('usage-model-scope-week').props.style.color, 'var(--dsw-alias-brand-primary)')
-  assert.notEqual(renderer.findByTestId('usage-model-scope-today').props.style.color, 'var(--dsw-alias-brand-primary)')
+  // v0.31 用户点名：模型明细默认按「今日」口径排序（原近 7 天）。
+  assert.match(text, /按今日 token 从多到少排列/)
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按今日 token 从多到少排列')
+  assert.equal(renderer.findByTestId('usage-model-scope-today').props.style.color, 'var(--dsw-alias-brand-primary)')
+  assert.notEqual(renderer.findByTestId('usage-model-scope-week').props.style.color, 'var(--dsw-alias-brand-primary)')
   assert.notEqual(renderer.findByTestId('usage-model-scope-all').props.style.color, 'var(--dsw-alias-brand-primary)')
   let topModelBars = renderer.findAllByTestIdPrefix('usage-model-bar-')
   assert.deepEqual(topModelBars.map((bar) => Number(bar.props['data-value'])), [4300, 3160, 2020])
-  assert.equal(topModelBars[0].props['aria-label'], 'deepseek/deepseek-chat：近 7 天 4.3K token')
+  assert.equal(topModelBars[0].props['aria-label'], 'deepseek/deepseek-chat：今日 4.3K token')
   assert.equal(topModelBars[0].children[0].props.style.width, '100%')
   assert.equal(topModelBars[1].children[0].props.style.width, '73.49%')
   assert.equal(renderer.findAllByTestIdPrefix('usage-model-segment-').length, 9)
@@ -854,18 +855,19 @@ test('usage model list re-sorts and relabels when switching between total and to
   await renderer.flush()
 
   const barValues = () => renderer.findAllByTestIdPrefix('usage-model-bar-').map((bar) => Number(bar.props['data-value']))
-  // 默认近 7 天口径：gemini 8600 登顶，deepseek 6450、gpt-5 3160 随后，claude 被折叠（第 9 天旧用量不计入）。
-  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
-  assert.deepEqual(barValues(), [8600, 6450, 3160])
-  assert.match(renderer.text('settings.section'), /▸ 展开其余 1 个模型/)
-  // 切到今日：只聚合今天的数据——gemini 无今日用量消失，claude 进入前三。
-  await renderer.findByTestId('usage-model-scope-today').props.onClick()
-  await renderer.flush()
+  // 默认今日口径：只聚合今天的数据——gemini 无今日用量消失，claude 进入前三且无折叠。
   assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按今日 token 从多到少排列')
   assert.equal(renderer.findByTestId('usage-model-scope-today').props.style.color, 'var(--dsw-alias-brand-primary)')
   assert.deepEqual(barValues(), [4300, 3160, 2020])
   assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
   assert.equal(renderer.findByTestId('usage-model-bar-deepseek/deepseek-chat').props['aria-label'], 'deepseek/deepseek-chat：今日 4.3K token')
+  // 切到近 7 天：昨日巨量的 gemini 登顶 [8600, 6450, 3160]，claude 被折叠（第 9 天旧用量不计入）。
+  await renderer.findByTestId('usage-model-scope-week').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
+  assert.deepEqual(barValues(), [8600, 6450, 3160])
+  assert.match(renderer.text('settings.section'), /▸ 展开其余 1 个模型/)
+  assert.equal(renderer.findByTestId('usage-model-bar-google/gemini').props['aria-label'], 'google/gemini：近 7 天 8.6K token')
   // 切到累计：第 9 天旧用量并入，claude（4020）反超 gpt-5 进入前三。
   await renderer.findByTestId('usage-model-scope-all').props.onClick()
   await renderer.flush()
@@ -873,12 +875,12 @@ test('usage model list re-sorts and relabels when switching between total and to
   assert.deepEqual(barValues(), [8600, 6450, 4020])
   assert.match(renderer.text('settings.section'), /▸ 展开其余 1 个模型/)
   assert.equal(renderer.findByTestId('usage-model-bar-anthropic/claude').props['aria-label'], 'anthropic/claude：累计 4K token')
-  // 切回近 7 天：排序与折叠恢复默认视图。
-  await renderer.findByTestId('usage-model-scope-week').props.onClick()
+  // 切回默认今日口径：排序恢复初始视图。
+  await renderer.findByTestId('usage-model-scope-today').props.onClick()
   await renderer.flush()
-  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按近 7 天 token 从多到少排列')
-  assert.deepEqual(barValues(), [8600, 6450, 3160])
-  assert.equal(renderer.findByTestId('usage-model-bar-google/gemini').props['aria-label'], 'google/gemini：近 7 天 8.6K token')
+  assert.equal(renderer.findByTestId('usage-model-sort-hint').children[0], '按今日 token 从多到少排列')
+  assert.deepEqual(barValues(), [4300, 3160, 2020])
+  assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
 })
 
 test('service panel uses distinct cards, display surfaces, and semantic action colors', async () => {
@@ -1463,7 +1465,7 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   assert.equal(renderer.reloadCount(), 1)
 })
 
-test('notification switches render three independent toggles and persist each choice', async () => {
+test('notification switches render four independent toggles (incl. bell visibility) and persist each choice', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     throw new Error(`unexpected endpoint ${endpoint}`)
@@ -1478,26 +1480,58 @@ test('notification switches render three independent toggles and persist each ch
   assert.match(renderer.text('settings.section'), /任务结束或需要你授权、抉择时发送浏览器通知。需要授权浏览器通知权限。/)
   assert.doesNotMatch(renderer.text('settings.section'), /关闭时下面两个开关暂停生效|页面刷新后保持|会话完成一轮任务时提醒|需要授权、审阅计划或选择答案时提醒/)
   const notifyRows = renderer.findAllByTestIdPrefix('notify-row-')
-  assert.equal(notifyRows.length, 3)
-  assert.deepEqual(notifyRows.map((row) => row.props.style.padding), ['5px 0', '5px 0', '5px 0'], 'rows keep their vertical spacing without hints')
+  assert.equal(notifyRows.length, 4)
+  assert.deepEqual(notifyRows.map((row) => row.props.style.padding), ['5px 0', '5px 0', '5px 0', '5px 0'], 'rows keep their vertical spacing without hints')
   let switches = renderer.findSwitches()
-  assert.equal(switches.length, 3, 'master + done + input switches')
-  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true'])
+  assert.equal(switches.length, 4, 'master + done + input + bell-visibility switches')
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true', 'true'])
   assert.equal(switches[1].props.onClick, undefined, 'sub switches are paused while master is off')
+  // 铃铛显隐独立于总开关：总开关关闭时仍可隐藏/恢复输入框旁的快捷入口。
+  assert.equal(typeof switches[3].props.onClick, 'function')
 
   switches[0].props.onClick()
   await renderer.flush()
   switches = renderer.findSwitches()
-  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'true'])
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'true', 'true'])
   assert.equal(typeof switches[1].props.onClick, 'function')
 
   switches[2].props.onClick()
   await renderer.flush()
   switches = renderer.findSwitches()
-  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'false'])
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['true', 'true', 'false', 'true'])
   assert.equal(localStorage.getItem('dsh-service-notify'), 'true')
   assert.equal(localStorage.getItem('dsh-service-notify-done'), null)
   assert.equal(localStorage.getItem('dsh-service-notify-input'), 'false')
+  assert.equal(localStorage.getItem('dsh-service-notify-bell'), null)
+
+  // 关掉铃铛显隐 → conversation.input.left 条目即时注销、选择持久化；再开回来条目恢复。
+  // 注意 hasSlot 首次注册后恒真，条目在否要看 registrations 的存活清单。
+  const bellEntries = () => (renderer.registrations()['conversation.input.left'] ?? []).filter((entry) => entry.id === 'dsh-service-notify')
+  assert.equal(bellEntries().length, 1)
+  switches[3].props.onClick()
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-notify-bell'), 'false')
+  assert.equal(bellEntries().length, 0)
+  renderer.findSwitches()[3].props.onClick()
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-notify-bell'), 'true')
+  assert.equal(bellEntries().length, 1)
+})
+
+test('bell visibility stays hidden on reload after a persisted off choice', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  // createRenderer 之后、load 之前播种持久化选择（模拟上次会话把铃铛藏了）。
+  globalThis.localStorage.setItem('dsh-service-notify-bell', 'false')
+  await renderer.load()
+  assert.equal((renderer.registrations()['conversation.input.left'] ?? []).some((entry) => entry.id === 'dsh-service-notify'), false, 'persisted bell-off hides the composer entry immediately')
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  const switches = renderer.findSwitches()
+  assert.deepEqual(switches.map((node) => node.props['aria-checked']), ['false', 'true', 'true', 'false'])
 })
 
 test('clicking a browser notification focuses the dsh page and closes the popup', async () => {
@@ -3410,6 +3444,13 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   // 注释以独立块展示在条目下方：只含描述与用法两行，不再带标题说明。
   assert.equal(renderer.hasTest('skill-note-alpha'), true)
   assert.equal(renderer.text().includes('仅面板展示'), false)
+  // v0.31 用户点名：描述/用法/注释占满技能展示区宽度——注释框是条目卡的直接子节点
+  // （独占整行），不再嵌在「名称 | 开关」双栏的左列里被开关列挤窄。
+  const entryNode = renderer.findByTestId('skill-entry-alpha')
+  const directIds = entryNode.children.filter((child) => child !== null && child.props && child.props['data-testid']).map((child) => child.props['data-testid'])
+  assert.deepEqual(directIds, ['skill-note-alpha'])
+  const headerRow = entryNode.children[0]
+  assert.equal(headerRow.props.style.display, 'flex', 'name + switches share the top row')
   // 运行日志盒保留最后一次生成的过程记录（结构化条目经词典渲染）。
   assert.equal(renderer.hasTest('skill-describe-log'), true)
   assert.match(renderer.text(), /解析成功，草稿就绪/)
@@ -4055,7 +4096,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
 
   const realDateNow = Date.now
   try {
-    const renderer = createRenderer(rpc, { services: { layout: {
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: {
       toggleSidebar() { layoutCalls.toggleSidebar += 1 },
       closeDetails() { layoutCalls.closeDetails += 1 },
     } } })
@@ -4249,7 +4290,7 @@ test('mobile adaptation debug chip renders diagnostics and counts JS errors only
     throw new Error(`unexpected endpoint ${endpoint}`)
   }
   try {
-    const renderer = createRenderer(rpc, { services: { layout: { toggleSidebar() {}, closeDetails() {} } } })
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: { toggleSidebar() {}, closeDetails() {} } } })
     globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
     globalThis.window.addEventListener = (type, handler) => { (windowListeners.get(type) || windowListeners.set(type, new Set()).get(type)).add(handler) }
     globalThis.window.removeEventListener = (type, handler) => { windowListeners.get(type)?.delete(handler) }
@@ -4327,7 +4368,7 @@ test('mobile adaptation survives cold narrow load before the shell frame mounts'
   }
   try {
     let toggles = 0
-    const renderer = createRenderer(rpc, { services: { layout: { toggleSidebar() { toggles += 1 }, closeDetails() {} } } })
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: { toggleSidebar() { toggles += 1 }, closeDetails() {} } } })
     globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
     await renderer.load()
 

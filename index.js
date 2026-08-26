@@ -28,7 +28,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   healthz: true,
   skillManager: true,
   subagentRoute: true,
-  mobileAdaptation: true,
+  // v0.31 用户点名：移动端适配默认改为关闭（需要时到插件配置卡打开）。
+  mobileAdaptation: false,
 })
 const FeatureSettingsSchema = z.object({
   healthDiagnostics: z.boolean().default(true),
@@ -39,7 +40,7 @@ const FeatureSettingsSchema = z.object({
   healthz: z.boolean().default(true),
   skillManager: z.boolean().default(true),
   subagentRoute: z.boolean().default(true),
-  mobileAdaptation: z.boolean().default(true),
+  mobileAdaptation: z.boolean().default(false),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -1005,6 +1006,20 @@ async function discoverQuotaCredential(ctx, kind, profile) {
     if (typeof value === 'string' && value.trim() !== '') return formatCredential(value.trim())
   }
   return undefined
+}
+
+/**
+ * 凭据可用性探测（v0.31 用户点名：自动识别的 DeepSeek 行在 API KEY 未配置时整行不下发）。
+ * 走与真实查询完全相同的发现链（settings apiKeyEnv → 凭据库 → 环境变量），发现即视为配置完成；
+ * 任何异常（凭据服务缺席、resolve 抛错等）一律按未配置处理——调用方静默隐藏该行，
+ * 绝不外呼、绝不下发错误提示，满足「进入余额查询标签页自动识别一次、失败不提示」。
+ */
+async function quotaCredentialConfigured(ctx, kind, profile) {
+  try {
+    return typeof (await discoverQuotaCredential(ctx, kind, profile)) === 'string'
+  } catch (_) {
+    return false
+  }
 }
 
 /**
@@ -4207,6 +4222,11 @@ function apply(ctx) {
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
             continue
           }
+          // v0.31 用户点名：自动识别出的 DeepSeek 行在 API KEY 未配置时整行不下发——
+          // 额度页不出现卡片、不进节流轮询；每次快照（含进入标签页的那次拉取）重新
+          // 走一遍凭据发现链，配置好后自动现身；探测失败一律静默视为未配置。
+          // 显式在 UI 适配过的不受此限（用户主动选择，照常显示填写入口）。
+          if (kindSource === 'auto' && kind === 'deepseek' && !(await quotaCredentialConfigured(ctx, kind, profile))) continue
           if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind, config)
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
@@ -4515,6 +4535,7 @@ export {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
@@ -4562,6 +4583,7 @@ export default {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,

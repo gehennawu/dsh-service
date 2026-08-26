@@ -11,7 +11,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -665,7 +665,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
-    mobileAdaptation: true,
+    mobileAdaptation: false,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     healthDiagnostics: true,
@@ -676,7 +676,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
-    mobileAdaptation: true,
+    mobileAdaptation: false,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
@@ -1959,12 +1959,26 @@ test('zai-coding-cn parser maps every limit window and tolerates idle windows wi
 test('quota merges runtime llm channels via the alias table (deepseek-official) without extra rows', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-channel-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  // 全程离线保险：记录一切 https.get——别名渠道无凭据时应在解凭据一步就停，绝不出网。
+  // 全程离线：https.get 整体替换为假上游——别名渠道配了凭据后的真实外呼也落在这个桩上。
   const originalGet = https.get
   const requests = []
   https.get = (url, options, callback) => {
     requests.push(String(url))
-    return originalGet(url, options, callback)
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (String(url).includes('api.deepseek.com')) {
+        response.emit('data', JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '12.34', granted_balance: '0', topped_up_balance: '12.34' }] }))
+      } else {
+        response.emit('data', '{"usage":{}}')
+      }
+      response.emit('end')
+    })
+    return request
   }
   t.after(() => { https.get = originalGet })
   const host = createHost({
@@ -1973,30 +1987,64 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
       settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' } } } : undefined) },
       // 真实契约：listProviders() 下发 [{id,name}] 对象数组（dsh-llm 源码核实）；字符串条目兼容容忍。
       llm: { listProviders: () => [{ id: 'pi-catalog-noise', name: 'Noise' }, { id: 'deepseek-official', name: 'DeepSeek' }, 'legacy-string'] },
+      // 最小凭据服务：resolve 走环境变量，describe 只回「未配置」——供凭据填写窗口的数据源断言。
+      credentials: {
+        resolve: async (name) => (typeof process.env[name] === 'string' && process.env[name] !== '' ? { value: process.env[name] } : undefined),
+        describe: async () => ({ configured: false }),
+      },
     },
   })
 
+  // v0.31 用户点名：自动识别的 DeepSeek 行在 API KEY 未配置时整行不下发——不出现卡片、不外呼。
   const first = await host.handler('quota', {})
   assert.equal(first.ok, true)
   const byProvider = new Map(first.value.providers.map((row) => [row.provider, row]))
-  // 别名渠道合成行并按 runtimeKind 自动适配；表外运行时渠道不产生行；settings 路由照旧。
-  const dsRow = byProvider.get('deepseek-official')
-  assert.ok(dsRow, 'deepseek-official row missing')
+  assert.equal(byProvider.has('deepseek-official'), false, 'unconfigured auto deepseek must be hidden')
+  assert.equal(byProvider.get('openrouter').usageUrl, undefined)
+  assert.equal(byProvider.has('pi-catalog-noise'), false)
+  assert.equal(byProvider.has('legacy-string'), false)
+
+  // 配置好 DEEPSEEK_API_KEY 后，下一次快照（即进入额度页那次拉取）自动识别完成、行自动现身；
+  // 假上游接住由此触发的唯一一次余额查询（TTL 内不再重复）。
+  process.env.DEEPSEEK_API_KEY = 'k'
+  t.after(() => { delete process.env.DEEPSEEK_API_KEY })
+  const second = await host.handler('quota', {})
+  assert.equal(second.ok, true)
+  const dsRow = second.value.providers.find((row) => row.provider === 'deepseek-official')
+  assert.ok(dsRow, 'configured deepseek-official row missing')
   assert.equal(dsRow.adapted, true)
   assert.equal(dsRow.kind, 'deepseek')
   assert.equal(dsRow.kindSource, 'auto')
   assert.equal(dsRow.displayName, 'DeepSeek') // 渠道对象的 name 作展示名
   assert.equal(dsRow.usageUrl, 'https://platform.deepseek.com/usage') // 官网用户页随 kind 下发
-  assert.equal(byProvider.get('openrouter').usageUrl, undefined)
-  assert.equal(byProvider.has('pi-catalog-noise'), false)
-  assert.equal(byProvider.has('legacy-string'), false)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(requests.filter((url) => url.includes('api.deepseek.com')).length, 1)
 
-  // 显式停用（kind:null）优先于别名自动适配；clear 回退后恢复。
+  // 显式停用（kind:null）优先于别名自动适配；clear 回退后恢复自动识别。
   const saved = await host.handler('quota-config', { provider: 'deepseek-official', kind: null })
   assert.equal(saved.ok, true)
   assert.equal((await host.handler('quota', {})).value.providers.find((row) => row.provider === 'deepseek-official').adapted, false)
   await host.handler('quota-config', { provider: 'deepseek-official', clear: true })
-  assert.equal((await host.handler('quota', {})).value.providers.find((row) => row.provider === 'deepseek-official').adapted, true)
+  assert.ok((await host.handler('quota', {})).value.providers.find((row) => row.provider === 'deepseek-official').adapted)
+
+  // 撤掉凭据后回退自动识别 → 行再次隐藏；但显式在 UI 适配过的不受隐匿门限制：
+  // 照常出现 unconfigured 卡片（带凭据填写线索），用户主动选择的入口不能消失。
+  delete process.env.DEEPSEEK_API_KEY
+  await host.handler('quota-config', { provider: 'deepseek-official', kind: 'deepseek' })
+  // quota-refresh 清掉上一阶段的成功 TTL，强制一次真实重试（此时无凭据 → 静默失败）。
+  await host.handler('quota-refresh', { provider: 'deepseek-official' })
+  const manualFirst = await host.handler('quota', {})
+  const manualRow = manualFirst.value.providers.find((row) => row.provider === 'deepseek-official')
+  assert.ok(manualRow, 'explicitly adapted deepseek row must stay visible even without key')
+  assert.equal(manualRow.kindSource, 'config')
+  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setImmediate(resolve))
+  const manualSettled = await host.handler('quota', {})
+  const settledRow = manualSettled.value.providers.find((row) => row.provider === 'deepseek-official')
+  assert.equal(settledRow.status, 'unconfigured')
+  assert.equal(settledRow.errorCode, 'credential-missing')
+  assert.ok(Array.isArray(settledRow.credentialHints))
+  assert.ok(settledRow.credentialHints.some((hint) => hint.name === 'DEEPSEEK_API_KEY' && hint.configured === false))
 
   // 别名渠道在白名单语义里与 settings 路由同权：凭据写入窗口接受它、未知名字仍拒绝。
   const credForm = await host.handler('quota-credential-set', { provider: 'deepseek-official', name: 'DEEPSEEK_API_KEY', value: 'k' })
@@ -2004,7 +2052,24 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   assert.equal((await host.handler('quota-reset-card', { provider: 'no-such-provider' })).error, 'unknown-provider')
 
   await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(requests.filter((url) => url.includes('deepseek')), [])
+  // 除假上游中转的 deepseek 域以外无任何出网请求（openrouter 未适配，绝不发起）。
+  assert.equal(requests.some((url) => !url.includes('api.deepseek.com')), false)
+})
+
+test('quotaCredentialConfigured mirrors the full credential chain and fails silent', async () => {
+  const profile = { name: 'deepseek-official', displayName: 'DeepSeek', baseURL: '', apiKeyEnv: '' }
+  // 凭据服务缺席且环境变量未设 → 未配置。
+  assert.equal(await quotaCredentialConfigured({ get: () => undefined }, 'deepseek', profile), false)
+  // resolve 抛错（凭据层故障）→ 静默按未配置处理，绝不让错误冒泡到快照 RPC。
+  assert.equal(await quotaCredentialConfigured({ get: () => ({ resolve: async () => { throw new Error('boom') } }) }, 'deepseek', profile), false)
+  // 凭据库命中 / 环境变量兜底 → 配置完成。
+  assert.equal(await quotaCredentialConfigured({ get: () => ({ resolve: async () => ({ value: 'k' }) }) }, 'deepseek', profile), true)
+  process.env.DEEPSEEK_API_KEY = 'k-env'
+  try {
+    assert.equal(await quotaCredentialConfigured({ get: () => undefined }, 'deepseek', profile), true)
+  } finally {
+    delete process.env.DEEPSEEK_API_KEY
+  }
 })
 
 test('inferQuotaKind matches an exact registered hostname or subdomain and refuses deceptive URLs', () => {
