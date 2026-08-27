@@ -97,10 +97,12 @@
 | OpenCode Go | `{baseURL}/usage` |
 | OpenRouter | credits 已用百分比 |
 | Kimi / 硅基流动 | 人民币余额 |
+| StepFun 余额 | 官方 `GET /v1/accounts`（API key，com/ai 双域） |
+| StepFun Step Plan | 控制台 BFF 订阅额度（Oasis-Token 登录令牌；5 小时/周窗口与 Credit 月池自动识别） |
 | 小米 MiMo Token Plan | 控制台同源套餐额度（网页登录态 Cookie） |
 | CLIProxyAPI 部署 | 各 OAuth 上游账号官方剩余额度 |
 
-- 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie
+- 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie，StepFun Step Plan 填控制台令牌（Oasis-Token，`Oasis-Webid` 由令牌自动派生无需手填）
 - 防风控：结果缓存 60 秒、失败指数退避（30 秒 ×2、封顶 15 分钟）；自动查询可调为仅手动 / 1 / 2 / 5 / 10 分钟
 - API key 只在宿主进程内解析，浏览器仅收到归一化窗口数据；未适配的供应商绝不发起请求
 
@@ -298,6 +300,18 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 <summary><strong>小米卡片显示「控制台 Cookie 已失效」？</strong></summary>
 
 网页登录态过期了。重新登录 platform.xiaomimimo.com，从任意 `/api/v1/tokenPlan/` 请求复制 `Cookie:` 头，点卡片「填写控制台 Cookie」重新粘贴。
+</details>
+
+<details>
+<summary><strong>StepFun Step Plan 卡片显示「凭据未配置」？</strong></summary>
+
+Step Plan 订阅没有 API-key 形态的查询接口，需要网页登录态令牌。登录 platform.stepfun.com，按 F12 打开开发者工具 → Application → Cookies → platform.stepfun.com，复制 `Oasis-Token` 的完整值（形如 `xxx...yyy`，两个小圆点分隔是令牌格式本身的一部分，不要拆分），点卡片「填写控制台令牌（Oasis-Token）」粘贴即可；`Oasis-Webid` 由宿主从令牌自动派生，无需手填。
+</details>
+
+<details>
+<summary><strong>StepFun Step Plan 卡片显示「控制台登录态已失效」？</strong></summary>
+
+令牌过期了（官方常见报错 `oasis-token is embezzled` 即令牌与 web_id 不匹配）。重新登录 platform.stepfun.com 后从 Cookies 复制新的 `Oasis-Token` 完整值再粘贴；从控制台复制时若自带 `Oasis-Token=` 或 `Cookie: ` 前缀会被自动剥离，不影响。
 </details>
 
 <details>

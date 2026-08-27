@@ -533,14 +533,20 @@ window.__ModuleLoader__.load({
       'quota.kind.kimi': 'Kimi / Moonshot',
       'quota.kind.siliconflow': '硅基流动',
       'quota.kind.deepseek': 'DeepSeek 开放平台',
+      'quota.kind.stepfun': 'StepFun 余额',
+      'quota.kind.stepfun-step-plan': 'StepFun Step Plan 订阅',
       'quota.kind.cliproxy': 'CLIProxyAPI 账号额度',
       'quota.kind.xiaomi-token-plan-cn': '小米 MiMo Token Plan',
       'quota.window.total_token': '套餐总额度',
       'quota.window.compensation_total_token': '补偿积分',
       'quota.window.plan-name': '订阅套餐',
-      'quota.error.no-subscription': '当前账号没有生效中的 Token Plan 订阅',
-      'quota.error.credential-rejected': '控制台 Cookie 已失效，请重新从浏览器复制',
+      'quota.window.credit-pool': '月度 Credit 池',
+      'quota.window.topup-credit': '加油包 Credit',
+      'quota.window.five-hour': '5 小时额度',
+      'quota.error.no-subscription': '当前账号没有生效中的订阅额度',
+      'quota.error.credential-rejected': '控制台登录态已失效，请重新从浏览器复制',
       'quota.credential.editCookie': '填写控制台 Cookie（网页登录态）',
+      'quota.credential.editToken': '填写控制台令牌（Oasis-Token，浏览器登录态）',
       'quota.kindAuto': '自动识别',
       'quota.noAdapted': '暂无已适配的供应商，可在下方手动适配',
       'quota.disable': '停用查询',
@@ -1115,13 +1121,19 @@ window.__ModuleLoader__.load({
       'quota.kind.siliconflow': 'SiliconFlow',
       'quota.kind.cliproxy': 'CLIProxyAPI accounts',
       'quota.kind.deepseek': 'DeepSeek Platform',
+      'quota.kind.stepfun': 'StepFun Balance',
+      'quota.kind.stepfun-step-plan': 'StepFun Step Plan',
       'quota.kind.xiaomi-token-plan-cn': 'Xiaomi MiMo Token Plan',
       'quota.window.total_token': 'Plan total quota',
       'quota.window.compensation_total_token': 'Compensation credits',
       'quota.window.plan-name': 'Subscription plan',
-      'quota.error.no-subscription': 'No active Token Plan subscription on this account',
-      'quota.error.credential-rejected': 'Console cookie expired; copy it from the browser again',
+      'quota.window.credit-pool': 'Monthly credit pool',
+      'quota.window.topup-credit': 'Top-up credit',
+      'quota.window.five-hour': '5-hour quota',
+      'quota.error.no-subscription': 'No active quota subscription on this account',
+      'quota.error.credential-rejected': 'Console session expired; copy it from the browser again',
       'quota.credential.editCookie': 'Set console cookie (web session)',
+      'quota.credential.editToken': 'Set console token (Oasis-Token, browser session)',
       'quota.kindAuto': 'Auto-detected',
       'quota.noAdapted': 'No adapted providers yet — adapt manually below',
       'quota.disable': 'Disable',
@@ -2058,7 +2070,7 @@ window.__ModuleLoader__.load({
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'xiaomi-token-plan-cn', 'cliproxy']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy']
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)

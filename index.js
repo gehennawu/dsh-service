@@ -184,6 +184,34 @@ const KIND_REGISTRY = {
     credentialPolicy: { includeProfileHint: false, format: 'raw', entryKey: 'editCookie' },
     configEndpointPolicy: 'fixed',
   },
+  // StepFun（阶跃星辰）余额（v0.38，按量计费）：官方文档 GET /v1/accounts，Bearer 即 API key，
+  // 响应 {object,type,balance,total_cash_balance,total_voucher_balance}，金额是 float。
+  // com（国内）与 ai（海外）双域候选链，401/403 换域。
+  stepfun: {
+    parser: normalizeStepfunBalance,
+    endpoints: [
+      'https://api.stepfun.com/v1/accounts',
+      'https://api.stepfun.ai/v1/accounts',
+    ],
+    keyHints: ['STEPFUN_API_KEY'],
+    hosts: ['api.stepfun.com', 'stepfun.com', 'api.stepfun.ai', 'stepfun.ai'],
+    usageUrl: 'https://platform.stepfun.com/plan-usage',
+  },
+  // StepFun Step Plan 订阅（v0.38）：无 API-key 形态额度查询端点（api.stepfun.com/step_plan/v1/*
+  // 逐路径探测 404），唯一数据面是控制台同源 Connect-JSON BFF
+  // （platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit）。
+  // 认证 = Oasis-Token（网页登录态令牌，access...refresh 对）+ Oasis-Webid（必须等于 token JWT
+  // 的 device_id，由 token 派生，不匹配报 "oasis-token is embezzled"）+ Oasis-appID/Oasis-Platform 头。
+  // 凭据按裸 token 交给 fetcher；settings apiKeyEnv（API 密钥）绝不进入控制台凭据链；
+  // configEndpointPolicy:'fixed' 表示查询平面由宿主常量固定、与 baseURL 无关（与 xiaomi 同款）。
+  'stepfun-step-plan': {
+    fetcher: fetchStepFunStepPlanUsage,
+    keyHints: ['STEPFUN_TOKEN', 'STEPFUN_OASIS_TOKEN'],
+    hosts: [],
+    usageUrl: 'https://platform.stepfun.com/plan-usage',
+    credentialPolicy: { includeProfileHint: false, format: 'raw', entryKey: 'editToken' },
+    configEndpointPolicy: 'fixed',
+  },
 }
 const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
@@ -1163,6 +1191,32 @@ function deepseekMoneyText(amount, currency) {
   return symbol === '' ? `${amount} ${currency}` : `${symbol}${amount}`
 }
 
+/**
+ * StepFun 余额（v0.38）：{object, type, balance, total_cash_balance, total_voucher_balance} →
+ * 文本窗口。官方响应无币种字段（控制台按人民币计费），金额按人民币惯例显示（与 kimi 同口径）；
+ * total_voucher_balance 为赠金，>0 时追加一行（kindKey 复用 granted-balance，客户端词典已有）。
+ * balance 缺失/非法丢弃整条（不伪造 ¥0.00——Number('') 是 0 的坑见 normalizeDeepseekMoney 注释）。
+ */
+function normalizeStepfunBalance(payload) {
+  const balance = normalizeStepfunMoney(payload?.balance)
+  if (balance === null) return { windows: [] }
+  const windows = [{ id: 'balance', text: `¥${balance}`, kindKey: 'balance' }]
+  const voucher = normalizeStepfunMoney(payload?.total_voucher_balance)
+  if (voucher !== null && Number(voucher) > 0) {
+    windows.push({ id: 'granted-balance', text: `¥${voucher}`, kindKey: 'granted-balance' })
+  }
+  return { windows }
+}
+
+/** StepFun 金额字段归一：数字/数字字符串均可（官方文档 float，兼容字符串下发）；负数或非有限值拒绝；
+ * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00（与 normalizeDeepseekMoney 同款坑）。 */
+function normalizeStepfunMoney(value) {
+  if (typeof value === 'string' && value.trim() === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return null
+  return (Math.round(n * 100) / 100).toFixed(2)
+}
+
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）控制台查询 ─────────────────
 // 数据源是控制台同源 API（platform.xiaomimimo.com SPA bundle 核实）：前端统一走
 // `/api/v1` 前缀 + same-origin Cookie，无任何 API-key 查询端点。两个 GET 都是宿主常量，
@@ -1243,6 +1297,160 @@ async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
   const hasPlan = typeof detailData?.planCode === 'string' && detailData.planCode.trim() !== ''
   const windows = normalizeXiaomiTokenPlanUsage(detailData, usageData)
   if (!hasPlan && windows.length === 0) throw new Error('no-subscription')
+  return windows
+}
+
+
+// ─── StepFun Step Plan（stepfun-step-plan）控制台 BFF 查询 ───────────────────
+// 数据源是控制台同源 Connect-JSON BFF（platform.stepfun.com SPA bundle 核实）：方法
+// POST /api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit，body {}，认证走
+// Oasis-Token + Oasis-Webid 头（web_id 必须等于 token JWT 的 device_id）。无候选链、
+// 无钉住域——查询平面与 settings baseURL 完全无关。
+const STEPFUN_STEP_PLAN_RATE_LIMIT_URL = 'https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit'
+
+/** 从 Oasis-Token 解出 Oasis-Webid：device_id 在 JWT payload；token 可能是
+ * `access...refresh` 对（浏览器 Oasis-Token cookie 形态），refresh 半优先（CodexBar 同款）。 */
+function stepfunWebIdFromToken(token) {
+  const halves = String(token ?? '').split('...')
+  for (let index = halves.length - 1; index >= 0; index--) {
+    const deviceId = stepfunJwtDeviceId(halves[index])
+    if (deviceId !== undefined) return deviceId
+  }
+  return undefined
+}
+
+function stepfunJwtDeviceId(jwt) {
+  const parts = String(jwt ?? '').split('.')
+  if (parts.length < 2) return undefined
+  let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+  while (payload.length % 4 !== 0) payload += '='
+  try {
+    const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
+    return typeof json?.device_id === 'string' && json.device_id !== '' ? json.device_id : undefined
+  } catch (_) {
+    return undefined
+  }
+}
+
+/** 响应字段 snake/camel 双形态读取（Connect protobuf JSON 两形态都出现过）。 */
+function pickQuotaField(target, snake, camel) {
+  if (target === null || typeof target !== 'object') return undefined
+  return target[snake] !== undefined ? target[snake] : target[camel]
+}
+
+/** 单个「剩余比例 0..1 → 已用 %」窗口；率缺失跳过；重置时刻过期/为 0（无窗口）不挂。 */
+function pushStepFunRateWindow(windows, id, rawRate, rawReset) {
+  const rate = Number(rawRate)
+  if (!Number.isFinite(rate)) return
+  const fraction = Math.max(0, Math.min(1, rate))
+  let resetsAt
+  if (rawReset !== undefined) resetsAt = normalizeResetTimestamp(rawReset)
+  windows.push({
+    id,
+    kindKey: id,
+    percent: Math.round((1 - fraction) * 100),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  })
+}
+
+/**
+ * QueryStepPlanRateLimit 响应 → 统一窗口（v0.38）。status!==1 返回空（fetcher 转 bad-payload）；
+ * 两代计费并存，先按形状判别再渲染：
+ * - 旧版 Token Plan（5h/周滚动窗口）：reset_time 有活值（>0）即旧版；窗口字段为 0/缺省
+ *   表示「无窗口未配置」而非「用光」，绝不把 0 当耗尽。
+ * - 新版 Credit 月池（plan_family=2）：窗口字段为 0/"0"（无窗口），额度在 plan_credit_rate_limit：
+ *   subscription/topup 剩余比例（0..1 小数）+ credit_buckets（绝对 Credit 数，total/residual）。
+ *   buckets 全有效时按 total 加权合成一窗（CodexBar totalCreditLeftRate 同款），否则回退
+ *   subscription/topup 两个剩余比例窗；resetsAt 取 subscription_credit_reset_time（月池清零时刻）。
+ */
+function normalizeStepFunStepPlanUsage(payload) {
+  const windows = []
+  if (payload === null || typeof payload !== 'object') return windows
+  if (Number(payload.status) !== 1) return windows
+  const fiveHourReset = Number(pickQuotaField(payload, 'five_hour_usage_reset_time', 'fiveHourUsageResetTime') ?? 0)
+  const weeklyReset = Number(pickQuotaField(payload, 'weekly_usage_reset_time', 'weeklyUsageResetTime') ?? 0)
+  if (fiveHourReset > 0 || weeklyReset > 0) {
+    pushStepFunRateWindow(windows, 'five-hour',
+      pickQuotaField(payload, 'five_hour_usage_left_rate', 'fiveHourUsageLeftRate'),
+      pickQuotaField(payload, 'five_hour_usage_reset_time', 'fiveHourUsageResetTime'))
+    pushStepFunRateWindow(windows, 'weekly',
+      pickQuotaField(payload, 'weekly_usage_left_rate', 'weeklyUsageLeftRate'),
+      pickQuotaField(payload, 'weekly_usage_reset_time', 'weeklyUsageResetTime'))
+    return windows
+  }
+  const credit = pickQuotaField(payload, 'plan_credit_rate_limit', 'planCreditRateLimit')
+  if (credit === undefined || typeof credit !== 'object') return windows
+  const resetAt = normalizeResetTimestamp(pickQuotaField(credit, 'subscription_credit_reset_time', 'subscriptionCreditResetTime'))
+  const buckets = pickQuotaField(credit, 'credit_buckets', 'creditBuckets')
+  const entries = Array.isArray(buckets) ? buckets : []
+  let totalSum = 0
+  let residualSum = 0
+  let bucketsValid = entries.length > 0
+  for (const bucket of entries) {
+    if (bucket === null || typeof bucket !== 'object') { bucketsValid = false; break }
+    const total = Number(pickQuotaField(bucket, 'credit_total', 'creditTotal'))
+    const residual = Number(pickQuotaField(bucket, 'credit_residual', 'creditResidual'))
+    if (!Number.isFinite(total) || !Number.isFinite(residual) || total <= 0 || residual < 0 || residual > total) {
+      bucketsValid = false
+      break
+    }
+    totalSum += total
+    residualSum += residual
+  }
+  if (bucketsValid && totalSum > 0) {
+    windows.push({
+      id: 'credit-pool',
+      kindKey: 'credit-pool',
+      percent: Math.max(0, Math.min(100, Math.round((1 - residualSum / totalSum) * 100))),
+      ...(resetAt !== undefined ? { resetsAt: resetAt } : {}),
+    })
+  } else {
+    pushStepFunRateWindow(windows, 'credit-pool',
+      pickQuotaField(credit, 'subscription_credit_left_rate', 'subscriptionCreditLeftRate'),
+      pickQuotaField(credit, 'subscription_credit_reset_time', 'subscriptionCreditResetTime'))
+    pushStepFunRateWindow(windows, 'topup-credit',
+      pickQuotaField(credit, 'topup_credit_left_rate', 'topupCreditLeftRate'))
+  }
+  return windows
+}
+
+/**
+ * StepFun Step Plan 额度编排：单次固定 POST（Connect-JSON，body {}）。credential 是裸
+ * Oasis-Token（discoverQuotaCredential 按 kind policy 下发）；web_id 由 token 派生，无独立
+ * 凭据位。HTTP 401/403 统一归一 credential-rejected（登录态失效/令牌与 web_id 不匹配是
+ * 唯一常见故障，别让用户猜状态码）；status!==1 归 bad-payload 并透出 desc；
+ * status==1 但无任何窗口 → no-subscription（未订阅 Step Plan）。
+ */
+async function fetchStepFunStepPlanUsage({ credential, signal }) {
+  const token = String(credential ?? '').trim().replace(/^oasis-token:\s*/i, '').replace(/^cookie:\s*/i, '')
+  if (token === '') throw new Error('credential-missing')
+  const webId = stepfunWebIdFromToken(token)
+  if (webId === undefined) throw new Error('credential-rejected')
+  let payload
+  try {
+    payload = await requestQuotaJson(STEPFUN_STEP_PLAN_RATE_LIMIT_URL, {
+      method: 'POST',
+      body: '{}',
+      signal,
+      headers: {
+        'Oasis-Token': token,
+        'Oasis-Webid': webId,
+        'Oasis-appID': '10300',
+        'Oasis-Platform': 'web',
+      },
+    })
+  } catch (error) {
+    if (error?.message === 'http-status:401' || error?.message === 'http-status:403') throw new Error('credential-rejected')
+    throw error
+  }
+  if (payload === null || typeof payload !== 'object' || Number(payload.status) !== 1) {
+    const desc = sanitizeQuotaErrorDetail(payload !== null && typeof payload === 'object' && typeof payload.desc === 'string' ? payload.desc : undefined)
+    const error = new Error('bad-payload')
+    if (desc !== undefined) error.detail = desc
+    throw error
+  }
+  const windows = normalizeStepFunStepPlanUsage(payload)
+  if (windows.length === 0) throw new Error('no-subscription')
   return windows
 }
 
@@ -1617,6 +1825,8 @@ async function fetchProviderUsage(endpoint, authorization, options = {}) {
  * 单次 JSON 请求（GET/POST，POST 带 JSON body）：CLIProxyAPI 管理面专用（GET auth-files +
  * POST api-call）。与 GET 版同样的 15s 超时、64KB 上限、瞬时错误白名单；body 只接受已序列化字符串。
  * options.cookie（v0.29 小米控制台）：按 Cookie 头直发登录态，与 Authorization 互斥使用。
+ * options.headers（v0.38 StepFun Step Plan）：附加自定义头（Oasis-Token 等，宿主常量构造，
+ * 浏览器零输入），放在默认头之后、可覆盖同名默认头。
  */
 function requestQuotaJsonOnce(endpoint, options = {}) {
   return new Promise((resolve, reject) => {
@@ -1630,6 +1840,7 @@ function requestQuotaJsonOnce(endpoint, options = {}) {
     }
     if (options.signal?.aborted === true) { fail('cancelled'); return }
     const body = typeof options.body === 'string' ? options.body : ''
+    const extraHeaders = options.headers !== null && typeof options.headers === 'object' ? options.headers : {}
     const request = https.request(endpoint, {
       method: options.method === 'POST' ? 'POST' : 'GET',
       timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
@@ -1640,6 +1851,7 @@ function requestQuotaJsonOnce(endpoint, options = {}) {
         ...(body === '' ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }),
         ...(options.authorization === undefined || options.authorization === '' ? {} : { Authorization: options.authorization }),
         ...(typeof options.cookie === 'string' && options.cookie !== '' ? { Cookie: options.cookie } : {}),
+        ...extraHeaders,
       },
     }, (response) => {
       const status = response.statusCode || 0
@@ -5294,6 +5506,7 @@ export {
   extractSkillDraftJson,
   fetchCliproxyUsage,
   fetchProviderUsage,
+  fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
@@ -5310,6 +5523,8 @@ export {
   normalizeOpencodeUsage,
   normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
+  normalizeStepfunBalance,
+  normalizeStepFunStepPlanUsage,
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
@@ -5332,6 +5547,7 @@ export {
   sessionEventText,
   setSkillInvocationKey,
   skillIdFor,
+  stepfunWebIdFromToken,
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
   viewSessionPage,
@@ -5349,6 +5565,7 @@ export default {
   extractSkillDraftJson,
   fetchCliproxyUsage,
   fetchProviderUsage,
+  fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
@@ -5365,6 +5582,8 @@ export default {
   normalizeOpencodeUsage,
   normalizeOpenRouterCredits,
   normalizeSiliconFlowInfo,
+  normalizeStepfunBalance,
+  normalizeStepFunStepPlanUsage,
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
@@ -5387,6 +5606,7 @@ export default {
   sessionEventText,
   setSkillInvocationKey,
   skillIdFor,
+  stepfunWebIdFromToken,
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
   viewSessionPage,

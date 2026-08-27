@@ -97,10 +97,12 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 | OpenCode Go | `{baseURL}/usage` |
 | OpenRouter | Credits used % |
 | Kimi / SiliconFlow | CNY balance |
+| StepFun Balance | Official `GET /v1/accounts` (API key, com/ai dual domains) |
+| StepFun Step Plan | Console BFF subscription quota (Oasis-Token console session; 5-hour/weekly windows vs Credit pool auto-detected) |
 | Xiaomi MiMo Token Plan | Console-origin plan quota (web session cookie) |
 | CLIProxyAPI deployment | Official remaining quota of each OAuth upstream account |
 
-- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, or the Xiaomi console cookie
+- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry)
 - Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); auto-query can be set to manual-only / 1 / 2 / 5 / 10 minutes
 - API keys are resolved only inside the host process; the browser receives normalized window data only; unadapted providers are never requested
 
@@ -298,6 +300,18 @@ Use the inline form on the card: an API key for regular adaptations, the managem
 <summary><strong>Xiaomi shows "console cookie expired"?</strong></summary>
 
 The web session expired. Log back in at platform.xiaomimimo.com, copy the `Cookie:` header from any `/api/v1/tokenPlan/` request, and paste it again via "Set console cookie".
+</details>
+
+<details>
+<summary><strong>StepFun Step Plan card shows "credential missing"?</strong></summary>
+
+Step Plan has no API-key query endpoint — it needs a web session token. Log in at platform.stepfun.com, press F12 → Application → Cookies → platform.stepfun.com, copy the full `Oasis-Token` value (shaped like `xxx...yyy`; the two-dot separator is part of the token format, do not split it), then paste it via "Set console token (Oasis-Token, browser session)". The `Oasis-Webid` is derived from the token automatically.
+</details>
+
+<details>
+<summary><strong>StepFun Step Plan card shows "console session expired"?</strong></summary>
+
+The token expired (the official `oasis-token is embezzled` error means the token and web_id no longer match). Log back in at platform.stepfun.com, copy the full new `Oasis-Token` from Cookies and paste it again; if the copied value carries an `Oasis-Token=` or `Cookie: ` prefix it is stripped automatically.
 </details>
 
 <details>

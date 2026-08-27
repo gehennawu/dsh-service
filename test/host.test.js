@@ -11,7 +11,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -3140,7 +3140,7 @@ function stubHttpsRequest(t, handler) {
   const originalRequest = https.request
   const requests = []
   https.request = (url, options, callback) => {
-    const entry = { url: String(url), method: options.method || 'GET', auth: options.headers?.Authorization, cookie: options.headers?.Cookie }
+    const entry = { url: String(url), method: options.method || 'GET', auth: options.headers?.Authorization, cookie: options.headers?.Cookie, headers: options.headers }
     requests.push(entry)
     const response = new EventEmitter()
     response.statusCode = 200
@@ -3613,6 +3613,256 @@ test('xiaomi token plan card stays fillable after the console cookie is rejected
   assert.ok(Array.isArray(row.credentialHints) && row.credentialHints.length > 0)
   // describe 只试 Cookie 线索名，绝不试探 tp- 推理密钥槽位。
   assert.deepEqual(describedNames, ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'])
+})
+
+// ─── StepFun（v0.38）：余额（/v1/accounts）+ Step Plan 订阅（控制台 BFF）────────────────
+
+const STEPFUN_ACCOUNTS_FIXTURE = { object: 'account', type: 'prepaid', balance: 123.45, total_cash_balance: 120.0, total_voucher_balance: 3.45 }
+// 旧版 Token Plan：5h/周滚动窗口，left_rate 是 0..1 剩余比例；reset_time 字符串/整数皆可。
+const STEPFUN_RATE_LIMIT_LEGACY_FIXTURE = {
+  status: 1,
+  five_hour_usage_left_rate: 1,
+  weekly_usage_left_rate: 0.8,
+  five_hour_usage_reset_time: '1777528800',
+  weekly_usage_reset_time: 1780000000,
+}
+// 新版 Credit 月池（plan_family=2）：窗口字段为 0/"0"（无窗口，不是用光）；额度在 plan_credit_rate_limit。
+const STEPFUN_RATE_LIMIT_CREDIT_FIXTURE = {
+  status: 1,
+  plan_family: 2,
+  five_hour_usage_left_rate: 0,
+  weekly_usage_left_rate: 0,
+  five_hour_usage_reset_time: '0',
+  weekly_usage_reset_time: 0,
+  plan_credit_rate_limit: {
+    subscription_credit_left_rate: 0.875,
+    subscription_credit_reset_time: '1790000000',
+    topup_credit_left_rate: 0.99,
+    credit_buckets: [
+      { credit_total: 1600000000, credit_residual: 1400000000, expire_at: 1800000000, next_reset_at: 1790000000 },
+      { credit_total: 400000000, credit_residual: 400000000, expire_at: 1810000000, next_reset_at: 1810000000 },
+    ],
+  },
+}
+
+/** 造一个带 device_id 的 JWT（index.js 的 stepfunJwtDeviceId 用 base64url payload）。 */
+function jwtWithDeviceId(deviceId, extra) {
+  const payload = Buffer.from(JSON.stringify({ device_id: deviceId, ...(extra ?? {}) })).toString('base64url')
+  return `header.${payload}.signature`
+}
+
+test('normalizeStepfunBalance maps the official accounts payload into money text windows', () => {
+  // 官方文档示例形状：金额是 float，balance 为主窗、赠金 >0 追加一行（kindKey 复用 granted-balance）。
+  assert.deepEqual(normalizeStepfunBalance(STEPFUN_ACCOUNTS_FIXTURE), {
+    windows: [
+      { id: 'balance', text: '¥123.45', kindKey: 'balance' },
+      { id: 'granted-balance', text: '¥3.45', kindKey: 'granted-balance' },
+    ],
+  })
+  // 无赠金（voucher 0）只出一行；字符串金额照收。
+  assert.deepEqual(normalizeStepfunBalance({ balance: '26', total_voucher_balance: 0 }), {
+    windows: [
+      { id: 'balance', text: '¥26.00', kindKey: 'balance' },
+    ],
+  })
+  // balance 缺失/非法（含空白串——Number('') 是 0 的坑）→ 整条丢弃，不伪造 ¥0.00。
+  assert.deepEqual(normalizeStepfunBalance({ balance: '' }), { windows: [] })
+  assert.deepEqual(normalizeStepfunBalance(undefined), { windows: [] })
+  assert.deepEqual(normalizeStepfunBalance({ balance: -5 }), { windows: [] })
+  assert.deepEqual(normalizeStepfunBalance({ balance: 'abc' }), { windows: [] })
+})
+
+test('stepfunWebIdFromToken derives the Oasis-Webid from the token JWT device_id', () => {
+  const access = jwtWithDeviceId('dev-access')
+  const refresh = jwtWithDeviceId('dev-refresh')
+  // 纯 access 半可解；`access...refresh` 对取 refresh 半优先（CodexBar 同款，浏览器 cookie 就是这种形态）。
+  assert.equal(stepfunWebIdFromToken(access), 'dev-access')
+  assert.equal(stepfunWebIdFromToken(`${access}...${refresh}`), 'dev-refresh')
+  assert.equal(stepfunWebIdFromToken(`${jwtWithDeviceId('')}...${refresh}`), 'dev-refresh')
+  // 解不出（非 JWT / 缺 device_id / 空）→ undefined。
+  assert.equal(stepfunWebIdFromToken('not-a-jwt'), undefined)
+  assert.equal(stepfunWebIdFromToken(jwtWithDeviceId('')), undefined)
+  assert.equal(stepfunWebIdFromToken(''), undefined)
+  assert.equal(stepfunWebIdFromToken(undefined), undefined)
+})
+
+test('normalizeStepFunStepPlanUsage classifies the two plan families by shape and never reads 0-window as used-up', () => {
+  // 旧版 Token Plan：活窗口值存在 → 5h/周两窗，left_rate 折算已用 %；reset 字符串/整数都归一为 ISO。
+  const legacy = normalizeStepFunStepPlanUsage(STEPFUN_RATE_LIMIT_LEGACY_FIXTURE)
+  assert.deepEqual(legacy, [
+    { id: 'five-hour', kindKey: 'five-hour', percent: 0, resetsAt: new Date(1777528800 * 1000).toISOString() },
+    { id: 'weekly', kindKey: 'weekly', percent: 20, resetsAt: new Date(1780000000 * 1000).toISOString() },
+  ])
+
+  // 新版 Credit 月池：窗口字段 0/"0" 是「无窗口未配置」→ 走 plan_credit_rate_limit；
+  // buckets 全有效时按 total 加权合成一窗（订阅 1600M 剩 1400M + 加油包 400M 全剩 = 剩 1800/2000 = 90% → 已用 10%）。
+  const credit = normalizeStepFunStepPlanUsage(STEPFUN_RATE_LIMIT_CREDIT_FIXTURE)
+  assert.deepEqual(credit, [
+    { id: 'credit-pool', kindKey: 'credit-pool', percent: 10, resetsAt: new Date(1790000000 * 1000).toISOString() },
+  ])
+
+  // 新版无 buckets（或不完整）→ 回退 subscription/topup 两个剩余比例窗。
+  const noBuckets = normalizeStepFunStepPlanUsage({
+    status: 1,
+    plan_family: 2,
+    five_hour_usage_reset_time: 0,
+    weekly_usage_reset_time: 0,
+    plan_credit_rate_limit: { subscription_credit_left_rate: 0.5, topup_credit_left_rate: 0.9 },
+  })
+  assert.deepEqual(noBuckets, [
+    { id: 'credit-pool', kindKey: 'credit-pool', percent: 50 },
+    { id: 'topup-credit', kindKey: 'topup-credit', percent: 10 },
+  ])
+
+  // camelCase 形态照收（Connect protobuf JSON 两形态都出现过）。
+  const camel = normalizeStepFunStepPlanUsage({ status: 1, planCreditRateLimit: { subscriptionCreditLeftRate: 0.75, subscriptionCreditResetTime: 1790000000 } })
+  assert.deepEqual(camel, [{ id: 'credit-pool', kindKey: 'credit-pool', percent: 25, resetsAt: new Date(1790000000 * 1000).toISOString() }])
+
+  // status 非 1 / 非对象 / 无任何窗口 → 空（fetcher 转 bad-payload / no-subscription）。
+  assert.deepEqual(normalizeStepFunStepPlanUsage({ status: 2, desc: 'x' }), [])
+  assert.deepEqual(normalizeStepFunStepPlanUsage({ status: 1 }), [])
+  assert.deepEqual(normalizeStepFunStepPlanUsage(null), [])
+  // 率缺失时旧版窗跳过（reset 有值但率全无 → 只保留存在的窗）。
+  assert.deepEqual(normalizeStepFunStepPlanUsage({ status: 1, five_hour_usage_reset_time: 1, weekly_usage_reset_time: 1, weekly_usage_left_rate: 0.5 }), [
+    { id: 'weekly', kindKey: 'weekly', percent: 50, resetsAt: new Date(1000).toISOString() },
+  ])
+})
+
+test('fetchStepFunStepPlanUsage POSTs the Connect-JSON RPC with Oasis headers derived from the token', async (t) => {
+  const token = jwtWithDeviceId('dev-123')
+  const requests = stubHttpsRequest(t, () => ({ payload: STEPFUN_RATE_LIMIT_CREDIT_FIXTURE }))
+  const windows = await fetchStepFunStepPlanUsage({ credential: token, signal: undefined })
+  assert.equal(windows.length, 1)
+  assert.equal(requests.length, 1)
+  const entry = requests[0]
+  // 固定端点 + POST + body {} + Oasis 全家头（token 与派生 web_id 各自落位，无 Authorization 无 Cookie）。
+  assert.equal(entry.url, 'https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit')
+  assert.equal(entry.method, 'POST')
+  assert.equal(entry.body, '{}')
+  assert.equal(entry.headers['Oasis-Token'], token)
+  assert.equal(entry.headers['Oasis-Webid'], 'dev-123')
+  assert.equal(entry.headers['Oasis-appID'], '10300')
+  assert.equal(entry.headers['Oasis-Platform'], 'web')
+  assert.equal(entry.auth, undefined)
+  assert.equal(entry.cookie, undefined)
+
+  // 粘贴带入的「Oasis-Token:」/「Cookie:」前缀剥掉再上头。
+  const prefixRequests = stubHttpsRequest(t, () => ({ payload: STEPFUN_RATE_LIMIT_LEGACY_FIXTURE }))
+  await fetchStepFunStepPlanUsage({ credential: `Oasis-Token: ${jwtWithDeviceId('dev-prefix')}`, signal: undefined })
+  assert.equal(prefixRequests[0].headers['Oasis-Token'], jwtWithDeviceId('dev-prefix'))
+})
+
+test('fetchStepFunStepPlanUsage normalizes credential/session/business failures stably', async (t) => {
+  // 空凭据（发现链全落空后不该发生，仍防御）。
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: '', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-missing')
+
+  // token 解不出 device_id（web_id 与 token 不匹配是唯一常见认证失败）→ credential-rejected。
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: 'not-a-jwt', signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-rejected')
+
+  // HTTP 401（登录态失效）→ credential-rejected。
+  stubHttpsRequest(t, () => ({ status: 401 }))
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
+    (error) => quotaErrorCode(error) === 'credential-rejected')
+
+  // status 非 1（业务失败）→ bad-payload 并透出 desc。
+  stubHttpsRequest(t, () => ({ payload: { status: 0, desc: 'plan expired', code: 120000 } }))
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
+    (error) => quotaErrorCode(error) === 'bad-payload' && error.detail === 'plan expired')
+
+  // status 1 但无任何窗口（未订阅 Step Plan）→ no-subscription。
+  stubHttpsRequest(t, () => ({ payload: { status: 1 } }))
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
+    (error) => quotaErrorCode(error) === 'no-subscription')
+
+  // 上游 500 维持 http-status 稳定码。
+  stubHttpsRequest(t, () => ({ status: 500 }))
+  await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
+    (error) => quotaErrorCode(error) === 'http-status')
+})
+
+test('stepfun auto-infers balance from the API host; step-plan adapts without a baseURL and never probes the API key', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-stepfun-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const resolvedNames = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: {
+        sf: { displayName: 'StepFun', baseURL: 'https://api.stepfun.com/v1', apiKeyEnv: 'SF_API_KEY' },
+        sfplan: { displayName: 'StepPlan', baseURL: 'https://api.stepfun.com/step_plan/v1', apiKeyEnv: 'SF_API_KEY' },
+      } } : undefined) },
+      credentials: {
+        resolve: async (name) => {
+          resolvedNames.push(name)
+          // 余额 kind 用 API key；订阅 kind 用 Oasis token（带 device_id 的 JWT）。
+          return name === 'SF_API_KEY' || name === 'STEPFUN_API_KEY' ? { value: 'sk-stepfun-abc' } : { value: jwtWithDeviceId('dev-rpc') }
+        },
+      },
+    },
+  })
+  const requests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v1/accounts')) return { payload: STEPFUN_ACCOUNTS_FIXTURE }
+    if (request.url.includes('QueryStepPlanRateLimit')) return { payload: STEPFUN_RATE_LIMIT_CREDIT_FIXTURE }
+    return { status: 404 }
+  })
+  // 经典链余额端点走 https.get（与 https.request 桩互补）：返回同一 fixture。
+  const originalGet = https.get
+  const getHits = []
+  t.after(() => { https.get = originalGet })
+  https.get = (url, options, callback) => {
+    getHits.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    request.write = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify(STEPFUN_ACCOUNTS_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+
+  // 订阅行的适配先落盘（fixed 查询面：baseURL 为空也不拦）；
+  // 余额行靠 baseURL 唯一命中自动推断，不写配置。
+  const adapted = await host.handler('quota-config', { provider: 'sfplan', kind: 'stepfun-step-plan' })
+  assert.equal(adapted.ok, true)
+  assert.equal(await host.handler('quota', {}).then((res) => res.ok), true)
+  await waitFor(() => requests.filter((r) => r.url.includes('QueryStepPlanRateLimit')).length >= 1, 'one rate-limit call')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const rows = (await host.handler('quota', {})).value.providers
+  const balanceRow = rows.find((entry) => entry.provider === 'sf')
+  assert.equal(balanceRow.kind, 'stepfun')
+  assert.equal(balanceRow.kindSource, 'auto')
+  assert.equal(balanceRow.status, 'ok')
+  assert.equal(balanceRow.credentialEntryKey, 'edit')
+  assert.equal(balanceRow.usageUrl, 'https://platform.stepfun.com/plan-usage')
+  assert.deepEqual(balanceRow.windows.map((w) => w.text), ['¥123.45', '¥3.45'])
+  // 余额请求走 https.get（Bearer 同 API key），仅命中固定 com 端点一次。
+  assert.deepEqual(getHits, ['https://api.stepfun.com/v1/accounts'])
+
+  const planRow = rows.find((entry) => entry.provider === 'sfplan')
+  assert.equal(planRow.kind, 'stepfun-step-plan')
+  assert.equal(planRow.kindSource, 'config')
+  assert.equal(planRow.status, 'ok')
+  assert.equal(planRow.credentialEntryKey, 'editToken')
+  assert.deepEqual(planRow.windows.map((w) => [w.id, w.percent]), [['credit-pool', 10]])
+  const planRequest = requests.find((r) => r.url.includes('QueryStepPlanRateLimit'))
+  assert.equal(planRequest.headers['Oasis-Webid'], 'dev-rpc')
+  assert.equal(planRequest.auth, undefined)
+
+  // 凭据发现链：余额行从 settings apiKeyEnv（SF_API_KEY）命中即止（不回退 STEPFUN_API_KEY）；
+  // 订阅行只试 Oasis token 线索名（第一个命中即止）——settings 的 API key 声明绝不进控制台平面。
+  assert.deepEqual(resolvedNames.filter((n) => n === 'SF_API_KEY' || n === 'STEPFUN_API_KEY'), ['SF_API_KEY'])
+  assert.ok(resolvedNames.includes('STEPFUN_TOKEN'))
+  assert.ok(!resolvedNames.includes('STEPFUN_OASIS_TOKEN'))
+  assert.deepEqual(quotaCredentialHintNames('stepfun-step-plan', { apiKeyEnv: 'SF_API_KEY' }), ['STEPFUN_TOKEN', 'STEPFUN_OASIS_TOKEN'])
 })
 
 

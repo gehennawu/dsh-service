@@ -2531,6 +2531,78 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
   assert.match(text, /填写控制台 Cookie（网页登录态）/)
 })
 
+test('stepfun cards show money text windows and the credit-pool plan windows with the token credential entry', async () => {
+  // StepFun（v0.38）：余额卡 = ¥ 文本窗（voucher 复用 granted-balance）；Step Plan 卡 = credit-pool/
+  // topup-credit 百分比窗；未配置订阅行的凭据入口分流为「控制台令牌（Oasis-Token）」版。
+  const now = Date.now()
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const quotaResponse = {
+    ok: true,
+    value: {
+      serverTime: now,
+      providers: [
+        {
+          provider: 'sf', displayName: 'StepFun', adapted: true, kind: 'stepfun', credentialEntryKey: 'edit', refreshing: false, status: 'ok',
+          windows: [
+            { id: 'balance', kindKey: 'balance', text: '¥123.45' },
+            { id: 'granted-balance', kindKey: 'granted-balance', text: '¥3.45' },
+          ],
+          fetchedAt: now,
+          usageUrl: 'https://platform.stepfun.com/plan-usage',
+        },
+        {
+          provider: 'sfplan', displayName: 'Step Plan', adapted: true, kind: 'stepfun-step-plan', credentialEntryKey: 'editToken', refreshing: false, status: 'ok',
+          windows: [
+            { id: 'credit-pool', kindKey: 'credit-pool', percent: 10, resetsAt: new Date(now + 3600_000).toISOString() },
+            { id: 'topup-credit', kindKey: 'topup-credit', percent: 1 },
+          ],
+          fetchedAt: now,
+          usageUrl: 'https://platform.stepfun.com/plan-usage',
+        },
+        {
+          provider: 'sfplan2', displayName: 'Step Plan2', adapted: true, kind: 'stepfun-step-plan', credentialEntryKey: 'editToken', refreshing: false, status: 'unconfigured',
+          errorCode: 'credential-missing', nextAllowedAt: null,
+          credentialHints: [
+            { name: 'STEPFUN_TOKEN', configured: false },
+            { name: 'STEPFUN_OASIS_TOKEN', configured: false },
+          ],
+        },
+      ],
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.38.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.38.0', latest: '0.38.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return quotaResponse
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 余额文本窗（voucher 行复用「赠送余额（未过期）」词典键）；卡片标题链到用户点名的官网用量页。
+  assert.match(text, /余额/)
+  assert.match(text, /¥123\.45/)
+  assert.match(text, /赠送余额（未过期）/)
+  assert.match(text, /¥3\.45/)
+  assert.equal(renderer.findByTestId('quota-usage-link-sf').props.href, 'https://platform.stepfun.com/plan-usage')
+  // Step Plan 窗：credit-pool 百分比 + 重置倒计时行；topup 无重置不渲染该行。
+  assert.match(text, /月度 Credit 池/)
+  assert.match(text, /10%/)
+  assert.ok(renderer.hasTest('quota-card-reset-sfplan-credit-pool'))
+  assert.equal(renderer.hasTest('quota-card-reset-sfplan-topup-credit'), false)
+  assert.match(text, /加油包 Credit/)
+  assert.match(text, /1%/)
+  // 未配置订阅行的凭据入口分流为「控制台令牌（Oasis-Token）」版。
+  assert.ok(renderer.hasTest('quota-cred-edit-sfplan2'))
+  assert.match(text, /填写控制台令牌（Oasis-Token，浏览器登录态）/)
+})
+
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
@@ -2631,7 +2703,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'xiaomi-token-plan-cn', 'cliproxy'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 已适配卡片脚部下拉预选当前 kind。
