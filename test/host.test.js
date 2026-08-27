@@ -3499,6 +3499,35 @@ test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps th
   assert.equal(config.kinds.relay, 'xiaomi-token-plan-cn')
 })
 
+test('xiaomi token plan card stays fillable after the console cookie is rejected', async (t) => {
+  // Cookie 失效是最典型的「需要重新填入」场景：行必须保持 unconfigured 并带线索状态，
+  // 否则用户面对「Cookie 已失效」错误却找不到任何填写入口（GUI 反馈回归，v0.31.2 修复）。
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-mimo-reject-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const describedNames = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { mimo: { displayName: 'MiMo', baseURL: 'https://token-plan-cn.xiaomimimo.com/v1', apiKeyEnv: 'MIMO_TP_KEY' } } } : undefined) },
+      credentials: {
+        resolve: async () => ({ value: 'stale-cookie' }),
+        describe: async (name) => { describedNames.push(name); return { configured: true, source: 'file' } },
+      },
+    },
+  })
+  const requests = stubHttpsRequest(t, () => ({ status: 401 }))
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'one console call')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'mimo')
+  assert.equal(row.status, 'unconfigured') // 不是锁死的 error 态——凭据表单入口回来了
+  assert.equal(row.errorCode, 'credential-rejected')
+  assert.ok(Array.isArray(row.credentialHints) && row.credentialHints.length > 0)
+  // describe 只试 Cookie 线索名，绝不试探 tp- 推理密钥槽位。
+  assert.deepEqual(describedNames, ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'])
+})
+
 
 test('quota credential hints and write endpoints round-trip through the DSH credentials store', async (t) => {
   // 线索名清单：经典 kind = apiKeyEnv 在前、keyHints 殿后去重；管理面 kind 不含代理 key。

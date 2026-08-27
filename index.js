@@ -4230,12 +4230,15 @@ function apply(ctx) {
           if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind, config)
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
-          const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable'
+          // 「凭据类」错误 = 填/换一份凭据就能恢复的状态，客户端按 unconfigured 渲染填写表单。
+          // credential-rejected（v0.29 修复）：Cookie/key 被上游拒绝时恰恰最需要重新填入——
+          // 漏掉它会把卡片锁死在错误态，用户找不到任何入口（GUI 反馈「失效后无法再次填入」）。
+          const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable' || view.lastError === 'credential-rejected'
           const providerResetCards = resetCardsByProvider.get(profile.name) ?? []
           // 凭据填写窗口的数据源：仅对「缺凭据」的未配置行附带候选线索名的配置状态（describe 只回
           // 配置与否/来源/可写，绝不带值）；凭据服务缺席时省略字段——客户端隐藏窗口退回文案指引。
           let credentialHints
-          if (credentialClass && !view.refreshing && (view.lastError === 'credential-missing' || view.lastError === 'credentials-unavailable')) {
+          if (credentialClass && !view.refreshing && view.lastError !== 'no-base-url') {
             const credentials = ctx.get('credentials')
             if (credentials !== undefined && typeof credentials.describe === 'function') {
               const described = []
