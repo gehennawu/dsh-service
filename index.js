@@ -3998,9 +3998,31 @@ function apply(ctx) {
     // reasoningEffort 不属于 AgentOptions，不能塞进 subagents.start() 的 options。
     // 用 AsyncLocalStorage 把「本次创建的 exact child 应注入的等级」带进 agent/created 监听器，
     // 再经 WeakMap<agent, target> 绑定到该 child；agent/request waterfall 在最终 proposal 阶段补入。
+    // 绑定是一次性的：首个请求结算后即消费（无论补标成功与否），之后交给请求自身/会话内状态，
+    // 避免官方模型选择装配层刻意剥离继承值后我们在后续请求上反复复活旧等级。
     const pendingEffortStorage = new AsyncLocalStorage()
     const managedEfforts = new WeakMap()
     const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && managedEfforts.has(agent)
+    // 运行时等级复审缓存：`${provider}\u0000${model}` → Promise<Set<supportedIds> | null>。
+    // null 表示无法判定（resolveModelInfo 缺席/失败/中止），按 fail-open 放行保持原行为；
+    // 只有「证实不支持」才丢弃。Promise 共享以合并并发派生的重复查询；结果仅在 fiber 存续期内有效。
+    const effortSupportCache = new Map()
+    const resolveSupportedEfforts = (provider, model, signal) => {
+      const llm = ctx.get('llm')
+      if (llm === undefined || typeof llm.resolveModelInfo !== 'function') return null
+      const key = `${provider}\u0000${model}`
+      let cached = effortSupportCache.get(key)
+      if (cached === undefined) {
+        cached = Promise.resolve()
+          .then(() => llm.resolveModelInfo(provider, model, signal))
+          .then(
+            (info) => new Set((info !== null && typeof info === 'object' ? publicSubagentReasoning(info.reasoning)?.efforts ?? [] : []).map((entry) => entry.id)),
+            () => null,
+          )
+        effortSupportCache.set(key, cached)
+      }
+      return cached
+    }
     const applyInjection = (request) => {
       if (!featureEnabled('subagentRoute')) return { request, effort: undefined }
       const injected = resolveSubagentInjection(request, subagentRouteConfig, { isRoutable, readParentHeader })
@@ -4029,6 +4051,8 @@ function apply(ctx) {
     }
     // agent/created：子代理注册时把本次创建携带的等级绑定到 exact child（仅当确有非空等级）。
     // agent/request：最终 proposal 阶段补入 reasoningEffort；已建立的值（提案自带/其他插件）永不覆盖。
+    // 补标前按 proposal 实际 provider/model 复审等级仍受支持（适配器元数据漂移即丢弃并告警），
+    // 与 isRoutable 的「实时判定、不让派生失败」契约同 philosophy。绑定无论结果如何都消费一次。
     // 注册在插件根 ctx：任何作用域标记的 agent 事件都会被未打标的根监听器全局收到（dsh-scope filter）。
     const disposeCreated = typeof ctx.on === 'function' ? ctx.on('agent/created', ({ agent }) => {
       const effort = pendingEffortStorage.getStore()?.reasoningEffort
@@ -4037,11 +4061,21 @@ function apply(ctx) {
     const disposeRequest = typeof ctx.on === 'function' ? ctx.on('agent/request', async (payload, next) => {
       const proposal = await next()
       const agent = payload?.agent
-      if (!isSubagentManaged(agent) || !featureEnabled('subagentRoute')) return proposal
-      if (proposal === null || typeof proposal !== 'object') return proposal
+      if (!isSubagentManaged(agent)) return proposal
       const effort = managedEfforts.get(agent)
-      if (typeof effort === 'string' && effort !== '' && proposal?.reasoningEffort === undefined) return { ...proposal, reasoningEffort: effort }
-      return proposal
+      managedEfforts.delete(agent)
+      if (!featureEnabled('subagentRoute')) return proposal
+      if (proposal === null || typeof proposal !== 'object') return proposal
+      if (!(typeof effort === 'string' && effort !== '') || proposal.reasoningEffort !== undefined) return proposal
+      const targetProvider = typeof proposal.provider === 'string' ? proposal.provider : ''
+      const targetModel = typeof proposal.model === 'string' ? proposal.model : ''
+      if (targetProvider === '' || targetModel === '') return proposal
+      const supported = await resolveSupportedEfforts(targetProvider, targetModel, payload?.signal)
+      if (supported !== null && !supported.has(effort)) {
+        ctx.logger?.warn?.(`dsh-service: subagent route reasoning effort "${effort}" is no longer supported by ${targetProvider}/${targetModel}; dropped`)
+        return proposal
+      }
+      return { ...proposal, reasoningEffort: effort }
     }) : null
     subagentSeamInstalled = true
     scope.effect(() => () => {
@@ -4049,6 +4083,7 @@ function apply(ctx) {
       subagents.startContinuable = originalStartContinuable
       if (typeof disposeCreated === 'function') disposeCreated()
       if (typeof disposeRequest === 'function') disposeRequest()
+      effortSupportCache.clear()
       subagentSeamInstalled = false
     }, 'dsh-service subagent route seam teardown')
   })

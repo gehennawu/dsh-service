@@ -3952,9 +3952,13 @@ test('subagent-route：Custom 把 reasoningEffort 注入首个 agent/request，�
   const proposal = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }))
   assert.deepEqual(proposal, { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
 
-  // proposal 已自带 reasoningEffort → 不覆盖。
+  // proposal 已自带 reasoningEffort → 不覆盖，且绑定视为已消费。
   const owned = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'p', model: 'm', reasoningEffort: 'low' }))
   assert.equal(owned.reasoningEffort, 'low')
+
+  // 绑定已在首个请求结算后消费：后续 waterfall 不再补标（即使 proposal 缺该字段）。
+  const subsequent = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'p', model: 'm' }))
+  assert.equal(subsequent.reasoningEffort, undefined)
 
   // 显式 provider/model：seam 不注入，也无 reasoningEffort 绑定。
   await registry.start('spawn', { label: 'b', parent: {}, agentOptions: { provider: 'cpa', model: 'gpt-5.6-sol' } })
@@ -3967,6 +3971,33 @@ test('subagent-route：Custom 把 reasoningEffort 注入首个 agent/request，�
   assert.deepEqual(createdAgents[2].options, {})
   const disabledProposal = await host.fire('agent/request', { agent: createdAgents[2] }, async () => ({ provider: 'p', model: 'm' }))
   assert.equal(disabledProposal.reasoningEffort, undefined)
+})
+
+test('subagent-route：等级随 proposal 实际目标模型运行时复审——漂移丢弃、判定失败 fail-open、绑定不复活', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-revalidate-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  llm.setModelInfo('deepseek-official', 'deepseek-v4-flash', { id: 'deepseek-v4-flash', name: 'Model A', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } })
+  let emitCreated
+  const { registry, createdAgents } = fakeSubagents((agent) => emitCreated?.(agent))
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  emitCreated = (agent) => { void host.fire('agent/created', { agent }) }
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+  await registry.start('spawn', { label: 'a', parent: {} })
+
+  // 元数据漂移：请求实际路由到的模型不再声明该等级 → 按复审结果丢弃，不影响派生本身。
+  llm.setModelInfo('deepseek-official', 'deepseek-v3', { id: 'deepseek-v3', name: 'Model B', reasoning: { efforts: [{ id: 'low', name: 'Low' }] } })
+  const drifted = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v3' }))
+  assert.equal(drifted.reasoningEffort, undefined)
+  // 同一 agent 的绑定已随首请求消费。
+  const again = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }))
+  assert.equal(again.reasoningEffort, undefined)
+
+  // 无法判定（resolveModelInfo 失败）→ fail-open 放行，保持注入行为。
+  llm.resolveModelInfo = () => Promise.reject(new Error('adapter offline'))
+  await registry.start('spawn', { label: 'b', parent: {} })
+  const degraded = await host.fire('agent/request', { agent: createdAgents[1] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }))
+  assert.equal(degraded.reasoningEffort, 'high')
 })
 
 
