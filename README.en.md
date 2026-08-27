@@ -125,6 +125,9 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 - Three modes: **Default** (no override) / **Follow main model** (the provider/model actually used by the latest main-conversation request) / **Custom** (pin every unspecified subagent)
 - A provider/model explicitly carried by the delegation always wins; pinned presets are never overridden
+- Custom mode optionally selects a **reasoning effort**: the dropdown appears only for the exact provider/model when its adapter declares selectable levels; leaving it empty means "use the target model default", materialized by the adapter
+- Values come from adapter metadata (`reasoning.efforts[].id`); effort ids are opaque to the host. Models with no declared levels disable the dropdown and show a hint
+- **inherit / follow / feature gate off** inject no provider, model, or reasoning effort at all; subagents that carry an explicit provider/model are unaffected
 - Config stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, `0600`); one-click reset
 
 ### Task notifications

@@ -117,6 +117,9 @@ window.__ModuleLoader__.load({
       'subagent.mode.custom.desc': '所有未显式指定模型的子代理固定使用下方选择的模型。',
       'subagent.provider': '供应商',
       'subagent.model': '模型',
+      'subagent.reasoningEffort': '思考等级',
+      'subagent.reasoningEffort.default': '使用模型默认（不指定）',
+      'subagent.reasoningEffort.unavailable': '该模型未声明可选思考等级',
       'subagent.modelsEmpty': '模型清单为空：无法解析宿主 LLM 渠道。',
       'subagent.save': '保存',
       'subagent.saved': '已保存',
@@ -130,6 +133,7 @@ window.__ModuleLoader__.load({
       'subagent.error.llm-unavailable': '宿主 LLM 服务不可用',
       'subagent.error.unknown-mode': '未知模式',
       'subagent.error.invalid-model-route': '供应商或模型不在宿主清单内',
+      'subagent.error.invalid-reasoning-effort': '思考等级不受该模型支持，请重新选择',
       'subagent.error.network': '网络错误：无法连接宿主',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
@@ -690,6 +694,9 @@ window.__ModuleLoader__.load({
       'subagent.mode.custom.desc': 'Every delegation without an explicit model uses the model selected below.',
       'subagent.provider': 'Provider',
       'subagent.model': 'Model',
+      'subagent.reasoningEffort': 'Reasoning effort',
+      'subagent.reasoningEffort.default': 'Use model default (unspecified)',
+      'subagent.reasoningEffort.unavailable': 'This model does not declare selectable reasoning levels',
       'subagent.modelsEmpty': 'Model list is empty: host LLM channels cannot be resolved.',
       'subagent.save': 'Save',
       'subagent.saved': 'Saved',
@@ -703,6 +710,7 @@ window.__ModuleLoader__.load({
       'subagent.error.llm-unavailable': 'Host LLM service is unavailable',
       'subagent.error.unknown-mode': 'Unknown mode',
       'subagent.error.invalid-model-route': 'Provider or model is not in the host catalog',
+      'subagent.error.invalid-reasoning-effort': 'This reasoning effort is not supported by the selected model; choose another',
       'subagent.error.network': 'Network error: cannot reach the host',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
@@ -2738,6 +2746,7 @@ window.__ModuleLoader__.load({
         if (code === 'llm-unavailable') return translate('subagent.error.llm-unavailable')
         if (code === 'unknown-mode') return translate('subagent.error.unknown-mode')
         if (code === 'invalid-model-route') return translate('subagent.error.invalid-model-route')
+        if (code === 'invalid-reasoning-effort') return translate('subagent.error.invalid-reasoning-effort')
         if (code === 'network') return translate('subagent.error.network')
         return code
       }
@@ -2755,6 +2764,7 @@ window.__ModuleLoader__.load({
         const [saving, setSaving] = useState(false)
         const [savedTick, setSavedTick] = useState(0)
         const [error, setError] = useState('')
+        const [reasoningEffort, setReasoningEffort] = useState('')
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -2768,6 +2778,9 @@ window.__ModuleLoader__.load({
               if (res.value.mode === 'custom') {
                 setProvider(typeof res.value.provider === 'string' ? res.value.provider : '')
                 setModel(typeof res.value.model === 'string' ? res.value.model : '')
+                setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
+              } else {
+                setReasoningEffort('')
               }
               setError('')
             } else {
@@ -2792,6 +2805,21 @@ window.__ModuleLoader__.load({
           }
         }
         const providerModels = models.filter((item) => item.provider === provider)
+        // 当前精确模型及其 adapter 声明的可选思考等级（host 已裁剪；此处再做防御性过滤/去重）。
+        const selectedModel = providerModels.find((item) => item.id === model) ?? null
+        const effortOptions = []
+        const seenEffortIds = new Set()
+        for (const entry of (selectedModel?.reasoning?.efforts ?? [])) {
+          if (entry === null || typeof entry !== 'object') continue
+          const id = typeof entry.id === 'string' ? entry.id : ''
+          if (id === '' || seenEffortIds.has(id)) continue
+          seenEffortIds.add(id)
+          effortOptions.push({ id, name: typeof entry.name === 'string' && entry.name !== '' ? entry.name : id, description: typeof entry.description === 'string' && entry.description !== '' ? entry.description : undefined })
+        }
+        // 换供应商/模型后，若已选等级不再被新模型支持，立即重置为空，避免把旧等级发给新模型。
+        useEffect(() => {
+          if (reasoningEffort !== '' && !seenEffortIds.has(reasoningEffort)) setReasoningEffort('')
+        }, [provider, model])
         // 换供应商时若当前模型不属于它，回落到该供应商首个模型。
         useEffect(() => {
           if (provider !== '' && !providerModels.some((item) => item.id === model)) {
@@ -2806,7 +2834,7 @@ window.__ModuleLoader__.load({
           setError('')
           try {
             const payload = nextMode === 'custom'
-              ? { mode: 'custom', provider: effectiveProvider, model }
+              ? { mode: 'custom', provider: effectiveProvider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) }
               : { mode: nextMode }
             const res = await ctx.connection.rpc.call('/dsh-service', 'subagent-route-save', payload)
             if (res.ok) {
@@ -2852,7 +2880,13 @@ window.__ModuleLoader__.load({
               providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.model')),
             React.createElement('select', { 'data-testid': 'subagent-model', value: model, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
-              providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))) : null,
+              providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id))),
+            mode === 'custom' && model !== '' ? React.createElement('div', { 'data-testid': 'subagent-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', flexBasis: '100%', width: '100%', flexWrap: 'wrap' } },
+              React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.reasoningEffort')),
+              React.createElement('select', { 'data-testid': 'subagent-reasoning-effort', value: reasoningEffort, disabled: saving || effortOptions.length === 0, onChange: (event) => setReasoningEffort(event.target.value), style: selectStyle },
+                React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
+                ...effortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))),
+              effortOptions.length === 0 ? React.createElement('span', { 'data-testid': 'subagent-reasoning-effort-unavailable', style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.reasoningEffort.unavailable')) : null) : null) : null,
           mode === 'custom' && models.length === 0 && !loading ? React.createElement('p', { 'data-testid': 'subagent-models-empty', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.modelsEmpty')) : null,
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,

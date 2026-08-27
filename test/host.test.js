@@ -11,7 +11,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -53,6 +53,7 @@ function createHost(overrides = {}) {
   const disposers = []
   const registeredCommands = []
   const registeredSettings = []
+  const eventHandlers = new Map()
   let updateFeatureSettings = async () => {}
   const services = new Map(Object.entries(overrides.services || {}))
   const injectors = []
@@ -124,8 +125,7 @@ function createHost(overrides = {}) {
       return services.get('subagents')
     },
     connection: {
-      rpc: {
-        handle(channel, handler, options) {
+      rpc: {        handle(channel, handler, options) {
           handlers.push({ channel, handler, options })
           return () => {}
         },
@@ -149,6 +149,16 @@ function createHost(overrides = {}) {
       if (typeof dispose === 'function') disposers.push(dispose)
       return typeof dispose === 'function' ? dispose : () => {}
     },
+    on(event, handler) {
+      if (!eventHandlers.has(event)) eventHandlers.set(event, [])
+      eventHandlers.get(event).push(handler)
+      return () => {
+        const list = eventHandlers.get(event)
+        if (list === undefined) return
+        const index = list.indexOf(handler)
+        if (index >= 0) list.splice(index, 1)
+      }
+    },
   }
 
   apply(ctx)
@@ -167,7 +177,22 @@ function createHost(overrides = {}) {
       injector.callback(ctx)
     }
   }
-  return { handler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  // 事件派发替身：emit 事件逐个调用监听器；waterfall 事件提供 next 链（最外层 listener 先执行）。
+  const fire = async (event, payload, baseNext) => {
+    const listeners = eventHandlers.get(event) || []
+    if (baseNext === undefined) {
+      for (const listener of [...listeners]) await listener(payload)
+      return undefined
+    }
+    let next = baseNext
+    for (let index = listeners.length - 1; index >= 0; index -= 1) {
+      const listener = listeners[index]
+      const preceding = next
+      next = () => listener(payload, preceding)
+    }
+    return next()
+  }
+  return { handler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -3655,28 +3680,43 @@ test('quota credential hints and write endpoints round-trip through the DSH cred
 
 // ─── 子代理路由（v0.27）────────────────────────────────────────────────
 
-/** 最小 subagents 注册表替身：记录两次入口的入参，可回读原始方法身份。 */
-function fakeSubagents() {
+/** 最小 subagents 注册表替身：记录两次入口的入参，可回读原始方法身份；可选在创建时同步派发 agent/created。 */
+function fakeSubagents(emitCreated) {
   const calls = []
+  const createdAgents = []
   const registry = {
     start(name, request) {
       calls.push({ entry: 'start', name, request })
+      const agent = { id: 'agent-' + (calls.length + 1), options: request?.agentOptions || {}, session: {} }
+      createdAgents.push(agent)
+      emitCreated?.(agent)
       return Promise.resolve({ id: 'run-1' })
     },
     startContinuable(spec) {
       calls.push({ entry: 'startContinuable', name: spec.provider, request: spec.request })
+      const agent = { id: 'agent-' + (calls.length + 1), options: spec.request?.agentOptions || {}, session: {} }
+      createdAgents.push(agent)
+      emitCreated?.(agent)
       return Promise.resolve({ childId: 'child-1' })
     },
   }
-  return { registry, calls }
+  return { registry, calls, createdAgents }
 }
 
-/** 最小 llm 服务替身：listProviders/listModels 提供白名单目录，stream 仅在位性检查用。 */
+/** 最小 llm 服务替身：listProviders/listModels 提供白名单目录，stream 仅在位性检查用；可选 resolveModelInfo 供 reasoning metadata。 */
 function fakeLlm(providers) {
+  const modelInfo = new Map()
   return {
     listProviders: () => providers.map(([id, name]) => ({ id, name })),
     listModels: async (provider) => (providers.find(([id]) => id === provider)?.[2] ?? []).map((modelId) => ({ id: modelId, name: modelId })),
     stream: async function* () {},
+    resolveModelInfo: async (provider, model) => {
+      const info = modelInfo.get(provider + '\u0000' + model)
+      return info === undefined ? { provider, id: model, name: model } : info
+    },
+    setModelInfo(provider, model, info) {
+      modelInfo.set(provider + '\u0000' + model, info)
+    },
   }
 }
 
@@ -3817,6 +3857,118 @@ test('subagent-route：宿主无 subagents/llm 服务时 available=false、模�
   // follow 不需要 llm 目录，允许保存。
   assert.equal((await host.handler('subagent-route-save', { mode: 'follow' })).ok, true)
 })
+
+test('publicSubagentReasoning：把 adapter reasoning metadata 裁剪成安全普通 JSON', () => {
+  assert.equal(publicSubagentReasoning(null), undefined)
+  assert.equal(publicSubagentReasoning('x'), undefined)
+  assert.equal(publicSubagentReasoning({}), undefined)
+  assert.equal(publicSubagentReasoning({ efforts: [] }), undefined)
+  assert.deepEqual(publicSubagentReasoning({
+    efforts: [{ id: 'low', name: 'Low' }, { id: 'low', name: 'Duplicate' }, { id: '', name: 'empty' }, 42, { id: 'high', name: 'High', description: 'More deliberate' }],
+    defaultEffort: 'low',
+  }), { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'More deliberate' }], defaultEffort: 'low' })
+  // name 缺失回退 id；非空 description 保留。
+  assert.deepEqual(publicSubagentReasoning({ efforts: [{ id: 'x', name: '' }, { id: 'y', name: 'Y', description: '' }] }), { efforts: [{ id: 'x', name: 'x' }, { id: 'y', name: 'Y' }] })
+  // 只有 defaultEffort 时返回它。
+  assert.deepEqual(publicSubagentReasoning({ defaultEffort: 'low' }), { defaultEffort: 'low' })
+})
+
+test('parseSubagentRouteText：version-1 带/不带 reasoningEffort 解析，空值与非字符串不保留', () => {
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: 'm' })), { version: 1, mode: 'custom', provider: 'p', model: 'm' })
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: 'm', reasoningEffort: 'low' })), { version: 1, mode: 'custom', provider: 'p', model: 'm', reasoningEffort: 'low' })
+  // 空白/空字符串不保留；非字符串忽略。
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: 'm', reasoningEffort: '  ' })), { version: 1, mode: 'custom', provider: 'p', model: 'm' })
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: 'm', reasoningEffort: 7 })), { version: 1, mode: 'custom', provider: 'p', model: 'm' })
+})
+
+test('resolveSubagentInjection：custom 附带 reasoningEffort，inherit/follow 不携带', () => {
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'p', model: 'm', reasoningEffort: 'low' }, { isRoutable: () => true }), { provider: 'p', model: 'm', reasoningEffort: 'low' })
+  // 空 reasoningEffort 不携带。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'p', model: 'm', reasoningEffort: '' }, { isRoutable: () => true }), { provider: 'p', model: 'm' })
+  // follow 只带 provider/model，不设置 reasoningEffort。
+  const parent = { session: { requestHeader: () => ({ config: { provider: 'a', model: 'b' } }) } }
+  assert.deepEqual(resolveSubagentInjection({ parent }, { mode: 'follow' }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config }), { provider: 'a', model: 'b' })
+})
+
+test('subagent-route：快照返回精确模型 reasoning metadata；保存校验等级、空值不持久化、跨重启恢复、follow/inherit 清理', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-reasoning-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  llm.setModelInfo('deepseek-official', 'deepseek-v4-flash', { id: 'deepseek-v4-flash', name: 'Model A', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'More deliberate' }], defaultEffort: 'low' } })
+  const host = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+
+  const snap = await host.handler('subagent-route', {})
+  assert.equal(snap.ok, true)
+  const modelEntry = snap.value.models.find((item) => item.provider === 'deepseek-official' && item.id === 'deepseek-v4-flash')
+  assert.deepEqual(modelEntry.reasoning, { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'More deliberate' }], defaultEffort: 'low' })
+
+  // 保存支持等级。
+  const saved = await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+  assert.deepEqual(saved, { ok: true, mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+
+  // 空值代表「使用模型默认」→ 不持久化。
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: '' })
+  const emptySnap = await host.handler('subagent-route', {})
+  assert.equal(emptySnap.value.reasoningEffort, undefined)
+
+  // 再次保存支持等级，跨重启恢复。
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' })
+  const rebooted = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+  const restored = await rebooted.handler('subagent-route', {})
+  assert.equal(restored.value.mode, 'custom')
+  assert.equal(restored.value.reasoningEffort, 'low')
+
+  // 不支持 / 非字符串。
+  assert.equal((await rebooted.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'nope' })).error, 'invalid-reasoning-effort')
+  assert.equal((await rebooted.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 5 })).error, 'invalid-reasoning-effort')
+
+  // follow 清理 reasoningEffort。
+  await rebooted.handler('subagent-route-save', { mode: 'follow' })
+  const afterFollow = await rebooted.handler('subagent-route', {})
+  assert.equal(afterFollow.value.mode, 'follow')
+  assert.equal(afterFollow.value.reasoningEffort, undefined)
+
+  // inherit 落盘干净。
+  await rebooted.handler('subagent-route-save', { mode: 'inherit' })
+  const raw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(raw, { version: 1, mode: 'inherit' })
+})
+
+test('subagent-route：Custom 把 reasoningEffort 注入首个 agent/request，已建立值/显式路由/功能关闭不覆盖', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-inject-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  llm.setModelInfo('deepseek-official', 'deepseek-v4-flash', { id: 'deepseek-v4-flash', name: 'Model A', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } })
+  let emitCreated
+  const { registry, createdAgents } = fakeSubagents((agent) => emitCreated?.(agent))
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  emitCreated = (agent) => { void host.fire('agent/created', { agent }) }
+
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+
+  // 普通派生（无显式 provider/model）：先注入 provider/model，再在首请求补入 reasoningEffort。
+  await registry.start('spawn', { label: 'a', parent: {} })
+  assert.deepEqual(createdAgents[0].options, { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  const proposal = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }))
+  assert.deepEqual(proposal, { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+
+  // proposal 已自带 reasoningEffort → 不覆盖。
+  const owned = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'p', model: 'm', reasoningEffort: 'low' }))
+  assert.equal(owned.reasoningEffort, 'low')
+
+  // 显式 provider/model：seam 不注入，也无 reasoningEffort 绑定。
+  await registry.start('spawn', { label: 'b', parent: {}, agentOptions: { provider: 'cpa', model: 'gpt-5.6-sol' } })
+  const explicitProposal = await host.fire('agent/request', { agent: createdAgents[1] }, async () => ({ provider: 'cpa', model: 'gpt-5.6-sol' }))
+  assert.equal(explicitProposal.reasoningEffort, undefined)
+
+  // 功能关闭：seam 不注入 provider/model，request listener 也不注入 reasoningEffort。
+  await host.updateFeatureSettings({ subagentRoute: false })
+  await registry.start('spawn', { label: 'c', parent: {} })
+  assert.deepEqual(createdAgents[2].options, {})
+  const disabledProposal = await host.fire('agent/request', { agent: createdAgents[2] }, async () => ({ provider: 'p', model: 'm' }))
+  assert.equal(disabledProposal.reasoningEffort, undefined)
+})
+
 
 // ── v0.30 移动端适配·宿主半：大 JSON 响应透明压缩 ──────────────────────────
 

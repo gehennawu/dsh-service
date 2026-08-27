@@ -3981,7 +3981,7 @@ function createSubagentRenderer(options = {}) {
       state.saves.push(payload)
       if (options.saveError) return { ok: false, error: options.saveError }
       state.route = payload.mode === 'custom'
-        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model }
+        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model, ...(payload.reasoningEffort !== undefined ? { reasoningEffort: payload.reasoningEffort } : {}) }
         : { available: true, mode: payload.mode }
       return { ok: true, ...state.route }
     }
@@ -4077,6 +4077,82 @@ test('subagent tab is feature-gated and renders host errors/unavailable status i
   failed.findByTestId('subagent-save').props.onClick()
   await failed.flush()
   assert.match(failed.findByTestId('subagent-error').children.join(''), /不在宿主清单内/)
+})
+
+test('subagent reasoning effort: custom 显示选择器、选项只来自当前模型、空值默认、切换模型清空旧等级、inherit/follow 不显示', async () => {
+  const reasoningModels = [
+    { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'More deliberate' }], defaultEffort: 'low' } },
+    { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+    { provider: 'cpa', providerName: 'CPA', id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol' },
+  ]
+  const { renderer, state } = createSubagentRenderer({ models: reasoningModels })
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // inherit 默认不显示 reasoning selector。
+  assert.equal(renderer.hasTest('subagent-reasoning-effort'), false)
+  // follow 也不显示。
+  renderer.findByTestId('subagent-mode-follow').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('subagent-reasoning-effort'), false)
+
+  // custom 显示选择器，选项来自当前模型的 reasoning.efforts。
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  const select = renderer.findByTestId('subagent-reasoning-effort')
+  assert.equal(select.props.disabled, false)
+  assert.deepEqual(select.children.map((option) => option.props.value), ['', 'low', 'high'])
+  assert.equal(select.children[0].children.join(''), '使用模型默认（不指定）')
+  assert.equal(select.children[1].children.join(''), 'Low')
+  assert.equal(select.children[2].children.join(''), 'High')
+  assert.equal(select.children[2].props.title, 'More deliberate')
+
+  // 默认空值 → payload 不含 reasoningEffort。
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+
+  // 选择非空等级 → payload 含 reasoningEffort。
+  renderer.findByTestId('subagent-reasoning-effort').props.onChange({ target: { value: 'high' } })
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+
+  // 切换到没有可选等级的模型 → selector disabled + unavailable hint + 旧等级被清空。
+  renderer.findByTestId('subagent-model').props.onChange({ target: { value: 'deepseek-v4-pro' } })
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-reasoning-effort').props.disabled, true)
+  assert.equal(renderer.hasTest('subagent-reasoning-effort-unavailable'), true)
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[2], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+})
+
+test('subagent reasoning effort: invalid-reasoning-effort 显示正确中文/英文错误', async () => {
+  const { renderer } = createSubagentRenderer({ saveError: 'invalid-reasoning-effort' })
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('subagent-error').children.join(''), /思考等级不受该模型支持/)
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.match(renderer.findByTestId('subagent-error').children.join(''), /not supported by the selected model/)
 })
 
 // ── v0.30 移动端适配·客户端引擎 ─────────────────────────────────────────────
