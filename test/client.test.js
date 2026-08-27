@@ -4373,12 +4373,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="FJxK0a_root"\] \{[^}]*overflow-x: auto !important/s)
-    // 真机反馈：消息尾部元信息行（MessageIconActions p-xYUq_）不再溢出出界——
-    // 行容器 min-width:0、时间文本 flex 收缩 + nowrap/ellipsis 兜底、点号分隔收紧
-    assert.match(styleTag.textContent, /\[class\*="p-xYUq_actions"\] \{[^}]*min-width: 0 !important/s)
-    assert.match(styleTag.textContent, /\[class\*="p-xYUq_timeStart"\][^}]*flex: 1 1 auto !important/s)
-    assert.match(styleTag.textContent, /\[class\*="p-xYUq_timeEnd"\] \{[^}]*flex: 1 1 auto !important/s)
-    assert.match(styleTag.textContent, /\[class\*="p-xYUq_runTimeDot"\] \{ margin: 0 4px !important; \}/)
+    // 真机反馈：消息尾部元信息行改用官方稳定 data-time-hover-root 结构定位，
+    // 不依赖会随 DSH 构建漂移的 MessageIconActions CSS-module 哈希类名。
+    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child \{[^}]*min-width: 0 !important/s)
+    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child > span:last-child \{[^}]*flex: 1 1 auto !important/s)
+    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child > span:last-child > span\[aria-hidden="true"\] \{[^}]*margin: 0 4px !important/s)
+    assert.doesNotMatch(styleTag.textContent, /p-xYUq_/)
     assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{ flex-direction: row/)
     // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
     // （transform 会造包含块把 fixed 模态锁进抽屉宽度），一律用 left/right 偏移。
@@ -4819,6 +4819,21 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     scrollToY(180)
     assert.equal(immersiveOn(), false)
 
+    // touchend 不是手势窗口刷新源：否则抬手后 800ms 内的程序化滚动会被误判为用户拖拽。
+    const realDateNow = Date.now
+    let gestureNow = 10_000
+    Date.now = () => gestureNow
+    freshGesture()
+    gestureNow += 700
+    htmlEl.dispatch('touchend', {})
+    gestureNow += 200
+    scroller.scrollTop = 250
+    htmlEl.dispatch('scroll', { target: scroller })
+    assert.equal(immersiveOn(), false, 'touchend must not extend the gesture window')
+    // 回归场景只验证窗口是否延长；恢复后把滚动基线拉回原位置，避免影响后续方向累加用例。
+    scrollToY(180)
+    Date.now = realDateNow
+
     // 真机拖拽形态回归（v0.36.1 核心）：单事件只有几像素、靠连续累加越过阈值
     const dragTo = (targetY, step) => {
       const dir = Math.sign(targetY - scroller.scrollTop)
@@ -5063,7 +5078,7 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     assert.equal(btn.style.display, 'flex', 'load-older availability keeps the up-arrow visible')
     btn.dispatch('click', {})
     assert.equal(olderClicks, 1, 'missing target must trigger the official load-older button')
-    await new Promise((resolve) => setTimeout(resolve, 350)) // 220ms 重试窗内：拉回基准视口 → 加载完成 → 跳转
+    await renderer.advanceTimer(220) // Fiber 托管的 220ms 重试窗：拉回基准视口 → 加载完成 → 跳转
     const lastSmooth = [...scroller.scrollCalls].reverse().find((c) => c.behavior === 'smooth')
     assert.deepEqual(lastSmooth, { top: 1488, behavior: 'smooth' }) // 基准 2988 + (1500-2988) - 12
     assert.ok(scroller.scrollCalls.some((c) => c.top === 2988 && c.behavior === 'instant'), 'anchor hijack must be reverted instantly')
@@ -5073,6 +5088,19 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     olderBox.remove()
     for (const observer of observers) observer.callback([], () => {})
     assert.equal(btn.style.display, 'none', 'history exhausted at the top hides the up-arrow again')
+
+    // disabled 的「加载更早」（官方 loading 态）：只等待、绝不点击，且每个 220ms
+    // 窗口照常消耗重试配额——20 个窗口后必须停表，不得退化成无限等待。
+    const disabledBox = new FakeElement('div'); disabledBox.className = 'Md3f7G_older'; scroller.appendChild(disabledBox)
+    const disabledBtn = new FakeElement('button'); disabledBtn.disabled = true; disabledBox.appendChild(disabledBtn)
+    let disabledClicks = 0
+    disabledBtn.addEventListener('click', () => { disabledClicks += 1 })
+    for (const observer of observers) observer.callback([], () => {})
+    btn.dispatch('click', {})
+    for (let i = 0; i < 20; i += 1) await renderer.advanceTimer(220)
+    assert.equal(disabledClicks, 0, 'disabled load-older must never be clicked')
+    assert.ok(!renderer.pendingTimerDelays().includes(220), 'retry budget must run out and stop scheduling')
+    disabledBox.remove()
 
     // 槽位重建（React 卸载重挂）→ observer 重新挂载新按钮
     slot.remove()

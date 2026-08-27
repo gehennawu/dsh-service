@@ -5852,27 +5852,26 @@ html[data-dshsvc-mobile] [class*="FJxK0a_root"] {
   scrollbar-width: none !important;
 }
 html[data-dshsvc-mobile] [class*="FJxK0a_root"]::-webkit-scrollbar { display: none !important; }
-/* 消息尾部元信息行（MessageIconActions，类哈希 p-xYUq_ 取自 0.1.1-rc.2）：
-   外壳默认 actions 行 display:flex; gap:10px，时间文本 white-space:nowrap 撑开
-   整行（如「13:13 · 用时 1分34秒 · 首 token 13秒 · 663 tok/s」271px），加上
-   28px 折叠/复制按钮超出移动端可用宽度，末尾出界被裁。分开两部分：
-   ① 行容器 min-width:0 + 时间文本 flex:1 收缩、nowrap+ellipsis 兜底截断；
-   ② 点号分隔符 margin 从 0 10px 收紧到 0 4px，尺寸可显示更多内容。 */
-html[data-dshsvc-mobile] [class*="p-xYUq_actions"] {
+/* Assistant 回合尾部的运行元信息行（MessageIconActions）使用官方稳定的
+   data-chat-flow-kind="turn-tail" + data-time-hover-root 结构定位，不依赖会随 DSH
+   构建漂移的 CSS-module 哈希。actions 行与 end-clock span 均为各自父级的最后子项；
+   行容器 min-width:0、时间文本可收缩并省略，点号间距收紧，以免移动端时间信息
+   把复制/分支按钮挤出可视区域。 */
+html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child {
   min-width: 0 !important;
   max-width: 100% !important;
 }
-html[data-dshsvc-mobile] [class*="p-xYUq_timeStart"],
-html[data-dshsvc-mobile] [class*="p-xYUq_timeEnd"] {
+html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child > span:last-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
+  padding-inline: 2px !important;
 }
-html[data-dshsvc-mobile] [class*="p-xYUq_timeStart"] { padding-right: 2px !important; }
-html[data-dshsvc-mobile] [class*="p-xYUq_timeEnd"] { padding-left: 2px !important; }
-html[data-dshsvc-mobile] [class*="p-xYUq_runTimeDot"] { margin: 0 4px !important; }
+html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child > span:last-child > span[aria-hidden="true"] {
+  margin: 0 4px !important;
+}
 /* 回到底部按钮簇（官方 Md3f7G_toBottom + 自有上箭头 data-dshsvc-user-jump）：
    移动端右侧还有约一行留白（scroll 的 --dsh-composer-side-clearance 侧清理），
    纯位移右移贴边（transform 只动绘制不动布局，sticky 定位不受影响）。
@@ -6242,7 +6241,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           const delta = scrollTop - lastY
           state.chatScrollLastY = scrollTop
           // 免疫层：程序化滚动（无手势窗口）或单事件大跳变 → 只重基线与累加器。
-          // touchend 会刷新时间戳，因此松手后的惯性滚动仍留在窗口内直至 800ms 用尽；
           // 窗口一过再到达的事件一律视为外壳自驱（贴底锚定），顺手把残留累加清零，
           // 保证下一次真实触摸从干净状态起算。
           if (!gestureFresh() || Math.abs(delta) > IMMERSIVE_DELTA_CAP_PX) {
@@ -6401,7 +6399,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           ['scroll', onDocumentScroll, { capture: true, passive: true }],
           ['touchstart', markGesture, { capture: true, passive: true }],
           ['touchmove', markGesture, { capture: true, passive: true }],
-          ['touchend', markGesture, { capture: true, passive: true }],
           ['wheel', markGesture, { capture: true, passive: true }],
           ['focusin', onFocusIn, { capture: true }],
         ]
@@ -6703,6 +6700,11 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
        */
       const createUserJump = (labelOf) => {
         const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null }
+        const cancelRetryTimer = () => {
+          if (state.retryTimer === null) return
+          try { state.retryTimer() } catch (_) {}
+          state.retryTimer = null
+        }
         const UP_SVG_FALLBACK =
           '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
           '<path d="M7 10.5V3.5M3.5 7 7 3.5 10.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -6807,6 +6809,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               // 负=上方）。「上一条用户回复」= flowTop<4（已滚出视口顶之上）的最后一行；
               // 目标文档坐标 = scrollTop + flowTop − 顶部留白。
               const jumpOnce = () => {
+                state.retryTimer = null
                 // 官方 loadOlderAnchored 加载后会按锚点移动视口（常把视口拉去别处）——
                 // 以点击时的基准视口为准即时拉回，避免跳转目标被劫持。
                 const now = Number(scroll.scrollTop) || 0
@@ -6831,18 +6834,19 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
                   return
                 }
                 // 目标不在已加载历史里：官方「加载更早」分页按钮还在 → 持续加载直到
-                // 目标出现或历史尽头（按钮消失）。加载中（disabled）只等待不重复点击。
+                // 目标出现或历史尽头（按钮消失）。每个 220ms 窗口都消耗一次配额，
+                // disabled 只是不重复点击，绝不能因此把约 4.4s 上限变成无限等待。
                 if (state.retryLeft <= 0) return
+                state.retryLeft -= 1
                 let older = null
                 try { older = scroll.querySelector('[class*="Md3f7G_older"] button') } catch (_) { older = null }
                 if (older === null) return // 历史已全部加载且无目标 → 停（按钮随显隐规则隐藏）
                 if (older.disabled !== true) {
-                  state.retryLeft -= 1
                   try { older.click() } catch (_) { /* 官方 loading 态下点击无害 */ }
                 }
-                if (state.retryTimer !== null) clearTimeout(state.retryTimer)
-                state.retryTimer = setTimeout(jumpOnce, 220)
+                state.retryTimer = ctx.timer.timeout(jumpOnce, 220)
               }
+              cancelRetryTimer()
               state.retryLeft = 20 // 最多约 4.4s 的加载重试窗（多批分页），防无限加载
               jumpOnce()
             })
@@ -6890,10 +6894,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         const stop = () => {
-          if (state.retryTimer !== null) {
-            clearTimeout(state.retryTimer)
-            state.retryTimer = null
-          }
+          cancelRetryTimer()
           if (state.scrollHandler !== null) {
             try { document.documentElement.removeEventListener('scroll', state.scrollHandler, true) } catch (_) {}
             state.scrollHandler = null
