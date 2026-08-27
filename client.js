@@ -6755,6 +6755,11 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
        *     会把 absolute right:0 推到内容区之外，桌面差一整个侧清理）；
        *  ③ 目标不存在时自动点击「加载更早」（Md3f7G_older button）并短窗重试，
        *     直到新历史里找到目标或按钮消失/重试耗尽。
+       * v0.36.6 iPhone 白屏修复：跳转一律瞬时 scrollTop 直接赋值，绝不
+       *   scrollTo({behavior:'smooth'})——真机排查（2026-08-27）：iOS WebKit 上
+       *   smooth 滚动 + sticky composer/transform 变换层会让合成层不重绘（点按
+       *   上箭头 → 视口白屏，再触发一次滚动才恢复）；Android/桌面 Blink 均无此
+       *   问题，官方全应用滚动也从来只用瞬时赋值。别把动画加回来。
        */
       const createUserJump = (labelOf) => {
         const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null }
@@ -6845,10 +6850,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
                 // 以点击时的基准视口为准即时拉回，避免跳转目标被劫持。
                 const now = Number(scroll.scrollTop) || 0
                 if (Math.abs(now - baseScrollTop) > 40) {
-                  try {
-                    if (typeof scroll.scrollTo === 'function') scroll.scrollTo({ top: baseScrollTop, behavior: 'instant' })
-                    else scroll.scrollTop = baseScrollTop
-                  } catch (_) {}
+                  try { scroll.scrollTop = baseScrollTop } catch (_) {}
                 }
                 const rows = nav.userRows(scroll)
                 let target = null
@@ -6857,8 +6859,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
                 }
                 if (target !== null) {
                   const top = Math.max(0, baseScrollTop + nav.flowTopOf(scroll, target) - 12)
-                  if (typeof scroll.scrollTo === 'function') scroll.scrollTo({ top, behavior: 'smooth' })
-                  else scroll.scrollTop = top
+                  try { scroll.scrollTop = top } catch (_) {}
                   return
                 }
                 // 目标不在已加载历史里：官方「加载更早」分页按钮还在 → 持续加载直到

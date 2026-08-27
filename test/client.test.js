@@ -4971,7 +4971,19 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
 
   // 主对话视图骨架：滚动容器 + 官方回到底部槽位 + 三条用户回复行
   const scroller = new FakeElement('div'); scroller.setAttribute('data-conversation-scroll', '')
-  scroller.scrollTop = 0; scroller.scrollCalls = []
+  scroller.scrollCalls = []
+  // 真实浏览器语义：scrollTop 直接赋值 = 引擎唯一滚动路径（v0.36.6 起，不再 scrollTo smooth），
+  // 赋值即触发滚动 → 布局更新 → rect 变化，等同 updateFlows 的真实时机
+  let scrollerTop = 0
+  Object.defineProperty(scroller, 'scrollTop', {
+    get() { return scrollerTop },
+    set(value) {
+      scrollerTop = value
+      scroller.scrollCalls.push(value)
+      if (typeof scroller.onScrollTo === 'function') scroller.onScrollTo(value)
+    },
+  })
+  scroller.scrollTop = 0
   const slot = new FakeElement('div'); slot.className = 'Md3f7G_toBottomSlot'
   const officialBottom = new FakeElement('button'); officialBottom.className = 'Md3f7G_toBottom'
   slot.appendChild(officialBottom)
@@ -4980,7 +4992,7 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
   mkUser(3000); mkUser(4000); mkUser(4900)
   // flowTop = 行文档坐标 − 视口顶（scrollTop），与真实 getBoundingClientRect 语义一致
   const updateFlows = () => { for (const r of scroller.children.filter((c) => c.attributes.has('data-chat-flow-kind'))) r.rect.top = r.docTop - scroller.scrollTop }
-  scroller.onScrollTo = () => updateFlows() // scrollTo（含 instant 拉回）后 rect 同步，等同真实布局更新
+  scroller.onScrollTo = () => updateFlows() // scrollTop 赋值（含劫持拉回）后 rect 同步，等同真实布局更新
   bodyEl.appendChild(scroller)
 
   const observers = []
@@ -5038,21 +5050,19 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     assert.equal(btn.style.display, 'flex')
 
     // 点一次：上一条 = flowTop<4 的最后一行（u3 at -100）→ 5000-100-12=4888
+    // （v0.36.6：瞬时 scrollTop 直接赋值，与官方同款；setter 已同步 flows）
     btn.dispatch('click', {})
-    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 4888, behavior: 'smooth' })
-    scroller.scrollTop = 4888
+    assert.equal(scroller.scrollTop, 4888)
     updateFlows() // u3=12, u2=-888, u1=-1888
 
     // 再点：u2（-888）→ 4888-888-12=3988
     btn.dispatch('click', {})
-    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 3988, behavior: 'smooth' })
-    scroller.scrollTop = 3988
+    assert.equal(scroller.scrollTop, 3988)
     updateFlows() // u2=12, u1=-988
 
     // 再点：u1（-988）→ 3988-988-12=2988
     btn.dispatch('click', {})
-    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 2988, behavior: 'smooth' })
-    scroller.scrollTop = 2988
+    assert.equal(scroller.scrollTop, 2988)
     updateFlows() // u1=12
 
     // 已到第一条：没有 flowTop<4 的行 → 忽略（不再滚动）
@@ -5079,11 +5089,10 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     btn.dispatch('click', {})
     assert.equal(olderClicks, 1, 'missing target must trigger the official load-older button')
     await renderer.advanceTimer(220) // Fiber 托管的 220ms 重试窗：拉回基准视口 → 加载完成 → 跳转
-    const lastSmooth = [...scroller.scrollCalls].reverse().find((c) => c.behavior === 'smooth')
-    assert.deepEqual(lastSmooth, { top: 1488, behavior: 'smooth' }) // 基准 2988 + (1500-2988) - 12
-    assert.ok(scroller.scrollCalls.some((c) => c.top === 2988 && c.behavior === 'instant'), 'anchor hijack must be reverted instantly')
-    scroller.scrollTop = 1488
-    updateFlows() // u0=12
+    assert.equal(scroller.scrollTop, 1488) // 基准 2988 + (1500-2988) - 12
+    // 官方锚点劫持到 9000 后必须被即时拉回基准（v0.36.6：scrollTop 直接赋值）
+    const hijackAt = scroller.scrollCalls.lastIndexOf(9000)
+    assert.ok(hijackAt !== -1 && scroller.scrollCalls.indexOf(2988, hijackAt) !== -1, 'anchor hijack must be reverted instantly')
     // 历史全部加载完（加载更早按钮消失）且已到最顶 → 再次隐藏
     olderBox.remove()
     for (const observer of observers) observer.callback([], () => {})
