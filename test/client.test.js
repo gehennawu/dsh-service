@@ -4301,13 +4301,22 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="FJxK0a_root"\] \{[^}]*overflow-x: auto !important/s)
+    // 真机反馈：消息尾部元信息行（MessageIconActions p-xYUq_）不再溢出出界——
+    // 行容器 min-width:0、时间文本 flex 收缩 + nowrap/ellipsis 兜底、点号分隔收紧
+    assert.match(styleTag.textContent, /\[class\*="p-xYUq_actions"\] \{[^}]*min-width: 0 !important/s)
+    assert.match(styleTag.textContent, /\[class\*="p-xYUq_timeStart"\][^}]*flex: 1 1 auto !important/s)
+    assert.match(styleTag.textContent, /\[class\*="p-xYUq_timeEnd"\] \{[^}]*flex: 1 1 auto !important/s)
+    assert.match(styleTag.textContent, /\[class\*="p-xYUq_runTimeDot"\] \{ margin: 0 4px !important; \}/)
     assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{ flex-direction: row/)
     // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
     // （transform 会造包含块把 fixed 模态锁进抽屉宽度），一律用 left/right 偏移。
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-(sidebar|details)\]\s*\{[^}]*transform/s)
     // 真机第六轮：钉位使 abs 子项包含块=0px grid area，百分比偏移对 0 宽取值失效、
     // 元素被超约束解算推回屏内盖住会话 —— 离屏偏移必须用 vw 长度。
-    assert.doesNotMatch(styleTag.textContent, /-105%|translateX/)
+    // 注：-105% 与 sidebar/details 上的 transform 仍全局禁止；悬浮按钮簇的
+    // translateX 位移规则（Task A 右移）不在此列 —— 只作用于 34px 小按钮、
+    // 不参与离屏布局，故断言收窄到列级。
+    assert.doesNotMatch(styleTag.textContent, /-105%|data-dshsvc-(sidebar|details)\]\s*\{[^}]*translateX/s)
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*left: calc\(-100vw - 24px\) !important/s)
     // 真机第九轮：外壳侧栏内容原生固定 280px；外层拉到 320px 会在右侧造出 40px 空带。
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{[^}]*width: min\(100vw, 280px\) !important/s)
@@ -4810,6 +4819,207 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
   }
 })
 
+
+test('user reply jump: mounts the up-arrow above the to-bottom button, steps up through user replies on every click, and tears down on dispose', async () => {
+  // 全平台引擎（与 mobileAdaptation 无关）：挂在官方 Md3f7G_toBottomSlot 内，
+  // 点击按 [data-chat-flow-kind="user"] 行定位「上一条」平滑跳转，逐击步进。
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.attributes = new Map()
+      this.style = {}; this.dataset = {}; this.parentNode = null; this.className = ''; this.listeners = new Map()
+      this.rect = { top: 0, left: 0, width: 0, height: 0 }
+    }
+    get isConnected() { let n = this; while (n.parentNode !== null) n = n.parentNode; return n === rootNode }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c }
+    remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null } }
+    setAttribute(k, v) { this.attributes.set(k, String(v)) }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null }
+    hasAttribute(k) { return this.attributes.has(k) }
+    removeAttribute(k) { this.attributes.delete(k) }
+    addEventListener(t, h) { (this.listeners.get(t) || this.listeners.set(t, new Set()).get(t)).add(h) }
+    removeEventListener(t, h) { this.listeners.get(t)?.delete(h) }
+    dispatch(t, event) { for (const h of this.listeners.get(t) || []) h(event || {}) }
+    click() { this.dispatch('click', {}) }
+    getBoundingClientRect() { return { top: this.rect.top, left: this.rect.left, width: this.rect.width, height: this.rect.height, right: this.rect.left + this.rect.width, bottom: this.rect.top + this.rect.height } }
+    querySelectorAll(selector) {
+      const m = selector.match(/^\[([a-z-]+)="?([^"]*)"?\]$/)
+      const found = []
+      const scan = (node) => {
+        if (node !== this && m !== null) {
+          const attr = node.attributes.get(m[1])
+          if (attr !== undefined && (m[2] === '' || attr === m[2])) found.push(node)
+        }
+        for (const c of node.children || []) scan(c)
+      }
+      scan(this)
+      return found
+    }
+    querySelector(selector) {
+      const cls = selector.match(/^\[class\*="([^"]+)"\](:not\(\[class\*="([^"]+)"\]\))?$/)
+      const desc = selector.match(/^\[class\*="([^"]+)"\] ([a-z]+)$/)
+      if (cls !== null) {
+        let found = null
+        const scan = (node) => {
+          if (found !== null) return
+          if (node !== this && node.className.includes(cls[1]) && (cls[2] === undefined || !node.className.includes(cls[2]))) { found = node; return }
+          for (const c of node.children || []) scan(c)
+        }
+        scan(this)
+        return found
+      }
+      if (desc !== null) {
+        const box = this.querySelector(`[class*="${desc[1]}"]`)
+        if (box !== null) {
+          for (const c of box.children) if ((c.tagName || '').toUpperCase() === desc[2].toUpperCase()) return c
+        }
+      }
+      return null
+    }
+    scrollTo(opts) { this.scrollTop = opts.top; (this.scrollCalls = this.scrollCalls || []).push(opts); if (typeof this.onScrollTo === 'function') this.onScrollTo(opts.top) }
+  }
+  const rootNode = new FakeElement('#root')
+  const head = new FakeElement('head'); rootNode.appendChild(head)
+  const bodyEl = new FakeElement('body'); rootNode.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); rootNode.appendChild(htmlEl)
+
+  // 主对话视图骨架：滚动容器 + 官方回到底部槽位 + 三条用户回复行
+  const scroller = new FakeElement('div'); scroller.setAttribute('data-conversation-scroll', '')
+  scroller.scrollTop = 0; scroller.scrollCalls = []
+  const slot = new FakeElement('div'); slot.className = 'Md3f7G_toBottomSlot'
+  const officialBottom = new FakeElement('button'); officialBottom.className = 'Md3f7G_toBottom'
+  slot.appendChild(officialBottom)
+  scroller.appendChild(slot)
+  const mkUser = (docTop) => { const r = new FakeElement('div'); r.setAttribute('data-chat-flow-kind', 'user'); r.docTop = docTop; r.rect.top = docTop; scroller.appendChild(r); return r }
+  mkUser(3000); mkUser(4000); mkUser(4900)
+  // flowTop = 行文档坐标 − 视口顶（scrollTop），与真实 getBoundingClientRect 语义一致
+  const updateFlows = () => { for (const r of scroller.children.filter((c) => c.attributes.has('data-chat-flow-kind'))) r.rect.top = r.docTop - scroller.scrollTop }
+  scroller.onScrollTo = () => updateFlows() // scrollTo（含 instant 拉回）后 rect 同步，等同真实布局更新
+  bodyEl.appendChild(scroller)
+
+  const observers = []
+  class FakeMutationObserver {
+    constructor(callback) { this.callback = callback; observers.push(this) }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl, head, body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      const cls = selector.match(/^\[class\*="([^"]+)"\]$/)
+      let found = null
+      const scan = (node) => {
+        if (found === null) {
+          if (cls !== null) { if (node.className.includes(cls[1])) found = node }
+          else if (node.attributes?.has?.(selector.replace(/[[\]]/g, ''))) found = node
+        }
+        for (const c of node.children || []) scan(c)
+      }
+      scan(rootNode)
+      return found
+    },
+    querySelectorAll() { return [] },
+  }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+  try {
+    const renderer = createRenderer(rpc, { featureSettings: {} }) // mobileAdaptation 关闭：本引擎独立于它
+    await renderer.load()
+
+    // 挂载：槽位内出现上箭头按钮 + hover 样式注入 head
+    const btn = slot.children.find((el) => el.attributes.has('data-dshsvc-user-jump'))
+    assert.notEqual(btn, undefined, 'up-arrow must mount into the official to-bottom slot')
+    assert.equal(btn.getAttribute('aria-label'), '上一条用户回复')
+    assert.equal(btn.style.bottom, '42px')
+    assert.equal(btn.style.borderRadius, '100px')
+    assert.equal(btn.style.right, '0px', 'desktop right alignment mirrors the official button edge (fake rects coincide)')
+    assert.ok(head.children.some((el) => (el.textContent || '').includes('[data-dshsvc-user-jump]:hover')), 'hover style must be injected')
+    // v0.36.5：顶部的显隐由「可达目标 / 加载更早」驱动——初始视口在顶部、无目标无更早 → 隐藏
+    assert.equal(btn.style.display, 'none', 'top of loaded history hides the up-arrow')
+
+    // 视口顶在 5000：三条用户行 docTop 3000/4000/4900 → flowTop -2000/-1000/-100
+    scroller.scrollTop = 5000
+    updateFlows()
+    htmlEl.dispatch('scroll', {}) // 滚动事件驱动显隐刷新 → 有上一条可跳 → 显示
+    assert.equal(btn.style.display, 'flex')
+
+    // 点一次：上一条 = flowTop<4 的最后一行（u3 at -100）→ 5000-100-12=4888
+    btn.dispatch('click', {})
+    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 4888, behavior: 'smooth' })
+    scroller.scrollTop = 4888
+    updateFlows() // u3=12, u2=-888, u1=-1888
+
+    // 再点：u2（-888）→ 4888-888-12=3988
+    btn.dispatch('click', {})
+    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 3988, behavior: 'smooth' })
+    scroller.scrollTop = 3988
+    updateFlows() // u2=12, u1=-988
+
+    // 再点：u1（-988）→ 3988-988-12=2988
+    btn.dispatch('click', {})
+    assert.deepEqual(scroller.scrollCalls.at(-1), { top: 2988, behavior: 'smooth' })
+    scroller.scrollTop = 2988
+    updateFlows() // u1=12
+
+    // 已到第一条：没有 flowTop<4 的行 → 忽略（不再滚动）
+    const before = scroller.scrollCalls.length
+    btn.dispatch('click', {})
+    assert.equal(scroller.scrollCalls.length, before)
+    // 跳无可跳且无「加载更早」→ 按钮隐藏（用户点名：达到最顶部后隐藏）
+    htmlEl.dispatch('scroll', {})
+    assert.equal(btn.style.display, 'none', 'reaching the top hides the up-arrow')
+
+    // 目标在未加载历史里：顶部有官方「加载更早」按钮 → 自动点击并在加载后跳到新目标
+    const olderBox = new FakeElement('div'); olderBox.className = 'Md3f7G_older'; scroller.appendChild(olderBox)
+    const olderBtn = new FakeElement('button'); olderBox.appendChild(olderBtn)
+    let olderClicks = 0
+    olderBtn.addEventListener('click', () => {
+      olderClicks += 1
+      mkUser(1500) // 官方加载更早后出现一条更早的用户回复（docTop 1500）
+      updateFlows()
+      scroller.scrollTop = 9000 // 官方 loadOlderAnchored 的锚点行为会把视口劫持走
+      updateFlows()
+    })
+    for (const observer of observers) observer.callback([], () => {}) // 加载更早按钮出现 → 按钮恢复显示
+    assert.equal(btn.style.display, 'flex', 'load-older availability keeps the up-arrow visible')
+    btn.dispatch('click', {})
+    assert.equal(olderClicks, 1, 'missing target must trigger the official load-older button')
+    await new Promise((resolve) => setTimeout(resolve, 350)) // 220ms 重试窗内：拉回基准视口 → 加载完成 → 跳转
+    const lastSmooth = [...scroller.scrollCalls].reverse().find((c) => c.behavior === 'smooth')
+    assert.deepEqual(lastSmooth, { top: 1488, behavior: 'smooth' }) // 基准 2988 + (1500-2988) - 12
+    assert.ok(scroller.scrollCalls.some((c) => c.top === 2988 && c.behavior === 'instant'), 'anchor hijack must be reverted instantly')
+    scroller.scrollTop = 1488
+    updateFlows() // u0=12
+    // 历史全部加载完（加载更早按钮消失）且已到最顶 → 再次隐藏
+    olderBox.remove()
+    for (const observer of observers) observer.callback([], () => {})
+    assert.equal(btn.style.display, 'none', 'history exhausted at the top hides the up-arrow again')
+
+    // 槽位重建（React 卸载重挂）→ observer 重新挂载新按钮
+    slot.remove()
+    const slot2 = new FakeElement('div'); slot2.className = 'Md3f7G_toBottomSlot'
+    scroller.appendChild(slot2)
+    for (const observer of observers) observer.callback([], () => {})
+    const btn2 = slot2.children.find((el) => el.attributes.has('data-dshsvc-user-jump'))
+    assert.notEqual(btn2, undefined, 'observer must re-mount after slot recreation')
+    assert.notEqual(btn2, btn)
+
+    // dispose：按钮与样式全部移除、观察者断开
+    renderer.disposeFactory()
+    assert.equal(slot2.children.some((el) => el.attributes.has('data-dshsvc-user-jump')), false)
+    assert.ok(!head.children.some((el) => (el.textContent || '').includes('[data-dshsvc-user-jump]:hover')))
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
 
 test('session manager tab lists sessions with archive marks, size info, and deleted filter', async () => {
   const calls = []

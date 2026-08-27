@@ -109,6 +109,7 @@ window.__ModuleLoader__.load({
       'mobile.immersive.hide': '收起头部与输入框',
       'mobile.immersive.show': '展开头部与输入框',
       'mobile.debug.immersive': '沉浸',
+      'conversation.jump.previousReply': '上一条用户回复',
       'subagent.title': '子代理模型',
       'subagent.hint': '控制「未显式指定模型」的子代理委派使用哪个模型；显式指定了模型的派生（预设钉死、其他插件注入、调用参数携带）不受影响。',
       'subagent.mode.label': '模式',
@@ -689,6 +690,7 @@ window.__ModuleLoader__.load({
       'mobile.immersive.hide': 'Hide header and composer',
       'mobile.immersive.show': 'Show header and composer',
       'mobile.debug.immersive': 'Immersive',
+      'conversation.jump.previousReply': 'Previous user message',
       'subagent.title': 'Subagent model',
       'subagent.hint': 'Controls which model a subagent delegation uses when no model was explicitly specified; delegations with an explicit route (pinned preset, another plugin, call arguments) are unaffected.',
       'subagent.mode.label': 'Mode',
@@ -5838,6 +5840,36 @@ html[data-dshsvc-mobile] [class*="FJxK0a_root"] {
   scrollbar-width: none !important;
 }
 html[data-dshsvc-mobile] [class*="FJxK0a_root"]::-webkit-scrollbar { display: none !important; }
+/* 消息尾部元信息行（MessageIconActions，类哈希 p-xYUq_ 取自 0.1.1-rc.2）：
+   外壳默认 actions 行 display:flex; gap:10px，时间文本 white-space:nowrap 撑开
+   整行（如「13:13 · 用时 1分34秒 · 首 token 13秒 · 663 tok/s」271px），加上
+   28px 折叠/复制按钮超出移动端可用宽度，末尾出界被裁。分开两部分：
+   ① 行容器 min-width:0 + 时间文本 flex:1 收缩、nowrap+ellipsis 兜底截断；
+   ② 点号分隔符 margin 从 0 10px 收紧到 0 4px，尺寸可显示更多内容。 */
+html[data-dshsvc-mobile] [class*="p-xYUq_actions"] {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+html[data-dshsvc-mobile] [class*="p-xYUq_timeStart"],
+html[data-dshsvc-mobile] [class*="p-xYUq_timeEnd"] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+html[data-dshsvc-mobile] [class*="p-xYUq_timeStart"] { padding-right: 2px !important; }
+html[data-dshsvc-mobile] [class*="p-xYUq_timeEnd"] { padding-left: 2px !important; }
+html[data-dshsvc-mobile] [class*="p-xYUq_runTimeDot"] { margin: 0 4px !important; }
+/* 回到底部按钮簇（官方 Md3f7G_toBottom + 自有上箭头 data-dshsvc-user-jump）：
+   移动端右侧还有约一行留白（scroll 的 --dsh-composer-side-clearance 侧清理），
+   纯位移右移贴边（transform 只动绘制不动布局，sticky 定位不受影响）。
+   :not([class*="Slot"]) 排除命名含 Slot 的 sticky 槽层，只移按钮本体。
+   方向：正 translateX 向右；位移量 = 侧清理 +16（scroll 右 padding）再留 4px 缓冲。 */
+html[data-dshsvc-mobile] [class*="Md3f7G_toBottom"]:not([class*="Slot"]),
+html[data-dshsvc-mobile] [data-dshsvc-user-jump] {
+  transform: translateX(calc(var(--dsh-composer-side-clearance, 16px) + 16px - 4px)) !important;
+}
 /* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */
 html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
 html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
@@ -6640,6 +6672,246 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
         return { evaluate, dispose }
       }
+
+      /**
+       * 全平台「跳上一条用户回复」引擎：
+       * 在官方「回到底部」按钮（Md3f7G_toBottomSlot，sticky 定位上下文）内注入
+       * 同款圆形上箭头按钮（absolute bottom:42px → 稳居官方按钮上方 8px），
+       * 随该按钮成组显隐（离开底部才渲染）、跟随 composer 高度偏移。
+       * 点击按官方 data-chat-flow-kind="user" 行定位上一条用户回复（流程坐标
+       * flowTop = rect.top - scrollport.rect.top，与官方 pagingAnchor 同系），
+       * 逐击向上步进；程序化滚动天然受沉浸引擎 800ms 手势窗口免疫。
+       * 与 mobileAdaptation 无关：不依赖 matchMedia、不引用 any 移动属性。
+       * v0.36.4 三处真机反馈修正：
+       *  ① 图标严格克隆官方按钮内 svg（旋转 180°），不再手绘近似；
+       *  ② 桌面 right 对齐实测「slot 右缘 − 官方按钮右缘」（slot 的 padding-right
+       *     会把 absolute right:0 推到内容区之外，桌面差一整个侧清理）；
+       *  ③ 目标不存在时自动点击「加载更早」（Md3f7G_older button）并短窗重试，
+       *     直到新历史里找到目标或按钮消失/重试耗尽。
+       */
+      const createUserJump = (labelOf) => {
+        const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null }
+        const UP_SVG_FALLBACK =
+          '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+          '<path d="M7 10.5V3.5M3.5 7 7 3.5 10.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+        const hasScrollAttr = (el) => {
+          if (typeof el.hasAttribute === 'function') {
+            try { return el.hasAttribute('data-conversation-scroll') } catch (_) { return false }
+          }
+          try {
+            return el.attributes !== null && typeof el.attributes.getNamedItem === 'function' &&
+              el.attributes.getNamedItem('data-conversation-scroll') !== null
+          } catch (_) { return false }
+        }
+
+        /** 从回到底部槽位向上找会话滚动容器（官方 [data-conversation-scroll]）。 */
+        const scrollContainerOf = (slot) => {
+          try {
+            let node = slot
+            while (node !== null && node !== document.documentElement && !hasScrollAttr(node)) {
+              node = node.parentNode
+            }
+            return node !== null && node !== document.documentElement ? node : slot.parentNode
+          } catch (_) { return null }
+        }
+
+        /**
+         * 按钮显隐（v0.36.5 用户点名：达到最顶部后隐藏）：
+         * 还有「可跳的上一条」（flowTop<4 的 user 行）或还有官方「加载更早」
+         * （点了能加载出更早目标）→ 显示；两者皆无（真正到顶且历史已加载完）→ 隐藏。
+         */
+        const updateVisibility = () => {
+          if (state.btn === null || !state.btn.isConnected) return
+          try {
+            const slot = document.querySelector('[class*="Md3f7G_toBottomSlot"]')
+            if (slot === null) return
+            const scroll = scrollContainerOf(slot)
+            if (scroll === null || typeof scroll.querySelectorAll !== 'function') return
+            let hasTarget = false
+            try {
+              for (const row of scroll.querySelectorAll('[data-chat-flow-kind="user"]')) {
+                const flowTop = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+                if (flowTop < 4) { hasTarget = true; break }
+              }
+            } catch (_) {}
+            let hasOlder = false
+            try { hasOlder = scroll.querySelector('[class*="Md3f7G_older"] button') !== null } catch (_) {}
+            state.btn.style.display = hasTarget || hasOlder ? 'flex' : 'none'
+          } catch (_) {}
+        }
+
+        /** 克隆官方回到底部按钮内的 svg 并旋转 180° → 图标与官方严格一致。 */
+        const officialUpSvg = (slot) => {
+          try {
+            const source = slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])')
+            const svg = source !== null ? source.querySelector('svg') : null
+            if (svg !== null && typeof svg.outerHTML === 'string') {
+              return svg.outerHTML.replace(/<svg/i, '<svg style="transform:rotate(180deg)"')
+            }
+          } catch (_) {}
+          return UP_SVG_FALLBACK
+        }
+
+        const mount = () => {
+          if (state.btn !== null && state.btn.isConnected) return
+          try {
+            const slot = document.querySelector('[class*="Md3f7G_toBottomSlot"]')
+            if (slot === null || typeof slot.appendChild !== 'function' || typeof slot.querySelector !== 'function') return
+            const official = slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])')
+            const btn = document.createElement('button')
+            btn.type = 'button'
+            btn.setAttribute('data-dshsvc-user-jump', '')
+            btn.setAttribute('aria-label', labelOf())
+            // 桌面 slot 有 padding-right（内容区居中垫白）→ absolute right:0 会比
+            // 官方按钮偏右一整个 padding；实测「slot 右缘 − 官方按钮右缘」对齐。
+            let rightGap = 0
+            try {
+              if (official !== null) {
+                const slotRight = slot.getBoundingClientRect().right
+                const officialRight = official.getBoundingClientRect().right
+                rightGap = Math.max(0, Math.round(slotRight - officialRight))
+              }
+            } catch (_) {}
+            Object.assign(btn.style, {
+              position: 'absolute', right: `${rightGap}px`, bottom: '42px', zIndex: '1',
+              width: '34px', height: '34px', padding: '0', cursor: 'pointer',
+              border: '1px solid var(--dsw-alias-border-l2)',
+              background: 'var(--dsw-alias-button-floating-fill)',
+              color: 'var(--dsw-alias-label-primary)',
+              boxShadow: 'var(--dsw-shadow-lv2)',
+              borderRadius: '100px', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', pointerEvents: 'auto',
+            })
+            btn.innerHTML = officialUpSvg(slot)
+            btn.addEventListener('click', () => {
+              const scroll = scrollContainerOf(slot)
+              if (scroll === null || typeof scroll.querySelectorAll !== 'function') return
+              const baseScrollTop = Number(scroll.scrollTop) || 0
+              const flowTopOf = (row) => {
+                try { return row.getBoundingClientRect().top - scroll.getBoundingClientRect().top } catch (_) { return 0 }
+              }
+              // flowTop 与 scrollTop 不同系：flowTop 是相对滚动视口的坐标（0=视口顶，
+              // 负=上方）。「上一条用户回复」= flowTop<4（已滚出视口顶之上）的最后一行；
+              // 目标文档坐标 = scrollTop + flowTop − 顶部留白。
+              const jumpOnce = () => {
+                // 官方 loadOlderAnchored 加载后会按锚点移动视口（常把视口拉去别处）——
+                // 以点击时的基准视口为准即时拉回，避免跳转目标被劫持。
+                const now = Number(scroll.scrollTop) || 0
+                if (Math.abs(now - baseScrollTop) > 40) {
+                  try {
+                    if (typeof scroll.scrollTo === 'function') scroll.scrollTo({ top: baseScrollTop, behavior: 'instant' })
+                    else scroll.scrollTop = baseScrollTop
+                  } catch (_) {}
+                }
+                const rows = []
+                try {
+                  for (const row of scroll.querySelectorAll('[data-chat-flow-kind="user"]')) rows.push(row)
+                } catch (_) { return }
+                let target = null
+                for (let i = rows.length - 1; i >= 0; i -= 1) {
+                  if (flowTopOf(rows[i]) < 4) { target = rows[i]; break }
+                }
+                if (target !== null) {
+                  const top = Math.max(0, baseScrollTop + flowTopOf(target) - 12)
+                  if (typeof scroll.scrollTo === 'function') scroll.scrollTo({ top, behavior: 'smooth' })
+                  else scroll.scrollTop = top
+                  return
+                }
+                // 目标不在已加载历史里：官方「加载更早」分页按钮还在 → 持续加载直到
+                // 目标出现或历史尽头（按钮消失）。加载中（disabled）只等待不重复点击。
+                if (state.retryLeft <= 0) return
+                let older = null
+                try { older = scroll.querySelector('[class*="Md3f7G_older"] button') } catch (_) { older = null }
+                if (older === null) return // 历史已全部加载且无目标 → 停（按钮随显隐规则隐藏）
+                if (older.disabled !== true) {
+                  state.retryLeft -= 1
+                  try { older.click() } catch (_) { /* 官方 loading 态下点击无害 */ }
+                }
+                if (state.retryTimer !== null) clearTimeout(state.retryTimer)
+                state.retryTimer = setTimeout(jumpOnce, 220)
+              }
+              state.retryLeft = 20 // 最多约 4.4s 的加载重试窗（多批分页），防无限加载
+              jumpOnce()
+            })
+            slot.appendChild(btn)
+            state.btn = btn
+            updateVisibility()
+          } catch (_) { /* 外壳结构变化期间探不到槽位时静默等待下轮 */ }
+        }
+
+        const start = () => {
+          try {
+            if (state.styleTag === null) {
+              const tag = document.createElement('style')
+              tag.dataset.plugin = '@gehennawu/dsh-service'
+              tag.dataset.pluginCss = '@gehennawu/dsh-service/user-jump.css'
+              tag.textContent =
+                '[data-dshsvc-user-jump]:hover,[data-dshsvc-user-jump]:active{background:var(--dsw-alias-button-floating-hover)!important}'
+              document.head.appendChild(tag)
+              state.styleTag = tag
+            }
+          } catch (_) {}
+          mount()
+          if (state.observer !== null) return
+          try {
+            state.observer = new MutationObserver(() => { mount(); updateVisibility() })
+            state.observer.observe(document.documentElement, { childList: true, subtree: true })
+          } catch (_) {
+            state.observer = null
+          }
+          if (state.scrollHandler === null) {
+            try {
+              state.scrollHandler = () => {
+                if (typeof requestAnimationFrame === 'function') {
+                  if (state.rafId !== null) return
+                  state.rafId = requestAnimationFrame(() => { state.rafId = null; updateVisibility() })
+                } else {
+                  updateVisibility()
+                }
+              }
+              document.documentElement.addEventListener('scroll', state.scrollHandler, true)
+            } catch (_) {
+              state.scrollHandler = null
+            }
+          }
+        }
+
+        const stop = () => {
+          if (state.retryTimer !== null) {
+            clearTimeout(state.retryTimer)
+            state.retryTimer = null
+          }
+          if (state.scrollHandler !== null) {
+            try { document.documentElement.removeEventListener('scroll', state.scrollHandler, true) } catch (_) {}
+            state.scrollHandler = null
+          }
+          if (state.rafId !== null) {
+            try { cancelAnimationFrame(state.rafId) } catch (_) {}
+            state.rafId = null
+          }
+          if (state.observer !== null) {
+            try { state.observer.disconnect() } catch (_) {}
+            state.observer = null
+          }
+          if (state.btn !== null) {
+            try { state.btn.remove() } catch (_) {}
+            state.btn = null
+          }
+          if (state.styleTag !== null) {
+            try { state.styleTag.remove() } catch (_) {}
+            state.styleTag = null
+          }
+        }
+
+        return { start, stop }
+      }
+
+      const userJump = createUserJump(() => t('conversation.jump.previousReply'))
+      ctx.effect(() => {
+        userJump.start()
+        return () => userJump.stop()
+      }, 'dsh-service user reply jump')
 
       const mobileEngine = createMobileAdaptation()
       ctx.effect(() => {

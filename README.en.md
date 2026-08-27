@@ -143,6 +143,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Off by default; active only below a 1024 px viewport (phones / narrow windows), desktops unaffected
 - Sidebar becomes a drawer, details column is hidden on mobile (matching the official narrow-screen behavior), modals become full-screen panels, settings left nav a horizontal top strip
 - Scroll immersion: inside a conversation, swiping down auto-hides the header and composer for full-screen reading; swipe up, reaching the bottom, or focusing the composer brings them back, with a resident bottom handle as a manual toggle. Programmatic scrolling (streaming pinning, anchor jumps) never triggers it
+- The "Back to bottom" button is shifted flush right on mobile (no more large empty strip); a matching circular up-arrow now sits above it on all platforms, jumping to the previous user message on each click for step-by-step back navigation. Targets outside the loaded history auto-trigger the official "load earlier" action; the button hides once you reach the very top and reappears when you scroll back down
 - Transparent large-JSON compression (≥4KB auto gzip/brotli per `Accept-Encoding`) speeds up long session histories
 - Adds `viewport-fit=cover` with safe-area avoidance, disables double-tap zoom, keeps inputs ≥16px against iOS focus zoom
 - `?dshsvc-mobile-debug=1` shows a floating diagnostics chip (debugging only)
