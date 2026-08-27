@@ -1142,6 +1142,26 @@ window.__ModuleLoader__.load({
           '[data-dsh-service-skills-nav]::before{' + navIconMask(NAV_ICON_BODY_SKILLS) + '}',
           '[data-dsh-service-subagent-nav]::before{' + navIconMask(NAV_ICON_BODY_SUBAGENT) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
+          // ── 窄面板下的顶栏标签（用户反馈：移动端「太乱、容易误触」）──────────
+          // 作用域是纯媒体查询 ≤640px，**不**挂在 data-dshsvc-mobile 下——这是本插件
+          // 自己的面板 UI，360px 手机上无论移动适配功能开没开都挤成数行碎胶囊。
+          // 方案：每个分组托盘整行横滑（不换行、藏滚动条），触达目标放大到 ≥36px；
+          // 重启胶囊独占第二行整宽居中——危险动作与普通标签物理分离，杜绝误触。
+          // 胶囊 padding/fontSize 是内联样式，覆盖必须 !important。
+          '@media (max-width:640px){',
+          /* 保持桌面语义：重启始终钉在首行右缘（marginLeft:auto 内联样式生效的前提
+             是它和托盘同行）。窄屏不再让托盘抢整行把重启挤去换行居中（用户复核：
+             悬在两行中间很离谱），而是托盘收缩可横滑、重启贴右不换行。 */
+          '[data-testid="tab-list"]{gap:10px}',
+          '[data-testid="tab-list"]>div{flex-wrap:nowrap !important;align-items:center}',
+          '[data-testid="tab-list"] [data-testid$="-tray"]{flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:3px}',
+          '[data-testid="tab-list"] [data-testid$="-tray"]::-webkit-scrollbar{display:none}',
+          '[data-testid="tab-list"] [data-testid^="top-tab-"]{padding:9px 13px !important;min-height:36px;box-sizing:border-box;font-size:13px !important;white-space:nowrap;flex:none}',
+          '[data-testid="tab-list"] [data-testid^="top-tab-"] svg{flex:none}',
+          /* 重启胶囊：刚性尺寸——窄屏挤压下 flex 子项会被压宽拉高成瘦椭圆
+            （真机复核），钉死高度/圆角/内边距/不缩不放。 */
+          '[data-testid="top-tab-restart"]{flex:none !important;width:max-content;height:40px;min-height:40px;max-height:40px;padding:0 16px !important;border-radius:999px !important}',
+          '}',
         ].join('')
         document.head.appendChild(svcStyle)
       }
