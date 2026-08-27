@@ -11,7 +11,7 @@ import https from 'node:https'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -4116,7 +4116,12 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-bytes-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const services = sessionManagerServices()
-  // 真实目录：alpha（live 也有目录）+ beta（冷+归档），供 locate 定位后 stat。
+  const baseListSessions = services.sessionQuery.listSessions
+  services.sessionQuery.listSessions = async () => [
+    ...(await baseListSessions()),
+    { header: { id: 'session-orphan', createdAt: 500, cwd: '/workspace/missing' }, live: false, persisted: true },
+  ]
+  // 真实目录：alpha（live 也有目录）+ beta（冷+归档），另有一个列表中存在但目录缺失的 orphan。
   const alphaDir = join(dshHome, 'sessions-root', 'session-alpha')
   const betaDir = join(dshHome, 'sessions-root', 'session-beta')
   await mkdir(alphaDir, { recursive: true })
@@ -4132,11 +4137,15 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   })
 
   // 第一次：缺缓存 → listSessions 定位 + 逐目录 stat；未知会话返回 null。
-  const first = await handler('sessions-bytes', { ids: ['session-beta', 'session-alpha', 'session-missing', 'session-beta'] })
+  const first = await handler('sessions-bytes', { ids: ['session-beta', 'session-alpha', 'session-orphan', 'session-missing', 'session-beta'] })
   assert.equal(first.ok, true)
   assert.equal(first.value.bytes['session-beta'], 20)
   assert.equal(first.value.bytes['session-alpha'], 10)
+  assert.equal(first.value.bytes['session-orphan'], null, 'listed session with a missing archive returns null')
   assert.equal(first.value.bytes['session-missing'], null, 'unknown session returns null (not cached)')
+  await rm(betaDir, { recursive: true, force: true })
+  const missingArchive = await handler('sessions-bytes', { ids: ['session-beta'] })
+  assert.equal(missingArchive.value.bytes['session-beta'], 20, 'a previously cached archive size remains available until invalidated')
 
   // 第二次：同一宿主实例（不重启）→ 全命中缓存，零 listSessions、零磁盘访问。
   const originalListSessions = services.sessionQuery.listSessions
@@ -4164,6 +4173,33 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   const mixed = await handler('sessions-bytes', { ids: ['session-beta', 7, '', 'session-beta'] })
   assert.equal(mixed.ok, true)
   assert.deepEqual(Object.keys(mixed.value.bytes), ['session-beta'])
+})
+
+test('session event text matches the official semantic extractor contract', () => {
+  const cases = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: ' first ' }, { type: 'reasoning', text: 'hidden' }, { type: 'text', text: 'second' }] } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', name: 'bash', arguments: '{"command":"pwd"}' }, { type: 'tool-result', content: [{ type: 'text', text: 'done' }] }] } } },
+    { type: 'tool/call', data: { name: 'read', arguments: '{"path":"README.md"}' } },
+    { type: 'tool/result', data: { message: { content: [{ type: 'text', text: 'output' }] }, error: { name: 'ToolError', code: 'EFAIL' } } },
+    { type: 'todo/write', data: { todos: [{ status: 'completed', content: 'ship it' }] } },
+    { type: 'turn/end', data: { reason: { kind: 'error', error: { message: 'boom' } } } },
+    { type: 'turn/end', data: { reason: { kind: 'aborted' } } },
+    { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    { type: 'turn/start', data: {} },
+  ]
+  assert.deepEqual(cases.map(sessionEventText), [
+    'first\nsecond',
+    'bash\n{"command":"pwd"}\ndone',
+    'read\n{"path":"README.md"}',
+    'output\nToolError\nEFAIL',
+    'completed\nship it',
+    'error\nboom',
+    'aborted',
+    'max-tokens',
+    '',
+    '',
+  ])
 })
 
 test('session management view pages events with seq cursor and marks noise types', async (t) => {
@@ -4215,6 +4251,13 @@ test('session management view pages events with seq cursor and marks noise types
 
   const badId = await handler('sessions-view', { id: '' })
   assert.deepEqual(badId, { ok: false, error: 'invalid-session-id' })
+
+  const atEnd = await handler('sessions-view', { id: 'session-alpha', cursor: 5 })
+  assert.deepEqual(atEnd.value.items, [], 'cursor at the final seq returns an empty page')
+  assert.equal(atEnd.value.nextCursor, undefined)
+  const beyondEnd = await handler('sessions-view', { id: 'session-alpha', cursor: 999 })
+  assert.deepEqual(beyondEnd.value.items, [], 'cursor beyond the final seq must not restart from page one')
+  assert.equal(beyondEnd.value.nextCursor, undefined)
 })
 
 test('session management view centers a hit window around a seq with clamped bounds and paging', async (t) => {
@@ -4288,6 +4331,37 @@ test('session management search scans cold and archived sessions with budget bou
   assert.deepEqual(empty.value.hits, [])
 })
 
+test('session management search returns the official semantic document text as the snippet', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-text-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  services.sessionQuery.filterEvents = async (sessionId) => sessionId === 'session-alpha'
+    ? [{ sessionId, seq: 2, type: 'assistant/message', time: 1002, surface: 'current', text: '官方语义片段' }]
+    : []
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('sessions-search', { query: '片段', scope: 'all' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.hits[0].items[0].snippet, '官方语义片段')
+})
+
+test('session management search enforces a global fifty-hit budget', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-budget-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  const headers = Array.from({ length: 11 }, (_, index) => ({ id: 'session-' + index, createdAt: 2000 - index, cwd: '/workspace' }))
+  services.sessionQuery.listSessions = async () => headers.map((header) => ({ header, live: false, persisted: true }))
+  services.sessionQuery.readTitleSnapshots = async (ids) => ids.map((sessionId) => ({ sessionId, status: 'fulfilled', value: { session: headers.find((header) => header.id === sessionId), title: { title: sessionId } } }))
+  services.sessionQuery.filterEvents = async (sessionId) => Array.from({ length: 5 }, (_, index) => ({ sessionId, seq: index, type: 'user/message', time: index, surface: 'current', text: sessionId + '-hit-' + index }))
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: { archivedSessionIds: [] } }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('sessions-search', { query: 'hit', scope: 'all' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.hits.flatMap((hit) => hit.items).length, 50)
+  assert.equal(result.value.hits.length, 10)
+  assert.equal(result.value.hits.some((hit) => hit.sessionId === 'session-10'), false)
+})
+
 test('session management export validates existence and reuses official ZIP URL', async (t) => {
   const services = sessionManagerServices()
   const { handler } = createHost({ services: { sessionQuery: services.sessionQuery } })
@@ -4316,12 +4390,35 @@ test('session management archive calls workspace registry and maps unknown sessi
   assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
 })
 
+test('session management delete keeps the archive when recording the deletion fails', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-delete-record-fail-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const dshHomeFile = join(root, 'not-a-directory')
+  await writeFile(dshHomeFile, 'occupied')
+  const services = sessionManagerServices()
+  const betaDir = join(root, 'cold-root', 'session-beta')
+  await mkdir(betaDir, { recursive: true })
+  await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n')
+  const persistence = { locate: () => ({ kind: 'jsonl', path: join(betaDir, 'session.jsonl') }) }
+  const { handler } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions, sessionPersistence: persistence },
+    env: { DSH_HOME: dshHomeFile },
+  })
+
+  const plan = await handler('sessions-delete-plan', { id: 'session-beta' })
+  assert.equal(plan.ok, true)
+  const result = await handler('sessions-delete', { planId: plan.value.planId })
+  assert.equal(result.ok, false)
+  assert.equal((await stat(betaDir)).isDirectory(), true, 'the archived log remains when the deletion record cannot be persisted')
+})
+
 test('session management delete is two-phase: plan lists consequences, live rejected, execution removes directory and records deleted', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-delete-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const services = sessionManagerServices()
   // beta 是冷会话（非 live），其目录指向 dshHome 之下以便断言删除落盘。
   const betaDir = join(dshHome, 'cold-root', 'session-beta')
+  const missingDir = join(dshHome, 'cold-root', 'session-missing-archive')
   await mkdir(betaDir, { recursive: true })
   await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n')
   const persistence = {
@@ -4348,19 +4445,26 @@ test('session management delete is two-phase: plan lists consequences, live reje
   assert.deepEqual(livePlan, { ok: false, error: 'live-session-rejected' })
   assert.equal(listSessionsCalls, 1, 'live rejection performs exactly one listSessions lookup')
 
+  // 未归档冷会话也拒绝：删除能力仅属于归档区。
+  services.workspaceRegistry.archivedSessionIds = []
+  const unarchivedPlan = await handler('sessions-delete-plan', { id: 'session-beta' })
+  assert.deepEqual(unarchivedPlan, { ok: false, error: 'session-not-archived' })
+  assert.equal(listSessionsCalls, 2, 'unarchived rejection performs exactly one lookup')
+  services.workspaceRegistry.archivedSessionIds = ['session-beta']
+
   // 未知会话拒绝
   const unknownPlan = await handler('sessions-delete-plan', { id: 'session-missing' })
   assert.deepEqual(unknownPlan, { ok: false, error: 'session-not-found' })
-  assert.equal(listSessionsCalls, 2, 'unknown session: one lookup per plan request')
+  assert.equal(listSessionsCalls, 3, 'unknown session: one lookup per plan request')
 
-  // 冷会话 plan 返回后果清单（仍只做一次目标定位，不触发全量字节扫描循环）
+  // 已归档冷会话 plan 返回后果清单（仍只做一次目标定位，不触发全量字节扫描循环）
   const plan = await handler('sessions-delete-plan', { id: 'session-beta' })
   assert.equal(plan.ok, true)
   assert.equal(typeof plan.value.planId, 'string')
   assert.equal(plan.value.session.id, 'session-beta')
   assert.equal(plan.value.session.archived, true)
-  assert.ok(plan.value.consequences.includes('deletes-session-log'))
-  assert.equal(listSessionsCalls, 3, 'cold plan performs exactly one listSessions lookup per request')
+  assert.deepEqual(plan.value.consequences, ['deletes-session-log'])
+  assert.equal(listSessionsCalls, 4, 'archived plan performs exactly one listSessions lookup per request')
 
   // v0.36：plan 前取一次体积（冷目录实际 10 字节），供删除后验证缓存失效。
   const beforeBytes = await handler('sessions-bytes', { ids: ['session-beta'] })
@@ -4383,10 +4487,11 @@ test('session management delete is two-phase: plan lists consequences, live reje
   assert.equal(recorded.items[0].title, '标题-session-beta')
   assert.ok(recorded.items[0].cwd === '/workspace/projects')
 
-  // 删除主动失效体积缓存：再请求会重 stat（目录已删）→ 0 而非旧缓存 10。
+  // planId 一次性消费；删除主动失效体积缓存，目录已缺失时回 null。
+  assert.deepEqual(await handler('sessions-delete', { planId: plan.value.planId }), { ok: false, error: 'unknown-delete-plan' })
   const afterBytes = await handler('sessions-bytes', { ids: ['session-beta'] })
   assert.equal(afterBytes.ok, true)
-  assert.equal(afterBytes.value.bytes['session-beta'], 0, 'delete invalidates the size cache')
+  assert.equal(afterBytes.value.bytes['session-beta'], null, 'delete invalidates the size cache and missing archive returns null')
 
   const afterList = await handler('sessions-list', {})
   assert.equal(afterList.ok, true)

@@ -1,16 +1,16 @@
 # screenshots
 
-截图目录。在面板中截取对应页面，按以下命名放入：
+README 使用的中英文界面截图。文件名与对应功能如下：
 
-| 文件名 | 内容 |
-| --- | --- |
-| `overview.png` | 概览标签页 |
-| `health.png` | 健康诊断标签页 |
-| `usage.png` | 模型统计标签页 |
-| `backup.png` | 备份维护标签页 |
-| `restart.png` | 重启标签页 |
-| `dark-mode.png` | 深色模式示例 |
+| 中文 | English | 内容 |
+| --- | --- | --- |
+| `overview.png` | `overview_en.png` | 概览 |
+| `model-usage.png` | `model-usage_en.png` | 模型统计 |
+| `quota-lookup.png` | `quota-lookup_en.png` | 额度查询 |
+| `skill-manager.png` | `skill-manager_en.png` | 技能管理 |
+| `subagent-model.png` | `subagent-model_en.png` | 子代理模型 |
+| `task-notifications.png` | `task-notifications_en.png` | 任务通知 |
 
-截图宽度建议 800-1200px，PNG 格式。
+截图宽度建议 800–1200px，PNG 格式。README 新增截图引用时，必须同时加入本目录并通过 `test/docs-static.test.js`；本目录由 `package.json#files` 打入 npm 包。
 
-> **注意（v0.14 起）**：README 中引用的 `overview.png` / `overview_en.png` 抓取于 v0.11.x 界面，当时任务通知还在概览内、版本行无展开交互。v0.14 布局已变化（六个顶部标签：概览/通知/健康诊断/模型统计/备份维护/重启；版本行可展开；左列可选「重启」入口）。容器内无 headless 浏览器，无法自动重截——下次可重截时请按新布局替换，并同步更新 README 中的引用。
+> `overview.png` / `overview_en.png` 抓取于较早界面。下次可重截时应更新为当前十标签布局，并同步替换中英文图片。

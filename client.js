@@ -35,6 +35,12 @@ window.__ModuleLoader__.load({
       'sessions.filter.archived': '仅归档',
       'sessions.filter.deleted': '已删除',
       'sessions.refresh': '刷新',
+      'sessions.status.loading': '加载中…',
+      'sessions.status.working': '处理中…',
+      'sessions.status.unavailableTime': '时间未知',
+      'sessions.glyph.expand': '▸',
+      'sessions.glyph.collapse': '▾',
+      'sessions.glyph.back': '←',
       'sessions.search.placeholder': '搜索对话内容…',
       'sessions.search.archivedOnly': '仅搜归档',
       'sessions.sort.createdDesc': '创建时间倒序',
@@ -58,6 +64,7 @@ window.__ModuleLoader__.load({
       'sessions.error.network': '网络错误：无法连接宿主',
       'sessions.error.session-not-found': '会话不存在或已被删除',
       'sessions.error.live-session-rejected': '会话正在运行，无法删除',
+      'sessions.error.session-not-archived': '仅已归档会话可以删除',
       'sessions.error.unknown-delete-plan': '删除请求已失效，请重新发起',
       'sessions.error.export-failed': '导出失败：{error}',
       'sessions.detail.back': '返回列表',
@@ -601,6 +608,12 @@ window.__ModuleLoader__.load({
       'sessions.filter.archived': 'Archived',
       'sessions.filter.deleted': 'Deleted',
       'sessions.refresh': 'Refresh',
+      'sessions.status.loading': 'Loading…',
+      'sessions.status.working': 'Working…',
+      'sessions.status.unavailableTime': 'Time unavailable',
+      'sessions.glyph.expand': '▸',
+      'sessions.glyph.collapse': '▾',
+      'sessions.glyph.back': '←',
       'sessions.search.placeholder': 'Search conversation content…',
       'sessions.search.archivedOnly': 'Search archived only',
       'sessions.sort.createdDesc': 'Created (newest first)',
@@ -624,6 +637,7 @@ window.__ModuleLoader__.load({
       'sessions.error.network': 'Network error: cannot reach the host',
       'sessions.error.session-not-found': 'Session not found or already deleted',
       'sessions.error.live-session-rejected': 'Session is running and cannot be deleted',
+      'sessions.error.session-not-archived': 'Only archived sessions can be deleted',
       'sessions.error.unknown-delete-plan': 'Delete request expired, please retry',
       'sessions.error.export-failed': 'Export failed: {error}',
       'sessions.detail.back': 'Back to list',
@@ -3286,14 +3300,39 @@ window.__ModuleLoader__.load({
         while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1 }
         return (unit === 0 ? String(size) : size.toFixed(1)) + ' ' + units[unit]
       }
-      function formatSessionTime(value) {
-        if (typeof value !== 'number' || value <= 0) return '—'
+      function formatSessionTime(value, translate) {
+        if (typeof value !== 'number' || value <= 0) return translate('sessions.status.unavailableTime')
         try { return new Date(value).toLocaleString() } catch (_) { return String(value) }
+      }
+      function highlightSessionSnippet(text, query, keyPrefix) {
+        const source = typeof text === 'string' ? text : ''
+        const tokens = typeof query === 'string' ? query.trim().split(/\s+/).filter(Boolean) : []
+        if (source === '' || tokens.length === 0) return source
+        let pattern
+        try {
+          pattern = new RegExp(tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'gi')
+        } catch (_) {
+          return source
+        }
+        const children = []
+        let cursor = 0
+        let match
+        let index = 0
+        while ((match = pattern.exec(source)) !== null) {
+          if (match.index > cursor) children.push(source.slice(cursor, match.index))
+          children.push(React.createElement('mark', { key: keyPrefix + '-' + index, 'data-testid': keyPrefix + '-' + index, style: { background: 'rgba(198,128,0,0.24)', color: 'inherit', borderRadius: '3px', padding: '0 1px' } }, match[0]))
+          cursor = match.index + match[0].length
+          index += 1
+        }
+        if (children.length === 0) return source
+        if (cursor < source.length) children.push(source.slice(cursor))
+        return children
       }
       function mapSessionError(translate, code) {
         if (code === 'feature-disabled') return translate('sessions.error.feature-disabled')
         if (code === 'session-not-found') return translate('sessions.error.session-not-found')
         if (code === 'live-session-rejected') return translate('sessions.error.live-session-rejected')
+        if (code === 'session-not-archived') return translate('sessions.error.session-not-archived')
         if (code === 'unknown-delete-plan') return translate('sessions.error.unknown-delete-plan')
         if (code === 'network') return translate('sessions.error.network')
         return code
@@ -3350,10 +3389,10 @@ window.__ModuleLoader__.load({
       // 目标命中行并闪烁高亮 2s。行按 testid sessions-jump-target-<seq> 找（seq 来自宿主可信
       // 清单，非用户输入）；滚动为 best-effort——测试替身无真实 DOM/行未渲染时静默跳过。
       function jumpScrollToHit(seq) {
-        if (typeof document === 'undefined' || document === null) return
+        if (typeof document === 'undefined' || document === null) return () => {}
         try {
           const element = document.querySelector('[data-testid="sessions-jump-target-' + seq + '"]')
-          if (element === null || element === undefined) return
+          if (element === null || element === undefined) return () => {}
           try {
             element.scrollIntoView({ behavior: 'smooth', block: 'center' })
           } catch (_) {
@@ -3361,15 +3400,22 @@ window.__ModuleLoader__.load({
           }
           if (element.classList && typeof element.classList.add === 'function') {
             element.classList.add('dshsv-locate-flash')
-            setTimeout(() => {
+            const disposeTimer = ctx.timer.timeout(() => {
               try {
                 if (element.classList && typeof element.classList.remove === 'function') element.classList.remove('dshsv-locate-flash')
               } catch (_) {}
             }, 2000)
+            return () => {
+              disposeTimer()
+              try {
+                if (element.classList && typeof element.classList.remove === 'function') element.classList.remove('dshsv-locate-flash')
+              } catch (_) {}
+            }
           }
         } catch (_) {
           // 定位滚动失败不影响查看：保持现状
         }
+        return () => {}
       }
 
       // v0.36 用户反馈「关掉面板再打开又要重新加载」：列表/体积缓存从组件 state 提升到
@@ -3600,8 +3646,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (filter === 'deleted') return
           if (search.trim() === '') { setSearchResult(null); return }
-          const handle = setTimeout(() => { void runSearch(search) }, 300)
-          return () => clearTimeout(handle)
+          return ctx.timer.timeout(() => { void runSearch(search) }, 300)
         }, [search, searchScopeArchived, filter])
 
         const openDetail = (sessionId, view, hitItems, event, targetSeq) => {
@@ -3848,7 +3893,7 @@ window.__ModuleLoader__.load({
         const jumpItemsLen = detail !== null && detail.view === 'search' && Array.isArray(detail.items) ? detail.items.length : 0
         useEffect(() => {
           if (jumpCenterSeq === null || typeof jumpCenterSeq !== 'number') return
-          jumpScrollToHit(jumpCenterSeq)
+          return jumpScrollToHit(jumpCenterSeq)
         }, [jumpCenterSeq, jumpItemsLen])
 
         const computeVisibleItems = () => {
@@ -3880,16 +3925,16 @@ window.__ModuleLoader__.load({
             live ? translate('sessions.row.live') : (archived ? translate('sessions.row.archived') : null),
             isDeleted ? translate('sessions.row.deleted') : null,
             item.cwd ? translate('sessions.detail.cwd', { cwd: item.cwd }) : null,
-            isDeleted ? (item.deletedAt ? formatSessionTime(item.deletedAt) : null) : sizeBit,
+            isDeleted ? (item.deletedAt ? formatSessionTime(item.deletedAt, translate) : null) : sizeBit,
           ].filter(Boolean)
           const actions = []
           if (!isDeleted) {
             actions.push(React.createElement('button', { key: 'view', type: 'button', 'data-testid': 'sessions-row-view-' + id, style: chipButton, onClick: (event) => openDetail(id, 'events', null, event) }, translate('sessions.action.view')))
             actions.push(React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-row-export-' + id, style: chipButton, disabled: exportingId === id, onClick: () => void doExport(id) }, exportingId === id ? translate('sessions.detail.exporting') : translate('sessions.action.export')))
             if (!live && !archived) {
-              actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? '…' : translate('sessions.action.archive')))
+              actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
             }
-            if (!live) {
+            if (!live && archived) {
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: primaryButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           }
@@ -3917,15 +3962,15 @@ window.__ModuleLoader__.load({
           return React.createElement('div', { key: String(event.seq), 'data-testid': 'sessions-event-' + event.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)', marginBottom: '5px' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
               React.createElement('span', { 'data-testid': 'sessions-event-type-' + event.seq, style: { fontWeight: 600, color: noise ? 'inherit' : 'var(--dsw-alias-label-secondary)' } }, noise ? translate('sessions.detail.noise') : event.type),
-              event.time ? React.createElement('span', null, formatSessionTime(event.time)) : null),
+              event.time ? React.createElement('span', null, formatSessionTime(event.time, translate)) : null),
             body)
         }
 
         const renderListBody = () => {
-          if (loading) return React.createElement('p', { style: hint }, '…')
+          if (loading) return React.createElement('p', { style: hint }, translate('sessions.status.loading'))
           if (error !== '') return React.createElement('p', { 'data-testid': 'sessions-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error)
           if (search.trim() !== '' && filter !== 'deleted') {
-            if (searchResult === null) return React.createElement('p', { style: hint }, searchRunning ? '…' : translate('sessions.search.placeholder'))
+            if (searchResult === null) return React.createElement('p', { style: hint }, searchRunning ? translate('sessions.status.loading') : translate('sessions.search.placeholder'))
             if (searchResult.error) return React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSessionError(translate, searchResult.error))
             if (searchResult.hits.length === 0) return React.createElement('p', { style: hint }, translate('sessions.empty.search', { query: search }))
             return searchResult.hits.map((hit) => React.createElement('div', { key: hit.sessionId, 'data-testid': 'sessions-hit-' + hit.sessionId, style: { padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
@@ -3935,7 +3980,7 @@ window.__ModuleLoader__.load({
               // v0.37：命中位置直接可见可点——点 seq 芯片直达该命中（不绕一次「打开→翻跳」）。
               hit.items.length > 1 ? React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '5px' } },
                 hit.items.map((item) => React.createElement('button', { key: item.seq, type: 'button', 'data-testid': 'sessions-hit-seq-' + hit.sessionId + '-' + item.seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', color: 'var(--dsw-alias-label-tertiary)' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event, Number(item.seq)) }, '#' + item.seq))) : null,
-              hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.snippet))))
+              hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, 'data-testid': 'sessions-hit-snippet-' + hit.sessionId, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, highlightSessionSnippet(item.snippet, searchResult.query || search, 'sessions-hit-highlight-' + hit.sessionId)))))
           }
           if (computeVisibleItems().length === 0) {
             const emptyKey = filter === 'archived' ? 'sessions.empty.archived' : filter === 'deleted' ? 'sessions.empty.deleted' : 'sessions.empty.all'
@@ -3951,7 +3996,6 @@ window.__ModuleLoader__.load({
             ? (searchResult.hits.find((hit) => hit.sessionId === detail.sessionId)?.title || '')
             : (target !== undefined && target.title !== '' ? target.title : '')
           const mineRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === detail.sessionId) : undefined
-          const canOpenOfficial = mineRow !== undefined && !mineRow.archived && mineRow.live !== false || (mineRow !== undefined && !mineRow.archived)
           // v0.37 命中导航：seq 芯片 + 上一个/下一个——翻跳只在详情内换窗口中心，不重载整个会话。
           const hitSeqList = detail.view === 'search' && Array.isArray(detail.hitItems)
             ? detail.hitItems.map((item) => Number(item.seq)).filter((seq) => Number.isSafeInteger(seq))
@@ -3970,7 +4014,7 @@ window.__ModuleLoader__.load({
                 : []
               return React.createElement('div', { key: 'noise-' + item.firstSeq, 'data-testid': 'sessions-noisewall-' + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-noisewall-toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleNoiseBlock(item.firstSeq) },
-                  (open ? '▾ ' : '▸ ') + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
+                  translate(open ? 'sessions.glyph.collapse' : 'sessions.glyph.expand') + ' ' + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
                 open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventCard(event, index))) : null)
             }
             if (matchSet !== null && matchSet.has(Number(item.seq))) {
@@ -3982,19 +4026,19 @@ window.__ModuleLoader__.load({
           })
           return React.createElement('div', { 'data-testid': 'sessions-detail' },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
-              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.detail.back')),
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.detail.back')),
               React.createElement('span', { style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0 } }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
               !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { ctx.sessions?.open?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: chipButton, disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
             detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { 'data-testid': 'sessions-jump-view', style: { marginBottom: '10px' } },
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' } },
-                React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.hit.return')),
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.hit.return')),
                 React.createElement('span', { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.hit.inSession', { count: Array.isArray(detail.hitItems) ? detail.hitItems.length : 0 })),
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-prev', style: chipButton, disabled: jumpPrevSeq === undefined || detailLoading, onClick: () => { if (jumpPrevSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpPrevSeq) } }, translate('sessions.hit.prev')),
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-next', style: chipButton, disabled: jumpNextSeq === undefined || detailLoading, onClick: () => { if (jumpNextSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpNextSeq) } }, translate('sessions.hit.next'))),
               React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' } },
                 hitSeqList.map((seq) => React.createElement('button', { key: seq, type: 'button', 'data-testid': 'sessions-jump-chip-' + seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', background: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-secondary)' }, onClick: () => void loadJumpWindow(detail.sessionId, seq) }, '#' + seq))),
-              detailLoading && detail.items.length === 0 ? React.createElement('p', { style: hint }, '…') : null,
+              detailLoading && detail.items.length === 0 ? React.createElement('p', { style: hint }, translate('sessions.status.loading')) : null,
               renderEventList(detail.items, hitSet),
               detail.cursor !== undefined && detail.items.length > 0 ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, detail.view) }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
               detail.cursor === undefined && detail.items.length > 0 ? React.createElement('p', { style: hint }, translate('sessions.detail.noMore', { total: detail.total })) : null) : null,
@@ -4018,7 +4062,7 @@ window.__ModuleLoader__.load({
               deleteError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, deleteError) : null,
               React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-cancel', style: chipButton, disabled: deleting, onClick: () => { setDeletePlan(null); setDeleteError('') } }, translate('sessions.delete.cancel')),
-                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: primaryButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? '…' : translate('sessions.delete.confirm')))))
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: primaryButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? translate('sessions.status.working') : translate('sessions.delete.confirm')))))
         }
 
         return React.createElement('div', null,

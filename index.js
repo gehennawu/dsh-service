@@ -3239,40 +3239,56 @@ async function saveDeletedSessions(dshHome, data) {
   }
 }
 
-/** 单个会话的事件文本（官方抽取语义，宿主自实现以免依赖官方内部包）。 */
+/** 单个会话的事件文本（与官方 extractSessionEventText 语义一致，不依赖官方内部包）。 */
 function sessionEventText(event) {
   if (typeof event !== 'object' || event === null) return ''
   const data = event.data
   if (typeof data !== 'object' || data === null) return ''
-  const joinText = (parts) => parts.filter((part) => typeof part === 'string' && part !== '').join(' ')
+  const joinText = (parts) => parts
+    .filter((part) => typeof part === 'string')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n')
   const blockText = (block) => {
-    if (typeof block !== 'object' || block === null) return ''
+    if (typeof block !== 'object' || block === null) return []
     switch (block.type) {
-      case 'text': return typeof block.text === 'string' ? block.text : ''
-      case 'image': return ''
-      default: return Array.isArray(block.content) ? joinText(block.content.map(blockText)) : ''
+      case 'text': return typeof block.text === 'string' ? [block.text] : []
+      case 'tool-call': return [block.name, block.arguments]
+      case 'tool-result': return Array.isArray(block.content) ? block.content.flatMap(blockText) : []
+      case 'reasoning':
+      case 'image':
+      default: return []
     }
   }
-  const contentText = (content) => joinText(Array.isArray(content) ? content.map(blockText) : [])
+  const contentText = (content) => joinText(Array.isArray(content) ? content.flatMap(blockText) : [])
+  const turnEndText = (reason) => {
+    switch (reason?.kind) {
+      case 'error': return joinText(['error', reason.error?.message])
+      case 'aborted': return 'aborted'
+      case 'max-tokens':
+      case 'interrupted': return reason.kind
+      case 'completed':
+      default: return ''
+    }
+  }
   switch (event.type) {
     case 'user/message': return contentText(data.content)
     case 'assistant/message': return contentText(data.message?.content)
-    case 'tool/call': return joinText([data.name, typeof data.arguments === 'string' ? data.arguments : ''])
-    case 'tool/result': return joinText([contentText(data.message?.content), data.error?.name ?? '', data.error?.code ?? ''])
+    case 'tool/call': return joinText([data.name, data.arguments])
+    case 'tool/result': return joinText([contentText(data.message?.content), data.error?.name, data.error?.code])
     case 'todo/write': return joinText(Array.isArray(data.todos) ? data.todos.flatMap((todo) => [todo.status, todo.content]) : [])
-    case 'turn/end': return typeof data.reason === 'string' ? data.reason : ''
-    case 'session/title': return typeof data.title === 'string' ? data.title : ''
+    case 'turn/end': return turnEndText(data.reason)
     default: return ''
   }
 }
 
-/** 会话目录大小（字节）；会话档案缺失时返回 0。 */
+/** 会话目录大小（字节）；会话档案或定位缺失时返回 null。 */
 async function sessionDirectoryBytes(ctx, header) {
   try {
     const sessionPersistence = ctx.get('sessionPersistence')
     const location = sessionPersistence?.locate?.(header)
     const dir = typeof location?.path === 'string' ? dirname(location.path) : undefined
-    if (dir === undefined) return 0
+    if (dir === undefined) return null
     let total = 0
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) continue
@@ -3283,7 +3299,7 @@ async function sessionDirectoryBytes(ctx, header) {
     }
     return total
   } catch (_) {
-    return 0
+    return null
   }
 }
 
@@ -3351,7 +3367,7 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all') {
  * { [id]: number|null }，只含请求过的 id。
  * @param {object} ctx - 宿主上下文。
  * @param {string[]} ids - 去重后的会话 id 列表。
- * @param {Map<string, {bytes: number, at: number}>} cache - apply() 状态的体积缓存。
+ * @param {Map<string, {bytes: number|null, at: number}>} cache - apply() 状态的体积缓存。
  * @returns {Promise<Record<string, number|null>>}
  */
 async function resolveSessionBytesForIds(ctx, ids, cache) {
@@ -3441,7 +3457,12 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
     limit = Math.min(total, clampedCenter + SESSIONS_VIEW_CONTEXT + 1) - start
     centerSeq = clampedCenter
   } else {
-    start = cursor === undefined ? 0 : Math.max(0, events.findIndex((event) => Number(event.seq) > Number(cursor)))
+    if (cursor === undefined) {
+      start = 0
+    } else {
+      const nextIndex = events.findIndex((event) => Number(event.seq) > Number(cursor))
+      start = nextIndex === -1 ? total : nextIndex
+    }
   }
   const slice = events.slice(start, start + limit)
   const items = slice.map((event) => {
@@ -3501,7 +3522,8 @@ async function searchSessionsContent(ctx, dshHome, query, scope = 'all') {
     } catch (_) {
       continue
     }
-    const bounded = (Array.isArray(docs) ? docs : []).slice(0, SESSIONS_SEARCH_PER_SESSION_LIMIT)
+    const remaining = SESSIONS_SEARCH_TOTAL_LIMIT - total
+    const bounded = (Array.isArray(docs) ? docs : []).slice(0, Math.min(SESSIONS_SEARCH_PER_SESSION_LIMIT, remaining))
     if (bounded.length === 0) continue
     result.hits.push({
       sessionId: item.id,
@@ -3509,7 +3531,7 @@ async function searchSessionsContent(ctx, dshHome, query, scope = 'all') {
       items: bounded.map((doc) => ({
         seq: Number(doc.seq),
         type: doc.type,
-        snippet: typeof doc.snippet === 'string' ? doc.snippet : sessionEventText(doc),
+        snippet: typeof doc.snippet === 'string' ? doc.snippet : typeof doc.text === 'string' ? doc.text : sessionEventText(doc),
       })),
     })
     total += bounded.length
@@ -5030,13 +5052,13 @@ function apply(ctx) {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       try {
-        // 安全教义：只接受宿主列表返回的 id（白名单校验）+ 非 live 才允许删除。
+        // 安全教义：只接受宿主列表返回的 id（白名单校验），且必须已归档、非 live。
         // 只定位目标会话 + stat 目标目录，不做全量列表重扫（v0.35 用户反馈：此前
         // 复用 listSessionsForManage 会对每个会话 readdir+stat，会话多时确认要等好几秒）。
         const record = await resolveSessionForDelete(ctx, id)
         if (record === undefined) return { ok: false, error: 'session-not-found' }
         if (record.live) return { ok: false, error: 'live-session-rejected' }
-        const wasArchived = record.archived
+        if (!record.archived) return { ok: false, error: 'session-not-archived' }
         const planId = randomUUID()
         sessionDeletePlans.set(planId, { id, title: record.title, cwd: record.cwd, dir: record.dir, bytes: record.bytes, expires: Date.now() + SESSIONS_DELETE_PLAN_TTL_MS })
         return {
@@ -5048,14 +5070,10 @@ function apply(ctx) {
               title: record.title,
               cwd: record.cwd,
               bytes: record.bytes,
-              archived: wasArchived,
+              archived: true,
             },
-            // 后果清单：删除后会话从官方侧栏/本插件列表消失；官方 archivedSessionIds 残留 id
-            // 无 UI 影响（会话不在 persistence list 就不出现在任何视图），主动提示用户。
-            consequences: [
-              'deletes-session-log',
-              ...(wasArchived ? [] : ['hides-from-official-sidebar']),
-            ],
+            // 归档会话早已从官方侧栏隐藏；删除只移除其日志，保留 archivedSessionIds 死 id。
+            consequences: ['deletes-session-log'],
           },
         }
       } catch (error) {
@@ -5071,15 +5089,28 @@ function apply(ctx) {
       sessionDeletePlans.delete(planId)
       if (Date.now() > plan.expires) return { ok: false, error: 'delete-plan-expired' }
       try {
-        // 执行前复检：计划期间会话可能被拉起（live 化），一律拒绝。
+        // 执行前复检：计划期间会话可能被拉起或从归档集合移除，两种情况都拒绝。
         if (sessionIsLive(ctx, plan.id)) return { ok: false, error: 'live-session-rejected' }
-        await rm(plan.dir, { recursive: true, force: true })
-        sessionBytesCache.delete(plan.id)
-        if (sessionViewCache.id === plan.id) sessionViewCache.id = null
+        const archivedIds = ctx.get('workspaceRegistry')?.archivedSessionIds
+        if (!Array.isArray(archivedIds) || !archivedIds.includes(plan.id)) return { ok: false, error: 'session-not-archived' }
+        // 先持久化删除记录，再执行不可逆 rm；侧车写失败时日志保持原样。
         const deleted = await loadDeletedSessions(dshHome)
+        const previousDeleted = { version: deleted.version, items: [...deleted.items] }
         deleted.items = deleted.items.filter((item) => item.id !== plan.id)
         deleted.items.push({ id: plan.id, title: plan.title, cwd: plan.cwd ?? null, deletedAt: Date.now() })
         await saveDeletedSessions(dshHome, deleted)
+        try {
+          await rm(plan.dir, { recursive: true, force: true })
+        } catch (error) {
+          try {
+            await saveDeletedSessions(dshHome, previousDeleted)
+          } catch (rollbackError) {
+            throw new Error(`${error?.message || String(error)}; deleted-record rollback failed: ${rollbackError?.message || String(rollbackError)}`)
+          }
+          throw error
+        }
+        sessionBytesCache.delete(plan.id)
+        if (sessionViewCache.id === plan.id) sessionViewCache.id = null
         return { ok: true, value: { deleted: true, id: plan.id } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }

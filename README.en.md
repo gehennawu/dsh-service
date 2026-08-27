@@ -32,7 +32,7 @@
 
 </div>
 
-A service-control and operations plugin for self-hosted DSH Web: safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, quota lookup, backup management, task notifications, skills management, and Linux file-permission maintenance.
+A service-control and operations plugin for self-hosted DSH Web: safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, quota lookup, backup management, task notifications, skills management, session management, and Linux file-permission maintenance.
 
 ![Overview](./screenshots/overview_en.png)
 
@@ -41,16 +41,16 @@ A service-control and operations plugin for self-hosted DSH Web: safe restart, v
 - [🚀 Features](#-features)
   - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
   - [Quota lookup](#quota-lookup) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
-  - [Task notifications](#task-notifications) · [Mobile adaptation](#mobile-adaptation) · [External liveness probe](#external-liveness-probe)
+  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [External liveness probe](#external-liveness-probe)
 - [🏗️ Architecture](#-architecture)
 - [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
 - [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
 
 ## 🚀 Features
 
-The Settings "Service Control" panel has nine tabs: **Overview · Notifications · Health · Model stats · Quota lookup · Backups · Skills · Subagents · Restart**; Restart, Quota lookup, Skills, and Subagents can each enable a **quick entry in the settings left navigation** (off by default).
+The Settings "Service Control" panel has ten tabs: **Overview · Notifications · Health · Model stats · Quota lookup · Backups · Skills · Subagents · Sessions · Restart**; Restart, Quota lookup, Skills, Subagents, and Sessions can each enable a **quick entry in the settings left navigation** (off by default).
 
-Under **Plugins → Plugin configuration**, nine host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
+Under **Plugins → Plugin configuration**, ten host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
 ### Version and updates
 
@@ -145,13 +145,11 @@ Under **Plugins → Plugin configuration**, nine host-level switches: **Health d
 
 ### Session manager
 
-![Session manager](./screenshots/session-manager_en.png)
-
 - **View**: one unified list for sessions (running / cold / archived) with status badges, workspace, event count, and size; **starts on the “Archived” view by default**, and each of the All / Archived / Deleted filters fetches its own subset from the host **once,** then keeps it in a **module-level cache** — switching filters sends no requests, and **closing and reopening the panel renders the cache instantly while quietly refreshing the current view once in the background** (only a page reload clears the cache), with a “Refresh” button for a forced refetch of the current view; sizes are never shipped with the list — each row fetches its size lazily (double-cached in the module and in host memory: reopened panels and refreshed pages reuse it, cleared on delete); the detail page walks events as paged cards (single-slot host snapshot cache: paging and reopening the same session never re-reads the log, live sessions stay fresh within 30 seconds), with **event bodies rendered as official Markdown** (reusing the platform renderer `MarkdownText`, same look as the chat UI: code blocks, lists, tables, math — raw HTML and unsafe links are rejected by default; older DSH shells without the renderer automatically fall back to plain text), and consecutive system events collapse into a countable block by default — click to expand the details; **entering a detail remembers the list scroll position and returning to the list drops you back exactly where you were** (reusing the official panel's scroll container; changing the filter or search while in the detail discards the restore)
 - **Export**: one-click download of the official full ZIP (including subagents and attachments) via the official export path — the host never assembles a package itself
 - **Archive**: archived sessions disappear from the official sidebar (official behavior); the panel marks “archiving is one-way”, and the official UI cannot unarchive
-- **Content search**: full-text semantic search over conversations (case-insensitive, whitespace-flexible) with cross-session hits (multiple matches show seq chips for one-click jumps) → **hit-window view**: opening a result centers a context window on the matched seq (15 events on each side; the matched event gets a HIT badge, is highlighted, **auto-scrolled into view and flashes for 2 seconds**), with **previous / next match** navigation and navigator seq chips for direct jumps (mirroring dsh-session-kb's Locate interaction); the window can keep loading later events; optionally restricted to the archived zone
-- **Delete**: non-running sessions can be deleted through a two-phase confirmation (a consequence list first: id / title / workspace / size / disappears from the official sidebar); deleted records stay visible (read-only) under the Deleted filter
+- **Content search**: full-text semantic search over conversations (case-insensitive, whitespace-flexible) with cross-session hits (matched text is highlighted; multiple matches show seq chips for one-click jumps) → **hit-window view**: opening a result centers a context window on the matched seq (15 events on each side; the matched event gets a HIT badge, is highlighted, **auto-scrolled into view and flashes for 2 seconds**), with **previous / next match** navigation and navigator seq chips for direct jumps (mirroring dsh-session-kb's Locate interaction); the window can keep loading later events; optionally restricted to the archived zone
+- **Delete**: Only archived sessions can be deleted, and a session that becomes live is rejected again immediately before execution; the two-phase confirmation shows its id / title / workspace / size, persists the deletion record atomically first, and only then removes the log directory; deleted records stay visible (read-only) under the Deleted filter
 - Entry: “Sessions” chip in the top “Maintenance” tab group (on by default); the optional settings-sidebar entry is off by default
 - Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
 
