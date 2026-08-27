@@ -143,6 +143,18 @@ Under **Plugins → Plugin configuration**, nine host-level switches: **Health d
 - Adds `viewport-fit=cover` with safe-area avoidance, disables double-tap zoom, keeps inputs ≥16px against iOS focus zoom
 - `?dshsvc-mobile-debug=1` shows a floating diagnostics chip (debugging only)
 
+### Session manager
+
+![Session manager](./screenshots/session-manager_en.png)
+
+- **View**: one unified list for sessions (running / cold / archived) with status badges, workspace, event count, and size; **starts on the “Archived” view by default**, and each of the All / Archived / Deleted filters fetches its own subset from the host **once,** then keeps it in a **module-level cache** — switching filters sends no requests, and **closing and reopening the panel renders the cache instantly while quietly refreshing the current view once in the background** (only a page reload clears the cache), with a “Refresh” button for a forced refetch of the current view; sizes are never shipped with the list — each row fetches its size lazily (double-cached in the module and in host memory: reopened panels and refreshed pages reuse it, cleared on delete); the detail page walks events as paged cards (single-slot host snapshot cache: paging and reopening the same session never re-reads the log, live sessions stay fresh within 30 seconds), and consecutive system events collapse into a countable block by default — click to expand the details
+- **Export**: one-click download of the official full ZIP (including subagents and attachments) via the official export path — the host never assembles a package itself
+- **Archive**: archived sessions disappear from the official sidebar (official behavior); the panel marks “archiving is one-way”, and the official UI cannot unarchive
+- **Content search**: full-text semantic search over conversations (case-insensitive, whitespace-flexible) with cross-session hits → per-session hit view; optionally restricted to the archived zone
+- **Delete**: non-running sessions can be deleted through a two-phase confirmation (a consequence list first: id / title / workspace / size / disappears from the official sidebar); deleted records stay visible (read-only) under the Deleted filter
+- Entry: “Sessions” chip in the top “Maintenance” tab group (on by default); the optional settings-sidebar entry is off by default
+- Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
+
 ### External liveness probe
 
 - `GET` / `HEAD /healthz` returns an empty 200; other methods return 405

@@ -975,11 +975,11 @@ test('tab and top alerts identify health and backup failures without treating an
   // 分组行与竖排侧签各带 testid；前缀收集按 DOM 出现序：行 div 在前、其内部标题随后。
   // v0.33：竖排侧签标题去掉，只剩行 + 行内分段条；前缀收集顺序=行 → 托盘。
   assert.deepEqual(renderer.findAllByTestIdPrefix('tab-group-').map((group) => group.props['data-testid']), ['tab-group-data', 'tab-group-data-tray', 'tab-group-maint', 'tab-group-maint-tray'])
-  // 组序（用户点名）：数据行 概览→健康诊断→模型统计→额度查询→通知；维护行 子代理→技能管理→备份维护。
+  // 组序（用户点名）：数据行 概览→健康诊断→模型统计→额度查询→通知；维护行 子代理→会话管理→技能管理→备份维护。
   // v0.34.1：重启移出托盘、独立胶囊钉在首行右缘 → DOM 序里它出现在首行之后、子代理之前。
   assert.deepEqual(renderer.findAllByTestIdPrefix('top-tab-').map((node) => node.props['data-testid']), [
     'top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify',
-    'top-tab-restart', 'top-tab-subagent', 'top-tab-skills', 'top-tab-backup',
+    'top-tab-restart', 'top-tab-subagent', 'top-tab-sessions', 'top-tab-skills', 'top-tab-backup',
   ], 'order: data row chips, restart pinned right, then maintenance row')
   // renderer.text() 只认槽名；分组节点文本用本地展平器收集。
   const flattenText = (node) => {
@@ -1017,7 +1017,7 @@ test('tab and top alerts identify health and backup failures without treating an
     for (const child of node.children ?? []) collectChipTestids(child, out)
     return out
   }
-  assert.deepEqual(collectChipTestids(maintTray), ['top-tab-subagent', 'top-tab-skills', 'top-tab-backup'], 'maintenance tray holds exactly its three segments; restart floats outside')
+  assert.deepEqual(collectChipTestids(maintTray), ['top-tab-subagent', 'top-tab-sessions', 'top-tab-skills', 'top-tab-backup'], 'maintenance tray holds exactly its four segments; restart floats outside')
   const dataTray = renderer.findByTestId('tab-group-data-tray')
   assert.deepEqual(collectChipTestids(dataTray), ['top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify'], 'data tray holds its five segments')
   assert.match(text, /服务控制提醒.*健康诊断.*备份维护/)
@@ -4479,4 +4479,584 @@ test('mobile adaptation survives cold narrow load before the shell frame mounts'
     delete globalThis.document
     delete globalThis.MutationObserver
   }
+})
+
+// ── 会话管理（v0.35）───────────────────────────────────────────────
+
+function sessionManagerRenderer(rpcCall, options = {}) {
+  return createRenderer(rpcCall, { featureSettings: { sessionManager: true, ...(options.featureSettings || {}) }, ...options })
+}
+
+const SESSION_LIST_VALUE = {
+  available: true,
+  items: [
+    { id: 'session-live', title: 'Live session', cwd: '/workspace', createdAt: 3000, live: true, persisted: true, archived: false, bytes: 2048 },
+    { id: 'session-cold', title: 'Cold session', cwd: '/workspace/projects', createdAt: 2000, live: false, persisted: true, archived: false, bytes: 4096 },
+    { id: 'session-archived', title: 'Archived one', cwd: '/workspace', createdAt: 1000, live: false, persisted: true, archived: true, bytes: 1024 },
+  ],
+  archivedIds: ['session-archived'],
+  deleted: [{ id: 'session-gone', title: 'Gone session', cwd: '/tmp', deletedAt: 1500 }],
+}
+
+test('session manager tab lists sessions with archive marks, size info, and deleted filter', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      // v0.35：宿主按 scope 下发子集——archived 只回归档、deleted 只回记录。
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+      }
+      if (scope === 'deleted') {
+        return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: SESSION_LIST_VALUE.deleted } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      // v0.36：按请求 id 回查 mock 数据里的体积；未知 id 返回 null。
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint.startsWith('sessions-search')) return { ok: true, value: { available: true, query: '', scope: 'all', hits: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  // 切到「会话管理」标签：v0.35 默认停在「仅归档」视图（不全量拉取）。
+  const sessionsTab = renderer.findByTestId('top-tab-sessions')
+  assert.ok(sessionsTab)
+  sessionsTab.props.onClick()
+  await renderer.flush()
+  assert.ok(calls.includes('sessions-list:archived'), 'default view requests the archived scope only')
+  assert.equal(calls.includes('sessions-list:all'), false, 'no full refresh on open')
+  // 默认仅归档：只显示归档行
+  assert.equal(renderer.hasTest('sessions-row-session-live'), false, 'default archived view hides live sessions')
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), false, 'default archived view hides cold sessions')
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), true)
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-archived'), true, 'archived session shows archived tag')
+  // 归档行只读操作：无归档按钮（已归档）、无删除按钮（保留删除？归档行非 live 可删——见下）
+  assert.equal(renderer.hasTest('sessions-row-archive-session-archived'), false, 'archived session has no archive button')
+  // v0.36：体积懒加载——打开即请求可见行体积；行内显示大小、无「—」占位。
+  assert.ok(calls.includes('sessions-bytes'), 'lazy bytes RPC fires for visible rows')
+  const archivedMeta = renderer.findByTestId('sessions-meta-session-archived')
+  const archivedMetaText = Array.isArray(archivedMeta.children) ? archivedMeta.children.join('') : String(archivedMeta.children)
+  assert.equal(archivedMetaText.includes('—'), false, 'no dash placeholder for sizes')
+  assert.ok(archivedMetaText.includes('1.0 KB'), 'lazy-loaded size appears after the bytes RPC resolves')
+
+  // 切到「全部」：全量拉取 → live/cold 行出现
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.ok(calls.includes('sessions-list:all'))
+  assert.equal(renderer.hasTest('sessions-row-session-live'), true)
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), true)
+  assert.equal(renderer.hasTest('sessions-tag-live-session-live'), true, 'live session shows running tag')
+  // 删除按钮只对非 live 会话出现
+  assert.equal(renderer.hasTest('sessions-row-delete-session-live'), false, 'live session has no delete button')
+  assert.equal(renderer.hasTest('sessions-row-delete-session-cold'), true)
+  assert.equal(renderer.hasTest('sessions-row-delete-session-archived'), true, 'archived cold session stays deletable')
+  assert.equal(renderer.hasTest('sessions-row-archive-session-cold'), true)
+
+  // 已删除筛选（scope=deleted）
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-row-session-gone'), true, 'deleted record shown in deleted filter')
+  assert.equal(renderer.hasTest('sessions-row-delete-session-gone'), false, 'deleted record is read-only')
+})
+
+test('session manager detail pages events, loads more with seq cursor, and triggers export', async () => {
+  const calls = []
+  const viewResponses = {
+    'session-cold': {
+      ok: true,
+      value: {
+        session: { id: 'session-cold', title: 'Cold session', cwd: '/workspace/projects', createdAt: 2000 },
+        items: [
+          { seq: 0, type: 'user/message', time: 2001, text: 'first question', noise: false },
+          { seq: 1, type: 'assistant/message', time: 2002, text: 'first answer', noise: false },
+          { seq: 2, type: 'session/created', time: 2000, text: '', noise: true },
+        ],
+        nextCursor: undefined,
+        total: 3,
+      },
+    },
+  }
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-view') return viewResponses['session-cold']
+    if (endpoint === 'sessions-export') return { ok: true, value: { url: '/api/session.export?sessionId=session-cold&includeDescendants=true', includesDescendants: true } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true)
+  assert.equal(renderer.hasTest('sessions-event-0'), true)
+  assert.equal(renderer.hasTest('sessions-event-1'), true)
+  // v0.36（用户点名「查看渲染优化」）：系统事件默认折叠为一块——不再逐条渲染卡片。
+  assert.equal(renderer.hasTest('sessions-event-2'), false, 'noise event is collapsed into a block by default')
+  assert.equal(renderer.hasTest('sessions-noisewall-2'), true, 'collapsed noise block rendered with its first seq as the key')
+  await renderer.findByTestId('sessions-noisewall-toggle-2').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-event-2'), true, 'expanding the noise block reveals its events')
+  assert.equal(renderer.findByTestId('sessions-event-type-2').children[0], '系统事件', 'noise event labeled as system event')
+  // 收起后再折叠。
+  await renderer.findByTestId('sessions-noisewall-toggle-2').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-event-2'), false, 'collapsing hides the noise events again')
+  assert.equal(renderer.hasTest('sessions-detail-back'), true)
+  assert.equal(renderer.hasTest('sessions-detail-export'), true)
+  assert.equal(renderer.hasTest('sessions-detail-more'), false, 'no load-more when all events loaded')
+})
+
+test('session manager search shows cross-session hits and opens the hit-only view', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-search') {
+      return { ok: true, value: { available: true, query: 'answer', scope: 'all', hits: [{ sessionId: 'session-cold', title: 'Cold session', items: [{ seq: 1, type: 'assistant/message', snippet: 'first answer' }] }] } }
+    }
+    if (endpoint === 'sessions-view') return { ok: true, value: { session: { id: 'session-cold' }, items: [], nextCursor: undefined, total: 0 } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  const searchInput = renderer.findByTestId('sessions-search-input')
+  searchInput.props.onChange({ target: { value: 'answer' } })
+  await renderer.flush()
+  // 搜索防抖 300ms 走真实 setTimeout：等待触发后断言 RPC 与命中视图。
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  await renderer.flush()
+  assert.ok(calls.includes('sessions-search'))
+  assert.equal(renderer.hasTest('sessions-hit-session-cold'), true)
+  assert.equal(renderer.hasTest('sessions-hit-open-session-cold'), true)
+  await renderer.findByTestId('sessions-hit-open-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true)
+  assert.equal(renderer.hasTest('sessions-detail-return-search'), true)
+  assert.equal(renderer.hasTest('sessions-hit-event-1'), true)
+})
+
+test('session manager delete is two-phase with consequences and rejects live sessions', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+      }
+      if (scope === 'deleted') {
+        return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: [...SESSION_LIST_VALUE.deleted, { id: 'session-cold', title: 'Cold session', cwd: '/workspace/projects', deletedAt: 3000 }] } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-delete-plan') {
+      return { ok: true, value: { planId: 'plan-1', session: { id: 'session-cold', title: 'Cold session', cwd: '/workspace/projects', bytes: 4096, archived: false }, consequences: ['deletes-session-log', 'hides-from-official-sidebar'] } }
+    }
+    if (endpoint === 'sessions-delete') return { ok: true, value: { deleted: true, id: 'session-cold' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 默认仅归档视图：切到「全部」才能看到冷会话的删除入口。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  // 冷会话删除：plan → 确认模态 → 取消
+  await renderer.findByTestId('sessions-row-delete-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-delete-modal'), true)
+  assert.ok(calls.includes('sessions-delete-plan'))
+  await renderer.findByTestId('sessions-delete-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-delete-modal'), false)
+  // 再次发起 → 确认
+  await renderer.findByTestId('sessions-row-delete-session-cold').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-delete-confirm').props.onClick()
+  await renderer.flush()
+  assert.ok(calls.includes('sessions-delete'))
+  assert.equal(renderer.hasTest('sessions-delete-modal'), false)
+  // v0.35 用户反馈：删除后本地更新，不重拉当前视图列表；行即时消失。
+  const listCalls = calls.filter((name) => name.startsWith('sessions-list')).length
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), false, 'deleted row disappears from the list immediately')
+  assert.equal(renderer.hasTest('sessions-delete-modal'), false)
+  // 切已删除筛选：宿主 scope=deleted 返回已落盘记录（mock 含 session-cold）。
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), true, 'deleted record appears under the deleted filter')
+  assert.equal(calls.filter((name) => name.startsWith('sessions-list')).length, listCalls + 1, 'switching to deleted refetches only that scope')
+})
+
+test('session manager fills row sizes lazily and shows no dash placeholder beforehand', async () => {
+  const calls = []
+  let resolveBytes
+  const bytesGate = new Promise((resolve) => { resolveBytes = resolve })
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      // 体积响应被闸住：断言「在途无占位」后手动放行，再断言大小出现。
+      await bytesGate
+      return { ok: true, value: { bytes: { 'session-archived': 1024 } } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 列表已落地但体积仍在途：请求已发出，行内没有任何「—」占位，也没有体积。
+  assert.ok(calls.includes('sessions-bytes'), 'bytes request issued lazily after the list lands')
+  assert.ok(calls.includes('sessions-list:archived'), 'default view still requests the archived scope only')
+  const meta = renderer.findByTestId('sessions-meta-session-archived')
+  const metaText = Array.isArray(meta.children) ? meta.children.join('') : String(meta.children)
+  assert.equal(metaText.includes('—'), false, 'no dash placeholder while size is pending')
+  assert.equal(metaText.includes('KB'), false, 'size not shown until the bytes RPC resolves')
+  // 放行体积响应 → 行内出现大小。
+  resolveBytes()
+  await renderer.flush()
+  await renderer.flush()
+  const metaAfter = renderer.findByTestId('sessions-meta-session-archived')
+  const metaAfterText = Array.isArray(metaAfter.children) ? metaAfter.children.join('') : String(metaAfter.children)
+  assert.ok(metaAfterText.includes('1.0 KB'), 'size appears after the lazy bytes RPC resolves')
+})
+
+test('session manager reuses loaded scope caches when switching filters, refresh forces refetch', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+      }
+      if (scope === 'deleted') {
+        return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: SESSION_LIST_VALUE.deleted } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  const listCalls = () => calls.filter((name) => name.startsWith('sessions-list')).length
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 打开默认仅归档：只拉一次 archived。
+  assert.equal(listCalls(), 1)
+  assert.equal(calls.filter((name) => name === 'sessions-list:archived').length, 1)
+  // 切「全部」：新 scope → 拉一次。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 2)
+  assert.equal(calls.filter((name) => name === 'sessions-list:all').length, 1)
+  // 切回「仅归档」：缓存命中 → 零 RPC。
+  await renderer.findByTestId('sessions-filter-archived').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 2, 'switching back to a loaded scope reuses the cache — no refetch')
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), true, 'cached archived rows still render')
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), false, 'archived view stays subset-scoped')
+  // 再切「全部」：同样缓存命中，零 RPC。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 2, 'switching to a loaded scope reuses the cache — no refetch')
+  // 「刷新」按钮：强制重拉当前 scope（全部）。
+  await renderer.findByTestId('sessions-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 3, 'refresh forces exactly one refetch of the current scope')
+  assert.equal(calls.filter((name) => name === 'sessions-list:all').length, 2)
+  // 新 scope（已删除）仍是按需首拉一次。
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 4, 'deleted scope first use fetches once')
+  assert.equal(renderer.hasTest('sessions-row-session-gone'), true)
+  // 切回「全部」：all 缓存仍在 → 零 RPC。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 4, 'already-loaded scope stays cached after visiting others')
+})
+
+test('session manager reuses module-level caches when the panel is closed and reopened', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+      }
+      if (scope === 'deleted') {
+        return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: SESSION_LIST_VALUE.deleted } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  const listCalls = () => calls.filter((name) => name.startsWith('sessions-list')).length
+  const bytesCalls = () => calls.filter((name) => name === 'sessions-bytes').length
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 1, 'first open fetches the archived scope once')
+  assert.equal(bytesCalls(), 1, 'first open lazily fetches sizes once')
+  // 切「全部」也缓存一份（体积对新行再取一次）。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 2)
+  assert.equal(bytesCalls(), 2)
+  // 关闭面板（组件卸载）→ 再打开：缓存仍在 → 秒显；同时后台静默刷新当前 scope 一次。
+  renderer.unmount('settings.section')
+  await renderer.flush()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // v0.36 用户选定「秒显 + 后台静默刷新」：列表即显（下方断言行可见）但会发一次静默刷新。
+  assert.equal(listCalls(), 3, 'reopening shows cached data instantly and refreshes quietly once')
+  assert.equal(bytesCalls(), 2, 'reopening reuses cached sizes — no bytes refetch')
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), true, 'cached archived rows render immediately')
+  // 已加载过的 scope 缓存重开后全部保留：切「全部」仍零请求。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 3, 'all scope cache survives reopen')
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), true)
+  assert.equal(renderer.hasTest('sessions-row-session-live'), true)
+})
+
+test('session manager shows cached data instantly on reopen, refreshes quietly in the background, and never overwrites a switched view', async () => {
+  const calls = []
+  let archivedReopenCalls = 0
+  let resolveReopen
+  let reopenGate
+  const holdReopen = () => {
+    reopenGate = new Promise((resolve) => { resolveReopen = resolve })
+    return reopenGate
+  }
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint + (payload && payload.scope ? ':' + payload.scope : ''))
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') {
+      const scope = payload && payload.scope ? payload.scope : 'all'
+      if (scope === 'archived') {
+        archivedReopenCalls += 1
+        if (archivedReopenCalls === 1) {
+          return { ok: true, value: { available: true, items: SESSION_LIST_VALUE.items.filter((item) => item.archived), archivedIds: SESSION_LIST_VALUE.archivedIds, deleted: [] } }
+        }
+        // 重开面板后的静默刷新返回「有变更」的数据：标题改了、归档区多了一个会话。
+        await holdReopen()
+        return {
+          ok: true,
+          value: {
+            available: true,
+            items: [
+              { id: 'session-archived', title: 'Archived renamed', cwd: '/workspace', createdAt: 1000, live: false, persisted: true, archived: true },
+              { id: 'session-new2', title: 'Brand new archived', cwd: '/workspace/x', createdAt: 900, live: false, persisted: true, archived: true },
+            ],
+            archivedIds: ['session-archived', 'session-new2'],
+            deleted: [],
+          },
+        }
+      }
+      if (scope === 'deleted') {
+        return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: SESSION_LIST_VALUE.deleted } }
+      }
+      return { ok: true, value: SESSION_LIST_VALUE }
+    }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  const listCalls = () => calls.filter((name) => name.startsWith('sessions-list')).length
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 1, 'first open fetches archived once')
+  assert.equal(renderer.findByTestId('sessions-row-session-archived').children !== undefined, true)
+  // 关闭再打开：无需等待，缓存立即可见（秒显），静默刷新请求已发出但被闸住。
+  renderer.unmount('settings.section')
+  await renderer.flush()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 2, 'background silent refresh issued on reopen')
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), true, 'cached row is visible instantly while refresh is in flight')
+  // 刷新在途时用户切到「全部」：该 scope 从未加载过 → 首拉一次（正常行为）。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 3, 'switching to all during in-flight refresh fetches the never-loaded scope once')
+  assert.equal(renderer.hasTest('sessions-row-session-live'), true)
+  // 释放静默刷新响应：视图已切走 → 不覆盖当前「全部」视图。
+  resolveReopen()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-row-session-live'), true, 'switched view is not overwritten by a stale archived response')
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), true, 'archived row stays visible in the all view as before')
+  // 切回「仅归档」：缓存已被静默刷新原地更新 → 零请求、看到新数据（改名 + 新增会话）。
+  await renderer.findByTestId('sessions-filter-archived').props.onClick()
+  await renderer.flush()
+  assert.equal(listCalls(), 3, 'returning to archived reuses the refreshed cache — no refetch')
+  assert.equal(renderer.hasTest('sessions-row-session-new2'), true, 'silently refreshed cache contains the new session')
 })

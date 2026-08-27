@@ -30,6 +30,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   subagentRoute: true,
   // v0.31 用户点名：移动端适配默认改为关闭（需要时到插件配置卡打开）。
   mobileAdaptation: false,
+  // v0.35：会话管理（查看/导出/归档/搜索/删除）。
+  sessionManager: true,
 })
 const FeatureSettingsSchema = z.object({
   healthDiagnostics: z.boolean().default(true),
@@ -41,6 +43,7 @@ const FeatureSettingsSchema = z.object({
   skillManager: z.boolean().default(true),
   subagentRoute: z.boolean().default(true),
   mobileAdaptation: z.boolean().default(false),
+  sessionManager: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -71,6 +74,28 @@ const SKILL_LEGACY_KEYS = {
   modelInvocable: { canonical: 'disable-model-invocation', invert: true },
   userInvocable: { canonical: 'user-invocable', invert: true },
 }
+
+// 会话管理（v0.35）：已删除会话的插件侧记录（官方无删除 API，删除 = 删会话目录 + 记此清单，
+// 供「已删除」筛选展示与归档视图过滤死条目；不存内容、不可恢复）。
+const SESSIONS_DELETED_VERSION = 1
+const SESSIONS_DELETED_FILE = 'dsh-service-sessions-deleted.json'
+const SESSIONS_VIEW_PAGE_SIZE = 100
+const SESSIONS_SEARCH_PER_SESSION_LIMIT = 5
+const SESSIONS_SEARCH_TOTAL_LIMIT = 50
+const SESSIONS_DELETE_PLAN_TTL_MS = 5 * 60 * 1000
+// 会话体积懒加载（v0.36 用户反馈：去掉「—」占位、行体积按需拉取）：sessions-bytes 的
+// 宿主内存缓存——apply() 状态，宿主不重启就一直在，浏览器刷新/面板重开直接命中不重扫。
+const SESSIONS_BYTES_TTL_MS = 5 * 60 * 1000
+const SESSIONS_BYTES_MAX_IDS = 200
+const SESSIONS_BYTES_MAX_ENTRIES = 1000
+// 详情快照缓存（v0.36 用户点名「查看渲染优化」）：live 会话日志持续增长，30s 后重读保持新鲜；
+// 冷会话（文件不变）命中后长期复用，直到槽位被替换/删除/Fiber 销毁。
+const SESSIONS_VIEW_LIVE_TTL_MS = 30 * 1000
+// 详情/检索里视为「机制性噪声」的事件类型：折叠展示计数，用户可展开。
+const SESSION_NOISE_TYPES = new Set([
+  'turn/start', 'step/start', 'step/end', 'assistant/chunk', 'request/header',
+  'token/meter', 'compaction', 'session/created', 'goal/status',
+])
 
 // 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
 const QUOTA_CONFIG_VERSION = 1
@@ -3177,6 +3202,359 @@ export function pickCompressionEncoding(acceptEncoding) {
   return null
 }
 
+// ── 会话管理（v0.35）：查看/导出/归档/搜索/删除 ─────────────────────────
+// 官方能力边界见 AGENTS.md「会话管理官方能力全貌」：官方有 sessionQuery（listSessions/
+// readTitleSnapshots/filterSessions/filterEvents 文本谓词）、workspaceRegistry.archiveSession、
+// /api/session.export；官方 sqlite 全文搜索默认禁用（openAt:never）；官方无会话删除 API。
+// 本插件的搜索走 filterEvents 语义文本谓词（不依赖 sqlite）；删除 = 删会话目录 + 插件侧
+// 已删除清单（不动官方存储，残留 archivedSessionIds 死 id 无 UI 影响）。
+
+/** 已删除会话清单：{version, items: [{id, title, cwd, deletedAt}]} */
+function createEmptyDeletedSessions() {
+  return { version: SESSIONS_DELETED_VERSION, items: [] }
+}
+
+async function loadDeletedSessions(dshHome) {
+  try {
+    const parsed = JSON.parse(await readFile(join(dshHome, SESSIONS_DELETED_FILE), 'utf8'))
+    if (parsed?.version !== SESSIONS_DELETED_VERSION || !Array.isArray(parsed.items)) return createEmptyDeletedSessions()
+    return { version: SESSIONS_DELETED_VERSION, items: parsed.items.filter((item) => item && typeof item.id === 'string') }
+  } catch (_) {
+    return createEmptyDeletedSessions()
+  }
+}
+
+async function saveDeletedSessions(dshHome, data) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, SESSIONS_DELETED_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify(data), { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+/** 单个会话的事件文本（官方抽取语义，宿主自实现以免依赖官方内部包）。 */
+function sessionEventText(event) {
+  if (typeof event !== 'object' || event === null) return ''
+  const data = event.data
+  if (typeof data !== 'object' || data === null) return ''
+  const joinText = (parts) => parts.filter((part) => typeof part === 'string' && part !== '').join(' ')
+  const blockText = (block) => {
+    if (typeof block !== 'object' || block === null) return ''
+    switch (block.type) {
+      case 'text': return typeof block.text === 'string' ? block.text : ''
+      case 'image': return ''
+      default: return Array.isArray(block.content) ? joinText(block.content.map(blockText)) : ''
+    }
+  }
+  const contentText = (content) => joinText(Array.isArray(content) ? content.map(blockText) : [])
+  switch (event.type) {
+    case 'user/message': return contentText(data.content)
+    case 'assistant/message': return contentText(data.message?.content)
+    case 'tool/call': return joinText([data.name, typeof data.arguments === 'string' ? data.arguments : ''])
+    case 'tool/result': return joinText([contentText(data.message?.content), data.error?.name ?? '', data.error?.code ?? ''])
+    case 'todo/write': return joinText(Array.isArray(data.todos) ? data.todos.flatMap((todo) => [todo.status, todo.content]) : [])
+    case 'turn/end': return typeof data.reason === 'string' ? data.reason : ''
+    case 'session/title': return typeof data.title === 'string' ? data.title : ''
+    default: return ''
+  }
+}
+
+/** 会话目录大小（字节）；会话档案缺失时返回 0。 */
+async function sessionDirectoryBytes(ctx, header) {
+  try {
+    const sessionPersistence = ctx.get('sessionPersistence')
+    const location = sessionPersistence?.locate?.(header)
+    const dir = typeof location?.path === 'string' ? dirname(location.path) : undefined
+    if (dir === undefined) return 0
+    let total = 0
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) continue
+      try {
+        const info = await stat(join(dir, entry.name))
+        total += info.isFile() ? info.size : 0
+      } catch (_) {}
+    }
+    return total
+  } catch (_) {
+    return 0
+  }
+}
+
+/**
+ * 会话管理列表：live + 冷会话（persistence）合并，标注归档/已删除，补标题。
+ * @param {string} [scope] - 'all'（默认）全量 | 'archived' 仅归档条目 | 'deleted' 仅已删除记录。
+ *   列表不携带文件体积——体积一律走 sessions-bytes 懒加载（v0.36 用户反馈：去掉「—」
+ *   占位；列表全量下发体积意味着打开/切换就要逐个会话 readdir+stat，正是当初全量刷新慢的根源）。
+ * @returns {Promise<object>} {items, archivedIds, deleted, available}
+ */
+async function listSessionsForManage(ctx, dshHome, scope = 'all') {
+  const sessionQuery = ctx.get('sessionQuery')
+  const workspaceRegistry = ctx.get('workspaceRegistry')
+  const available = sessionQuery !== undefined && typeof sessionQuery.listSessions === 'function'
+  if (!available) {
+    return { available: false, items: [], archivedIds: [], deleted: [] }
+  }
+  if (scope === 'deleted') {
+    return { available: true, items: [], archivedIds: [], deleted: (await loadDeletedSessions(dshHome)).items }
+  }
+  const records = await sessionQuery.listSessions()
+  const archivedIds = workspaceRegistry !== undefined && Array.isArray(workspaceRegistry.archivedSessionIds)
+    ? [...workspaceRegistry.archivedSessionIds]
+    : []
+  const archivedSet = new Set(archivedIds)
+  const deleted = (await loadDeletedSessions(dshHome)).items
+  const deletedSet = new Set(deleted.map((item) => item.id))
+  // scope=archived 只保留归档条目（含 live 会话被归档的情况）；此时仍需标题。
+  const recordsInScope = scope === 'archived'
+    ? records.filter((record) => archivedSet.has(record.header.id))
+    : records
+  // 标题批量折叠：只对 scope 内的 id 取（按请求序）；缺席时逐个回落为默认。
+  const ids = recordsInScope.map((record) => record.header.id)
+  const titles = new Map()
+  if (typeof sessionQuery.readTitleSnapshots === 'function' && ids.length > 0) {
+    const observed = await sessionQuery.readTitleSnapshots(ids)
+    for (const entry of observed) {
+      if (entry?.sessionId !== undefined && entry?.status === 'fulfilled' && entry.value?.title?.title !== undefined) {
+        titles.set(entry.sessionId, entry.value.title.title)
+      }
+    }
+  }
+  const items = []
+  for (const record of recordsInScope) {
+    const id = record.header.id
+    if (deletedSet.has(id)) continue
+    items.push({
+      id,
+      title: titles.get(id) ?? '',
+      cwd: record.header.cwd ?? null,
+      createdAt: record.header.createdAt ?? 0,
+      live: record.live === true,
+      persisted: record.persisted === true,
+      archived: archivedSet.has(id),
+    })
+  }
+  items.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+  return { available: true, items, archivedIds, deleted }
+}
+
+/**
+ * 批量取会话体积（sessions-bytes 用）：命中缓存秒回、不碰磁盘；未命中的再做一次
+ * listSessions 定位 + 目标目录 stat。缓存键=会话 id（live 会话体积会随增长变化，TTL
+ * 兜底、删除时主动失效）；未知会话返回 null（不缓存，列表里本就不该出现）。返回
+ * { [id]: number|null }，只含请求过的 id。
+ * @param {object} ctx - 宿主上下文。
+ * @param {string[]} ids - 去重后的会话 id 列表。
+ * @param {Map<string, {bytes: number, at: number}>} cache - apply() 状态的体积缓存。
+ * @returns {Promise<Record<string, number|null>>}
+ */
+async function resolveSessionBytesForIds(ctx, ids, cache) {
+  const bytes = {}
+  const misses = []
+  const now = Date.now()
+  for (const id of ids) {
+    const hit = cache.get(id)
+    if (hit !== undefined && now - hit.at < SESSIONS_BYTES_TTL_MS) bytes[id] = hit.bytes
+    else misses.push(id)
+  }
+  if (misses.length === 0) return bytes
+  const sessionQuery = ctx.get('sessionQuery')
+  let headerById = null
+  if (sessionQuery !== undefined && typeof sessionQuery.listSessions === 'function') {
+    headerById = new Map()
+    try {
+      for (const record of await sessionQuery.listSessions()) {
+        if (record?.header?.id !== undefined) headerById.set(record.header.id, record.header)
+      }
+    } catch (_) {
+      headerById = null
+    }
+  }
+  for (const id of misses) {
+    const header = headerById === null ? undefined : headerById.get(id)
+    if (header === undefined) {
+      bytes[id] = null
+      continue
+    }
+    const value = await sessionDirectoryBytes(ctx, header)
+    cache.set(id, { bytes: value, at: Date.now() })
+    if (cache.size > SESSIONS_BYTES_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest !== undefined) cache.delete(oldest)
+    }
+    bytes[id] = value
+  }
+  return bytes
+}
+
+/**
+ * 分页读取一个会话的事件：readSession 取全量后按 seq 游标切片。
+ * v0.36（用户点名「查看渲染优化」）：readSession 结果按会话做**单槽位宿主缓存**——
+ * 冷会话日志文件不变可长期复用、live 会话 30s TTL 兜底新鲜度，翻页不再重复整份读取。
+ * @param {object} ctx - 宿主上下文。
+ * @param {string} id - 会话 id。
+ * @param {number|undefined} cursor - 上一页末条 seq；缺省从头。
+ * @param {{id: string|null, snapshot: object|null, at: number, live: boolean}} cacheRef - apply() 状态的单槽位缓存（就地改写，跨 RPC 复用）。
+ * @param {number} limit - 页大小（默认 SESSIONS_VIEW_PAGE_SIZE）。
+ * @returns {Promise<object>} {ok, value:{session, items, nextCursor, total}} 或 {ok:false, error}
+ */
+async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_PAGE_SIZE) {
+  const sessionQuery = ctx.get('sessionQuery')
+  if (sessionQuery === undefined || typeof sessionQuery.readSession !== 'function') return { ok: false, error: 'session-query-unavailable' }
+  const live = sessionIsLive(ctx, id)
+  const hit = cacheRef !== null && cacheRef.id === id && cacheRef.snapshot !== null && (!cacheRef.live || Date.now() - cacheRef.at < SESSIONS_VIEW_LIVE_TTL_MS)
+  let snapshot
+  if (hit) {
+    snapshot = cacheRef.snapshot
+  } else {
+    try {
+      snapshot = await sessionQuery.readSession(id)
+    } catch (error) {
+      if (error?.code === 'SESSION_QUERY_NOT_FOUND' || /not found/i.test(String(error?.message || error))) return { ok: false, error: 'session-not-found' }
+      return { ok: false, error: error?.message || String(error) }
+    }
+    // 单槽位：详情同一时刻只浏览一个会话，直接整槽替换；live 只对当前快照记 live 标志。
+    cacheRef.id = id
+    cacheRef.snapshot = snapshot
+    cacheRef.at = Date.now()
+    cacheRef.live = live
+  }
+  const events = Array.isArray(snapshot.events) ? snapshot.events : []
+  const start = cursor === undefined ? 0 : Math.max(0, events.findIndex((event) => Number(event.seq) > Number(cursor)))
+  const slice = events.slice(start, start + limit)
+  const items = slice.map((event) => {
+    const seq = Number(event.seq)
+    const isNoise = SESSION_NOISE_TYPES.has(event.type)
+    return {
+      seq,
+      type: event.type,
+      time: typeof event.time === 'number' ? event.time : undefined,
+      text: sessionEventText(event),
+      noise: isNoise,
+    }
+  })
+  const total = events.length
+  const lastSeq = items.length > 0 ? items[items.length - 1].seq : (cursor ?? -1)
+  return {
+    ok: true,
+    value: {
+      session: {
+        id: snapshot.session?.id ?? id,
+        title: undefined,
+        cwd: snapshot.session?.cwd ?? null,
+        createdAt: snapshot.session?.createdAt ?? 0,
+      },
+      items,
+      nextCursor: lastSeq < total - 1 ? lastSeq : undefined,
+      total,
+    },
+  }
+}
+
+/**
+ * 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
+ * @returns {Promise<object>} {available, query, scope, hits:[{sessionId,title,items:[{seq,type,snippet}]}]}
+ */
+async function searchSessionsContent(ctx, dshHome, query, scope = 'all') {
+  const sessionQuery = ctx.get('sessionQuery')
+  const result = { available: sessionQuery !== undefined && typeof sessionQuery.filterEvents === 'function', query, scope, hits: [] }
+  if (!result.available) return result
+  const q = typeof query === 'string' ? query.trim() : ''
+  if (q === '') return result
+  const listed = await listSessionsForManage(ctx, dshHome)
+  if (!listed.available) return result
+  // scope=all 搜全部会话（含 live，readSession/filterEvents 均支持 live 快照）；archived 只搜归档冷会话。
+  const targets = scope === 'archived'
+    ? listed.items.filter((item) => item.archived && !item.live)
+    : listed.items
+  const scopeSet = new Set(targets.map((item) => item.id))
+  const titleById = new Map(listed.items.map((item) => [item.id, item.title]))
+  let total = 0
+  for (const item of targets) {
+    if (total >= SESSIONS_SEARCH_TOTAL_LIMIT) break
+    let docs
+    try {
+      const filters = [{ kind: 'text', text: q }]
+      docs = await sessionQuery.filterEvents(item.id, filters)
+    } catch (_) {
+      continue
+    }
+    const bounded = (Array.isArray(docs) ? docs : []).slice(0, SESSIONS_SEARCH_PER_SESSION_LIMIT)
+    if (bounded.length === 0) continue
+    result.hits.push({
+      sessionId: item.id,
+      title: titleById.get(item.id) ?? '',
+      items: bounded.map((doc) => ({
+        seq: Number(doc.seq),
+        type: doc.type,
+        snippet: typeof doc.snippet === 'string' ? doc.snippet : sessionEventText(doc),
+      })),
+    })
+    total += bounded.length
+  }
+  return result
+}
+
+/** 会话是否存在（live 或 persistence）；缺失返回 false。 */
+async function sessionExists(ctx, id) {
+  const sessions = ctx.get('sessions')
+  if (sessions?.get?.(id) !== undefined) return true
+  const sessionQuery = ctx.get('sessionQuery')
+  try {
+    const record = (await sessionQuery.listSessions()).find((entry) => entry.header?.id === id)
+    return record !== undefined
+  } catch (_) {
+    return false
+  }
+}
+
+/** 会话当前是否 live（运行中，删除必须拒绝）。 */
+function sessionIsLive(ctx, id) {
+  return ctx.get('sessions')?.get?.(id) !== undefined
+}
+
+/** 定位一个持久化会话的目录（供删除）。 */
+
+/**
+ * 轻量定位单个会话（sessions-delete-plan 用）：只查一次 listSessions 找到目标 header，
+ * 只 stat 目标会话目录一次，不扫描其他会话。返回面向删除确认清单的记录。
+ * @returns {Promise<object|undefined>} {title, cwd, bytes, archived, live, dir} 或 undefined（未找到）。
+ */
+async function resolveSessionForDelete(ctx, id) {
+  const sessionQuery = ctx.get('sessionQuery')
+  if (sessionQuery === undefined || typeof sessionQuery.listSessions !== 'function') return undefined
+  const records = await sessionQuery.listSessions()
+  const found = records.find((entry) => entry.header?.id === id)
+  if (found === undefined) return undefined
+  const header = found.header
+  const sessionPersistence = ctx.get('sessionPersistence')
+  const location = sessionPersistence?.locate?.(header)
+  if (typeof location?.path !== 'string') return undefined
+  const dir = dirname(location.path)
+  const workspaceRegistry = ctx.get('workspaceRegistry')
+  const archived = workspaceRegistry !== undefined && Array.isArray(workspaceRegistry.archivedSessionIds) && workspaceRegistry.archivedSessionIds.includes(id)
+  // 标题：readTitleSnapshots 单查（存在时）；失败留空（删除确认清单的标题尽力而为）。
+  let title = ''
+  if (typeof sessionQuery.readTitleSnapshots === 'function') {
+    try {
+      const observed = await sessionQuery.readTitleSnapshots([id])
+      if (observed[0]?.status === 'fulfilled' && observed[0].value?.title?.title !== undefined) title = observed[0].value.title.title
+    } catch (_) {}
+  }
+  return {
+    id,
+    title,
+    cwd: header.cwd ?? null,
+    bytes: await sessionDirectoryBytes(ctx, header),
+    archived,
+    live: sessionIsLive(ctx, id),
+    dir,
+  }
+}
+
 /**
  * 向既有 Vary 值追加一个 token；已有（大小写不敏感）则原样返回。
  * @param {unknown} existing - 现有 Vary 头值。
@@ -3418,6 +3796,13 @@ function apply(ctx) {
   const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
   const downloadTokens = new Map()
+  // 会话管理（v0.35）：删除两段式计划（planId → {id, path, bytes}），TTL 过期自动驱逐。
+  const sessionDeletePlans = new Map()
+  // 会话体积懒加载缓存（v0.36）：宿主进程不重启就一直在——浏览器刷新/面板重开直接命中，
+  // 不用重新 readdir+stat（归档冷会话体积不变；live 会话靠 TTL 兜底、删除时主动失效）。
+  const sessionBytesCache = new Map()
+  // 会话详情快照缓存（v0.36）：单槽位只留最近打开的会话，翻页零重复 readSession。
+  const sessionViewCache = { id: null, snapshot: null, at: 0, live: false }
   let usageIndexPromise = loadUsageIndex(dshHome)
   let usageRefreshPromise
   let updateCache
@@ -3682,6 +4067,9 @@ function apply(ctx) {
     if (!queued && !quotaDisposed) quotaThrottle.settle(profile.name, { ok: false, code: 'cancelled' })
   }
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
+  ctx.effect(() => () => sessionDeletePlans.clear(), 'dsh-service session delete plans')
+  ctx.effect(() => () => sessionBytesCache.clear(), 'dsh-service session bytes cache')
+  ctx.effect(() => { sessionViewCache.id = null; sessionViewCache.snapshot = null }, 'dsh-service session view cache')
   ctx.effect(() => () => {
     quotaDisposed = true
     quotaPending.length = 0
@@ -4524,6 +4912,160 @@ function apply(ctx) {
       }
     }
 
+    // ── 会话管理（v0.35）：查看/导出/归档/搜索/删除 ─────────────────────
+    if (endpoint === 'sessions-list') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const scope = payload?.scope === 'archived' || payload?.scope === 'deleted' ? payload.scope : 'all'
+      try {
+        const value = await listSessionsForManage(ctx, dshHome, scope)
+        // 已删除记录独立下发（供「已删除」筛选）：字段只为展示，绝不包含内容。
+        return { ok: true, value }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    // 体积懒加载（v0.36）：列表不下发体积，行内按需批量取；宿主内存缓存跨刷新复用。
+    if (endpoint === 'sessions-bytes') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const raw = Array.isArray(payload?.ids) ? payload.ids : []
+      const ids = []
+      const seen = new Set()
+      for (const id of raw) {
+        if (typeof id !== 'string' || id === '' || seen.has(id)) continue
+        seen.add(id)
+        ids.push(id)
+        if (ids.length >= SESSIONS_BYTES_MAX_IDS) break
+      }
+      if (ids.length === 0) return { ok: false, error: 'invalid-session-ids' }
+      try {
+        // 安全教义：id 只用来在宿主 listSessions 结果里查找头信息，定位/统计路径全部来自
+        // 宿主侧记录（locate），浏览器不提供任何路径。
+        return { ok: true, value: { bytes: await resolveSessionBytesForIds(ctx, ids, sessionBytesCache) } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-view') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      if (id === '') return { ok: false, error: 'invalid-session-id' }
+      const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : undefined
+      try {
+        return await viewSessionPage(ctx, id, cursor, sessionViewCache)
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-search') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const query = typeof payload?.query === 'string' ? payload.query : ''
+      const scope = payload?.scope === 'archived' ? 'archived' : 'all'
+      try {
+        return { ok: true, value: await searchSessionsContent(ctx, dshHome, query, scope) }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-export') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      if (id === '') return { ok: false, error: 'invalid-session-id' }
+      try {
+        if (!(await sessionExists(ctx, id))) return { ok: false, error: 'session-not-found' }
+        // 复用官方 ZIP 导出路由：浏览器半下载同源 URL（含子代理+附件），宿主不自己拼包。
+        const url = `/api/session.export?sessionId=${encodeURIComponent(id)}&includeDescendants=true`
+        return { ok: true, value: { url, includesDescendants: true } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-archive') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      if (id === '') return { ok: false, error: 'invalid-session-id' }
+      const workspaceRegistry = ctx.get('workspaceRegistry')
+      if (workspaceRegistry === undefined || typeof workspaceRegistry.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
+      try {
+        await workspaceRegistry.archiveSession(id)
+        return {
+          ok: true,
+          value: {
+            archived: true,
+            archivedSessionIds: Array.isArray(workspaceRegistry.archivedSessionIds) ? [...workspaceRegistry.archivedSessionIds] : [id],
+          },
+        }
+      } catch (error) {
+        if (error?.name === 'WorkspaceUnknownSessionError') return { ok: false, error: 'session-not-found' }
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-delete-plan') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      if (id === '') return { ok: false, error: 'invalid-session-id' }
+      try {
+        // 安全教义：只接受宿主列表返回的 id（白名单校验）+ 非 live 才允许删除。
+        // 只定位目标会话 + stat 目标目录，不做全量列表重扫（v0.35 用户反馈：此前
+        // 复用 listSessionsForManage 会对每个会话 readdir+stat，会话多时确认要等好几秒）。
+        const record = await resolveSessionForDelete(ctx, id)
+        if (record === undefined) return { ok: false, error: 'session-not-found' }
+        if (record.live) return { ok: false, error: 'live-session-rejected' }
+        const wasArchived = record.archived
+        const planId = randomUUID()
+        sessionDeletePlans.set(planId, { id, title: record.title, cwd: record.cwd, dir: record.dir, bytes: record.bytes, expires: Date.now() + SESSIONS_DELETE_PLAN_TTL_MS })
+        return {
+          ok: true,
+          value: {
+            planId,
+            session: {
+              id,
+              title: record.title,
+              cwd: record.cwd,
+              bytes: record.bytes,
+              archived: wasArchived,
+            },
+            // 后果清单：删除后会话从官方侧栏/本插件列表消失；官方 archivedSessionIds 残留 id
+            // 无 UI 影响（会话不在 persistence list 就不出现在任何视图），主动提示用户。
+            consequences: [
+              'deletes-session-log',
+              ...(wasArchived ? [] : ['hides-from-official-sidebar']),
+            ],
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'sessions-delete') {
+      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+      const planId = typeof payload?.planId === 'string' ? payload.planId : ''
+      const plan = sessionDeletePlans.get(planId)
+      if (plan === undefined) return { ok: false, error: 'unknown-delete-plan' }
+      sessionDeletePlans.delete(planId)
+      if (Date.now() > plan.expires) return { ok: false, error: 'delete-plan-expired' }
+      try {
+        // 执行前复检：计划期间会话可能被拉起（live 化），一律拒绝。
+        if (sessionIsLive(ctx, plan.id)) return { ok: false, error: 'live-session-rejected' }
+        await rm(plan.dir, { recursive: true, force: true })
+        sessionBytesCache.delete(plan.id)
+        if (sessionViewCache.id === plan.id) sessionViewCache.id = null
+        const deleted = await loadDeletedSessions(dshHome)
+        deleted.items = deleted.items.filter((item) => item.id !== plan.id)
+        deleted.items.push({ id: plan.id, title: plan.title, cwd: plan.cwd ?? null, deletedAt: Date.now() })
+        await saveDeletedSessions(dshHome, deleted)
+        return { ok: true, value: { deleted: true, id: plan.id } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    }
+
     return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
   }, { authority: 'loopback' })
 }
@@ -4545,6 +5087,7 @@ export {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  listSessionsForManage,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -4565,16 +5108,20 @@ export {
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
+  resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,
+  searchSessionsContent,
   selectSkillBatchCandidates,
+  sessionEventText,
   setSkillInvocationKey,
   skillIdFor,
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
+  viewSessionPage,
 }
 export default {
   SKILL_SOURCE_RANK,
@@ -4593,6 +5140,7 @@ export default {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  listSessionsForManage,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -4613,14 +5161,18 @@ export default {
   quotaEndpointFor,
   quotaErrorCode,
   readLlmProviders,
+  resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,
+  searchSessionsContent,
   selectSkillBatchCandidates,
+  sessionEventText,
   setSkillInvocationKey,
   skillIdFor,
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
+  viewSessionPage,
 }

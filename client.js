@@ -25,8 +25,68 @@ window.__ModuleLoader__.load({
       'features.readOnly': '当前设置不可写。',
       'tabs.skills': '技能',
       'tabs.subagent': '子代理',
+      'tabs.sessions': '会话管理',
       'features.subagentRoute': '子代理模型',
       'features.mobileAdaptation': '移动端适配',
+      'features.sessionManager': '会话管理',
+      'sessions.title': '会话管理',
+      'sessions.hint': '查看、导出、归档全部会话；支持对话内容搜索与删除归档会话。归档由官方侧栏的「归档」菜单或本面板完成，归档后从官方侧栏隐藏（单项操作）。',
+      'sessions.filter.all': '全部',
+      'sessions.filter.archived': '仅归档',
+      'sessions.filter.deleted': '已删除',
+      'sessions.refresh': '刷新',
+      'sessions.search.placeholder': '搜索对话内容…',
+      'sessions.search.archivedOnly': '仅搜归档',
+      'sessions.sort.createdDesc': '创建时间倒序',
+      'sessions.sort.createdAsc': '创建时间正序',
+      'sessions.sort.title': '按标题',
+      'sessions.row.live': '运行中',
+      'sessions.row.archived': '已归档',
+      'sessions.row.deleted': '已删除',
+      'sessions.row.events': '{count} 条事件',
+      'sessions.row.noTitle': '（无标题）',
+      'sessions.action.view': '查看',
+      'sessions.action.export': '导出',
+      'sessions.action.archive': '归档',
+      'sessions.action.delete': '删除',
+      'sessions.empty.all': '没有会话',
+      'sessions.empty.archived': '没有归档会话',
+      'sessions.empty.deleted': '暂无删除记录',
+      'sessions.empty.search': '没有命中「{query}」',
+      'sessions.error.load': '加载失败：{error}',
+      'sessions.error.feature-disabled': '会话管理功能已在设置中关闭',
+      'sessions.error.network': '网络错误：无法连接宿主',
+      'sessions.error.session-not-found': '会话不存在或已被删除',
+      'sessions.error.live-session-rejected': '会话正在运行，无法删除',
+      'sessions.error.unknown-delete-plan': '删除请求已失效，请重新发起',
+      'sessions.error.export-failed': '导出失败：{error}',
+      'sessions.detail.back': '返回列表',
+      'sessions.detail.open': '在官方会话中打开',
+      'sessions.detail.archiveDisabled': '归档会话/空白会话无法在官方界面打开',
+      'sessions.detail.exportAll': '导出全部 ZIP',
+      'sessions.detail.exporting': '正在导出…',
+      'sessions.detail.loadMore': '加载更多（{remaining}）',
+      'sessions.detail.noMore': '已加载全部 {total} 条事件',
+      'sessions.detail.noise': '系统事件',
+      'sessions.detail.noiseBlock': '{count} 条系统事件',
+      'sessions.detail.noiseExpand': '展开全部',
+      'sessions.detail.noiseCollapse': '收起',
+      'sessions.detail.cwd': '{cwd}',
+      'sessions.detail.created': '创建于 {time}',
+      'sessions.hit.title': '命中 {count} 条',
+      'sessions.hit.return': '返回搜索结果',
+      'sessions.delete.title': '删除会话',
+      'sessions.delete.body': '将永久删除以下会话的日志文件，删除后不可恢复。',
+      'sessions.delete.consequence.log': '删除会话日志（{bytes}）',
+      'sessions.delete.consequence.sidebar': '会话从官方侧栏隐藏',
+      'sessions.delete.confirm': '确认删除',
+      'sessions.delete.cancel': '取消',
+      'sessions.delete.done': '已删除',
+      'sessions.export.includes': '含子代理与附件',
+      'sessions.navToggle': '设置页左列显示「会话管理」入口',
+      'sessions.navToggleHint': '默认关闭；开启后在设置页左侧标签列显示会话管理入口',
+      'sessions.oneWay': '归档为单项操作',
+      'sessions.oneWayHint': '归档后会话从官方侧栏隐藏；官方不支持恢复归档，只能通过本面板删除。',
       'mobile.fab.label': '打开侧栏菜单',
       'mobile.debug.title': '移动端诊断',
       'mobile.debug.viewport': '视口',
@@ -527,8 +587,68 @@ window.__ModuleLoader__.load({
       'features.readOnly': 'These settings are read-only.',
       'tabs.skills': 'Skills',
       'tabs.subagent': 'Subagents',
+      'tabs.sessions': 'Sessions',
       'features.subagentRoute': 'Subagent model',
       'features.mobileAdaptation': 'Mobile adaptation',
+      'features.sessionManager': 'Session manager',
+      'sessions.title': 'Session manager',
+      'sessions.hint': 'View, export, and archive all sessions; search conversation content and delete archived sessions. Archiving is done from the official sidebar Archive menu or this panel and hides the session from the official sidebar (one-way).',
+      'sessions.filter.all': 'All',
+      'sessions.filter.archived': 'Archived',
+      'sessions.filter.deleted': 'Deleted',
+      'sessions.refresh': 'Refresh',
+      'sessions.search.placeholder': 'Search conversation content…',
+      'sessions.search.archivedOnly': 'Search archived only',
+      'sessions.sort.createdDesc': 'Created (newest first)',
+      'sessions.sort.createdAsc': 'Created (oldest first)',
+      'sessions.sort.title': 'By title',
+      'sessions.row.live': 'Running',
+      'sessions.row.archived': 'Archived',
+      'sessions.row.deleted': 'Deleted',
+      'sessions.row.events': '{count} events',
+      'sessions.row.noTitle': '（No title）',
+      'sessions.action.view': 'View',
+      'sessions.action.export': 'Export',
+      'sessions.action.archive': 'Archive',
+      'sessions.action.delete': 'Delete',
+      'sessions.empty.all': 'No sessions',
+      'sessions.empty.archived': 'No archived sessions',
+      'sessions.empty.deleted': 'No deleted sessions yet',
+      'sessions.empty.search': 'No matches for “{query}”',
+      'sessions.error.load': 'Load failed: {error}',
+      'sessions.error.feature-disabled': 'Session manager is disabled in settings',
+      'sessions.error.network': 'Network error: cannot reach the host',
+      'sessions.error.session-not-found': 'Session not found or already deleted',
+      'sessions.error.live-session-rejected': 'Session is running and cannot be deleted',
+      'sessions.error.unknown-delete-plan': 'Delete request expired, please retry',
+      'sessions.error.export-failed': 'Export failed: {error}',
+      'sessions.detail.back': 'Back to list',
+      'sessions.detail.open': 'Open in official view',
+      'sessions.detail.archiveDisabled': 'Archived or blank sessions cannot be opened in the official view',
+      'sessions.detail.exportAll': 'Export full ZIP',
+      'sessions.detail.exporting': 'Exporting…',
+      'sessions.detail.loadMore': 'Load more ({remaining})',
+      'sessions.detail.noMore': 'All {total} events loaded',
+      'sessions.detail.noise': 'System events',
+      'sessions.detail.noiseBlock': '{count} system events',
+      'sessions.detail.noiseExpand': 'Expand all',
+      'sessions.detail.noiseCollapse': 'Collapse',
+      'sessions.detail.cwd': '{cwd}',
+      'sessions.detail.created': 'Created {time}',
+      'sessions.hit.title': '{count} hits',
+      'sessions.hit.return': 'Back to search results',
+      'sessions.delete.title': 'Delete session',
+      'sessions.delete.body': 'This permanently deletes the session log below. This cannot be undone.',
+      'sessions.delete.consequence.log': 'Delete session log ({bytes})',
+      'sessions.delete.consequence.sidebar': 'Session disappears from the official sidebar',
+      'sessions.delete.confirm': 'Delete',
+      'sessions.delete.cancel': 'Cancel',
+      'sessions.delete.done': 'Deleted',
+      'sessions.export.includes': 'Includes subagents and attachments',
+      'sessions.navToggle': 'Show “Sessions” entry in the settings sidebar',
+      'sessions.navToggleHint': 'Disabled by default; shows the session manager entry at the bottom of the settings sidebar when enabled',
+      'sessions.oneWay': 'Archiving is one-way',
+      'sessions.oneWayHint': 'Archived sessions are hidden from the official sidebar; the official UI cannot unarchive, deletion here is the only way out.',
       'mobile.fab.label': 'Open sidebar menu',
       'mobile.debug.title': 'Mobile diagnostics',
       'mobile.debug.viewport': 'Viewport',
@@ -1044,6 +1164,8 @@ window.__ModuleLoader__.load({
       skills: [['path', { d: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20' }], ['path', { d: 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z' }]],
       // 子代理 = 机器人头
       subagent: [['path', { d: 'M12 8V4H8' }], ['rect', { width: '16', height: '12', x: '4', y: '8', rx: '2' }], ['path', { d: 'M2 14h2' }], ['path', { d: 'M20 14h2' }], ['path', { d: 'M15 13v2' }], ['path', { d: 'M9 13v2' }]],
+      // 会话管理 = 对话气泡 + 对钩（查/导出/归档的管理语义）
+      sessions: [['path', { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }], ['path', { d: 'm9 10 2 2 4-4' }]],
       // 重启 = 电源符号
       restart: [['path', { d: 'M12 2v10' }], ['path', { d: 'M18.4 6.6a9 9 0 1 1-12.77.04' }]],
     }
@@ -1058,6 +1180,8 @@ window.__ModuleLoader__.load({
     const NAV_ICON_BODY_SKILLS = iconMaskBody(SVG_ICONS.skills)
     // 子代理 = 机器人头（lucide bot 风格，16px 下可读）
     const NAV_ICON_BODY_SUBAGENT = iconMaskBody(SVG_ICONS.subagent)
+    // 会话管理 = 对话气泡 + 对钩（lucide message-circle check，16px 下可读）
+    const NAV_ICON_BODY_SESSIONS = iconMaskBody(SVG_ICONS.sessions)
     /** 顶栏胶囊的内联 SVG 图标：跟随 currentColor，尺寸 13px，随文字基线居中。 */
     function TabIcon({ name }) {
       const elements = SVG_ICONS[name]
@@ -1135,12 +1259,13 @@ window.__ModuleLoader__.load({
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
           // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
           // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
-          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-skills-nav]>svg:first-child,[data-dsh-service-subagent-nav]>svg:first-child{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before,[data-dsh-service-subagent-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-skills-nav]>svg:first-child,[data-dsh-service-subagent-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before,[data-dsh-service-subagent-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
           '[data-dsh-service-skills-nav]::before{' + navIconMask(NAV_ICON_BODY_SKILLS) + '}',
           '[data-dsh-service-subagent-nav]::before{' + navIconMask(NAV_ICON_BODY_SUBAGENT) + '}',
+          '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
           // ── 窄面板下的顶栏标签（用户反馈：移动端「太乱、容易误触」）──────────
           // 作用域是纯媒体查询 ≤640px，**不**挂在 data-dshsvc-mobile 下——这是本插件
@@ -1181,7 +1306,7 @@ window.__ModuleLoader__.load({
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: false }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: false, sessionManager: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -1199,6 +1324,7 @@ window.__ModuleLoader__.load({
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
           { attr: 'data-dsh-service-skills-nav', label: () => t('tabs.skills') },
           { attr: 'data-dsh-service-subagent-nav', label: () => t('tabs.subagent') },
+          { attr: 'data-dsh-service-sessions-nav', label: () => t('tabs.sessions') },
         ]),
         'dsh-service settings nav icons',
       )
@@ -1288,6 +1414,7 @@ window.__ModuleLoader__.load({
       const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
       const skillsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-skills-nav', sectionId: 'dsh-service-skills', order: 497, labelKey: 'tabs.skills', feature: 'skillManager', renderContent: () => React.createElement(SkillsSection, null) })
       const subagentNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-subagent-nav', sectionId: 'dsh-service-subagent', order: 496, labelKey: 'tabs.subagent', feature: 'subagentRoute', renderContent: () => React.createElement(SubagentSection, null) })
+      const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       let skillsBatchState = null       // 宿主状态快照
       let skillsBatchPlan = null        // 本端计划（含所选模型）
@@ -2575,7 +2702,7 @@ window.__ModuleLoader__.load({
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute', 'mobileAdaptation'].map(row),
+          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute', 'sessionManager', 'mobileAdaptation'].map(row),
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
           row('healthz'),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
@@ -3136,6 +3263,571 @@ window.__ModuleLoader__.load({
 
       function QuotaSection() {
         return React.createElement(RemoteQuotaCard, null)
+      }
+
+      // ─── 会话管理（v0.35）：列表/搜索/详情/导出/归档/删除 ──────────────────
+      // v0.36：体积不在列表下发，行内懒加载（sessions-bytes）；非正数不渲染占位符。
+      function formatBytes(value) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return ''
+        if (value === 0) return '0 B'
+        const units = ['B', 'KB', 'MB', 'GB']
+        let size = value
+        let unit = 0
+        while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1 }
+        return (unit === 0 ? String(size) : size.toFixed(1)) + ' ' + units[unit]
+      }
+      function formatSessionTime(value) {
+        if (typeof value !== 'number' || value <= 0) return '—'
+        try { return new Date(value).toLocaleString() } catch (_) { return String(value) }
+      }
+      function mapSessionError(translate, code) {
+        if (code === 'feature-disabled') return translate('sessions.error.feature-disabled')
+        if (code === 'session-not-found') return translate('sessions.error.session-not-found')
+        if (code === 'live-session-rejected') return translate('sessions.error.live-session-rejected')
+        if (code === 'unknown-delete-plan') return translate('sessions.error.unknown-delete-plan')
+        if (code === 'network') return translate('sessions.error.network')
+        return code
+      }
+      // v0.36（用户点名「查看渲染优化」）：连续的系统事件合并为一块（DOM/视觉噪音双降），
+      // 点击展开显示明细。普通事件原样保留。返回 [{_noiseBlock:true, count, firstSeq, lastSeq} | event]
+      function collapseEventItems(items) {
+        const out = []
+        for (const item of Array.isArray(items) ? items : []) {
+          if (item.noise === true) {
+            const last = out[out.length - 1]
+            if (last !== undefined && last._noiseBlock === true) {
+              last.count += 1
+              last.lastSeq = item.seq
+            } else {
+              out.push({ _noiseBlock: true, count: 1, firstSeq: item.seq, lastSeq: item.seq })
+            }
+          } else {
+            out.push(item)
+          }
+        }
+        return out
+      }
+
+      // v0.36 用户反馈「关掉面板再打开又要重新加载」：列表/体积缓存从组件 state 提升到
+      // **模块级**（页面加载期间一直存活，设置面板关闭只是组件卸载、数据保留；刷新页面才清零）。
+      // 测试替代环境的 ?test= 查询串让每个 renderer 独立评估本模块，互不污染。
+      const sessionPanelListCache = { all: undefined, archived: undefined, deleted: undefined }
+      const sessionPanelBytesCache = new Map()
+
+      function SessionsSection() {
+        const translate = useTranslation()
+        const { useState, useEffect, useRef } = React
+        const [navEnabled, setNavEnabled] = sessionsNavToggle.useEnabled()
+        // 列表状态
+        // 测试替身 React 的 useState 只接受直接值（不接受初始化函数），模块缓存读取放表达式里。
+        const cachedArchivedList = sessionPanelListCache.archived
+        const [list, setList] = useState(cachedArchivedList !== undefined ? cachedArchivedList : null)
+        // v0.36：列表/体积为模块级缓存——面板关闭再打开直接复用（零 RPC 秒开），
+        // 切换筛选走同一缓存；「刷新」按钮强制重拉（用户反馈：关闭再打开不该重新加载）。
+        const [loading, setLoading] = useState(cachedArchivedList === undefined)
+        const [error, setError] = useState('')
+        // v0.36：行体积懒加载——bytesById 初始自模块级缓存，跨面板关闭复用
+        //（刷新浏览器/宿主重启后宿主另有内存缓存接管 sessions-bytes 秒回）。
+        const [bytesById, setBytesById] = useState(Object.fromEntries(sessionPanelBytesCache))
+        const bytesInFlight = useRef(new Set())
+        // v0.35 用户反馈：默认停在「仅归档」——不再每次打开都全量拉全部会话（过得快）。
+        const [filter, setFilter] = useState('archived')      // all | archived | deleted
+        const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title
+        const [search, setSearch] = useState('')
+        const [searchScopeArchived, setSearchScopeArchived] = useState(false)
+        const [searchRunning, setSearchRunning] = useState(false)
+        const [searchResult, setSearchResult] = useState(null)
+        // 详情状态
+        const [detail, setDetail] = useState(null)            // {sessionId, title, view: 'events'|'search', cursor, items, total, hitItems}
+        const [detailLoading, setDetailLoading] = useState(false)
+        const [detailError, setDetailError] = useState('')
+        // v0.36：系统事件块的展开态（key=块首条 seq），默认折叠。
+        const [noiseOpen, setNoiseOpen] = useState({})
+        const toggleNoiseBlock = (firstSeq) => setNoiseOpen((current) => ({ ...current, [firstSeq]: !current[firstSeq] }))
+        // 导出状态
+        const [exportingId, setExportingId] = useState('')
+        const [exportError, setExportError] = useState('')
+        // 删除确认状态
+        const [deletePlan, setDeletePlan] = useState(null)
+        const [deleting, setDeleting] = useState(false)
+        const [deleteError, setDeleteError] = useState('')
+        const [doneTick, setDoneTick] = useState(0)
+        // 归档状态
+        const [archivingId, setArchivingId] = useState('')
+        const [archiveError, setArchiveError] = useState('')
+
+        const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
+        const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
+        const chipButton = { fontSize: '12.5px', padding: '4px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', flexShrink: 0 }
+        const primaryButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' })
+        const inputStyle = { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '100%', boxSizing: 'border-box' }
+        const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
+
+        // 当前筛选对应的宿主 scope：archived/deleted 只在宿主侧拉对应子集，
+        // 避免每次打开/切换都全量拉取全部会话（v0.35 用户反馈：全量刷新多余）。
+        const scopeForFilter = (key) => key === 'archived' ? 'archived' : key === 'deleted' ? 'deleted' : 'all'
+        // v0.36 用户选定「秒显 + 后台静默刷新」：打开面板先渲染缓存，再无感 re-fetch 一次。
+        // filterRef 每次渲染同步当前筛选——loadList 响应回来时若视图已切走，不应用 setList（防竞态覆盖）。
+        const filterRef = useRef(filter)
+        filterRef.current = filter
+        const loadList = async (scope, options = {}) => {
+          const target = scope !== undefined ? scope : scopeForFilter(filter)
+          const cached = sessionPanelListCache[target]
+          const reuse = !options.force && cached !== undefined
+          if (reuse) {
+            setList(cached)
+            setError('')
+            setLoading(false)
+            // 打开面板（组件重挂载）走 silent：秒显缓存后再后台静默刷新一次——
+            // 不置 loading、失败保留缓存视图；普通缓存命中（切换筛选）零 RPC 直接返回。
+            if (options.silent !== true) return
+          } else {
+            setLoading(true)
+          }
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-list', { scope: target })
+            if (res.ok) {
+              sessionPanelListCache[target] = res.value
+              // 竞态防护：静默/普通刷新响应回来时用户可能已切到别的 scope——缓存照写、
+              // 视图只在仍处于该 scope 时原地更新（filterRef 是发起后最新值）。
+              if (scopeForFilter(filterRef.current) === target) {
+                setList(res.value)
+                setError('')
+              }
+            } else if (!(reuse && options.silent)) {
+              setError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            if (!(reuse && options.silent)) setError(translate('sessions.error.network'))
+          } finally {
+            if (!(reuse && options.silent)) setLoading(false)
+          }
+        }
+        const refreshList = () => void loadList(undefined, { force: true })
+        const changeFilter = (key) => {
+          if (key === filter) return
+          setFilter(key)
+          setSearch('')
+          setSearchResult(null)
+          setDetail(null)
+          void loadList(key)
+        }
+        useEffect(() => { void loadList('archived', { silent: true }) }, [])
+
+        // v0.36：体积懒加载——列表落地后只对缺体积的行发起一次 sessions-bytes 批量请求
+        // （分片防超宿主上限）；请求失败留在缺失集，下次列表变更自动重试；筛选切换时
+        // bytesById 已在组件状态里，同一面板内不重复请求。
+        useEffect(() => {
+          if (list === null) return
+          const items = Array.isArray(list.items) ? list.items : []
+          const missing = []
+          for (const item of items) {
+            const id = item.id
+            if (bytesById[id] !== undefined || bytesInFlight.current.has(id)) continue
+            bytesInFlight.current.add(id)
+            missing.push(id)
+          }
+          if (missing.length === 0) return
+          let cancelled = false
+          const MAX_PER_REQUEST = 100
+          const fetchSlice = async (sliceIds) => {
+            try {
+              const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-bytes', { ids: sliceIds })
+              if (cancelled) return
+              const map = res && res.ok && res.value && typeof res.value.bytes === 'object' ? res.value.bytes : {}
+              if (Object.keys(map).length > 0) {
+                for (const id of sliceIds) {
+                  if (map[id] !== undefined) sessionPanelBytesCache.set(id, map[id])
+                }
+                setBytesById((current) => {
+                  const next = { ...current }
+                  for (const id of sliceIds) {
+                    if (map[id] !== undefined) next[id] = map[id]
+                  }
+                  return next
+                })
+              }
+            } catch (_) {
+              // 网络失败：保持缺失，下次列表变更重试
+            } finally {
+              if (!cancelled) {
+                for (const id of sliceIds) bytesInFlight.current.delete(id)
+              }
+            }
+          }
+          for (let index = 0; index < missing.length; index += MAX_PER_REQUEST) {
+            void fetchSlice(missing.slice(index, index + MAX_PER_REQUEST))
+          }
+          return () => {
+            cancelled = true
+            for (const id of missing) bytesInFlight.current.delete(id)
+          }
+        }, [list])
+
+        const runSearch = async (query) => {
+          if (query.trim() === '') { setSearchResult(null); return }
+          setSearchRunning(true)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-search', {
+              query: query.trim(),
+              scope: searchScopeArchived ? 'archived' : 'all',
+            })
+            if (res.ok) setSearchResult(res.value)
+            else setSearchResult({ available: true, query, scope: 'all', hits: [], error: res.error })
+          } catch (_) {
+            setSearchResult({ available: true, query, scope: searchScopeArchived ? 'archived' : 'all', hits: [], error: 'network' })
+          } finally {
+            setSearchRunning(false)
+          }
+        }
+        // 防抖 300ms
+        useEffect(() => {
+          if (filter === 'deleted') return
+          if (search.trim() === '') { setSearchResult(null); return }
+          const handle = setTimeout(() => { void runSearch(search) }, 300)
+          return () => clearTimeout(handle)
+        }, [search, searchScopeArchived, filter])
+
+        const openDetail = (sessionId, view, hitItems) => {
+          setNoiseOpen({})
+          setDetail({ sessionId, view: view || 'events', cursor: undefined, items: [], total: 0, hitItems: hitItems || null, loadedTitle: '' })
+          setDetailError('')
+          setDetailLoading(false)
+          void loadDetailPage(sessionId, undefined, view || 'events')
+        }
+        const loadDetailPage = async (sessionId, cursor, view) => {
+          setDetailLoading(true)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-view', { id: sessionId, cursor })
+            if (res.ok) {
+              setDetail((current) => {
+                const merged = current === null ? {} : current
+                const appended = cursor === undefined ? (res.value.items || []) : [...(merged.items || []), ...(res.value.items || [])]
+                return {
+                  ...merged,
+                  sessionId,
+                  view: view || merged.view || 'events',
+                  cursor: res.value.nextCursor,
+                  items: appended,
+                  total: res.value.total,
+                  loadedTitle: merged.loadedTitle || (res.value.session && res.value.session.id !== undefined ? '' : ''),
+                }
+              })
+              setDetailError('')
+            } else {
+              setDetailError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            setDetailError(translate('sessions.error.network'))
+          } finally {
+            setDetailLoading(false)
+          }
+        }
+
+        const doExport = async (sessionId) => {
+          setExportingId(sessionId)
+          setExportError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-export', { id: sessionId })
+            if (!res.ok) {
+              setExportError(mapSessionError(translate, res.error || 'unknown'))
+              return
+            }
+            // 复用官方 ZIP 下载：HEAD 探测 → 触发浏览器下载（同源 loopback）。
+            const url = res.value.url
+            const head = await fetch(url, { method: 'HEAD' })
+            if (!head.ok) {
+              setExportError(translate('sessions.error.export-failed', { error: 'HTTP ' + head.status }))
+              return
+            }
+            const anchor = document.createElement('a')
+            anchor.href = url
+            anchor.download = 'dsh-session-' + sessionId.replace(/[^A-Za-z0-9_-]/g, '_') + '.zip'
+            anchor.click()
+          } catch (_) {
+            setExportError(translate('sessions.error.network'))
+          } finally {
+            setExportingId('')
+          }
+        }
+
+        const doArchive = async (sessionId) => {
+          setArchivingId(sessionId)
+          setArchiveError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-archive', { id: sessionId })
+            if (res.ok) {
+              // 本地同步模块级缓存（不重拉）：all/archived 缓存里该行标 archived，
+              // archived 缓存缺此行则补入（切「仅归档」/重开面板直接命中新行）。
+              const currentAll = sessionPanelListCache.all
+              if (currentAll !== undefined && Array.isArray(currentAll.items)) {
+                sessionPanelListCache.all = { ...currentAll, items: currentAll.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+              }
+              const archived = sessionPanelListCache.archived
+              if (archived !== undefined && Array.isArray(archived.items)) {
+                const exists = archived.items.some((item) => item.id === sessionId)
+                const sourceRow = currentAll?.items?.find((item) => item.id === sessionId)
+                sessionPanelListCache.archived = exists
+                  ? { ...archived, items: archived.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+                  : sourceRow !== undefined
+                    ? { ...archived, items: [{ ...sourceRow, archived: true }, ...archived.items] }
+                    : archived
+              }
+              setList((current) => {
+                if (current === null || !Array.isArray(current.items)) return current
+                return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+              })
+            } else {
+              setArchiveError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            setArchiveError(translate('sessions.error.network'))
+          } finally {
+            setArchivingId('')
+          }
+        }
+
+        const requestDelete = async (sessionId) => {
+          // 在途防重：确认模态已开时不重复发起 plan。
+          if (deletePlan !== null || deleting) return
+          setDeleteError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-delete-plan', { id: sessionId })
+            if (res.ok) {
+              setDeletePlan(res.value)
+            } else {
+              setDeleteError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            setDeleteError(translate('sessions.error.network'))
+          }
+        }
+        const confirmDelete = async () => {
+          if (deletePlan === null || deleting) return
+          setDeleting(true)
+          setDeleteError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-delete', { planId: deletePlan.planId })
+            if (res.ok) {
+              const removedId = deletePlan.session?.id ?? ''
+              setDeletePlan(null)
+              setDoneTick((tick) => tick + 1)
+              // v0.36：删除同步模块级缓存（all/archived 移除行、deleted 缓存补记录）——
+              // 切回已加载过的视图/关掉面板再打开都不再重拉；deleted 缓存从未加载时首次切换仍按 scope 拉一次。
+              const removedRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === removedId) : undefined
+              const deletedRecord = { id: removedId, title: removedRow?.title ?? '', cwd: removedRow?.cwd ?? null, deletedAt: Date.now() }
+              for (const scope of ['all', 'archived']) {
+                const value = sessionPanelListCache[scope]
+                if (value !== undefined && Array.isArray(value.items)) {
+                  sessionPanelListCache[scope] = { ...value, items: value.items.filter((item) => item.id !== removedId) }
+                }
+              }
+              const deletedValue = sessionPanelListCache.deleted
+              if (deletedValue !== undefined) {
+                sessionPanelListCache.deleted = {
+                  ...deletedValue,
+                  deleted: [
+                    deletedRecord,
+                    ...(Array.isArray(deletedValue.deleted) ? deletedValue.deleted : []).filter((item) => item.id !== removedId),
+                  ],
+                }
+              }
+              sessionPanelBytesCache.delete(removedId)
+              // 本地更新：移除该会话行 + 追加已删除记录，不再全量重拉列表
+              //（v0.35 用户反馈：删除单个会话后全量 loadList 属多余往返）。
+              setList((current) => {
+                if (current === null) return current
+                const items = Array.isArray(current.items) ? current.items : []
+                return {
+                  ...current,
+                  items: items.filter((item) => item.id !== removedId),
+                  deleted: [
+                    deletedRecord,
+                    ...(Array.isArray(current.deleted) ? current.deleted : []).filter((item) => item.id !== removedId),
+                  ],
+                }
+              })
+              setBytesById((current) => {
+                const next = { ...current }
+                delete next[removedId]
+                return next
+              })
+              if (removedId !== '') bytesInFlight.current.delete(removedId)
+            } else {
+              setDeleteError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            setDeleteError(translate('sessions.error.network'))
+          } finally {
+            setDeleting(false)
+          }
+        }
+        // 删除完成自动刷新一次列表（loadList 已做，doneTick 仅用于复位列表外的状态）
+        useEffect(() => { if (doneTick > 0) setDetail(null) }, [doneTick])
+
+        const computeVisibleItems = () => {
+          if (list === null) return []
+          if (filter === 'deleted') {
+            const items = Array.isArray(list.deleted) ? list.deleted : []
+            return items.slice().sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)).map((item) => ({ ...item, _deleted: true, archived: true }))
+          }
+          // 宿主按 scope 已过滤（archived 只回归档条目、all 全量）；本地只要排序。
+          let items = (Array.isArray(list.items) ? list.items : []).slice()
+          if (sort === 'createdAsc') items.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+          else if (sort === 'title') items.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')))
+          else items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+          return items
+        }
+
+        const listRow = (item) => {
+          const isDeleted = item._deleted === true
+          const id = item.id
+          const title = isDeleted ? (item.title || translate('sessions.row.noTitle')) : (item.title !== '' ? item.title : translate('sessions.row.noTitle'))
+          const live = item.live === true
+          const archived = isDeleted || item.archived === true
+          // v0.36：体积懒加载——未返回前不占位（无「—」），返回后行内显示。
+          const sizeBit = (() => {
+            const value = bytesById[id]
+            return typeof value === 'number' && value > 0 ? formatBytes(value) : null
+          })()
+          const metaBits = [
+            live ? translate('sessions.row.live') : (archived ? translate('sessions.row.archived') : null),
+            isDeleted ? translate('sessions.row.deleted') : null,
+            item.cwd ? translate('sessions.detail.cwd', { cwd: item.cwd }) : null,
+            isDeleted ? (item.deletedAt ? formatSessionTime(item.deletedAt) : null) : sizeBit,
+          ].filter(Boolean)
+          const actions = []
+          if (!isDeleted) {
+            actions.push(React.createElement('button', { key: 'view', type: 'button', 'data-testid': 'sessions-row-view-' + id, style: chipButton, onClick: () => openDetail(id, 'events', null) }, translate('sessions.action.view')))
+            actions.push(React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-row-export-' + id, style: chipButton, disabled: exportingId === id, onClick: () => void doExport(id) }, exportingId === id ? translate('sessions.detail.exporting') : translate('sessions.action.export')))
+            if (!live && !archived) {
+              actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? '…' : translate('sessions.action.archive')))
+            }
+            if (!live) {
+              actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: primaryButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
+            }
+          }
+          return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
+            React.createElement('div', { style: { minWidth: 0 } },
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+                React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+                live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(16,185,129,0.16)', color: 'var(--dsw-alias-state-success-primary)' } }, translate('sessions.row.live')) : null,
+                archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(198,128,0,0.14)', color: 'var(--dsw-alias-state-warn-primary)' } }, translate('sessions.row.archived')) : null,
+                isDeleted ? React.createElement('span', { style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(220,38,38,0.12)', color: 'var(--dsw-alias-state-error-primary)' } }, translate('sessions.row.deleted')) : null),
+              React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · '))),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions))
+        }
+
+        const eventCard = (event, index) => {
+          const noise = event.noise === true
+          return React.createElement('div', { key: String(event.seq), 'data-testid': 'sessions-event-' + event.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)', marginBottom: '5px' } },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
+              React.createElement('span', { 'data-testid': 'sessions-event-type-' + event.seq, style: { fontWeight: 600, color: noise ? 'inherit' : 'var(--dsw-alias-label-secondary)' } }, noise ? translate('sessions.detail.noise') : event.type),
+              event.time ? React.createElement('span', null, formatSessionTime(event.time)) : null),
+            typeof event.text === 'string' && event.text !== '' ? React.createElement('div', { style: { fontSize: '12.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', marginTop: '4px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, event.text) : null)
+        }
+
+        const renderListBody = () => {
+          if (loading) return React.createElement('p', { style: hint }, '…')
+          if (error !== '') return React.createElement('p', { 'data-testid': 'sessions-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, error)
+          if (search.trim() !== '' && filter !== 'deleted') {
+            if (searchResult === null) return React.createElement('p', { style: hint }, searchRunning ? '…' : translate('sessions.search.placeholder'))
+            if (searchResult.error) return React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSessionError(translate, searchResult.error))
+            if (searchResult.hits.length === 0) return React.createElement('p', { style: hint }, translate('sessions.empty.search', { query: search }))
+            return searchResult.hits.map((hit) => React.createElement('div', { key: hit.sessionId, 'data-testid': 'sessions-hit-' + hit.sessionId, style: { padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-hit-open-' + hit.sessionId, style: { ...chipButton, border: 0, padding: 0, textAlign: 'left', display: 'inline', maxWidth: '100%' }, onClick: () => openDetail(hit.sessionId, 'search', hit.items) },
+                React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, hit.title !== '' ? hit.title : translate('sessions.row.noTitle')),
+                React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginLeft: '6px', fontSize: '11.5px' } }, translate('sessions.hit.title', { count: hit.items.length }))),
+              hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.snippet))))
+          }
+          if (computeVisibleItems().length === 0) {
+            const emptyKey = filter === 'archived' ? 'sessions.empty.archived' : filter === 'deleted' ? 'sessions.empty.deleted' : 'sessions.empty.all'
+            return React.createElement('p', { style: hint }, translate(emptyKey))
+          }
+          return computeVisibleItems().map(listRow)
+        }
+
+        const renderDetail = () => {
+          if (detail === null) return null
+          const target = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === detail.sessionId) : undefined
+          const targetTitle = search !== '' && detail.view === 'search' && searchResult !== null
+            ? (searchResult.hits.find((hit) => hit.sessionId === detail.sessionId)?.title || '')
+            : (target !== undefined && target.title !== '' ? target.title : '')
+          const mineRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === detail.sessionId) : undefined
+          const canOpenOfficial = mineRow !== undefined && !mineRow.archived && mineRow.live !== false || (mineRow !== undefined && !mineRow.archived)
+          return React.createElement('div', { 'data-testid': 'sessions-detail' },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.detail.back')),
+              React.createElement('span', { style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0 } }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
+              !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { ctx.sessions?.open?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: chipButton, disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
+            detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { style: { marginBottom: '10px' } },
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.hit.return')),
+              detail.hitItems.map((item, index) => React.createElement('div', { key: index, 'data-testid': 'sessions-hit-event-' + item.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', marginBottom: '5px', fontSize: '12.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
+                React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '3px' } }, item.type + ' · #' + item.seq),
+                item.snippet || ''))) : null,
+            detailError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, detailError) : null,
+            detail.view !== 'search' ? collapseEventItems(detail.items).map((item, index) => {
+              if (item._noiseBlock === true) {
+                const open = noiseOpen[item.firstSeq] === true
+                const blockEvents = open && Array.isArray(detail.items)
+                  ? detail.items.filter((event) => event.noise === true && event.seq >= item.firstSeq && event.seq <= item.lastSeq)
+                  : []
+                // v0.36：连续系统事件默认折叠为一块「▸ N 条系统事件」，展开才渲染明细卡片。
+                return React.createElement('div', { key: 'noise-' + item.firstSeq, 'data-testid': 'sessions-noisewall-' + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
+                  React.createElement('button', { type: 'button', 'data-testid': 'sessions-noisewall-toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleNoiseBlock(item.firstSeq) },
+                    (open ? '▾ ' : '▸ ') + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
+                  open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventCard(event, index))) : null)
+              }
+              return eventCard(item, index)
+            }) : null,
+            detail.view !== 'search' && detail.cursor !== undefined ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, 'events') }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
+            detail.view !== 'search' && detail.cursor === undefined && detail.items.length > 0 ? React.createElement('p', { style: hint }, translate('sessions.detail.noMore', { total: detail.total })) : null)
+        }
+
+        const renderDeleteModal = () => {
+          if (deletePlan === null) return null
+          const session = deletePlan.session || {}
+          return React.createElement('div', { 'data-testid': 'sessions-delete-modal', style: { position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)' } },
+            React.createElement('div', { style: { width: 'min(480px, calc(100vw - 32px))', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '14px', padding: '18px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)' } },
+              React.createElement('div', { style: { fontSize: '15px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, translate('sessions.delete.title')),
+              React.createElement('p', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.5, margin: '0 0 10px' } }, translate('sessions.delete.body')),
+              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '6px' } }, session.title || translate('sessions.row.noTitle')),
+              React.createElement('ul', { style: { margin: '0 0 12px', paddingLeft: '18px', fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.7 } },
+                React.createElement('li', null, translate('sessions.delete.consequence.log', { bytes: formatBytes(session.bytes) })),
+                deletePlan.consequences && deletePlan.consequences.includes('hides-from-official-sidebar') ? React.createElement('li', null, translate('sessions.delete.consequence.sidebar')) : null),
+              deleteError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, deleteError) : null,
+              React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-cancel', style: chipButton, disabled: deleting, onClick: () => { setDeletePlan(null); setDeleteError('') } }, translate('sessions.delete.cancel')),
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: primaryButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? '…' : translate('sessions.delete.confirm')))))
+        }
+
+        return React.createElement('div', null,
+          React.createElement('div', { style: sectionTitle }, translate('sessions.title')),
+          React.createElement('p', { style: hint }, translate('sessions.hint')),
+          // v0.35 用户点名：设置页左列入口开关放在面板靠上、筛选标签之前。
+          React.createElement('div', { 'data-testid': 'sessions-nav-toggle', style: { margin: '2px 0 8px', fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)' } },
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' } },
+              React.createElement('input', { type: 'checkbox', checked: navEnabled, onChange: (event) => setNavEnabled(event.target.checked) }),
+              translate('sessions.navToggle')),
+            React.createElement('div', null, translate('sessions.navToggleHint'))),
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px' } },
+            (['all', 'archived', 'deleted']).map((key) => React.createElement('button', { key, type: 'button', 'data-testid': 'sessions-filter-' + key, style: { ...chipButton, background: filter === key ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: filter === key ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-primary)', fontWeight: filter === key ? 650 : 400 }, onClick: () => changeFilter(key) }, translate('sessions.filter.' + key))),
+            React.createElement('select', { 'data-testid': 'sessions-sort', style: selectStyle, value: sort, onChange: (event) => setSort(event.target.value) },
+              React.createElement('option', { value: 'createdDesc' }, translate('sessions.sort.createdDesc')),
+              React.createElement('option', { value: 'createdAsc' }, translate('sessions.sort.createdAsc')),
+              React.createElement('option', { value: 'title' }, translate('sessions.sort.title'))),
+            // v0.36：切换筛选复用已取过的 scope 缓存；「刷新」才强制重拉当前 scope。
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', style: chipButton, onClick: () => refreshList() }, translate('sessions.refresh'))),
+          filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
+            React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => setSearch(event.target.value), style: inputStyle }),
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
+              React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
+              translate('sessions.search.archivedOnly'))) : null,
+          archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + ' · ' + translate('sessions.oneWayHint')) : null,
+          exportError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, exportError) : null,
+          renderDetail() ?? renderListBody(),
+          renderDeleteModal())
       }
 
       function RemoteQuotaCard() {
@@ -4447,6 +5139,7 @@ window.__ModuleLoader__.load({
           ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),
           ...(features.skillManager !== false ? [['skills', 'tabs.skills']] : []),
           ...(features.subagentRoute !== false ? [['subagent', 'tabs.subagent']] : []),
+          ...(features.sessionManager !== false ? [['sessions', 'tabs.sessions']] : []),
           ['restart', 'tabs.restart'],
         ]
         const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
@@ -4467,6 +5160,8 @@ window.__ModuleLoader__.load({
                   ? React.createElement(SkillsSection, null)
                 : visibleActiveTab === 'subagent'
                   ? React.createElement(SubagentSection, null)
+                : visibleActiveTab === 'sessions'
+                  ? React.createElement(SessionsSection, null)
                   : restartBlock
         return React.createElement('div', null,
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
@@ -4512,7 +5207,7 @@ window.__ModuleLoader__.load({
               }
               const groupDefs = [
                 ['tabs.group.data', ['overview', 'health', 'usage', 'quota', 'notify']],
-                ['tabs.group.maint', ['subagent', 'skills', 'backup']],
+                ['tabs.group.maint', ['subagent', 'sessions', 'skills', 'backup']],
               ]
               const rows = []
               let restartEntry = null
@@ -4614,23 +5309,27 @@ window.__ModuleLoader__.load({
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」「额度查询」「技能」「子代理」入口由各自标签内的开关控制，默认不注册
+        // 左列「重启」「额度查询」「技能」「子代理」「会话管理」入口由各自标签内的开关控制，默认不注册
         restartNavToggle.sync()
         quotaNavToggle.sync()
         skillsNavToggle.sync()
         subagentNavToggle.sync()
+        sessionsNavToggle.sync()
         const unsubscribeFeatures = featureScope.subscribe(quotaNavToggle.sync)
         const unsubscribeFeaturesSkills = featureScope.subscribe(skillsNavToggle.sync)
         const unsubscribeFeaturesSubagent = featureScope.subscribe(subagentNavToggle.sync)
+        const unsubscribeFeaturesSessions = featureScope.subscribe(sessionsNavToggle.sync)
         return () => {
           unsubscribeFeatures()
           unsubscribeFeaturesSkills()
           unsubscribeFeaturesSubagent()
+          unsubscribeFeaturesSessions()
           disposePanel()
           restartNavToggle.disposeEntry()
           quotaNavToggle.disposeEntry()
           skillsNavToggle.disposeEntry()
           subagentNavToggle.disposeEntry()
+          sessionsNavToggle.disposeEntry()
         }
       })
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(

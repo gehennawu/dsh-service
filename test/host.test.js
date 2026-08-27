@@ -643,7 +643,7 @@ test('feature settings namespace registers when the settings service appears aft
 test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
   const routes = []
   const { handler, registeredSettings, updateFeatureSettings } = createHost({
-    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false },
+    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false, sessionManager: false },
     services: {
       webServer: {
         register(route) {
@@ -666,6 +666,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     skillManager: true,
     subagentRoute: true,
     mobileAdaptation: false,
+    sessionManager: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     healthDiagnostics: true,
@@ -677,11 +678,12 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     skillManager: true,
     subagentRoute: true,
     mobileAdaptation: false,
+    sessionManager: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -3988,4 +3990,360 @@ test('mobileAdaptation feature gate installs and restores response compression h
 
   await host.updateFeatureSettings({ mobileAdaptation: false })
   assert.equal(proto.writeHead, beforeWriteHead, 'disabling the feature must restore the prototype')
+})
+
+// ── 会话管理（v0.35）───────────────────────────────────────────────
+
+function sessionManagerServices() {
+  const eventsBySession = {
+    'session-alpha': [
+      { seq: 0, type: 'session/created', time: 1000, data: {} },
+      { seq: 1, type: 'user/message', time: 1001, data: { content: [{ type: 'text', text: '你好，帮我查一下' }] } },
+      { seq: 2, type: 'assistant/message', time: 1002, data: { message: { content: [{ type: 'text', text: '好的，正在查询' }] } } },
+      { seq: 3, type: 'tool/call', time: 1003, data: { name: 'bash', arguments: '{"command":"ls"}' } },
+      { seq: 4, type: 'tool/result', time: 1004, data: { message: { content: [{ type: 'text', text: 'output' }] } } },
+      { seq: 5, type: 'assistant/message', time: 1005, data: { message: { content: [{ type: 'text', text: '查询完成：余额充足' }] } } },
+    ],
+    'session-beta': [
+      { seq: 0, type: 'user/message', time: 2000, data: { content: [{ type: 'text', text: 'alpha 测试会话' }] } },
+    ],
+  }
+  const headers = {
+    'session-alpha': { id: 'session-alpha', createdAt: 1000, cwd: '/workspace' },
+    'session-beta': { id: 'session-beta', createdAt: 2000, cwd: '/workspace/projects' },
+  }
+  const persistence = {
+    supportsRawArtifacts: true,
+    locate(meta) {
+      return { kind: 'jsonl', path: `/sessions-root/${encodeURIComponent(meta.cwd ?? '_no-cwd')}/${meta.id}/session.jsonl` }
+    },
+  }
+  const sessionQuery = {
+    async listSessions() {
+      return [
+        { header: { ...headers['session-alpha'] }, live: true, persisted: true },
+        { header: { ...headers['session-beta'] }, live: false, persisted: true },
+      ]
+    },
+    async readSession(id) {
+      const events = eventsBySession[id]
+      if (events === undefined) {
+        const error = new Error(`session '${id}' not found`)
+        error.code = 'SESSION_QUERY_NOT_FOUND'
+        throw error
+      }
+      return { session: { ...headers[id] }, events: events.map((event) => ({ ...event })) }
+    },
+    async readTitleSnapshots(ids) {
+      return ids.map((sessionId) => ({
+        sessionId,
+        status: 'fulfilled',
+        value: { session: headers[sessionId], title: { title: `标题-${sessionId}` } },
+      }))
+    },
+    async filterEvents(sessionId, filters) {
+      const textFilter = filters.find((filter) => filter.kind === 'text')
+      if (textFilter === undefined) return []
+      const query = textFilter.text.trim().toLowerCase()
+      return (eventsBySession[sessionId] ?? [])
+        .filter((event) => JSON.stringify(event).toLowerCase().includes(query))
+        .map((event) => ({
+          seq: event.seq,
+          type: event.type,
+          time: event.time,
+          surface: 'current',
+          sessionId,
+          text: event.data?.content?.[0]?.text ?? '',
+        }))
+    },
+  }
+  const workspaceRegistry = {
+    archivedSessionIds: ['session-beta'],
+    async archiveSession(id) {
+      if (id === 'session-missing') {
+        const error = new Error('cannot archive unknown session')
+        error.name = 'WorkspaceUnknownSessionError'
+        throw error
+      }
+      if (!this.archivedSessionIds.includes(id)) this.archivedSessionIds = [...this.archivedSessionIds, id]
+    },
+  }
+  const sessions = {
+    get(id) {
+      return id === 'session-alpha' ? { id } : undefined
+    },
+  }
+  return { sessionQuery, persistence, workspaceRegistry, sessions, headers, eventsBySession, persistence }
+}
+
+test('session management list merges live/cold sessions, archive marks, titles, and deleted filter (no eager sizes)', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  // v0.36：列表不下发体积（体积走 sessions-bytes 懒加载），因此无需构造会话目录。
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions }, env: { DSH_HOME: dshHome } })
+  const result = await handler('sessions-list', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.available, true)
+  const byId = new Map(result.value.items.map((item) => [item.id, item]))
+  assert.equal(byId.size, 2)
+  assert.equal(byId.get('session-alpha').live, true)
+  assert.equal(byId.get('session-alpha').archived, false)
+  assert.equal(byId.get('session-alpha').title, '标题-session-alpha')
+  assert.equal(byId.get('session-beta').live, false)
+  assert.equal(byId.get('session-beta').archived, true)
+  assert.equal(byId.get('session-beta').title, '标题-session-beta')
+  assert.equal(byId.get('session-beta').bytes, undefined, 'list items carry no size field — sizes are lazy-loaded')
+  assert.deepEqual(result.value.archivedIds, ['session-beta'])
+  assert.deepEqual(result.value.deleted, [])
+
+  // v0.35 用户反馈：默认视图只拉归档 scope——只回归档条目，不逐会话扫描。
+  const archivedResult = await handler('sessions-list', { scope: 'archived' })
+  assert.equal(archivedResult.ok, true)
+  assert.deepEqual(archivedResult.value.items.map((item) => item.id), ['session-beta'])
+  assert.deepEqual(archivedResult.value.archivedIds, ['session-beta'])
+
+  // deleted scope 只回已删除记录（不含会话条目）。
+  const deletedResult = await handler('sessions-list', { scope: 'deleted' })
+  assert.equal(deletedResult.ok, true)
+  assert.deepEqual(deletedResult.value.items, [])
+  assert.deepEqual(deletedResult.value.deleted, [])
+  const unknownScope = await handler('sessions-list', { scope: 'bogus' })
+  assert.deepEqual(unknownScope.value.items.map((item) => item.id), ['session-beta', 'session-alpha'], 'unknown scope falls back to full list (created desc)')
+})
+
+test('session management sizes are lazy-loaded, cached in-process and reusable without restart', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-bytes-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  // 真实目录：alpha（live 也有目录）+ beta（冷+归档），供 locate 定位后 stat。
+  const alphaDir = join(dshHome, 'sessions-root', 'session-alpha')
+  const betaDir = join(dshHome, 'sessions-root', 'session-beta')
+  await mkdir(alphaDir, { recursive: true })
+  await mkdir(betaDir, { recursive: true })
+  await writeFile(join(alphaDir, 'session.jsonl'), '{"seq":0}\n') // 10 字节
+  await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n{"seq":1}\n') // 20 字节
+  const persistence = {
+    locate(meta) { return { kind: 'jsonl', path: join(dshHome, 'sessions-root', meta.id, 'session.jsonl') } },
+  }
+  const { handler } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions, sessionPersistence: persistence },
+    env: { DSH_HOME: dshHome },
+  })
+
+  // 第一次：缺缓存 → listSessions 定位 + 逐目录 stat；未知会话返回 null。
+  const first = await handler('sessions-bytes', { ids: ['session-beta', 'session-alpha', 'session-missing', 'session-beta'] })
+  assert.equal(first.ok, true)
+  assert.equal(first.value.bytes['session-beta'], 20)
+  assert.equal(first.value.bytes['session-alpha'], 10)
+  assert.equal(first.value.bytes['session-missing'], null, 'unknown session returns null (not cached)')
+
+  // 第二次：同一宿主实例（不重启）→ 全命中缓存，零 listSessions、零磁盘访问。
+  const originalListSessions = services.sessionQuery.listSessions
+  let listSessionsCalls = 0
+  services.sessionQuery.listSessions = async (...args) => {
+    listSessionsCalls += 1
+    return originalListSessions(...args)
+  }
+  const second = await handler('sessions-bytes', { ids: ['session-beta', 'session-alpha'] })
+  assert.equal(second.ok, true)
+  assert.equal(second.value.bytes['session-beta'], 20, 'cached size returned')
+  assert.equal(second.value.bytes['session-alpha'], 10, 'cached size returned')
+  assert.equal(listSessionsCalls, 0, 'cache hits skip the listSessions scan entirely')
+
+  // 只对未命中的 id 才查（半命中）：beta 已有缓存，missing 未缓存 → 一次 listSessions。
+  const third = await handler('sessions-bytes', { ids: ['session-beta', 'session-missing'] })
+  assert.equal(third.ok, true)
+  assert.equal(third.value.bytes['session-beta'], 20)
+  assert.equal(third.value.bytes['session-missing'], null)
+  assert.equal(listSessionsCalls, 1, 'partial hit performs one listSessions for the miss only')
+
+  // payload 校验：非数组 / 空数组拒绝，id 去重且只收字符串。
+  assert.deepEqual(await handler('sessions-bytes', { ids: 'nope' }), { ok: false, error: 'invalid-session-ids' })
+  assert.deepEqual(await handler('sessions-bytes', { ids: [] }), { ok: false, error: 'invalid-session-ids' })
+  const mixed = await handler('sessions-bytes', { ids: ['session-beta', 7, '', 'session-beta'] })
+  assert.equal(mixed.ok, true)
+  assert.deepEqual(Object.keys(mixed.value.bytes), ['session-beta'])
+})
+
+test('session management view pages events with seq cursor and marks noise types', async (t) => {
+  const services = sessionManagerServices()
+  // v0.36：详情快照单槽位缓存——翻页/重复查看同一会话不再重复 readSession。
+  const originalReadSession = services.sessionQuery.readSession
+  let readSessionCalls = 0
+  services.sessionQuery.readSession = async (...args) => {
+    readSessionCalls += 1
+    return originalReadSession(...args)
+  }
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery }, featureSettings: { sessionManager: true } })
+
+  const first = await handler('sessions-view', { id: 'session-alpha', cursor: undefined })
+  assert.equal(first.ok, true)
+  assert.equal(first.value.session.id, 'session-alpha')
+  assert.equal(first.value.total, 6)
+  assert.equal(first.value.items.length, 6)
+  assert.ok(first.value.nextCursor === undefined)
+  assert.equal(first.value.items[0].noise, true, 'session/created is a noise type')
+  assert.equal(first.value.items[1].text, '你好，帮我查一下')
+  assert.equal(first.value.items[2].text, '好的，正在查询')
+  assert.equal(first.value.items[4].type, 'tool/result')
+  assert.equal(readSessionCalls, 1, 'first page reads the session once')
+
+  // 同一会话再次查看（翻页/重进详情）：缓存命中 → 零重复读取。
+  const second = await handler('sessions-view', { id: 'session-alpha', cursor: undefined })
+  assert.equal(second.ok, true)
+  assert.equal(second.value.total, 6)
+  assert.equal(readSessionCalls, 1, 'reopening the same session reuses the cached snapshot')
+
+  // 换会话：单槽位整体替换 → 重读一次。
+  const beta = await handler('sessions-view', { id: 'session-beta', cursor: undefined })
+  assert.equal(beta.ok, true)
+  assert.equal(beta.value.total, 1)
+  assert.equal(readSessionCalls, 2, 'switching sessions replaces the single slot with one read')
+
+  // 换回 alpha：槽位已被替换 → 再读一次，之后命中缓存。
+  const alphaAgain = await handler('sessions-view', { id: 'session-alpha', cursor: undefined })
+  assert.equal(alphaAgain.ok, true)
+  assert.equal(alphaAgain.value.total, 6)
+  assert.equal(readSessionCalls, 3, 'switching back re-reads after slot replacement')
+  const alphaThird = await handler('sessions-view', { id: 'session-alpha', cursor: undefined })
+  assert.equal(alphaThird.ok, true)
+  assert.equal(readSessionCalls, 3, 'subsequent views of the current slot hit the cache')
+
+  const missing = await handler('sessions-view', { id: 'session-missing' })
+  assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
+
+  const badId = await handler('sessions-view', { id: '' })
+  assert.deepEqual(badId, { ok: false, error: 'invalid-session-id' })
+})
+
+test('session management search scans cold and archived sessions with budget bounds and respects scope', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions }, env: { DSH_HOME: dshHome } })
+
+  const all = await handler('sessions-search', { query: '查询', scope: 'all' })
+  assert.equal(all.ok, true)
+  assert.equal(all.value.available, true)
+  // alpha 命中 3 处文本含「查询」，beta 无。
+  const alphaHit = all.value.hits.find((hit) => hit.sessionId === 'session-alpha')
+  assert.equal(alphaHit.title, '标题-session-alpha')
+  assert.ok(alphaHit.items.length >= 1)
+  assert.equal(all.value.hits.filter((hit) => hit.sessionId === 'session-beta').length, 0)
+
+  const archived = await handler('sessions-search', { query: '查询', scope: 'archived' })
+  assert.equal(archived.ok, true)
+  // 归档区只有 session-beta（无「查询」命中）→ 无命中。
+  assert.equal(archived.value.hits.length, 0)
+
+  const empty = await handler('sessions-search', { query: '  ', scope: 'all' })
+  assert.equal(empty.ok, true)
+  assert.deepEqual(empty.value.hits, [])
+})
+
+test('session management export validates existence and reuses official ZIP URL', async (t) => {
+  const services = sessionManagerServices()
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery } })
+
+  const ok = await handler('sessions-export', { id: 'session-beta' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.value.includesDescendants, true)
+  assert.equal(ok.value.url, '/api/session.export?sessionId=session-beta&includeDescendants=true')
+
+  const missing = await handler('sessions-export', { id: 'session-missing' })
+  assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
+  const badId = await handler('sessions-export', { id: '' })
+  assert.deepEqual(badId, { ok: false, error: 'invalid-session-id' })
+})
+
+test('session management archive calls workspace registry and maps unknown session', async (t) => {
+  const services = sessionManagerServices()
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry } })
+
+  const ok = await handler('sessions-archive', { id: 'session-alpha' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.value.archived, true)
+  assert.deepEqual(ok.value.archivedSessionIds, ['session-beta', 'session-alpha'])
+
+  const missing = await handler('sessions-archive', { id: 'session-missing' })
+  assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
+})
+
+test('session management delete is two-phase: plan lists consequences, live rejected, execution removes directory and records deleted', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-delete-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  // beta 是冷会话（非 live），其目录指向 dshHome 之下以便断言删除落盘。
+  const betaDir = join(dshHome, 'cold-root', 'session-beta')
+  await mkdir(betaDir, { recursive: true })
+  await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n')
+  const persistence = {
+    locate(meta) {
+      if (meta.id === 'session-beta') return { kind: 'jsonl', path: join(betaDir, 'session.jsonl') }
+      return { kind: 'jsonl', path: `/sessions-root/${meta.id}/session.jsonl` }
+    },
+  }
+  const { handler } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions, sessionPersistence: persistence },
+    env: { DSH_HOME: dshHome },
+  })
+
+  // v0.35 用户反馈：plan 阶段只定位目标会话，不做全量列表重扫——listSessions 调用保持 1 次。
+  const originalListSessions = services.sessionQuery.listSessions
+  let listSessionsCalls = 0
+  services.sessionQuery.listSessions = async (...args) => {
+    listSessionsCalls += 1
+    return originalListSessions(...args)
+  }
+
+  // live 会话 plan 拒绝
+  const livePlan = await handler('sessions-delete-plan', { id: 'session-alpha' })
+  assert.deepEqual(livePlan, { ok: false, error: 'live-session-rejected' })
+  assert.equal(listSessionsCalls, 1, 'live rejection performs exactly one listSessions lookup')
+
+  // 未知会话拒绝
+  const unknownPlan = await handler('sessions-delete-plan', { id: 'session-missing' })
+  assert.deepEqual(unknownPlan, { ok: false, error: 'session-not-found' })
+  assert.equal(listSessionsCalls, 2, 'unknown session: one lookup per plan request')
+
+  // 冷会话 plan 返回后果清单（仍只做一次目标定位，不触发全量字节扫描循环）
+  const plan = await handler('sessions-delete-plan', { id: 'session-beta' })
+  assert.equal(plan.ok, true)
+  assert.equal(typeof plan.value.planId, 'string')
+  assert.equal(plan.value.session.id, 'session-beta')
+  assert.equal(plan.value.session.archived, true)
+  assert.ok(plan.value.consequences.includes('deletes-session-log'))
+  assert.equal(listSessionsCalls, 3, 'cold plan performs exactly one listSessions lookup per request')
+
+  // v0.36：plan 前取一次体积（冷目录实际 10 字节），供删除后验证缓存失效。
+  const beforeBytes = await handler('sessions-bytes', { ids: ['session-beta'] })
+  assert.equal(beforeBytes.ok, true)
+  assert.equal(beforeBytes.value.bytes['session-beta'], 10)
+
+  // 伪造 planId 拒绝
+  const forged = await handler('sessions-delete', { planId: 'forged' })
+  assert.deepEqual(forged, { ok: false, error: 'unknown-delete-plan' })
+
+  // 确认删除：目录消失 + 记录写入 + 列表不再包含该会话
+  const confirmed = await handler('sessions-delete', { planId: plan.value.planId })
+  assert.equal(confirmed.ok, true)
+  assert.equal(confirmed.value.deleted, true)
+  await assert.rejects(() => stat(betaDir))
+  const deletedFile = join(dshHome, 'dsh-service-sessions-deleted.json')
+  const recorded = JSON.parse(await readFile(deletedFile, 'utf8'))
+  assert.equal(recorded.version, 1)
+  assert.equal(recorded.items[0].id, 'session-beta')
+  assert.equal(recorded.items[0].title, '标题-session-beta')
+  assert.ok(recorded.items[0].cwd === '/workspace/projects')
+
+  // 删除主动失效体积缓存：再请求会重 stat（目录已删）→ 0 而非旧缓存 10。
+  const afterBytes = await handler('sessions-bytes', { ids: ['session-beta'] })
+  assert.equal(afterBytes.ok, true)
+  assert.equal(afterBytes.value.bytes['session-beta'], 0, 'delete invalidates the size cache')
+
+  const afterList = await handler('sessions-list', {})
+  assert.equal(afterList.ok, true)
+  assert.equal(afterList.value.items.some((item) => item.id === 'session-beta'), false)
+  assert.equal(afterList.value.deleted.some((item) => item.id === 'session-beta'), true)
 })
