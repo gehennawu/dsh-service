@@ -4676,6 +4676,130 @@ test('session manager detail pages events, loads more with seq cursor, and trigg
   assert.equal(renderer.hasTest('sessions-detail-more'), false, 'no load-more when all events loaded')
 })
 
+test('session manager restores the list scroll position after returning from detail', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-view') return { ok: true, value: { session: { id: 'session-cold', title: 'Cold session' }, items: [{ seq: 0, type: 'user/message', time: 2001, text: 'hi', noise: false }], nextCursor: undefined, total: 1 } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  // v0.37 假滚动容器 = 官方 .VOzbGW_options 的替身：列表长到可滚、scrollTop 站在 640。
+  // 点击行的 DOM 祖先链：view 按钮 → 行包装 → 这个滚动容器（inline overflow-y:auto）。
+  const scrollContainer = { nodeType: 1, scrollTop: 640, scrollHeight: 3000, clientHeight: 400, style: { overflowY: 'auto' } }
+  const rowWrap = { nodeType: 1, style: {}, parentNode: scrollContainer }
+  const buttonNode = { nodeType: 1, style: {}, parentNode: rowWrap }
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 点「查看」时带上真实点击事件 → 组件沿祖先链找到滚动容器并记下 scrollTop。
+  renderer.findByTestId('sessions-row-view-session-cold').props.onClick({ currentTarget: buttonNode })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true)
+  // 详情里滚动到别处（模拟长详情把容器 scrollTop 带走）。
+  scrollContainer.scrollTop = 120
+  // 返回列表：筛选/排序/搜索上下文未变 → 恢复 640（不再回到顶部）。
+  await renderer.findByTestId('sessions-detail-back').props.onClick()
+  await renderer.flush()
+  assert.equal(scrollContainer.scrollTop, 640, 'back from detail restores the saved list scroll position')
+  assert.equal(renderer.hasTest('sessions-row-session-cold'), true, 'list rendered again')
+  // 无点击事件（老调用方/坏事件）时不保存也不崩溃：再进再出，容器位置保持现状。
+  renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  scrollContainer.scrollTop = 200
+  await renderer.findByTestId('sessions-detail-back').props.onClick()
+  await renderer.flush()
+  assert.equal(scrollContainer.scrollTop, 200, 'no event → nothing saved → back leaves the scroll untouched')
+})
+
+test('session manager does not restore scroll onto a different filter, and restores for search-hit returns', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-search') {
+      return { ok: true, value: { available: true, query: 'answer', scope: 'all', hits: [{ sessionId: 'session-cold', title: 'Cold session', items: [{ seq: 1, type: 'assistant/message', snippet: 'first answer' }] }] } }
+    }
+    if (endpoint === 'sessions-view') return { ok: true, value: { session: { id: 'session-cold', title: 'Cold session' }, items: [], nextCursor: undefined, total: 0 } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  const scrollContainer = { nodeType: 1, scrollTop: 640, scrollHeight: 3000, clientHeight: 400, style: { overflowY: 'auto' } }
+  const rowWrap = { nodeType: 1, style: {}, parentNode: scrollContainer }
+  const buttonNode = { nodeType: 1, style: {}, parentNode: rowWrap }
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 带事件进详情（保存 640），在详情里滚动到 120，然后切「全部」筛选。
+  renderer.findByTestId('sessions-row-view-session-cold').props.onClick({ currentTarget: buttonNode })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true)
+  scrollContainer.scrollTop = 120
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.notEqual(scrollContainer.scrollTop, 640, 'filter changed mid-detail → old position is NOT restored onto the new list')
+  // 切回「仅归档」，再从搜索结果进详情：搜索命中路径同样恢复。
+  await renderer.findByTestId('sessions-filter-archived').props.onClick()
+  await renderer.flush()
+  const searchInput = renderer.findByTestId('sessions-search-input')
+  searchInput.props.onChange({ target: { value: 'answer' } })
+  await renderer.flush()
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-open-session-cold'), true)
+  scrollContainer.scrollTop = 640
+  renderer.findByTestId('sessions-hit-open-session-cold').props.onClick({ currentTarget: buttonNode })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail-return-search'), true)
+  scrollContainer.scrollTop = 40
+  await renderer.findByTestId('sessions-detail-return-search').props.onClick()
+  await renderer.flush()
+  assert.equal(scrollContainer.scrollTop, 640, 'returning from a search-hit detail restores the search results scroll position')
+})
+
 test('session manager search shows cross-session hits and opens the hit-only view', async () => {
   const calls = []
   const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {

@@ -3308,6 +3308,34 @@ window.__ModuleLoader__.load({
         return out
       }
 
+      // v0.37 用户点名「查看详情后返回列表维持原位置」：进详情前记录列表滚动位置，返回时恢复。
+      // 滚动容器不是本插件的 DOM——官方设置面板的内容列（.VOzbGW_options，overflow-y:auto）在
+      // panel > content 里，跨列表⇄详情切换一直挂载（哈希类名跨版本会漂，故不按类名找）。
+      // 从点击行的 DOM 祖先链向上找第一个「真的能滚」的滚动祖先（computed overflowY；测试替身
+      // 无 document 时回落 inline style）。找不到容器（宽度撑不满/异常布局）= 无需恢复，静默降级。
+      function findSessionScrollContainer(event) {
+        let node = event !== null && event !== undefined && event.currentTarget ? event.currentTarget : null
+        const doc = typeof document !== 'undefined' ? document : null
+        while (node !== null && node !== undefined && node.nodeType === 1) {
+          let overflowY = ''
+          if (doc !== null && doc.defaultView && typeof doc.defaultView.getComputedStyle === 'function') {
+            try {
+              const style = doc.defaultView.getComputedStyle(node)
+              overflowY = style ? String(style.overflowY || '') : ''
+            } catch (_) { /* 个别节点 computed style 抛错：当无样式处理 */ }
+          } else if (node.style) {
+            overflowY = String(node.style.overflowY || node.style.overflow || '')
+          }
+          if ((overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+            && typeof node.scrollHeight === 'number' && typeof node.clientHeight === 'number'
+            && node.scrollHeight > node.clientHeight + 1) {
+            return node
+          }
+          node = node.parentNode
+        }
+        return null
+      }
+
       // v0.36 用户反馈「关掉面板再打开又要重新加载」：列表/体积缓存从组件 state 提升到
       // **模块级**（页面加载期间一直存活，设置面板关闭只是组件卸载、数据保留；刷新页面才清零）。
       // 测试替代环境的 ?test= 查询串让每个 renderer 独立评估本模块，互不污染。
@@ -3391,6 +3419,11 @@ window.__ModuleLoader__.load({
         // v0.36：系统事件块的展开态（key=块首条 seq），默认折叠。
         const [noiseOpen, setNoiseOpen] = useState({})
         const toggleNoiseBlock = (firstSeq) => setNoiseOpen((current) => ({ ...current, [firstSeq]: !current[firstSeq] }))
+        // v0.37 详情返回保持列表滚动位置：进详情时保存一次、回列表时恢复一次。记录当下列表
+        // 上下文（筛选/排序/搜索），返回时上下文一致才回写 scrollTop——在详情里切了筛选/
+        // 搜了新词，列表内容已换，不恢复旧位置（避免冲到别的视图上）。
+        const savedListScroll = useRef(null)
+        const listScrollKey = () => filter + '\u0000' + sort + '\u0000' + search + '\u0000' + (searchScopeArchived ? 1 : 0)
         // 导出状态
         const [exportingId, setExportingId] = useState('')
         const [exportError, setExportError] = useState('')
@@ -3535,7 +3568,13 @@ window.__ModuleLoader__.load({
           return () => clearTimeout(handle)
         }, [search, searchScopeArchived, filter])
 
-        const openDetail = (sessionId, view, hitItems) => {
+        const openDetail = (sessionId, view, hitItems, event) => {
+          // v0.37：进详情前沿点击行的 DOM 祖先链找官方面板内容滚动容器（.VOzbGW_options），
+          // 记下列表位置；找不到容器（宽度撑不满/异常布局/无点击事件）→ 不保存，返回时保持现状。
+          const scrollContainer = findSessionScrollContainer(event)
+          if (scrollContainer !== null) {
+            savedListScroll.current = { key: listScrollKey(), container: scrollContainer, scrollTop: scrollContainer.scrollTop }
+          }
           setNoiseOpen({})
           setDetail({ sessionId, view: view || 'events', cursor: undefined, items: [], total: 0, hitItems: hitItems || null, loadedTitle: '' })
           setDetailError('')
@@ -3711,6 +3750,23 @@ window.__ModuleLoader__.load({
         }
         // 删除完成自动刷新一次列表（loadList 已做，doneTick 仅用于复位列表外的状态）
         useEffect(() => { if (doneTick > 0) setDetail(null) }, [doneTick])
+        // v0.37（用户点名「返回列表不要回到顶部」）：离开详情回到列表时恢复原滚动位置。
+        // effect 在列表重新渲染进 DOM 后运行——此时回写 scrollTop 才不会被详情内容的高度
+        // 把值裁掉（连详情内滚到深处的场景也一并纠正）。保存的上下文与当前不一致则放弃。
+        useEffect(() => {
+          if (detail !== null) return
+          const saved = savedListScroll.current
+          savedListScroll.current = null
+          if (saved === null) return
+          if (saved.key !== listScrollKey()) return
+          if (saved.container === null || saved.container === undefined) return
+          const top = typeof saved.scrollTop === 'number' ? saved.scrollTop : 0
+          try {
+            if (typeof saved.container.scrollTop === 'number') saved.container.scrollTop = top
+          } catch (_) {
+            // 容器已脱离文档（面板被关）：忽略——下次打开自然从顶部开始
+          }
+        }, [detail])
 
         const computeVisibleItems = () => {
           if (list === null) return []
@@ -3745,7 +3801,7 @@ window.__ModuleLoader__.load({
           ].filter(Boolean)
           const actions = []
           if (!isDeleted) {
-            actions.push(React.createElement('button', { key: 'view', type: 'button', 'data-testid': 'sessions-row-view-' + id, style: chipButton, onClick: () => openDetail(id, 'events', null) }, translate('sessions.action.view')))
+            actions.push(React.createElement('button', { key: 'view', type: 'button', 'data-testid': 'sessions-row-view-' + id, style: chipButton, onClick: (event) => openDetail(id, 'events', null, event) }, translate('sessions.action.view')))
             actions.push(React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-row-export-' + id, style: chipButton, disabled: exportingId === id, onClick: () => void doExport(id) }, exportingId === id ? translate('sessions.detail.exporting') : translate('sessions.action.export')))
             if (!live && !archived) {
               actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? '…' : translate('sessions.action.archive')))
@@ -3790,7 +3846,7 @@ window.__ModuleLoader__.load({
             if (searchResult.error) return React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSessionError(translate, searchResult.error))
             if (searchResult.hits.length === 0) return React.createElement('p', { style: hint }, translate('sessions.empty.search', { query: search }))
             return searchResult.hits.map((hit) => React.createElement('div', { key: hit.sessionId, 'data-testid': 'sessions-hit-' + hit.sessionId, style: { padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
-              React.createElement('button', { type: 'button', 'data-testid': 'sessions-hit-open-' + hit.sessionId, style: { ...chipButton, border: 0, padding: 0, textAlign: 'left', display: 'inline', maxWidth: '100%' }, onClick: () => openDetail(hit.sessionId, 'search', hit.items) },
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-hit-open-' + hit.sessionId, style: { ...chipButton, border: 0, padding: 0, textAlign: 'left', display: 'inline', maxWidth: '100%' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event) },
                 React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, hit.title !== '' ? hit.title : translate('sessions.row.noTitle')),
                 React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginLeft: '6px', fontSize: '11.5px' } }, translate('sessions.hit.title', { count: hit.items.length }))),
               hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.snippet))))
