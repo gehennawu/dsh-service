@@ -75,6 +75,10 @@ window.__ModuleLoader__.load({
       'sessions.detail.created': '创建于 {time}',
       'sessions.hit.title': '命中 {count} 条',
       'sessions.hit.return': '返回搜索结果',
+      'sessions.hit.badge': '命中',
+      'sessions.hit.prev': '◀ 上一个',
+      'sessions.hit.next': '下一个 ▶',
+      'sessions.hit.inSession': '本会话 {count} 处命中',
       'sessions.delete.title': '删除会话',
       'sessions.delete.body': '将永久删除以下会话的日志文件，删除后不可恢复。',
       'sessions.delete.consequence.log': '删除会话日志（{bytes}）',
@@ -637,6 +641,10 @@ window.__ModuleLoader__.load({
       'sessions.detail.created': 'Created {time}',
       'sessions.hit.title': '{count} hits',
       'sessions.hit.return': 'Back to search results',
+      'sessions.hit.badge': 'HIT',
+      'sessions.hit.prev': '◀ Prev',
+      'sessions.hit.next': 'Next ▶',
+      'sessions.hit.inSession': '{count} matches in this session',
       'sessions.delete.title': 'Delete session',
       'sessions.delete.body': 'This permanently deletes the session log below. This cannot be undone.',
       'sessions.delete.consequence.log': 'Delete session log ({bytes})',
@@ -1287,6 +1295,8 @@ window.__ModuleLoader__.load({
             （真机复核），钉死高度/圆角/内边距/不缩不放。 */
           '[data-testid="top-tab-restart"]{flex:none !important;width:max-content;height:40px;min-height:40px;max-height:40px;padding:0 16px !important;border-radius:999px !important}',
           '}',
+          // v0.37 搜索命中定位闪烁（jumpScrollToHit）：命中窗口视图里滚到目标行时叠加 2s 闪烁。
+          '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
         ].join('')
         document.head.appendChild(svcStyle)
       }
@@ -3336,6 +3346,32 @@ window.__ModuleLoader__.load({
         return null
       }
 
+      // v0.37 搜索命中定位（参考 dsh-session-kb 的 Locate）：命中窗口渲染完成后把详情滚动到
+      // 目标命中行并闪烁高亮 2s。行按 testid sessions-jump-target-<seq> 找（seq 来自宿主可信
+      // 清单，非用户输入）；滚动为 best-effort——测试替身无真实 DOM/行未渲染时静默跳过。
+      function jumpScrollToHit(seq) {
+        if (typeof document === 'undefined' || document === null) return
+        try {
+          const element = document.querySelector('[data-testid="sessions-jump-target-' + seq + '"]')
+          if (element === null || element === undefined) return
+          try {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          } catch (_) {
+            try { element.scrollIntoView() } catch (_) {}
+          }
+          if (element.classList && typeof element.classList.add === 'function') {
+            element.classList.add('dshsv-locate-flash')
+            setTimeout(() => {
+              try {
+                if (element.classList && typeof element.classList.remove === 'function') element.classList.remove('dshsv-locate-flash')
+              } catch (_) {}
+            }, 2000)
+          }
+        } catch (_) {
+          // 定位滚动失败不影响查看：保持现状
+        }
+      }
+
       // v0.36 用户反馈「关掉面板再打开又要重新加载」：列表/体积缓存从组件 state 提升到
       // **模块级**（页面加载期间一直存活，设置面板关闭只是组件卸载、数据保留；刷新页面才清零）。
       // 测试替代环境的 ?test= 查询串让每个 renderer 独立评估本模块，互不污染。
@@ -3568,7 +3604,7 @@ window.__ModuleLoader__.load({
           return () => clearTimeout(handle)
         }, [search, searchScopeArchived, filter])
 
-        const openDetail = (sessionId, view, hitItems, event) => {
+        const openDetail = (sessionId, view, hitItems, event, targetSeq) => {
           // v0.37：进详情前沿点击行的 DOM 祖先链找官方面板内容滚动容器（.VOzbGW_options），
           // 记下列表位置；找不到容器（宽度撑不满/异常布局/无点击事件）→ 不保存，返回时保持现状。
           const scrollContainer = findSessionScrollContainer(event)
@@ -3576,10 +3612,17 @@ window.__ModuleLoader__.load({
             savedListScroll.current = { key: listScrollKey(), container: scrollContainer, scrollTop: scrollContainer.scrollTop }
           }
           setNoiseOpen({})
-          setDetail({ sessionId, view: view || 'events', cursor: undefined, items: [], total: 0, hitItems: hitItems || null, loadedTitle: '' })
+          setDetail({ sessionId, view: view || 'events', cursor: undefined, items: [], total: 0, hitItems: hitItems || null, loadedTitle: '', centerSeq: undefined })
           setDetailError('')
           setDetailLoading(false)
-          void loadDetailPage(sessionId, undefined, view || 'events')
+          if ((view || 'events') === 'search' && Array.isArray(hitItems) && hitItems.length > 0) {
+            // v0.37 搜索命中不再从头分页（旧实现浪费一次拉取且看不到上下文）：
+            // 直接进命中窗口视图，围绕首个命中（或点击的 seq 芯片）拉上下文窗口。
+            const seq = Number.isSafeInteger(targetSeq) ? Number(targetSeq) : Number(hitItems[0].seq)
+            void loadJumpWindow(sessionId, Number.isSafeInteger(seq) ? seq : 0)
+          } else {
+            void loadDetailPage(sessionId, undefined, view || 'events')
+          }
         }
         const loadDetailPage = async (sessionId, cursor, view) => {
           setDetailLoading(true)
@@ -3597,6 +3640,37 @@ window.__ModuleLoader__.load({
                   items: appended,
                   total: res.value.total,
                   loadedTitle: merged.loadedTitle || (res.value.session && res.value.session.id !== undefined ? '' : ''),
+                }
+              })
+              setDetailError('')
+            } else {
+              setDetailError(mapSessionError(translate, res.error || 'unknown'))
+            }
+          } catch (_) {
+            setDetailError(translate('sessions.error.network'))
+          } finally {
+            setDetailLoading(false)
+          }
+        }
+        // v0.37 命中窗口视图：围绕命中 seq 拉上下文窗口（宿主端快照缓存切片，无额外读取）。
+        const loadJumpWindow = async (sessionId, seq) => {
+          setDetailLoading(true)
+          setDetailError('')
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-view', { id: sessionId, center: seq })
+            if (res.ok) {
+              setDetail((current) => {
+                const merged = current === null ? {} : current
+                return {
+                  ...merged,
+                  sessionId,
+                  view: 'search',
+                  cursor: res.value.nextCursor,
+                  items: res.value.items || [],
+                  total: res.value.total,
+                  // 命中行不一定是窗口几何中心（窗口两端被行首/行尾裁剪），以宿主回传为准。
+                  centerSeq: Number.isSafeInteger(res.value.centerSeq) ? res.value.centerSeq : seq,
+                  loadedTitle: merged.loadedTitle || '',
                 }
               })
               setDetailError('')
@@ -3768,6 +3842,15 @@ window.__ModuleLoader__.load({
           }
         }, [detail])
 
+        // v0.37 命中窗口自动定位：窗口落地（centerSeq 或 items.length 变化）后滚动到目标命中
+        // 行并闪烁高亮——第一次打开与「上一个/下一个命中」翻跳共用，滚动为 best-effort。
+        const jumpCenterSeq = detail !== null && detail.view === 'search' ? detail.centerSeq : null
+        const jumpItemsLen = detail !== null && detail.view === 'search' && Array.isArray(detail.items) ? detail.items.length : 0
+        useEffect(() => {
+          if (jumpCenterSeq === null || typeof jumpCenterSeq !== 'number') return
+          jumpScrollToHit(jumpCenterSeq)
+        }, [jumpCenterSeq, jumpItemsLen])
+
         const computeVisibleItems = () => {
           if (list === null) return []
           if (filter === 'deleted') {
@@ -3849,6 +3932,9 @@ window.__ModuleLoader__.load({
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-hit-open-' + hit.sessionId, style: { ...chipButton, border: 0, padding: 0, textAlign: 'left', display: 'inline', maxWidth: '100%' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event) },
                 React.createElement('span', { style: { fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, hit.title !== '' ? hit.title : translate('sessions.row.noTitle')),
                 React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginLeft: '6px', fontSize: '11.5px' } }, translate('sessions.hit.title', { count: hit.items.length }))),
+              // v0.37：命中位置直接可见可点——点 seq 芯片直达该命中（不绕一次「打开→翻跳」）。
+              hit.items.length > 1 ? React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '5px' } },
+                hit.items.map((item) => React.createElement('button', { key: item.seq, type: 'button', 'data-testid': 'sessions-hit-seq-' + hit.sessionId + '-' + item.seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', color: 'var(--dsw-alias-label-tertiary)' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event, Number(item.seq)) }, '#' + item.seq))) : null,
               hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.snippet))))
           }
           if (computeVisibleItems().length === 0) {
@@ -3866,33 +3952,55 @@ window.__ModuleLoader__.load({
             : (target !== undefined && target.title !== '' ? target.title : '')
           const mineRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === detail.sessionId) : undefined
           const canOpenOfficial = mineRow !== undefined && !mineRow.archived && mineRow.live !== false || (mineRow !== undefined && !mineRow.archived)
+          // v0.37 命中导航：seq 芯片 + 上一个/下一个——翻跳只在详情内换窗口中心，不重载整个会话。
+          const hitSeqList = detail.view === 'search' && Array.isArray(detail.hitItems)
+            ? detail.hitItems.map((item) => Number(item.seq)).filter((seq) => Number.isSafeInteger(seq))
+            : []
+          const hitIndex = detail.view === 'search' && typeof detail.centerSeq === 'number' ? hitSeqList.indexOf(detail.centerSeq) : -1
+          const jumpPrevSeq = hitIndex > 0 ? hitSeqList[hitIndex - 1] : undefined
+          const jumpNextSeq = hitIndex >= 0 && hitIndex < hitSeqList.length - 1 ? hitSeqList[hitIndex + 1] : undefined
+          const hitSet = new Set(hitSeqList)
+          // 详情事件列表渲染（v0.36 噪音折叠 + v0.37 命中高亮共用）：命中行套命中徽章/强调框，
+          // 带 sessions-jump-target-<seq> 定位 testid（jumpScrollToHit 按它滚）。
+          const renderEventList = (items, matchSet) => collapseEventItems(items).map((item, index) => {
+            if (item._noiseBlock === true) {
+              const open = noiseOpen[item.firstSeq] === true
+              const blockEvents = open && Array.isArray(items)
+                ? items.filter((event) => event.noise === true && event.seq >= item.firstSeq && event.seq <= item.lastSeq)
+                : []
+              return React.createElement('div', { key: 'noise-' + item.firstSeq, 'data-testid': 'sessions-noisewall-' + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-noisewall-toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleNoiseBlock(item.firstSeq) },
+                  (open ? '▾ ' : '▸ ') + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
+                open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventCard(event, index))) : null)
+            }
+            if (matchSet !== null && matchSet.has(Number(item.seq))) {
+              return React.createElement('div', { key: 'jump-' + item.seq, 'data-testid': 'sessions-jump-target-' + item.seq, style: { borderRadius: '8px', border: '1px solid rgba(198,128,0,0.55)', background: 'rgba(198,128,0,0.10)', padding: '6px 8px', marginBottom: '6px' } },
+                React.createElement('div', { 'data-testid': 'sessions-jump-badge-' + item.seq, style: { fontSize: '10.5px', fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)', marginBottom: '3px' } }, translate('sessions.hit.badge')),
+                eventCard(item, index))
+            }
+            return eventCard(item, index)
+          })
           return React.createElement('div', { 'data-testid': 'sessions-detail' },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.detail.back')),
               React.createElement('span', { style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0 } }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
               !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { ctx.sessions?.open?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: chipButton, disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
-            detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { style: { marginBottom: '10px' } },
-              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.hit.return')),
-              detail.hitItems.map((item, index) => React.createElement('div', { key: index, 'data-testid': 'sessions-hit-event-' + item.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', marginBottom: '5px', fontSize: '12.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
-                React.createElement('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '3px' } }, item.type + ' · #' + item.seq),
-                item.snippet || ''))) : null,
+            detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { 'data-testid': 'sessions-jump-view', style: { marginBottom: '10px' } },
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, '← ' + translate('sessions.hit.return')),
+                React.createElement('span', { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.hit.inSession', { count: Array.isArray(detail.hitItems) ? detail.hitItems.length : 0 })),
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-prev', style: chipButton, disabled: jumpPrevSeq === undefined || detailLoading, onClick: () => { if (jumpPrevSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpPrevSeq) } }, translate('sessions.hit.prev')),
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-next', style: chipButton, disabled: jumpNextSeq === undefined || detailLoading, onClick: () => { if (jumpNextSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpNextSeq) } }, translate('sessions.hit.next'))),
+              React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' } },
+                hitSeqList.map((seq) => React.createElement('button', { key: seq, type: 'button', 'data-testid': 'sessions-jump-chip-' + seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', background: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-secondary)' }, onClick: () => void loadJumpWindow(detail.sessionId, seq) }, '#' + seq))),
+              detailLoading && detail.items.length === 0 ? React.createElement('p', { style: hint }, '…') : null,
+              renderEventList(detail.items, hitSet),
+              detail.cursor !== undefined && detail.items.length > 0 ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, detail.view) }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
+              detail.cursor === undefined && detail.items.length > 0 ? React.createElement('p', { style: hint }, translate('sessions.detail.noMore', { total: detail.total })) : null) : null,
             detailError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, detailError) : null,
-            detail.view !== 'search' ? collapseEventItems(detail.items).map((item, index) => {
-              if (item._noiseBlock === true) {
-                const open = noiseOpen[item.firstSeq] === true
-                const blockEvents = open && Array.isArray(detail.items)
-                  ? detail.items.filter((event) => event.noise === true && event.seq >= item.firstSeq && event.seq <= item.lastSeq)
-                  : []
-                // v0.36：连续系统事件默认折叠为一块「▸ N 条系统事件」，展开才渲染明细卡片。
-                return React.createElement('div', { key: 'noise-' + item.firstSeq, 'data-testid': 'sessions-noisewall-' + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
-                  React.createElement('button', { type: 'button', 'data-testid': 'sessions-noisewall-toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleNoiseBlock(item.firstSeq) },
-                    (open ? '▾ ' : '▸ ') + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
-                  open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventCard(event, index))) : null)
-              }
-              return eventCard(item, index)
-            }) : null,
-            detail.view !== 'search' && detail.cursor !== undefined ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, 'events') }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
+            detail.view !== 'search' ? renderEventList(detail.items, null) : null,
+            detail.view !== 'search' && detail.cursor !== undefined ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, detail.view) }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
             detail.view !== 'search' && detail.cursor === undefined && detail.items.length > 0 ? React.createElement('p', { style: hint }, translate('sessions.detail.noMore', { total: detail.total })) : null)
         }
 

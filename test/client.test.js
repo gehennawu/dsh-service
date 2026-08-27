@@ -4800,8 +4800,9 @@ test('session manager does not restore scroll onto a different filter, and resto
   assert.equal(scrollContainer.scrollTop, 640, 'returning from a search-hit detail restores the search results scroll position')
 })
 
-test('session manager search shows cross-session hits and opens the hit-only view', async () => {
+test('session manager search opens a hit window with highlight, context, and match navigation', async () => {
   const calls = []
+  const viewCenters = []
   const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
     calls.push(endpoint)
     assert.equal(channel, '/dsh-service')
@@ -4826,7 +4827,15 @@ test('session manager search shows cross-session hits and opens the hit-only vie
     if (endpoint === 'sessions-search') {
       return { ok: true, value: { available: true, query: 'answer', scope: 'all', hits: [{ sessionId: 'session-cold', title: 'Cold session', items: [{ seq: 1, type: 'assistant/message', snippet: 'first answer' }] }] } }
     }
-    if (endpoint === 'sessions-view') return { ok: true, value: { session: { id: 'session-cold' }, items: [], nextCursor: undefined, total: 0 } }
+    if (endpoint === 'sessions-view') {
+      viewCenters.push(payload && payload.center !== undefined ? payload.center : null)
+      // v0.37：命中窗口视图——围绕 center 的下上文窗口，命中行的 text 与上下文都全量返回。
+      return { ok: true, value: { session: { id: 'session-cold' }, items: [
+        { seq: 0, type: 'session/created', time: 2000, text: '', noise: true },
+        { seq: 1, type: 'assistant/message', time: 2002, text: 'first answer', noise: false },
+        { seq: 2, type: 'user/message', time: 2003, text: 'follow-up here', noise: false },
+      ], nextCursor: undefined, total: 100, centerSeq: 1 } }
+    }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
 
@@ -4844,11 +4853,107 @@ test('session manager search shows cross-session hits and opens the hit-only vie
   assert.ok(calls.includes('sessions-search'))
   assert.equal(renderer.hasTest('sessions-hit-session-cold'), true)
   assert.equal(renderer.hasTest('sessions-hit-open-session-cold'), true)
+  // v0.37：点开命中 → 直接以首个命中 seq 为中心拉上下文窗口（不再从头分页的浪费调用）。
   await renderer.findByTestId('sessions-hit-open-session-cold').props.onClick()
   await renderer.flush()
+  assert.deepEqual(viewCenters, [1], 'search hit opens centered on the first matched seq')
   assert.equal(renderer.hasTest('sessions-detail'), true)
-  assert.equal(renderer.hasTest('sessions-detail-return-search'), true)
-  assert.equal(renderer.hasTest('sessions-hit-event-1'), true)
+  assert.equal(renderer.hasTest('sessions-detail-return-search'), true, 'back-to-search button kept')
+  assert.equal(renderer.hasTest('sessions-jump-view'), true)
+  // 命中行高亮 + 定位 testid；上下文事件也渲染（不再只有孤立的 type · #seq 列表）。
+  assert.equal(renderer.hasTest('sessions-jump-target-1'), true, 'matched event wrapped with the jump target testid')
+  assert.equal(renderer.hasTest('sessions-jump-badge-1'), true, 'matched event shows the HIT badge')
+  assert.equal(renderer.hasTest('sessions-event-1'), true, 'matched event still renders its full event card inside the wrapper')
+  assert.equal(renderer.hasTest('sessions-event-2'), true, 'context event after the hit is rendered')
+  assert.equal(renderer.hasTest('sessions-hit-event-1'), false, 'the old flat type · #seq list is gone')
+  // 窗口里的噪音事件仍折叠（与普通详情一致）。
+  assert.equal(renderer.hasTest('sessions-noisewall-0'), true, 'noise events inside the window stay collapsed')
+  // 命中导航条：seq 芯片 + 上一个/下一个（单命中时两者都禁用）。
+  assert.equal(renderer.hasTest('sessions-jump-chip-1'), true)
+  assert.equal(renderer.findByTestId('sessions-jump-prev').props.disabled, true, 'no previous match at the first hit')
+  assert.equal(renderer.findByTestId('sessions-jump-next').props.disabled, true, 'no next match with a single hit')
+})
+
+test('session manager hit window navigates between matches via card chips, prev/next, and navigator chips', async () => {
+  const calls = []
+  const centers = []
+  const renderer = sessionManagerRenderer(async (channel, endpoint, payload) => {
+    calls.push(endpoint)
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-bytes') {
+      const ids = payload && Array.isArray(payload.ids) ? payload.ids : []
+      const bytes = {}
+      for (const id of ids) {
+        const found = SESSION_LIST_VALUE.items.find((item) => item.id === id)
+        bytes[id] = found ? found.bytes : null
+      }
+      return { ok: true, value: { bytes } }
+    }
+    if (endpoint === 'sessions-search') {
+      // 同会话 4 处命中（用户反馈里那类 #7 #8 #431 #533 的稀疏分布）。
+      return { ok: true, value: { available: true, query: 'todo', scope: 'all', hits: [{ sessionId: 'session-cold', title: 'Cold session', items: [
+        { seq: 7, type: 'user/message', snippet: 'a' },
+        { seq: 8, type: 'user/message', snippet: 'b' },
+        { seq: 431, type: 'assistant/message', snippet: 'c' },
+        { seq: 533, type: 'assistant/message', snippet: 'd' },
+      ] }] } }
+    }
+    if (endpoint === 'sessions-view') {
+      const center = payload && payload.center !== undefined ? payload.center : null
+      centers.push(center)
+      return { ok: true, value: { session: { id: 'session-cold' }, items: [
+        { seq: center, type: 'user/message', time: 1000 + (center || 0), text: 'match at ' + center, noise: false },
+      ], nextCursor: undefined, total: 600, centerSeq: center } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  const searchInput = renderer.findByTestId('sessions-search-input')
+  searchInput.props.onChange({ target: { value: 'todo' } })
+  await renderer.flush()
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  await renderer.flush()
+  // 命中卡上 4 个 seq 芯片（多命中时显示）。
+  assert.equal(renderer.hasTest('sessions-hit-seq-session-cold-7'), true)
+  assert.equal(renderer.hasTest('sessions-hit-seq-session-cold-533'), true)
+  // 点卡上芯片 #431：直接以该命中为中心打开窗口（不绕「打开→翻跳」）。
+  await renderer.findByTestId('sessions-hit-seq-session-cold-431').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(centers, [431], 'card seq chip jumps straight to that match')
+  assert.equal(renderer.hasTest('sessions-jump-target-431'), true)
+  // 上一个 → 8；再下一个 → 回到 431；最后到 533 时 next 禁用。
+  await renderer.findByTestId('sessions-jump-prev').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(centers, [431, 8], 'prev moves to the previous match')
+  await renderer.findByTestId('sessions-jump-next').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(centers, [431, 8, 431], 'next moves forward again')
+  await renderer.findByTestId('sessions-jump-chip-533').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(centers, [431, 8, 431, 533], 'navigator chip jumps to its match')
+  assert.equal(renderer.findByTestId('sessions-jump-next').props.disabled, true, 'next disabled at the last match')
+  assert.equal(renderer.findByTestId('sessions-jump-prev').props.disabled, false, 'prev enabled with earlier matches')
+  // 返回搜索结果，点整卡 → 自动以首个命中（7）为中心。
+  await renderer.findByTestId('sessions-detail-return-search').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-seq-session-cold-7'), true, 'back on the search result cards')
+  await renderer.findByTestId('sessions-hit-open-session-cold').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(centers, [431, 8, 431, 533, 7], 'opening the card centers on the first match')
 })
 
 test('session manager delete is two-phase with consequences and rejects live sessions', async () => {

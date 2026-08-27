@@ -4217,6 +4217,52 @@ test('session management view pages events with seq cursor and marks noise types
   assert.deepEqual(badId, { ok: false, error: 'invalid-session-id' })
 })
 
+test('session management view centers a hit window around a seq with clamped bounds and paging', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-window-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  // 60 条用户消息（无噪音），验证窗口切片边界。
+  const events = Array.from({ length: 60 }, (_, seq) => ({ seq, type: 'user/message', time: 1000 + seq, data: { content: [{ type: 'text', text: 'event ' + seq }] } }))
+  services.sessionQuery.readSession = async (id) => ({ session: { id, createdAt: 1000, cwd: '/workspace' }, events: events.map((event) => ({ ...event })) })
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery }, featureSettings: { sessionManager: true } })
+
+  // 中间命中：窗口 = [15, 45]，共 31 条；centerSeq 回传；nextCursor 指向窗口末条可续页。
+  const mid = await handler('sessions-view', { id: 'session-alpha', center: 30 })
+  assert.equal(mid.ok, true)
+  assert.equal(mid.value.centerSeq, 30)
+  assert.equal(mid.value.total, 60)
+  assert.equal(mid.value.items.length, 31)
+  assert.equal(mid.value.items[0].seq, 15)
+  assert.equal(mid.value.items[30].seq, 45)
+  assert.equal(mid.value.nextCursor, 45, 'paging may continue beyond the window end')
+
+  // 行首附近命中：窗口被左端裁剪。
+  const early = await handler('sessions-view', { id: 'session-alpha', center: 2 })
+  assert.equal(early.ok, true)
+  assert.equal(early.value.centerSeq, 2)
+  assert.equal(early.value.items.length, 18, 'window starts at 0 and extends past the hit')
+  assert.equal(early.value.items[0].seq, 0)
+
+  // 行尾命中：窗口被右端裁剪，nextCursor 不再续页。
+  const late = await handler('sessions-view', { id: 'session-alpha', center: 59 })
+  assert.equal(late.ok, true)
+  assert.equal(late.value.centerSeq, 59)
+  assert.equal(late.value.items.length, 16, 'window ends at the last event')
+  assert.equal(late.value.items[late.value.items.length - 1].seq, 59)
+  assert.ok(late.value.nextCursor === undefined)
+
+  // 越界 center 钳制到事件范围。
+  const over = await handler('sessions-view', { id: 'session-alpha', center: 999 })
+  assert.equal(over.ok, true)
+  assert.equal(over.value.centerSeq, 59, 'center clamped to the last seq')
+
+  // 无 center 时保持既有 cursor 分页语义（不混入窗口模式字段）。
+  const page = await handler('sessions-view', { id: 'session-alpha', cursor: 45 })
+  assert.equal(page.ok, true)
+  assert.equal(page.value.items[0].seq, 46)
+  assert.ok(page.value.centerSeq === undefined, 'cursor paging does not report centerSeq')
+})
+
 test('session management search scans cold and archived sessions with budget bounds and respects scope', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

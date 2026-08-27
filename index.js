@@ -80,6 +80,9 @@ const SKILL_LEGACY_KEYS = {
 const SESSIONS_DELETED_VERSION = 1
 const SESSIONS_DELETED_FILE = 'dsh-service-sessions-deleted.json'
 const SESSIONS_VIEW_PAGE_SIZE = 100
+// v0.37 搜索命中窗口：sessions-view 带 center 时围绕命中 seq 前后各取 N 条（参考
+// dsh-session-kb 的 readEvent 上下文窗口语义，但我们直接切片已缓存的 readSession 快照）。
+const SESSIONS_VIEW_CONTEXT = 15
 const SESSIONS_SEARCH_PER_SESSION_LIMIT = 5
 const SESSIONS_SEARCH_TOTAL_LIMIT = 50
 const SESSIONS_DELETE_PLAN_TTL_MS = 5 * 60 * 1000
@@ -3394,14 +3397,18 @@ async function resolveSessionBytesForIds(ctx, ids, cache) {
  * 分页读取一个会话的事件：readSession 取全量后按 seq 游标切片。
  * v0.36（用户点名「查看渲染优化」）：readSession 结果按会话做**单槽位宿主缓存**——
  * 冷会话日志文件不变可长期复用、live 会话 30s TTL 兜底新鲜度，翻页不再重复整份读取。
+ * v0.37：新增 center 模式——搜索命中的详情跳转视图。center 存在时忽略 cursor，
+ * 返回围绕该 seq 前后各 SESSIONS_VIEW_CONTEXT 条的窗口（命中行不一定居中，被行首/行尾
+ * 裁剪），并回传实际居中的 centerSeq；nextCursor 照常指向窗口末条，可继续向前翻页。
  * @param {object} ctx - 宿主上下文。
  * @param {string} id - 会话 id。
- * @param {number|undefined} cursor - 上一页末条 seq；缺省从头。
+ * @param {number|undefined} cursor - 上一页末条 seq；缺省从头。与 center 互斥（center 优先）。
+ * @param {number|undefined} center - 命中 seq；提供时返回其上下文窗口。
  * @param {{id: string|null, snapshot: object|null, at: number, live: boolean}} cacheRef - apply() 状态的单槽位缓存（就地改写，跨 RPC 复用）。
  * @param {number} limit - 页大小（默认 SESSIONS_VIEW_PAGE_SIZE）。
- * @returns {Promise<object>} {ok, value:{session, items, nextCursor, total}} 或 {ok:false, error}
+ * @returns {Promise<object>} {ok, value:{session, items, nextCursor, total, centerSeq?}} 或 {ok:false, error}
  */
-async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_PAGE_SIZE) {
+async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_PAGE_SIZE, center) {
   const sessionQuery = ctx.get('sessionQuery')
   if (sessionQuery === undefined || typeof sessionQuery.readSession !== 'function') return { ok: false, error: 'session-query-unavailable' }
   const live = sessionIsLive(ctx, id)
@@ -3423,7 +3430,19 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
     cacheRef.live = live
   }
   const events = Array.isArray(snapshot.events) ? snapshot.events : []
-  const start = cursor === undefined ? 0 : Math.max(0, events.findIndex((event) => Number(event.seq) > Number(cursor)))
+  const total = events.length
+  let start
+  let centerSeq
+  if (center !== undefined && Number.isSafeInteger(center) && total > 0) {
+    // v0.37 命中窗口：以命中 seq 为中心前后各 SESSIONS_VIEW_CONTEXT 条；越界 seq 钳制到
+    // 事件范围，centerSeq 回传钳制后的实际位置（客户端按它定位/高亮）。
+    const clampedCenter = Math.min(Math.max(Number(center), 0), total - 1)
+    start = Math.max(0, clampedCenter - SESSIONS_VIEW_CONTEXT)
+    limit = Math.min(total, clampedCenter + SESSIONS_VIEW_CONTEXT + 1) - start
+    centerSeq = clampedCenter
+  } else {
+    start = cursor === undefined ? 0 : Math.max(0, events.findIndex((event) => Number(event.seq) > Number(cursor)))
+  }
   const slice = events.slice(start, start + limit)
   const items = slice.map((event) => {
     const seq = Number(event.seq)
@@ -3436,7 +3455,6 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
       noise: isNoise,
     }
   })
-  const total = events.length
   const lastSeq = items.length > 0 ? items[items.length - 1].seq : (cursor ?? -1)
   return {
     ok: true,
@@ -3450,6 +3468,7 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
       items,
       nextCursor: lastSeq < total - 1 ? lastSeq : undefined,
       total,
+      ...(centerSeq !== undefined ? { centerSeq } : {}),
     },
   }
 }
@@ -4952,8 +4971,9 @@ function apply(ctx) {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : undefined
+      const center = typeof payload?.center === 'number' && Number.isSafeInteger(payload.center) ? payload.center : undefined
       try {
-        return await viewSessionPage(ctx, id, cursor, sessionViewCache)
+        return await viewSessionPage(ctx, id, cursor, sessionViewCache, SESSIONS_VIEW_PAGE_SIZE, center)
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
