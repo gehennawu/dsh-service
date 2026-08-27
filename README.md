@@ -1,130 +1,204 @@
-# dsh-service
+<div align="center">
 
 [English](./README.en.md)
 
-面向自托管 DSH Web 的服务控制与运维插件。提供安全重启、版本管理与一键升级、健康诊断、模型用量统计、备份管理、任务通知和 Linux 文件权限维护。
+# 🛠️ dsh-service
+
+<p align="center">
+  <strong>面向自托管 DeepSeek Harness (DSH) Web 的服务控制与运维插件</strong><br>
+  <em>A service-control &amp; operations plugin for self-hosted DeepSeek Harness (DSH) Web.</em>
+</p>
+
+[![Version](https://img.shields.io/badge/version-0.31.1-3b82f6.svg?style=flat-square)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1-rc.2-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai)
+[![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
+[![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
+
+<p align="center">
+  <a href="#-功能">功能</a> •
+  <a href="#-架构">架构</a> •
+  <a href="#-安装">安装</a> •
+  <a href="#-自动重启配置">自动重启配置</a> •
+  <a href="#-平台支持">平台支持</a> •
+  <a href="#-安全设计">安全设计</a> •
+  <a href="#-常见问题-faq">常见问题 FAQ</a> •
+  <a href="#-参与贡献">参与贡献</a> •
+  <a href="#-许可证">许可证</a>
+</p>
+
+---
+
+</div>
+
+面向自托管 DSH Web 的服务控制与运维插件：安全重启、版本管理与一键升级、健康诊断、模型用量统计、额度查询、备份管理、任务通知、技能管理与 Linux 文件权限维护。
 
 ![概览](./screenshots/overview.png)
 
-## 功能
+## 📑 目录
 
-设置页「服务控制」面板包含九个顶部标签：**概览、通知、健康诊断、模型统计、额度查询、备份维护、技能、子代理、重启**；重启、额度查询、技能与子代理标签还可在设置页左侧标签列底部开启快捷入口（默认关闭）。
+- [🚀 功能](#-功能)
+  - [版本与更新](#版本与更新) · [安全重启](#安全重启) · [健康诊断](#健康诊断) · [模型统计](#模型统计)
+  - [额度查询](#额度查询) · [备份管理](#备份管理) · [技能管理](#技能管理) · [子代理模型](#子代理模型)
+  - [任务通知](#任务通知) · [移动端适配](#移动端适配) · [外部探活](#外部探活)
+- [🏗️ 架构](#-架构)
+- [⚡ 安装](#-安装) · [🔄 自动重启配置](#-自动重启配置) · [🖥️ 平台支持](#-平台支持)
+- [🔒 安全设计](#-安全设计) · [❓ 常见问题 FAQ](#-常见问题-faq) · [🤝 参与贡献](#-参与贡献) · [📄 许可证](#-许可证)
 
-插件同时出现在「插件 → 插件配置」，提供九个宿主级开关：**健康诊断、模型统计、额度查询、备份维护、任务通知、技能管理、子代理模型、移动端适配、`/healthz` 探活端点**（除移动端适配默认关闭外，其余默认开启）。关闭后不仅隐藏对应界面，也会停止相关轮询/订阅并由宿主拒绝对应能力；概览与重启固定保留。设置写入 DSH settings，全部热生效：关闭或重新开启都无需刷新页面或重启 DSH Web。已在途的统计刷新、额度请求或备份操作允许完成；额度重新开启时保留既有缓存、TTL 与退避状态，因此可立即恢复界面和调用，但不保证立刻重新请求上游。
+## 🚀 功能
+
+设置页「服务控制」面板九个标签：**概览 · 通知 · 健康诊断 · 模型统计 · 额度查询 · 备份维护 · 技能 · 子代理 · 重启**；重启、额度查询、技能、子代理可另行开启**设置页左列快捷入口**（默认关闭）。
+
+「插件 → 插件配置」提供九个宿主级开关：**健康诊断、模型统计、额度查询、备份维护、任务通知、技能管理、子代理模型、移动端适配、`/healthz` 探活**（除移动端适配外默认开启）。全部热生效：关闭即隐藏界面、停止轮询并让宿主拒绝对应能力；概览与重启固定保留。
 
 ### 版本与更新
 
-- 显示当前 DSH 和插件版本，版本号链接到 GitHub Releases
-- 自动检查 npm registry 的正式版和预览版；有新版本时右侧「小三角 + 有新版本」状态文本可点击展开/收起，行内展示当前/最新版本与正式版/预览版双 tag，版本号分别带 npmjs 与 npmmirror 链接（部分网络会被 npmjs.com 拦截，npmmirror 作为镜像入口）
-- 一键升级插件，升级后自动重启；未检测到进程管理器（如在 Windows 终端手动启动）时，升级前先确认后果，安装完成后保持运行并提示手动重启
+- 显示当前 DSH 与插件版本，链接 GitHub Releases
+- 自动检查 npm **正式版 + 预览版**（latest / next 双 tag）；有新版本时行内展开对比，版本号附 npmjs 与 npmmirror 双链接
+- 一键升级，完成后自动重启；未检测到进程管理器时先确认后果，保持运行并提示手动重启
 
 ### 安全重启
 
-- 重启前检测活跃 Agent、后台任务和终端，展示清单并要求显式确认
-- 对话中输入 `/restart` 也可触发，检测到运行中工作时自动拒绝
-- 重启后自动探测新进程并刷新页面，60 秒未恢复时提供手动刷新
-- 疑似终端手动启动时，重启确认流程会提示「退出后不会自动拉起」，健康诊断中以黄色行内警示标注
-- 可在「重启」标签开启「设置页左列显示入口」开关（默认关闭），开启后在设置页左侧标签列底部显示「重启」快捷入口，与「重启」标签共用同一套确认流程
+- 重启前检测活跃 Agent、后台任务与终端，展示清单并要求显式确认
+- 对话输入 `/restart` 也可触发；检测到运行中工作时自动拒绝
+- 重启后自动探测新进程并刷新页面，60 秒未恢复提供手动刷新
+- 可开启「设置页左列显示入口」（默认关闭），与「重启」标签共用同一确认流程
+- 疑似终端手动启动时提示「退出后不会自动拉起」，健康诊断以黄色警示标注
 
 ### 健康诊断
 
-- 显示运行时间、内存、会话数、活跃 Agent 和后台任务
-- 「进程与运行环境」卡显示平台、架构和 Node 版本
-- 完整诊断检查会话存储、工作区注册表、备份目录、tar 可用性、文件权限、运行环境和 Node 运行时版本；手动启动环境以黄色行内警示标注重启无保障（不触发健康提醒横幅、服务控制提醒和标签 ⚠），未识别环境与空备份为信息级提示（不算警告），均可通过 `DSH_SERVICE_RUNTIME_ENV` 显式声明
-- 没有备份属于信息级提示，不算警告，也不点亮健康诊断标签的 ⚠
-- 文件权限深检与修复：检查 Agent 是否能读写 DSH_HOME 和工作区，修复需两段式确认
-- 「插件 → 插件配置」的「健康诊断」开关可整体关闭本标签：关闭后完整诊断与文件权限请求立即停止、宿主拒绝对应 RPC；概览的运行指标（5 秒轮询）不受影响
+- 运行时间、内存、会话数、活跃 Agent 与后台任务；「进程与运行环境」卡显示平台、架构与 Node 版本
+- 完整诊断：会话存储、工作区注册表、备份目录、tar 可用性、文件权限、运行环境与 Node 版本
+- 文件权限深检与修复（两段式确认）
+- 疑似手动启动 → 黄色警示「重启无保障」；无备份属信息级提示，不点亮 ⚠
 
 ### 模型统计
 
 ![模型统计](./screenshots/model-usage.png)
 
-- 近 7 天输入/输出/缓存 token 堆叠柱图，蓝/橙/青图例
-- 按项目筛选，鼠标悬停显示精确数值
-- 模型明细为横向堆叠柱形图（沿用主图图例配色），列表头部右侧提供「今日 / 近 7 天 / 累计」切换标签（默认今日）：今日只聚合当天，近 7 天按主图同窗口排序，累计覆盖索引内全部日期（受会话持久化留存范围限制）；每行附「x次 · 缓存命中 x% · 输入 xM token · 输出 xM token」明细
-- 提供方未上报 token 用量的模型步骤不纳入统计
-- 最近 24 小时模型/工具报错统计，默认折叠
+- 近 7 天输入 / 输出 / 缓存 token 堆叠柱图，按项目筛选、悬停显示精确值
+- 模型明细横条，列表头部「今日 / 近 7 天 / 累计」切换
+- 最近 24 小时模型 / 工具报错统计（默认折叠）
+- 提供方未上报 token 用量的步骤不纳入统计
 
 ### 额度查询
 
 ![额度查询](./screenshots/quota-lookup.png)
 
-- 独立的「额度查询」标签：以卡片分区展示已适配的供应商，每个窗口显示百分比、独立进度条，重置时间单独一行；卡片头部更新时间旁有刷新图标，点击即强制重拉该供应商（不受轮询间隔限制）；已适配卡片的标题链接到对应官网用量页（DeepSeek 平台、智谱 GLM Coding Plan、OpenCode Go、小米 MiMo 控制台用量页），点击新标签页打开；卡片列表右上角有「调整排序」开关（至少两张卡时显示），点击后各卡头部出现 ↑/↓ 按钮（首末卡对应方向自动禁用），再点一次收起；顺序记忆在本浏览器，新出现的供应商排在末尾；未适配的不占位置，统一收进底部「手动适配」行选择类型启用，卡片脚部可随时切换适配类型、回退自动识别或停用查询
-- 对话输入框内一枚额度圆环，跟随当前会话所选模型的供应商，显示最紧预算窗口的已用百分比（<80% 绿色、≥80% 黄色）；点击弹出面板——头部标明供应商，各窗口带独立进度条与已用百分比、重置时间单独一行；手机等窄屏上面板自动切换为视口居中的浮层（完整可见、超高时内部滚动），旋转或拖宽窗口即时切回圆环上方锚定
-- 可在「额度查询」标签开启「设置页左列显示入口」开关（默认关闭），开启后在设置页左侧标签列底部显示「额度查询」快捷入口（与「重启」入口同模式）
-- 内置适配：**OpenCode Go**（`{baseURL}/usage`）、**智谱 GLM Coding Plan / zai-coding-cn**（官方监控端点 `quota/limit`，含 5 小时滚动 Token、每周 Token、MCP 月度配额三个窗口，5 小时窗口空闲时与官网一致地不显示重置时间）、**OpenRouter**（credits 已用%）、**Kimi/Moonshot** 与 **硅基流动**（人民币余额）、**DeepSeek 开放平台**（官方余额，见下一条）、**小米 MiMo Token Plan**（订阅套餐额度，见下一条）；原生报「剩余百分比」的方言会自动把面板头部切换为「剩余」并把预警阈值反向；上游瞬时网络错误自动重试，智谱双域候选链自动切换；供应商与适配类型的对应关系保存在 `DSH_HOME/dsh-service-quota.json`，已知服务商按 baseURL 自动识别适配（如 opencode.ai、bigmodel.cn、api.deepseek.com、token-plan-cn.xiaomimimo.com），无需手选；未适配或已停用的供应商不会被发起任何上游请求，停用可在卡片脚部选「停用查询」或在配置文件写 `"<provider>": null`（两者等价）。智谱的重置卡暂无 API Key 可查的接口，可在「额度查询」标签内点各供应商卡片的「添加重置卡」填写名称与到期时间（可精确到分钟），可连续添加多条、每条独立移除；圆环面板同步显示（数据存入同一配置文件），过期自动标注
-- **DeepSeek 官方余额与峰谷提示（deepseek）**：调用 DeepSeek 开放平台官方 `GET /user/balance`，按币种显示总额余额（CNY→¥、USD→$），未过期赠金大于 0 时追加一行「赠送余额」；卡片内嵌**峰谷时段提示块**——顶部为当前状态徽标（橙=「当前高峰时段 · 标准价」、绿=「当前空闲时段 · 半价计费」）和下一次换挡的北京时间倒计时（如「09:00 转高峰（12 小时 41 分钟后）」，跨周末也能算到周一早高峰），下方是一条**两段式**峰谷色带：第一段是当前时段的剩余部分，第二段是下一个相反时段（可跨天，如周五晚直接画到周一早高峰），宽度按实际时长比例、左缘细标线即当前时刻；段内只标「忙时 / 闲时」，每 30 秒自动前进，底部说明行写明官方规则「空闲时段价格为高峰时段的一半」；圆环面板内同步显示紧凑版（无说明行）。凭据按 `DEEPSEEK_API_KEY` 线索从 DSH 凭据库或环境变量解析，也可直接在卡片上用「填写 API 密钥」表单写入。DSH 内置的 `@deepseek-ai/dsh-llm-deepseek` 官方渠道（模型选择器里的 DeepSeek V4 系列，路由名 `deepseek-official`）**无需在 settings 另建路由**——额度查询会自动并入这个运行时渠道并按官方余额适配，切换到它的模型时圆环同样出现。自动识别出的 DeepSeek 行在 `DEEPSEEK_API_KEY` 未配置时**整行不显示**；每次进入「额度查询」标签页都会自动重新识别一次凭据是否已配置（识别失败静默不提示），配置好后卡片自动现身。手动在 UI 里适配过的 DeepSeek 行不受此限，照常显示以便填写密钥。
-- **CLIProxyAPI 账号额度（cliproxy）**：查询 CLIProxyAPI（CPA）部署内各 OAuth 上游账号的**官方剩余额度**（Codex 的 5 小时/本周窗口、GeminiCLI 与 Antigravity 的各模型配额），而不是代理 key 的用量。前置条件：CPA 配置 `remote-management.secret-key` 非空（为空时管理面整体不可用）、远程访问需开启 `allow-remote-management`；管理密钥放入 DSH 凭据库 `CPA_MANAGEMENT_KEY` 或同名环境变量——它与代理用的 API key 相互独立，插件绝不会把代理 key 发往管理面。在「手动适配」中选择「CLIProxyAPI 账号额度」保存时，插件会把该供应商 settings baseURL 的域名钉进配置文件，此后外呼只发往这个域（修改 baseURL 后需重新保存适配）；单次刷新最多查询 8 个账号（已禁用或无受支持配额端点的账号自动跳过），部分账号失败不影响其余账号的结果。请注意 CPA 管理面对错误密钥有内建封禁（连续错 5 次封 IP 30 分钟），务必填对再测
-- **小米 MiMo Token Plan 额度（xiaomi-token-plan-cn）**：查询小米 MiMo 开放平台 Token Plan 订阅的「套餐使用情况」——套餐总额度、补偿积分等额度桶，与控制台同源，每行显示已用百分比、绝对数缩写（如 `12% · 1.4B / 11B`）和订阅有效期倒计时。小米没有可用 API Key 查询额度的接口（推理网关只有 `/v1` 推理路径），数据来自控制台同源 API，凭据是**网页登录态 Cookie**：浏览器登录 platform.xiaomimimo.com 后打开开发者工具，从任意 `/api/v1/tokenPlan/` 请求复制完整 `Cookie:` 请求头的值，点卡片上的**「填写控制台 Cookie（网页登录态）」**粘贴保存（写入 DSH 凭据库 `XIAOMI_MIMO_CONSOLE_COOKIE` 或同名环境变量；带不带 `Cookie:` 前缀都行）。Cookie 只发往 `platform.xiaomimimo.com/api/v1/tokenPlan/detail` 与 `/usage` 两个固定端点；`tp-` 开头的推理密钥绝不会发往控制台平面。Cookie 失效（退出登录或过期）时卡片显示「控制台 Cookie 已失效」，重新复制一次即可。供应商按 baseURL 自动识别（token-plan-cn.xiaomimimo.com）；经中转域接入推理时在「手动适配」中选择「小米 MiMo Token Plan」即可（查询平面固定、不受 baseURL 影响）。请注意网页 Cookie 等同整个控制台的访问权限——它只保存在本机凭据库、只用于上述两个固定端点，请不要把 Cookie 交给不信任的环境
-- 凭据填写窗口：已适配供应商因缺凭据显示「凭据未配置」时，卡片上会出现内联表单——普通适配显示**「填写 API 密钥」**，CLIProxyAPI 适配显示**「填写管理密钥（网页登录的 key）」**（即登录 CPA 网页管理面所用的 remote-management 密钥，不是代理 API key——管理面对错密钥有封禁，别填错），小米 Token Plan 适配显示**「填写控制台 Cookie（网页登录态）」**；凭据名称由宿主按适配类型派生白名单（CLIProxyAPI 只会出现 `CPA_MANAGEMENT_KEY`/`CLIPROXY_MANAGEMENT_KEY`——两者是同一密钥的**别名存放槽，二选一即可**，查找按顺序取第一个已配置的值；小米只出现 `XIAOMI_MIMO_CONSOLE_COOKIE`/`MIMO_CONSOLE_COOKIE`，同理二选一；主名带「主名」标记且表单默认选中已配置的槽位。绝不混入代理 key 或 tp- 推理密钥），输入密钥值保存即写入 DSH 凭据提供方（`$DSH_HOME/.credentials.yaml` 的 `refs:` 分节，热生效无需重启），随后自动强制重拉该供应商；表单里还能一键清除已存的文件层凭据。进程环境变量正在遮蔽该名字时宿主会拒绝写入（凭据库契约），此时请改环境变量本身
-- 防风控节律由宿主统一控制：成功结果缓存 60 秒（多标签共享）、失败指数退避（30 秒起 ×2、封顶 15 分钟）、上游超时 15 秒；面板可把自动查询调成仅手动 / 1 / 2 / 5 / 10 分钟（默认仅手动），页面不可见时自动暂停
-- API key 只在宿主进程内解析使用，浏览器只会收到归一化后的窗口数据（百分比或余额文本）；数据走插件自有 loopback RPC，不在 webServer 上暴露任何路由
+- 卡片分区展示各供应商：窗口百分比、独立进度条、重置时间；支持强制刷新、官网用量页链接与卡片排序
+- 对话输入框**额度圆环**：跟随当前会话模型所属供应商，显示最紧预算窗口用量（<80% 绿、≥80% 黄）；点击弹出详情面板，窄屏自动切换为居中浮层
+- 内置适配：
+
+| 供应商 | 数据来源 |
+| --- | --- |
+| DeepSeek 开放平台 | 官方余额 + 峰谷时段提示（忙/闲色带、换挡倒计时） |
+| 智谱 GLM Coding Plan | 官方端点：5 小时滚动 / 每周 / MCP 月度三窗口 |
+| OpenCode Go | `{baseURL}/usage` |
+| OpenRouter | credits 已用百分比 |
+| Kimi / 硅基流动 | 人民币余额 |
+| 小米 MiMo Token Plan | 控制台同源套餐额度（网页登录态 Cookie） |
+| CLIProxyAPI 部署 | 各 OAuth 上游账号官方剩余额度 |
+
+- 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie
+- 防风控：结果缓存 60 秒、失败指数退避（30 秒 ×2、封顶 15 分钟）；自动查询可调为仅手动 / 1 / 2 / 5 / 10 分钟
+- API key 只在宿主进程内解析，浏览器仅收到归一化窗口数据；未适配的供应商绝不发起请求
 
 ### 备份管理
 
-- 创建会话、配置和插件 profile 清单的 `.tar.gz` 归档
-- 导出：下载备份到浏览器
-- 恢复：解压覆盖到对应路径，两段式确认后自动重启
-- 导入：选择 `.tar.gz` 文件上传到备份目录
-- 删除需两段式确认，备份不限份数，不自动清理
+- 创建会话、配置与插件 profile 清单的 `.tar.gz` 归档
+- 导出下载 / 导入上传 / 删除（两段式确认）；不限份数、不自动清理
+- 恢复：解压覆盖对应路径，确认后自动重启
 
 ### 技能管理
 
 ![技能管理](./screenshots/skill-manager.png)
 
-- 「技能」标签按**自动加载 / 仅手动调用 / 完全停用**三区展示全部本地技能（项目 `.dsh`、项目 `.agents`、用户 `~/.dsh/skills`、`$DSH_AGENTS_HOME` 与 `$DSH_BUNDLED_SKILL_DIR` 根，一层深度），支持名称过滤与来源徽标；同名遮蔽（低 rank 优先）与被遮蔽副本均有标注，内置目录只读展示；同一物理目录被多条规则命中时只计一次
-- 每条目双开关直接改写 SKILL.md frontmatter：`disable-model-invocation` 控制「对模型可见」，`user-invocable` 控制「可被 / 调用」；开关采用两段式点击确认，改动约 200ms 内热生效，活跃会话下一步自动收到目录更新提示；往返切换不会在文件中累积残留
-- 带 camelCase 旧版调用键（如 `disableModelInvocation`）的条目会被官方解析器整条剔除：面板给出 ⚠ 提示，两段式确认后按语义换算修复为规范键
-- ✨「AI 补全说明」：从已配置模型中任选一个（记住上次选择），宿主用固定模板调用该模型生成描述与用法草稿，**输出语言跟随 DSH 设置的界面语言**（中文环境出简体中文、英文环境出英文）；草稿以新旧对照预览，显式确认后保存为「AI 注释」。注释**只存在插件的侧车索引 `DSH_HOME/dsh-service-skills-index.json` 里、绝不改写 SKILL.md**，仅在技能标签页该条目下方单独展示并占满条目卡片宽度（带移除按钮）；正文变更后注释自动标记过期，重新补全即可刷新
-- 一键批量补全：自动圈出未注释或正文有变的技能（含只读目录，跳过无效与被遮蔽副本），先展示候选数/预计发送量与可展开的逐条跳过清单，确认后顺序执行并显示进度，单条失败不影响批次，可随时取消（取消会立即中断在途模型调用）；全程零文件改动，也绝不自动发起任何模型调用
-- 批量任务在宿主后台持续运行：切换标签、关闭设置面板甚至刷新页面都不会中断；回到技能页自动恢复进度与取消按钮，批量进行中「技能」标签标题实时显示 `⟳已完成/总数` 角标，运行中重复生成计划会被明确拒绝
+- 按 **自动加载 / 仅手动调用 / 完全停用** 三区展示本地技能；同名遮蔽与被遮蔽副本均有标注，内置目录只读
+- 双开关直接改写 SKILL.md frontmatter（`disable-model-invocation` / `user-invocable`），约 200ms 热生效
+- 带 camelCase 旧版键的条目会被官方解析器剔除：⚠ 提示 + 一键修复
+- ✨ AI 补全说明：选模型生成描述草稿（跟随界面语言），确认后存入插件侧车索引——**绝不改写 SKILL.md**；支持一键批量补全（宿主后台运行、可取消）
 
 ### 子代理模型
 
 ![子代理模型](./screenshots/subagent-model.png)
 
-- 「子代理」标签控制**未显式指定模型**的子代理委派路由，支持三种模式：**初始（不干预）**不注入任何配置并完整保留 DSH 原生继承；**跟随主模型**在每次派生时读取主对话最近一次请求实际使用的 provider/model；**自定义**把所有未指定路由的子代理固定到所选供应商与模型
-- 派生请求自身显式指定 provider 或 model 时始终优先，插件不会覆盖预设钉死、调用参数或其他插件已经注入的路由。自定义模型只能从宿主实时模型清单中选择；已配置供应商后来被卸载时安全回落原生继承，不会让子代理创建失败
-- 配置保存在 `$DSH_HOME/dsh-service-subagent-route.json`（原子写入、文件权限 `0600`）；「重置回初始配置」会清除自定义路由并恢复零干预。可在该标签开启设置页左列「子代理」快捷入口（默认关闭）
+- 三种模式：**初始**（不干预）/ **跟随主模型**（取主对话最近一次实际使用的 provider/model）/ **自定义**（固定到所选模型）
+- 派生请求自带 provider/model 时始终优先，绝不覆盖预设钉死
+- 配置存 `$DSH_HOME/dsh-service-subagent-route.json`（原子写入、`0600`），可一键重置
 
 ### 任务通知
 
 ![任务通知](./screenshots/task-notifications.png)
 
-- 通知设置位于服务控制顶部的「通知」标签：会话完成一轮任务、或需要你授权/审阅计划/选择答案时发送浏览器通知
-- 点击系统通知弹窗会聚焦到 DSH 页面并关闭该通知
-- 四档开关条：总开关、任务结束通知、授权与提问通知、铃铛图标显隐，各自独立控制
-- 对话栏内铃铛图标快速切换总开关；「通知」标签内的「显示输入框旁的铃铛图标」胶囊开关可把它整体隐藏（通知行为不受影响，显隐选择在页面刷新后保持）
-- 各开关在页面刷新后保持
+- 会话完成一轮任务、或需要授权 / 审阅计划 / 回答问题时发送浏览器通知；点击通知聚焦页面
+- 四档独立开关：总开关、任务完成、授权与提问、输入框铃铛显隐
+- 对话栏铃铛一键开关总通知；所有开关刷新后保持
 
 ### 移动端适配
 
-- 默认关闭（可在「插件 → 插件配置」开启），仅在手机竖屏或窄窗口（视口 <1024px，与官方外壳的侧栏折叠断点一致）下生效，桌面宽度完全无感
-- 侧栏变抽屉：官方侧栏整体收进左侧 overlay 抽屉——左缘半透明悬浮按钮开合、点背板或点选任意会话后自动收起；预览/文件树详情列变右侧浮层，不再挤压会话区。开合走 DSH 官方 `layout` 服务，不重挂宿主 DOM
-- 模态弹窗底部化：设置等对话框变为底部 sheet（上圆角、内部滚动），设置页左列导航变为顶部横向滑动条
-- 触屏细节：自动补 `viewport-fit=cover` 并避让刘海安全区；按钮双击不再触发页面缩放；文本输入框保持 ≥16px，iOS 聚焦时不再自动放大
-- 大 JSON 响应透明压缩：宿主对 ≥4KB 的 JSON 响应按浏览器 `Accept-Encoding` 自动 gzip/brotli 异步压缩（长会话历史可达十几 MB，压缩后首屏明显提速），小体积与其他类型字节级透传，SSE 流不受影响
-- 「插件 → 插件配置」的「移动端适配」开关可整体关闭：关闭后宿主压缩补丁还原、界面增强全部卸载，立即回到原生布局，热生效无需重启
-- 调试模式：URL 追加 `?dshsvc-mobile-debug=1` 显示浮动诊断条（视口尺寸 / 断点状态 / 抽屉与详情列状态 / JS 错误计数），仅调试用途
+- 默认关闭；仅在视口 <1024px（手机竖屏 / 窄窗口）生效，桌面完全无感
+- 侧栏变抽屉、详情列变右侧浮层、模态变底部 sheet、设置左列导航变顶部横滑
+- 大 JSON 响应透明压缩（≥4KB 按 `Accept-Encoding` 自动 gzip/brotli），长会话历史首屏提速
+- 自动补 `viewport-fit=cover` 避让刘海、禁双击缩放、输入框 ≥16px 防 iOS 聚焦放大
+- `?dshsvc-mobile-debug=1` 显示浮动诊断条（仅调试）
 
 ### 外部探活
 
-- `GET` / `HEAD /healthz` 返回空的 HTTP 200，其他方法返回 405
+- `GET` / `HEAD /healthz` 返回空 200，其他方法返回 405
 - 适合 Uptime Kuma、Docker、Kubernetes 等外部监控
 
-## 安装
+## 🏗️ 架构
 
-### 从 npm 安装（推荐）
+插件是 Cordis 双半结构：**Host 端（`index.js`）** 承担一切能力与数据访问，**Client 端（`client.js`）** 只在浏览器渲染界面；两侧经 Typert JSON-RPC 通信，通道为单层绝对路径 `/dsh-service`，authority 一律 `loopback`。
 
-```sh
-dsh plugin --profile web add @gehennawu/dsh-service
+```mermaid
+flowchart TB
+    subgraph Client["🌐 Client 浏览器端 (client.js)"]
+        UI["设置页「服务控制」面板（9 标签 + 快捷入口）<br/>额度圆环 · 通知铃铛 · 移动端适配"]
+    end
+
+    subgraph Host["⚙️ Host 服务端 (index.js)"]
+        RPC["Loopback RPC · /dsh-service<br/>version / check-update / restart / quota / skills / backup"]
+        SPAWN["受控 spawn<br/>chmod / chown / npm 升级"]
+    end
+
+    subgraph DSH["🚀 DSH 核心运行时（只读消费）"]
+        CORE["agents · jobs · terminals · sessions<br/>sessionQuery · skills · credentials"]
+        WEB["webServer 路由<br/>GET/HEAD /healthz"]
+    end
+
+    subgraph OS["💾 宿主机与外部"]
+        PM["进程管理器<br/>Docker / systemd / pm2"]
+        FS["$DSH_HOME<br/>配置 / 备份 / 凭据 / 技能索引"]
+        REG["npm registry"]
+        QUOTA["上游额度 API"]
+    end
+
+    UI -- "Typert JSON-RPC（loopback）" --> RPC
+    RPC --> CORE
+    RPC --> SPAWN
+    RPC --> REG
+    RPC --> QUOTA
+    RPC -- "process.exit(42)" --> PM
+    SPAWN --> FS
+    MON["外部监控<br/>Uptime Kuma / Docker / K8s"] -- "GET /healthz" --> WEB
 ```
 
-### 从 GitHub 安装
+关键契约：
 
-```sh
-dsh plugin --profile web add github:gehennawu/dsh-service
-```
+- **仅 loopback**：能力只经 `/dsh-service` loopback channel 暴露；webServer 路由只返回不含信息量的状态码
+- **重启 = `process.exit(42)`**：插件只发退出信号，由外层进程管理器拉起；没有管理器时重启无保障
+- **零输入拼接**：浏览器侧不接受 URL / 包名 / 命令 / 路径，命令全部走宿主侧白名单
+- **凭据不出宿主**：API key 只在宿主进程内解析，浏览器只收到归一化窗口数据
+
+## ⚡ 安装
+
+| 方式 | 命令 |
+| --- | --- |
+| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service` |
+| GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
+| 本地开发 | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
 安装或更新后重启 DSH Web：
 
@@ -132,19 +206,13 @@ dsh plugin --profile web add github:gehennawu/dsh-service
 dsh web
 ```
 
-打开 DSH Web 设置页，进入 **服务控制**。
+打开 DSH Web 设置页，进入**服务控制**。
 
-### 本地开发安装
+## 🔄 自动重启配置
 
-```sh
-dsh plugin --profile web add link:/path/to/dsh-service
-```
+插件只发送退出信号，不负责拉起进程；没有进程管理器时重启会直接停止 DSH Web。
 
-## 自动重启配置
-
-插件只发送退出信号，不负责重新启动进程。没有进程管理器时，点击重启会直接停止 DSH Web。
-
-插件会用被动信号（环境变量、`/.dockerenv`、`/proc/1/cgroup`、终端 TTY）判断当前是否由进程管理器拉起：检测到 Docker/systemd/pm2/supervisord/Kubernetes 时照常自动重启；都没有且 stdin/stdout 是交互终端时视为「疑似手动启动」，健康诊断会以黄色警示标注，一键升级改为「不自动退出 + 提示手动重启」。启发式无法覆盖输出重定向、NSSM/WinSW 等场景，可用环境变量 `DSH_SERVICE_RUNTIME_ENV=managed|manual` 显式声明。
+插件以被动信号（环境变量、`/.dockerenv`、`/proc/1/cgroup`、终端 TTY）判断进程管理器：检测到 Docker/systemd/pm2/supervisord/Kubernetes 时照常自动重启；都没有且 stdin/stdout 为交互终端时视为「疑似手动启动」——健康诊断黄色标注、一键升级改为保持运行并提示手动重启。启发式无法覆盖输出重定向、NSSM/WinSW 等场景，可用 `DSH_SERVICE_RUNTIME_ENV=managed|manual` 显式声明。
 
 ### Docker Compose
 
@@ -169,7 +237,7 @@ RestartSec=2
 pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 ```
 
-## 平台支持
+## 🖥️ 平台支持
 
 | 环境 | 插件功能 | 重启后自动拉起 | 验证状态 |
 | --- | --- | --- | --- |
@@ -178,18 +246,73 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | macOS / Windows + pm2 等 | 代码未限制 | 由进程管理器负责 | 未验证 |
 | 直接运行 `dsh web` | 支持 | 不支持 | 预期行为 |
 
-直接在终端运行（PowerShell/CMD/bash）时，面板会标注「疑似终端手动启动」，一键升级不再自动退出进程。
+运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-运行要求：Node.js `>=22`，DSH Web 能加载 Host 和 Client 两半插件。检查更新需要访问 `registry.npmjs.org`；网络失败不影响其他功能。
+## 🔒 安全设计
 
-## 安全设计
+| 领域 | 边界 |
+| --- | --- |
+| 输入 | 浏览器不能传入 URL、包名、命令或文件路径 |
+| 网络 | 更新检查只访问固定 npm registry 地址 |
+| RPC | 仅接受 loopback 调用，数据不出本机 |
+| 数据 | 用量索引不保存消息、Prompt、工具参数或凭据；API key 只在宿主进程内使用 |
+| 操作 | 破坏性操作（重启、删除、修复权限）均需两段式确认 |
+| 凭据 | 写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`），只发往固定端点 |
 
-- 浏览器端不能传入 URL、包名、命令或文件路径
-- 更新检查只访问固定的 npm registry 地址
-- RPC channel 仅接受 loopback 调用
-- 模型用量索引不保存消息、Prompt、Tool 参数或凭据
-- 破坏性操作（重启、删除、修复权限）均需两段式确认
+## ❓ 常见问题 FAQ
 
-## 许可证
+<details>
+<summary><strong>重启后没有自动起来？</strong></summary>
+
+插件只发送退出信号，重新拉起由进程管理器负责（见「自动重启配置」）。面板标注「疑似手动启动」时，直接运行 `dsh web` 的终端进程会被退出；请改用 Docker Compose / systemd / pm2 托管。
+</details>
+
+<details>
+<summary><strong>健康诊断里的黄色「重启无保障」警告是什么？</strong></summary>
+
+这是「疑似终端手动启动」的检测结果，说明当前没有检测到进程管理器。若实际由 NSSM/WinSW 或输出重定向等场景托管，可用 `DSH_SERVICE_RUNTIME_ENV=managed` 显式声明消除。
+</details>
+
+<details>
+<summary><strong>额度卡片显示「凭据未配置」？</strong></summary>
+
+点击卡片上的内联表单写入凭据：普通适配填 API key，CLIProxyAPI 填管理密钥（不是代理 key），小米 Token Plan 填控制台 Cookie。写入 DSH 凭据库后自动强制刷新；被进程环境变量遮蔽时宿主会拒绝写入，需改环境变量本身。
+</details>
+
+<details>
+<summary><strong>小米卡片显示「控制台 Cookie 已失效」？</strong></summary>
+
+网页登录态过期了。重新登录 platform.xiaomimimo.com，从任意 `/api/v1/tokenPlan/` 请求复制 `Cookie:` 头，点卡片「填写控制台 Cookie」重新粘贴。
+</details>
+
+<details>
+<summary><strong>恢复备份会怎样？</strong></summary>
+
+解压并覆盖到对应路径（会话、配置、插件 profile），两段式确认后自动重启生效。删除备份同样需要两段式确认。
+</details>
+
+<details>
+<summary><strong>技能开关为什么置灰不可点？</strong></summary>
+
+该技能来自内置（bundled）只读目录。只有 `project-*` 与 `user-*` 来源的技能支持双向开关。
+</details>
+
+<details>
+<summary><strong>保存技能开关提示「技能文件刚刚发生变化」？</strong></summary>
+
+并发保护生效：SKILL.md 刚被外部编辑器改动（版本比对失败）。点击「刷新」获取最新状态后重试即可。
+</details>
+
+<details>
+<summary><strong>更新检查失败会影响其他功能吗？</strong></summary>
+
+不会。更新检查只是访问 npm registry 的只读请求，失败静默忽略，其余功能不受影响。
+</details>
+
+## 🤝 参与贡献
+
+欢迎提交 Issue 与 Pull Request。开发路线与技术约定见仓库内 AGENTS.md；发布规范见 AGENTS.md「发布」一节。
+
+## 📄 许可证
 
 [MIT](./LICENSE)

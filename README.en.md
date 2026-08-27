@@ -1,132 +1,206 @@
-# dsh-service
+<div align="center">
 
 [中文](./README.md)
 
-A service-control and operations plugin for self-hosted DSH Web. Provides safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, remote quota, backup management, task notifications, and Linux file-permission maintenance.
+# 🛠️ dsh-service
+
+<p align="center">
+  <strong>A service-control &amp; operations plugin for self-hosted DeepSeek Harness (DSH) Web.</strong><br>
+  <em>面向自托管 DeepSeek Harness (DSH) Web 的服务控制与运维插件。</em>
+</p>
+
+[![Version](https://img.shields.io/badge/version-0.31.1-3b82f6.svg?style=flat-square)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1-rc.2-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai)
+[![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
+[![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
+
+<p align="center">
+  <a href="#-features">Features</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#-automatic-restart">Automatic restart</a> •
+  <a href="#-platform-support">Platform support</a> •
+  <a href="#-security-design">Security design</a> •
+  <a href="#-faq">FAQ</a> •
+  <a href="#-contributing">Contributing</a> •
+  <a href="#-license">License</a>
+</p>
+
+---
+
+</div>
+
+A service-control and operations plugin for self-hosted DSH Web: safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, quota lookup, backup management, task notifications, skills management, and Linux file-permission maintenance.
 
 ![Overview](./screenshots/overview_en.png)
 
-## Features
+## 📑 Contents
 
-The Settings panel "Service Control" page has nine top-level tabs: **Overview, Notifications, Health, Model stats, Quota lookup, Backups, Skills, Subagents, Restart**; the Restart, Quota lookup, Skills, and Subagents tabs can each enable a quick entry at the bottom of the settings left navigation (off by default).
+- [🚀 Features](#-features)
+  - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
+  - [Quota lookup](#quota-lookup) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
+  - [Task notifications](#task-notifications) · [Mobile adaptation](#mobile-adaptation) · [External liveness probe](#external-liveness-probe)
+- [🏗️ Architecture](#-architecture)
+- [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
+- [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
 
-The plugin also appears under **Plugins → Plugin configuration**, with nine host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Mobile adaptation, and the `/healthz` liveness endpoint** (all enabled by default except Mobile adaptation, which is off by default). Disabling one hides its UI, stops the associated polling/subscriptions, and makes the Host reject that capability; Overview and Restart remain available. All nine switches are live settings: disabling or re-enabling them requires neither a page reload nor a DSH Web restart. Statistics refreshes, quota requests, or backup operations already in flight are allowed to finish; quota re-enablement preserves existing cache, TTL, and backoff state, so its UI and calls return immediately but a new upstream request is not guaranteed at once.
+## 🚀 Features
+
+The Settings "Service Control" panel has nine tabs: **Overview · Notifications · Health · Model stats · Quota lookup · Backups · Skills · Subagents · Restart**; Restart, Quota lookup, Skills, and Subagents can each enable a **quick entry in the settings left navigation** (off by default).
+
+Under **Plugins → Plugin configuration**, nine host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
 ### Version and updates
 
-- Displays current DSH and plugin versions with links to GitHub Releases
-- Automatically checks npm registry for stable and preview releases; when a new version exists, the right-side status text (chevron + `New version`) is clickable to expand/collapse, showing the current/latest versions and both dist-tag versions inline, each with npmjs and npmmirror links (npmjs.com is blocked on some networks; npmmirror serves as the mirror entry)
-- One-click plugin upgrade with automatic restart after completion; when no process manager is detected (for example, a manual launch from a Windows terminal), the upgrade first confirms the consequences, then keeps the process running and shows manual-restart instructions
+- Shows the current DSH and plugin versions, linking to GitHub Releases
+- Automatically checks npm **stable + preview** (latest / next dist-tags); when a new version exists, an inline expandable compares them, each with npmjs and npmmirror links
+- One-click upgrade with automatic restart; when no process manager is detected, it confirms the consequences first, keeps running, and shows manual-restart instructions
 
 ### Safe restart
 
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
-- `/restart` command also available in conversations; automatically refuses when active work is detected
-- Automatically probes for the new process after restart and reloads the page; manual reload available after 60 seconds
-- When a manual terminal launch is suspected, the restart confirmation flow warns that nothing will bring the process back, and Health diagnostics marks it with a yellow inline caution
-- Optional `Restart` entry at the bottom of the settings left navigation, enabled by a switch in the Restart tab (off by default), sharing the exact same confirmation flow as the Restart tab
+- `/restart` also works in conversations; automatically refuses while work is running
+- Probes the new process after restart and reloads the page; manual reload offered after 60 seconds
+- Optional "Restart" entry in the settings left navigation (off by default), sharing the same confirmation flow
+- A suspected manual terminal launch warns that nothing will bring the process back and gets a yellow caution in Health
 
 ### Health diagnostics
 
-- Shows uptime, memory, session count, active agents, and background jobs
-- The "Process and runtime" card shows platform, architecture, and Node version
-- Full diagnostics check session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node runtime version; a manual launch is marked with a yellow inline caution (no restart assurance) that does not trigger the health alert banner, the service-control reminder, or the tab ⚠; an unrecognized environment and an empty backup list are informational only — all can be declared explicitly via `DSH_SERVICE_RUNTIME_ENV`
-- Having no backups is an informational note, not a warning, and does not light the Health tab ⚠
-- File-permission deep scan and repair: checks whether the Agent can read/write DSH_HOME and workspaces; repair requires two-step confirmation
-- The **Health diagnostics** switch under Plugins → Plugin configuration hides this whole tab: full diagnostics and file-permission requests stop immediately and the Host rejects the corresponding RPCs; the overview metrics (5-second polling) are unaffected
+- Uptime, memory, session count, active agents, and background jobs; a "Process and runtime" card shows platform, architecture, and Node version
+- Full diagnostics: session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node version
+- File-permission deep scan and repair (two-step confirmation)
+- Suspected manual launch → yellow "no restart assurance" caution; no backups is informational only and never lights the ⚠
 
 ### Model statistics
 
 ![Model statistics](./screenshots/model-usage_en.png)
 
-- 7-day stacked bar chart of input/output/cache tokens with blue/orange/teal legend
-- Filter by project; hover for exact values
-- Model breakdown as horizontal stacked bars (same legend colors) with a "Today / Last 7 days / All time" toggle on the right of the list header (default: today): Today aggregates only the current day, Last 7 days ranks within the chart's window, and All time covers every date in the index (bounded by session retention); each row keeps `x times · Cache hit x% · Input xM token · Output xM token`
-- Steps whose provider reports no token usage are excluded from the statistics
-- Last-24-hour model/tool error statistics, collapsed by default
+- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values
+- Per-model horizontal bars with a "Today / Last 7 days / All time" toggle
+- Last-24-hour model/tool errors (collapsed by default)
+- Steps whose provider reports no token usage are excluded
 
 ### Quota lookup
 
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
-- A dedicated "Quota lookup" tab shows adapted providers as separate cards, each window rendered as a percentage with its own bar and a reset countdown on its own line, plus a refresh icon beside the updated time that force-refreshes that provider on click (bypassing the poll interval); adapted card titles link to the provider's official usage page (DeepSeek Platform, Zhipu GLM Coding Plan, OpenCode Go, Xiaomi MiMo console usage page) in a new tab; a "Reorder" toggle at the top-right of the card list (shown with two or more cards) reveals ↑/↓ buttons on each card header (auto-disabled at the ends), and clicking it again hides them; the order is remembered in this browser and newly seen providers append at the end; unadapted providers take no space — a "Manual adapt" row at the bottom enables one by picking its type, and each card's footer can switch type, fall back to auto-detect, or disable lookup at any time
-- A quota ring inside the conversation composer follows the provider selected by the current session and shows the tightest budget window as a percentage (green below 80%, amber at or above); clicking opens a panel headed by the provider name, with a bar and used percentage for each window and reset times on their own lines; on narrow viewports (phones) the panel switches to a viewport-centered floating layer — fully visible, scrolling internally when too tall — and rotates or resizing wider flips it back to the anchored placement above the ring
-- A "Show a remote quota entry in the settings left navigation" switch lives in the Quota lookup tab (off by default), mirroring the Restart entry
-- Built-in adaptations: **OpenCode Go** (`{baseURL}/usage`), **Zhipu GLM Coding Plan / zai-coding-cn** (official monitor `quota/limit` endpoint with three windows — 5-hour rolling tokens, weekly tokens, monthly MCP quota; an idle 5-hour window hides its reset time, matching the official console), **OpenRouter** (credits used %), **Kimi/Moonshot** and **SiliconFlow** (CNY balance text), **DeepSeek Platform** (official balance, see next bullet), **Xiaomi MiMo Token Plan** (subscription plan quota, see below); dialects that natively report remaining percentage flip the panel word to "Remaining" and invert the warn threshold; transient network errors retry automatically and the Zhipu dual-domain candidate chain switches automatically; the provider-to-kind mapping lives in `DSH_HOME/dsh-service-quota.json`, and known services are auto-detected from their baseURL (e.g. opencode.ai, bigmodel.cn, api.deepseek.com, token-plan-cn.xiaomimimo.com) with no manual picking; no upstream request is ever made for unadapted or disabled providers; disabling can be done via "Disable" in a card's footer or by writing `"<provider>": null` in the config file (both are equivalent). Zhipu reset cards have no API-key-queryable endpoint yet — you can add any number of them via each provider card's "Add reset card" button on the tab (name plus expiry time, down to the minute), and remove each one independently — the ring panel shows them too (stored in the same config file); expired cards are flagged automatically
-- **DeepSeek official balance with peak/off-peak hint (deepseek)**: calls DeepSeek Platform's official `GET /user/balance` and shows the total balance per currency (CNY→¥, USD→$), plus a separate "Granted balance" line whenever unexpired granted credit is positive; each DeepSeek card embeds a **peak/off-peak block** — a status badge on top (orange = "Peak now · standard price", green = "Off-peak now · half price") with a countdown to the next switch in Beijing time (e.g. "Peak pricing from 09:00 (in 12 h 41 min)", correctly spanning weekends to Monday's morning peak), below it a two-segment ribbon: the first block is the remainder of the current period and the second is the next opposite period (spanning days when needed — e.g. Friday evening draws straight to Monday's morning peak), widths proportional to actual durations with the left edge marking "now"; blocks are tagged inline as Peak / Off-peak, advancing every 30 seconds, and a caption stating the official rule "off-peak price is half the peak price"; the ring panel shows a compact version without the caption. Credentials resolve via the `DEEPSEEK_API_KEY` hint from the DSH credential store or environment variables, or can be written directly through the card's credential form. DSH's built-in `@deepseek-ai/dsh-llm-deepseek` official channel (the DeepSeek V4 models in the model picker, route id `deepseek-official`) needs **no extra settings route** — the quota lookup merges that runtime channel automatically and adapts it to the official balance endpoint, so the ring also appears when you switch to one of its models. The auto-detected DeepSeek row is **hidden entirely while `DEEPSEEK_API_KEY` is not configured**; each visit to the Quota lookup tab re-checks the credential once (a failed check stays silent), and the card appears automatically once the key exists. A DeepSeek row adapted manually through the UI is exempt and always shown so its key can be filled in
-- **CLIProxyAPI accounts (cliproxy)**: queries the **official remaining quota** of each OAuth upstream account inside a CLIProxyAPI (CPA) deployment (Codex 5-hour/weekly windows, per-model quotas for GeminiCLI and Antigravity) — not proxy-key usage. Prerequisites: CPA's `remote-management.secret-key` must be set (the whole management API is unavailable without it), remote access requires `allow-remote-management`, and the management secret goes into the DSH credential store as `CPA_MANAGEMENT_KEY` or an environment variable of the same name — it is independent of the proxy API key, and the plugin never sends the proxy key to the management plane. When you save the "CLIProxyAPI accounts" adaptation, the plugin pins the hostname of that provider's settings baseURL into the config file and afterwards only sends requests to that pinned domain (re-save the adaptation after changing baseURL); a single refresh queries at most 8 accounts (disabled accounts and account types without a supported quota endpoint are skipped automatically), and failures on some accounts do not affect the rest. Note that CPA's management plane has built-in key throttling — 5 wrong attempts ban your IP for 30 minutes — so make sure the secret is correct before testing
-- **Xiaomi MiMo Token Plan quota (xiaomi-token-plan-cn)**: queries the "plan usage" of a Xiaomi MiMo Open Platform Token Plan subscription — plan total quota, compensation credits and other buckets, straight from the same source as the console; each row shows used percentage, an absolute figure abbreviation (e.g. `12% · 1.4B / 11B`) and a subscription-validity countdown. Xiaomi has no API-key-based quota endpoint (the inference gateway serves `/v1` inference paths only); the data lives behind console-origin APIs, so the credential is your **web session cookie**: log into platform.xiaomimimo.com in your browser, open DevTools, copy the full `Cookie:` request header from any `/api/v1/tokenPlan/` call, then click **"Set console cookie (web session)"** on the card and paste it (stored in the DSH credential store under `XIAOMI_MIMO_CONSOLE_COOKIE` or an environment variable of the same name; the `Cookie:` prefix is optional). The cookie is sent only to two fixed endpoints, `platform.xiaomimimo.com/api/v1/tokenPlan/detail` and `/usage`; the `tp-…` inference key is never sent to the console plane. When the cookie expires (logout or session expiry) the card shows "Console cookie expired" — copy it again. Providers auto-detect from baseURL (token-plan-cn.xiaomimimo.com); when you reach MiMo through a relay domain, pick "Xiaomi MiMo Token Plan" in "Manual adapt" instead (the queried plane is fixed and unaffected by baseURL). Note that a web cookie grants full console access — it is stored only in your local credential store and sent only to those two fixed endpoints; never hand it to environments you do not trust
-- Credential fill-in form: when an adapted provider shows "credential missing", its card offers an inline form — regular adaptations show **"Set API credential"**, the CLIProxyAPI adaptation shows **"Set management key (web login key)"** (the remote-management secret you use to log into CPA's web management UI — not the proxy API key, which the management plane bans wrong attempts for), and the Xiaomi Token Plan adaptation shows **"Set console cookie (web session)"**; the credential name comes from a host-derived whitelist per adaptation type (CLIProxyAPI only ever offers `CPA_MANAGEMENT_KEY`/`CLIPROXY_MANAGEMENT_KEY` — these are **alias slots for the same secret; storing one is enough**, discovery takes the first configured value in order; Xiaomi likewise offers `XIAOMI_MIMO_CONSOLE_COOKIE`/`MIMO_CONSOLE_COOKIE`; the primary name is marked and the form defaults to a configured slot. Never the proxy key or the tp-… inference key); saving writes the value into the DSH credential provider (the `refs:` section of `$DSH_HOME/.credentials.yaml`, hot-effective without restarts) and then force-refreshes that provider; the form can also clear a stored file-layer credential in one click. If a process environment variable is currently shadowing that name, the host refuses the write (credential-store contract) — change the environment variable itself instead
-- Anti-rate-limit pacing is enforced by the host: successful results are cached for 60 seconds (shared across tabs), failures back off exponentially (30 s doubling, capped at 15 minutes), upstream timeout is 15 s; the panel can set auto query to manual only / 1 / 2 / 5 / 10 minutes (manual only by default), paused automatically while the page is hidden
-- API keys are resolved and used only inside the host process — the browser receives normalized window data (percentages or balance text) only; data flows through the plugin's own loopback RPC with no webServer routes exposed
+- Provider cards: per-window percentage, independent bar, and reset countdown; force refresh, official usage-page links, and card reordering
+- A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
+- Built-in adaptations:
+
+| Provider | Data source |
+| --- | --- |
+| DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown |
+| Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows |
+| OpenCode Go | `{baseURL}/usage` |
+| OpenRouter | Credits used % |
+| Kimi / SiliconFlow | CNY balance |
+| Xiaomi MiMo Token Plan | Console-origin plan quota (web session cookie) |
+| CLIProxyAPI deployment | Official remaining quota of each OAuth upstream account |
+
+- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, or the Xiaomi console cookie
+- Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); auto-query can be set to manual-only / 1 / 2 / 5 / 10 minutes
+- API keys are resolved only inside the host process; the browser receives normalized window data only; unadapted providers are never requested
 
 ### Backup management
 
-- Creates `.tar.gz` archives of sessions, configuration, and plugin profile manifests
-- Export: download backup to browser
-- Restore: extract and overwrite to corresponding paths, two-step confirmation followed by automatic restart
-- Import: upload a `.tar.gz` file to the backup directory
-- Delete requires two-step confirmation; backups are unlimited and never auto-pruned
+- Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests
+- Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned
+- Restore: extract and overwrite to the corresponding paths, then restarts automatically after confirmation
 
 ### Skills management
 
 ![Skills management](./screenshots/skill-manager_en.png)
 
-- The "Skills" tab lists every local skill under three sections — **auto-loaded / manual-only / fully disabled** — scanning project `.dsh`, project `.agents`, user `~/.dsh/skills`, `$DSH_AGENTS_HOME`, and `$DSH_BUNDLED_SKILL_DIR` roots one level deep, with a name filter and source badges; same-name shadowing (lower rank wins) marks both winner and loser copies, bundled directories are shown read-only, and a physical directory hit by multiple root rules is counted once
-- Two per-entry switches edit the SKILL.md frontmatter directly: `disable-model-invocation` for "visible to model", `user-invocable` for "invocable via /"; switches use a two-click confirmation, changes go live within ~200 ms, active sessions receive a catalog-update notice on their next step, and toggling back and forth leaves no residue in the file
-- Entries carrying legacy camelCase invocation keys (e.g. `disableModelInvocation`) are dropped entirely by the official parser: the panel shows a ⚠ warning and a two-click confirmed fix that converts them to canonical keys semantically
-- "Fill with AI" (✨): pick any configured model (last choice remembered); the Host calls it with a fixed template to draft description and usage **in the DSH UI language** (Simplified Chinese in Chinese environments, English in English ones); the draft is previewed old-vs-new and saved after explicit confirmation as an "AI note". Notes live only in the plugin sidecar index `DSH_HOME/dsh-service-skills-index.json` and **never modify SKILL.md** — they render under their entry on the Skills tab only, at full entry-card width (with a remove button); a body change marks the note stale for refilling
-- One-click batch fill: automatically collects unannotated skills or ones whose body changed (read-only roots included; invalid entries and shadowed copies are skipped), shows candidate count / estimated payload and an expandable per-entry skip list first, then runs sequentially with live progress; individual failures never block the batch, and cancelling immediately interrupts the in-flight model call. Zero file modifications throughout, and the plugin never issues model calls autonomously
-- Batch runs in the Host background: switching tabs, closing the settings panel, or even refreshing the page never interrupts it; returning to the Skills tab restores progress and the cancel button, the Skills tab title shows a live `⟳done/total` badge while running, and planning a second batch mid-run is explicitly rejected
+- Lists local skills in three sections — **auto-loaded / manual-only / fully disabled**; same-name shadowing marks both copies, bundled directories are read-only
+- Two switches edit the SKILL.md frontmatter directly (`disable-model-invocation` / `user-invocable`); changes go live within ~200 ms
+- Entries with legacy camelCase keys are dropped by the official parser: ⚠ warning + one-click canonical fix
+- ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled
 
 ### Subagent model
 
 ![Subagent model](./screenshots/subagent-model_en.png)
 
-- The "Subagents" tab controls routing for delegations that **did not explicitly specify a model**, with three modes: **Default (no override)** injects nothing and preserves DSH's native inheritance; **Follow main model** reads the provider/model actually used by the main conversation's latest request at delegation time; **Custom** pins every unspecified subagent to the selected provider and model
-- A provider or model explicitly carried by the delegation always wins, so the plugin never overrides a pinned preset, call arguments, or a route already injected by another plugin. Custom choices come exclusively from the Host's live model catalog; if that provider is later removed, delegation safely falls back to native inheritance instead of failing
-- Configuration is stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, file mode `0600`); "Reset to default" clears the custom route and restores zero intervention. An optional "Subagents" quick entry can be enabled for the settings left navigation (off by default)
+- Three modes: **Default** (no override) / **Follow main model** (the provider/model actually used by the latest main-conversation request) / **Custom** (pin every unspecified subagent)
+- A provider/model explicitly carried by the delegation always wins; pinned presets are never overridden
+- Config stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, `0600`); one-click reset
 
 ### Task notifications
 
 ![Task notifications](./screenshots/task-notifications_en.png)
 
-- Notification settings live in the top-level Notifications tab: browser notification when a session finishes its turn, or when your approval, plan review, or answer is needed
-- Clicking a notification focuses the DSH page and closes the popup
-- Four toggle switches: master switch, task completion, approvals & questions, and bell-icon visibility, each controlled independently
-- Bell icon in the conversation input bar toggles the master switch quickly; a "Show composer bell icon" capsule switch on the Notifications tab hides it entirely (notification behavior is unaffected, and the choice persists across reloads)
-- All toggles persist across page reloads
+- Browser notification when a session finishes its turn or your approval / plan review / answer is needed; clicking focuses the page
+- Four independent toggles: master, task completion, approvals & questions, composer-bell visibility
+- The composer bell toggles the master switch quickly; all toggles persist across reloads
 
 ### Mobile adaptation
 
-- Off by default (enable it under "Plugins → Plugin configuration"); active only on phones or narrow windows (viewport <1024px, matching the official shell's sidebar collapse breakpoint). Desktop widths are completely unaffected
-- Sidebar becomes a drawer: the official sidebar slides into a left overlay drawer — a translucent floating button on the left edge toggles it, and tapping the backdrop or any session row closes it automatically. The preview/file-tree details column becomes a right overlay instead of squeezing the conversation area. Open/close goes through DSH's official `layout` service; no host DOM reparenting
-- Modals become bottom sheets: settings dialogs turn into bottom sheets (rounded top corners, internal scrolling), and the settings left navigation becomes a horizontally scrollable top strip
-- Touch details: adds `viewport-fit=cover` automatically and respects notch safe areas; double-tap no longer zooms the page; text inputs stay ≥16px so iOS no longer auto-zooms on focus
-- Transparent large-JSON compression: the host compresses JSON responses ≥4KB with gzip/brotli chosen from the browser's `Accept-Encoding` (long session histories can reach tens of MB — compression noticeably speeds up first paint). Small payloads and other content types pass through byte-identical; SSE streams are untouched
-- The "Mobile adaptation" switch in "Plugins → Plugin configuration" turns everything off: the host compression patch is restored and all UI enhancements unmount, returning to the native layout immediately without a restart
-- Debug mode: append `?dshsvc-mobile-debug=1` to the URL to show a floating diagnostics chip (viewport size / breakpoint state / drawer & details state / JS error count). For debugging only
+- Off by default; active only below a 1024 px viewport (phones / narrow windows), desktops unaffected
+- Sidebar becomes a drawer, details column an overlay, modals bottom sheets, settings left nav a horizontal top strip
+- Transparent large-JSON compression (≥4KB auto gzip/brotli per `Accept-Encoding`) speeds up long session histories
+- Adds `viewport-fit=cover` with safe-area avoidance, disables double-tap zoom, keeps inputs ≥16px against iOS focus zoom
+- `?dshsvc-mobile-debug=1` shows a floating diagnostics chip (debugging only)
 
 ### External liveness probe
 
-- `GET` / `HEAD /healthz` returns empty HTTP 200; other methods return 405
-- Suitable for Uptime Kuma, Docker, Kubernetes, or other external monitors
+- `GET` / `HEAD /healthz` returns an empty 200; other methods return 405
+- Suitable for Uptime Kuma, Docker, Kubernetes, and other external monitors
 
-## Installation
+## 🏗️ Architecture
 
-### Install from npm (recommended)
+The plugin is a Cordis two-half structure: the **Host half (`index.js`)** owns all capabilities and data access, while the **Client half (`client.js`)** only renders UI in the browser; the two sides communicate over Typert JSON-RPC on a single-layer absolute path channel `/dsh-service`, with `loopback` authority throughout.
 
-```sh
-dsh plugin --profile web add @gehennawu/dsh-service
+```mermaid
+flowchart TB
+    subgraph Client["🌐 Client browser half (client.js)"]
+        UI["Settings : Service Control panel (9 tabs + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
+    end
+
+    subgraph Host["⚙️ Host half (index.js)"]
+        RPC["Loopback RPC · /dsh-service<br/>version / check-update / restart / quota / skills / backup"]
+        SPAWN["Controlled spawn<br/>chmod / chown / npm upgrade"]
+    end
+
+    subgraph DSH["🚀 DSH core runtime (read-only consumption)"]
+        CORE["agents · jobs · terminals · sessions<br/>sessionQuery · skills · credentials"]
+        WEB["webServer routes<br/>GET/HEAD /healthz"]
+    end
+
+    subgraph OS["💾 Host machine & external"]
+        PM["Process manager<br/>Docker / systemd / pm2"]
+        FS["$DSH_HOME<br/>config / backups / credentials / skills index"]
+        REG["npm registry"]
+        QUOTA["Upstream quota APIs"]
+    end
+
+    UI -- "Typert JSON-RPC (loopback)" --> RPC
+    RPC --> CORE
+    RPC --> SPAWN
+    RPC --> REG
+    RPC --> QUOTA
+    RPC -- "process.exit(42)" --> PM
+    SPAWN --> FS
+    MON["External monitors<br/>Uptime Kuma / Docker / K8s"] -- "GET /healthz" --> WEB
 ```
 
-### Install from GitHub
+Key contracts:
 
-```sh
-dsh plugin --profile web add github:gehennawu/dsh-service
-```
+- **Loopback only**: capabilities are exposed solely through the `/dsh-service` loopback channel; webServer routes return only information-free status codes
+- **Restart = `process.exit(42)`**: the plugin only sends an exit signal; an external process manager brings it back — no manager, no restart guarantee
+- **Zero input concatenation**: the browser side never supplies URLs, package names, commands, or paths; all commands go through a host-side whitelist
+- **Credentials never leave the host**: API keys are resolved only inside the host process; the browser receives only normalized window data
 
-Restart DSH Web after installation or updates:
+## ⚡ Installation
+
+| Method | Command |
+| --- | --- |
+| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service` |
+| GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
+| Local development | `dsh plugin --profile web add link:/path/to/dsh-service` |
+
+Restart DSH Web after installing or updating:
 
 ```sh
 dsh web
@@ -134,17 +208,11 @@ dsh web
 
 Open DSH Web Settings and select **Service Control**.
 
-### Local development install
+## 🔄 Automatic restart
 
-```sh
-dsh plugin --profile web add link:/path/to/dsh-service
-```
+The plugin only sends an exit signal; it does not start the process again. Without a process manager, restart stops DSH Web.
 
-## Automatic restart configuration
-
-The plugin only sends an exit signal; it does not start the process again. Without a process manager, selecting restart stops DSH Web.
-
-The plugin passively detects whether a process manager is present (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the environment as a likely manual launch, flags it in Health diagnostics with a yellow caution, and switches one-click upgrade to keep the process running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers like NSSM/WinSW; set `DSH_SERVICE_RUNTIME_ENV=managed|manual` to declare it explicitly.
+The plugin passively detects a process manager (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the launch as manual — flagged in Health diagnostics and switching one-click upgrade to keep running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers such as NSSM/WinSW; declare `DSH_SERVICE_RUNTIME_ENV=managed|manual` explicitly.
 
 ### Docker Compose
 
@@ -169,7 +237,7 @@ RestartSec=2
 pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 ```
 
-## Platform support
+## 🖥️ Platform support
 
 | Environment | Plugin features | Automatic recovery | Verification |
 | --- | --- | --- | --- |
@@ -178,18 +246,73 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | macOS / Windows + pm2 or similar | Not blocked by the code | Managed externally | Not tested |
 | Direct `dsh web` execution | Supported | Not supported | Expected behavior |
 
-When launched directly from a terminal (PowerShell/CMD/bash), the panel labels the environment as a likely manual launch and the one-click upgrade no longer exits the process automatically.
-
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-## Security design
+## 🔒 Security design
 
-- The browser cannot supply URLs, package names, commands, or file paths
-- Update checks only access fixed npm registry endpoints
-- The RPC channel is loopback-only
-- The model-usage index stores no messages, prompts, tool arguments, or credentials
-- Destructive operations (restart, delete, permission repair) all require two-step confirmation
+| Area | Boundary |
+| --- | --- |
+| Input | The browser cannot supply URLs, package names, commands, or file paths |
+| Network | Update checks only access fixed npm registry endpoints |
+| RPC | Loopback-only; data never leaves the machine |
+| Data | The usage index stores no messages, prompts, tool arguments, or credentials; API keys are used inside the host process only |
+| Actions | Destructive operations (restart, delete, permission repair) all require two-step confirmation |
+| Credentials | Stored in the DSH credential store (`$DSH_HOME/.credentials.yaml`), sent to fixed endpoints only |
 
-## License
+## ❓ FAQ
+
+<details>
+<summary><strong>It does not come back after restart?</strong></summary>
+
+The plugin only sends an exit signal; a process manager brings it back (see "Automatic restart"). When the panel flags a manual launch, a plain `dsh web` terminal process exits for good — run it under Docker Compose / systemd / pm2 instead.
+</details>
+
+<details>
+<summary><strong>What is the yellow "no restart assurance" caution in Health?</strong></summary>
+
+It is the "likely manual terminal launch" detection — no process manager found. If it is actually managed by NSSM/WinSW or output redirection, declare `DSH_SERVICE_RUNTIME_ENV=managed` to clear it.
+</details>
+
+<details>
+<summary><strong>A quota card shows "credential missing"?</strong></summary>
+
+Use the inline form on the card: an API key for regular adaptations, the management key for CLIProxyAPI (not the proxy key), and the console cookie for Xiaomi Token Plan. The value goes into the DSH credential store and the provider refreshes automatically; if a process environment variable shadows the name, the host refuses the write — change the variable itself.
+</details>
+
+<details>
+<summary><strong>Xiaomi shows "console cookie expired"?</strong></summary>
+
+The web session expired. Log back in at platform.xiaomimimo.com, copy the `Cookie:` header from any `/api/v1/tokenPlan/` request, and paste it again via "Set console cookie".
+</details>
+
+<details>
+<summary><strong>What does restoring a backup do?</strong></summary>
+
+It extracts and overwrites the corresponding paths (sessions, config, plugin profiles) and restarts automatically after the two-step confirmation. Deleting a backup also requires two-step confirmation.
+</details>
+
+<details>
+<summary><strong>Why is a skill switch greyed out?</strong></summary>
+
+That skill lives in a read-only bundled directory. Only `project-*` and `user-*` sources support the two-way switches.
+</details>
+
+<details>
+<summary><strong>Saving a skill switch says "the skill file just changed"?</strong></summary>
+
+Concurrency protection kicked in: SKILL.md was just modified by an external editor (version mismatch). Refresh to get the latest state and retry.
+</details>
+
+<details>
+<summary><strong>Does a failed update check affect other features?</strong></summary>
+
+No. It is a read-only request to the npm registry and fails silently; everything else keeps working.
+</details>
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. See AGENTS.md in the repository for the development roadmap and conventions, and its "Release" section for publishing rules.
+
+## 📄 License
 
 [MIT](./LICENSE)
