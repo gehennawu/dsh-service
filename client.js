@@ -3313,6 +3313,53 @@ window.__ModuleLoader__.load({
       // 测试替代环境的 ?test= 查询串让每个 renderer 独立评估本模块，互不污染。
       const sessionPanelListCache = { all: undefined, archived: undefined, deleted: undefined }
       const sessionPanelBytesCache = new Map()
+      // v0.36 用户点名：详情正文 markdown 渲染——复用官方渲染器（platform seed
+      // `@deepseek-ai/dsh-client-ui-primitives`，seed.ts 静态导入与 react-dom 同机制、shell
+      // 全局单例）。官方 `MarkdownText` 即「untrusted assistant-authored markdown」渲染器：
+      // GFM + KaTeX、默认禁用原始 HTML/相对链接/危险协议，安全面官方已处理。老版本 DSH 的
+      // seed 可能缺席 → try/catch 回落现有纯文本，功能不退化。
+      // React 合法组件类型：function，或 exotic 对象（React.memo/forwardRef/lazy 的 $$typeof）。
+      // 官方 MarkdownText = memo(function...) → 导出是 {$$typeof: react.memo, type, compare} 对象
+      //（v0.36 真机实证 keys=[$$typeof,type,compare]），createElement 直通即可——把它当「不可用」
+      // 是当初误判的根源；{default: fn} 命名空间包裹（互操作形态）作为第二候选解包。
+      const EXOTIC_COMPONENT_TYPES = [Symbol.for('react.memo'), Symbol.for('react.forward_ref'), Symbol.for('react.lazy')]
+      const isRenderableComponent = (value) => {
+        if (typeof value === 'function') return true
+        if (value !== null && typeof value === 'object' && typeof value.$$typeof === 'symbol') {
+          return EXOTIC_COMPONENT_TYPES.includes(value.$$typeof)
+        }
+        return false
+      }
+      let sessionMarkdownText = null
+      try {
+        const uiPrimitives = require('@deepseek-ai/dsh-client-ui-primitives')
+        let candidate = uiPrimitives === null || uiPrimitives === undefined ? null : uiPrimitives.MarkdownText
+        // 直通判定：函数 / memo / forwardRef / lazy。
+        if (isRenderableComponent(candidate)) {
+          sessionMarkdownText = candidate
+        } else if (candidate !== null && typeof candidate === 'object') {
+          // 互操作命名空间包裹 {default: fn}：解包后再判定。
+          const unwrapped = typeof candidate.default === 'function' ? candidate.default
+            : typeof candidate.MarkdownText === 'function' ? candidate.MarkdownText
+              : null
+          candidate = unwrapped
+          if (isRenderableComponent(candidate)) {
+            sessionMarkdownText = candidate
+          } else {
+            let shape = String(typeof candidate)
+            try { shape += ' keys=[' + Object.keys(candidate).join(',') + ']' } catch (_) {}
+            console.warn('[dsh-service-md] MarkdownText is an unexpected value (' + shape + ') — falling back to plain text')
+          }
+        } else {
+          // v0.36 排查埋点（[dsh-service-md] tag）：seed 拿到了但 MarkdownText 缺席——
+          // 之前静默吞掉导致「不渲染却无原因」。打开 DevTools Console 即可看到。
+          console.warn('[dsh-service-md] ui-primitives seed present, but MarkdownText unavailable (' + typeof candidate + ') — falling back to plain text')
+        }
+      } catch (error) {
+        // v0.36 排查埋点：老外壳 seed 缺席 require 抛错——warn 一次让「为何回落」可见。
+        console.warn('[dsh-service-md] ui-primitives require failed: ' + (error && error.message ? error.message : String(error)))
+      }
+      if (sessionMarkdownText !== null) console.info('[dsh-service-md] session detail markdown renderer ready')
 
       function SessionsSection() {
         const translate = useTranslation()
@@ -3720,11 +3767,19 @@ window.__ModuleLoader__.load({
 
         const eventCard = (event, index) => {
           const noise = event.noise === true
+          // v0.36 用户点名：正文用官方 MarkdownText 渲染（与官方聊天观感一致、主题 token 同源、
+          // 默认拒原始 HTML/危险链接）；官方 seed 缺席的老外壳自动回落纯文本（pre-wrap）。
+          const body = typeof event.text === 'string' && event.text !== ''
+            ? React.createElement('div', { 'data-testid': 'sessions-event-text-' + event.seq, style: { marginTop: '4px' } },
+                sessionMarkdownText !== null
+                  ? React.createElement(sessionMarkdownText, { text: event.text })
+                  : React.createElement('div', { style: { fontSize: '12.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, event.text))
+            : null
           return React.createElement('div', { key: String(event.seq), 'data-testid': 'sessions-event-' + event.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)', marginBottom: '5px' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
               React.createElement('span', { 'data-testid': 'sessions-event-type-' + event.seq, style: { fontWeight: 600, color: noise ? 'inherit' : 'var(--dsw-alias-label-secondary)' } }, noise ? translate('sessions.detail.noise') : event.type),
               event.time ? React.createElement('span', null, formatSessionTime(event.time)) : null),
-            typeof event.text === 'string' && event.text !== '' ? React.createElement('div', { style: { fontSize: '12.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', marginTop: '4px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, event.text) : null)
+            body)
         }
 
         const renderListBody = () => {

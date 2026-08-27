@@ -231,6 +231,28 @@ function createRenderer(rpcCall, options = {}) {
         // react-dom 在平台 seed 表内（dsh-web-frontend 前端 bundle 核实）；圆环窄视口
         // 弹窗 portal 用它，这里提供同语义替身。
         if (name === 'react-dom') return { createPortal: React.createPortal }
+        // 官方 markdown 渲染器同样在平台 seed 表内（seed.ts 核实，v0.36 接入）：
+        // 默认提供可断言的替身组件；options.noUiPrimitives=true 模拟老外壳 seed 缺席（抛错）。
+        if (name === '@deepseek-ai/dsh-client-ui-primitives') {
+          if (options.noUiPrimitives === true) throw new Error('simulated legacy shell without ui-primitives seed')
+          const plain = {
+            MarkdownText: (props) => React.createElement('div', { 'data-testid': 'md-markdown' }, props && props.text),
+            MessageText: (props) => React.createElement('div', { 'data-testid': 'md-message' }, props && props.text),
+          }
+          // options.nestedMarkdown=true 模拟互操作包裹形态：组件被包成 {default: fn}。
+          if (options.nestedMarkdown === true) {
+            return { MarkdownText: { default: plain.MarkdownText }, MessageText: { default: plain.MessageText } }
+          }
+          // options.memoMarkdown=true 模拟真实 shell 的真机形态（v0.36 实证 keys=[$$typeof,type,compare]）：
+          // MarkdownText 是 React.memo 的返回对象，本身是合法组件类型（createElement 直通）。
+          if (options.memoMarkdown === true) {
+            return {
+              MarkdownText: { $$typeof: Symbol.for('react.memo'), type: plain.MarkdownText, compare: null },
+              MessageText: { $$typeof: Symbol.for('react.memo'), type: plain.MessageText, compare: null },
+            }
+          }
+          return plain
+        }
         assert.equal(name, 'react')
         return React
       })
@@ -4644,6 +4666,11 @@ test('session manager detail pages events, loads more with seq cursor, and trigg
   await renderer.findByTestId('sessions-noisewall-toggle-2').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-event-2'), false, 'collapsing hides the noise events again')
+  // v0.36 用户点名：正文走官方 MarkdownText（platform seed 替身渲染 data-testid=md-markdown）。
+  assert.equal(renderer.hasTest('sessions-event-text-0'), true, 'event body container present')
+  const mdText = renderer.findByTestId('sessions-event-text-0').children[0]
+  assert.ok(mdText !== undefined && mdText.type === 'div' && mdText.props['data-testid'] === 'md-markdown', 'official MarkdownText wrapped the event body')
+  assert.equal(mdText.children[0], 'first question', 'text flows through the official renderer')
   assert.equal(renderer.hasTest('sessions-detail-back'), true)
   assert.equal(renderer.hasTest('sessions-detail-export'), true)
   assert.equal(renderer.hasTest('sessions-detail-more'), false, 'no load-more when all events loaded')
@@ -5059,4 +5086,103 @@ test('session manager shows cached data instantly on reopen, refreshes quietly i
   await renderer.flush()
   assert.equal(listCalls(), 3, 'returning to archived reuses the refreshed cache — no refetch')
   assert.equal(renderer.hasTest('sessions-row-session-new2'), true, 'silently refreshed cache contains the new session')
+})
+
+test('session manager detail falls back to plain text when the shell lacks the markdown seed', async () => {
+  const renderer = sessionManagerRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-view') {
+      return { ok: true, value: { session: { id: 'session-cold' }, items: [{ seq: 0, type: 'user/message', time: 2001, text: '**bold** and `code`', noise: false }], nextCursor: undefined, total: 1 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { noUiPrimitives: true })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  // 老外壳（seed 无 ui-primitives）：官方渲染器不可用 → 回落 pre-wrap 纯文本，原文按字面显示。
+  assert.equal(renderer.hasTest('md-markdown'), false, 'no official renderer on legacy shells')
+  assert.equal(renderer.hasTest('sessions-event-text-0'), true, 'plain-text fallback container present')
+  const fallback = renderer.findByTestId('sessions-event-text-0').children[0]
+  assert.ok(fallback !== undefined && fallback.type === 'div')
+  assert.equal(fallback.children[0], '**bold** and `code`', 'markdown source shown literally when the official renderer is unavailable')
+})
+
+test('session manager unwraps a namespace-wrapped official MarkdownText (ESM interop shell)', async () => {
+  const renderer = sessionManagerRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-view') {
+      return { ok: true, value: { session: { id: 'session-cold' }, items: [{ seq: 0, type: 'user/message', time: 2001, text: 'hello **world**', noise: false }], nextCursor: undefined, total: 1 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { nestedMarkdown: true })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  // v0.36 真实 shell 复现：MarkdownText 是 {default: fn} 命名空间对象——必须解包才渲染。
+  assert.equal(renderer.hasTest('sessions-event-text-0'), true, 'event body container present')
+  const inner = renderer.findByTestId('sessions-event-text-0').children[0]
+  assert.ok(inner !== undefined && inner.type === 'div' && inner.props['data-testid'] === 'md-markdown', 'namespace-wrapped MarkdownText unwrapped and rendered')
+  assert.equal(inner.children[0], 'hello **world**', 'text flows through the unwrapped renderer')
+})
+
+test('session manager accepts the memo-wrapped official MarkdownText (real shell shape) instead of falling back', async () => {
+  const renderer = sessionManagerRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
+    if (endpoint === 'sessions-list') return { ok: true, value: SESSION_LIST_VALUE }
+    if (endpoint === 'sessions-view') {
+      return { ok: true, value: { session: { id: 'session-cold' }, items: [{ seq: 0, type: 'user/message', time: 2001, text: 'hello **world**', noise: false }], nextCursor: undefined, total: 1 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { memoMarkdown: true })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  // v0.36 真实 shell 形态：MarkdownText = React.memo 返回对象（$$typeof/type/compare）。
+  // 它是合法组件类型——探测必须直通交给 createElement，而不是回落纯文本。
+  assert.equal(renderer.hasTest('sessions-event-text-0'), true, 'event body container present')
+  const inner = renderer.findByTestId('sessions-event-text-0').children[0]
+  assert.ok(inner !== undefined && inner.type !== undefined && inner.type.$$typeof === Symbol.for('react.memo'),
+    'memo-wrapped MarkdownText accepted as a renderable component (not falling back)')
+  assert.equal(inner.props && inner.props.text, 'hello **world**', 'text flows to the memo-wrapped renderer')
 })
