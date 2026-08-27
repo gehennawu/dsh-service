@@ -10,6 +10,11 @@ README 使用的中英文界面截图。文件名与对应功能如下：
 | `skill-manager.png` | `skill-manager_en.png` | 技能管理 |
 | `subagent-model.png` | `subagent-model_en.png` | 子代理模型 |
 | `task-notifications.png` | `task-notifications_en.png` | 任务通知 |
+| `restart.png` | `restart_en.png` | 安全重启 |
+| `health-diagnostics.png` | `health-diagnostics_en.png` | 健康诊断 |
+| `backup-management.png` | `backup-management_en.png` | 备份管理 |
+| `session-manager.png` | `session-manager_en.png` | 会话管理 |
+| `mobile-adaptation.png` | `mobile-adaptation_en.png` | 移动端适配 |
 
 截图宽度建议 800–1200px，PNG 格式。README 新增截图引用时，必须同时加入本目录并通过 `test/docs-static.test.js`；本目录由 `package.json#files` 打入 npm 包。
 

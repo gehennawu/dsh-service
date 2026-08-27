@@ -60,6 +60,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ### Safe restart
 
+![Safe restart](./screenshots/restart_en.png)
+
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` also works in conversations; automatically refuses while work is running
 - Probes the new process after restart and reloads the page; manual reload offered after 60 seconds
@@ -67,6 +69,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - A suspected manual terminal launch warns that nothing will bring the process back and gets a yellow caution in Health
 
 ### Health diagnostics
+
+![Health diagnostics](./screenshots/health-diagnostics_en.png)
 
 - Uptime, memory, session count, active agents, and background jobs; a "Process and runtime" card shows platform, architecture, and Node version
 - Full diagnostics: session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node version
@@ -108,6 +112,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ### Backup management
 
+![Backup management](./screenshots/backup-management_en.png)
+
 - Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests
 - Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned
 - Restore: extract and overwrite to the corresponding paths, then restarts automatically after confirmation
@@ -142,6 +148,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ### Mobile adaptation
 
+![Mobile adaptation](./screenshots/mobile-adaptation_en.png)
+
 - Off by default; active only below a 1024 px viewport (phones / narrow windows), desktops unaffected
 - Sidebar becomes a drawer, details column is hidden on mobile (matching the official narrow-screen behavior), modals become full-screen panels, settings left nav a horizontal top strip
 - Scroll immersion: inside a conversation, swiping down auto-hides the header and composer for full-screen reading; swipe up, reaching the bottom, or focusing the composer brings them back, with a resident bottom handle as a manual toggle. Programmatic scrolling (streaming pinning, anchor jumps) never triggers it
@@ -151,6 +159,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - `?dshsvc-mobile-debug=1` shows a floating diagnostics chip (debugging only)
 
 ### Session manager
+
+![Session manager](./screenshots/session-manager_en.png)
 
 - **View**: one unified list for sessions (running / cold / archived) with status badges, workspace, event count, and size; **starts on the “Archived” view by default**, and each of the All / Archived / Deleted filters fetches its own subset from the host **once,** then keeps it in a **module-level cache** — switching filters sends no requests, and **closing and reopening the panel renders the cache instantly while quietly refreshing the current view once in the background** (only a page reload clears the cache), with a “Refresh” button for a forced refetch of the current view; sizes are never shipped with the list — each row fetches its size lazily (double-cached in the module and in host memory: reopened panels and refreshed pages reuse it, cleared on delete); the detail page walks events as paged cards (single-slot host snapshot cache: paging and reopening the same session never re-reads the log, live sessions stay fresh within 30 seconds), with **event bodies rendered as official Markdown** (reusing the platform renderer `MarkdownText`, same look as the chat UI: code blocks, lists, tables, math — raw HTML and unsafe links are rejected by default; older DSH shells without the renderer automatically fall back to plain text), and consecutive system events collapse into a countable block by default — click to expand the details; **entering a detail remembers the list scroll position and returning to the list drops you back exactly where you were** (reusing the official panel's scroll container; changing the filter or search while in the detail discards the restore)
 - **Export**: one-click download of the official full ZIP (including subagents and attachments) via the official export path — the host never assembles a package itself
