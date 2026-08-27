@@ -125,6 +125,9 @@
 
 - 三种模式：**初始**（不干预）/ **跟随主模型**（取主对话最近一次实际使用的 provider/model）/ **自定义**（固定到所选模型）
 - 派生请求自带 provider/model 时始终优先，绝不覆盖预设钉死
+- 自定义模式可选**思考等级**：仅当所选的 **exact provider/model** 由适配器声明了可选等级时才显示下拉；留空表示「使用目标模型默认」，由适配器在请求时物化默认值
+- 该字段来自适配器 metadata（`reasoning.efforts[].id`），等级 ID 对宿主不透明；无等级声明的模型禁用下拉并提示
+- **inherit / follow / 功能开关关闭** 均不注入任何 provider、model 或思考等级；显式指定 provider/model 的子代理不受影响
 - 配置存 `$DSH_HOME/dsh-service-subagent-route.json`（原子写入、`0600`），可一键重置
 
 ### 任务通知

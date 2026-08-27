@@ -1,5 +1,6 @@
 // Host half of @gehennawu/dsh-service
 // 「服务控制」：版本信息 + 检查更新 + 一键重启 dsh web
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants, existsSync, readFileSync } from 'node:fs'
@@ -3056,6 +3057,63 @@ async function listSkillModels(llm, agentDefaultModel) {
   return { models, ...(current !== undefined ? { current } : {}) }
 }
 
+/**
+ * 把适配器私有 reasoning metadata 裁剪成可下发给 Web 的普通 JSON：
+ * - efforts 只保留 id / name（缺省回退 id）/ 非空 description；
+ * - 忽略无效条目、空 ID、重复 ID（保持首个出现的顺序）；
+ * - defaultEffort 是字符串且非空才保留；
+ * - 无效 efforts 且无 defaultEffort 时返回 undefined（不暴露空壳对象）。
+ * 绝不把适配器内部对象、函数或其他私有字段发送到 Web。
+ * @param {unknown} reasoning - llm.resolveModelInfo() 返回的 reasoning 字段原始值。
+ * @returns {{efforts?: Array<{id:string,name:string,description?:string}>, defaultEffort?: string}|undefined}
+ */
+function publicSubagentReasoning(reasoning) {
+  if (reasoning === null || typeof reasoning !== 'object') return undefined
+  const source = Array.isArray(reasoning.efforts) ? reasoning.efforts : []
+  const efforts = []
+  const seen = new Set()
+  for (const entry of source) {
+    if (entry === null || typeof entry !== 'object') continue
+    const id = typeof entry.id === 'string' ? entry.id : ''
+    if (id === '' || seen.has(id)) continue
+    seen.add(id)
+    const name = typeof entry.name === 'string' && entry.name !== '' ? entry.name : id
+    const description = typeof entry.description === 'string' && entry.description !== '' ? entry.description : undefined
+    efforts.push(description !== undefined ? { id, name, description } : { id, name })
+  }
+  const defaultEffort = typeof reasoning.defaultEffort === 'string' && reasoning.defaultEffort !== '' ? reasoning.defaultEffort : undefined
+  if (efforts.length === 0 && defaultEffort === undefined) return undefined
+  return { ...(efforts.length > 0 ? { efforts } : {}), ...(defaultEffort !== undefined ? { defaultEffort } : {}) }
+}
+
+/**
+ * 子代理模型清单：沿用 skills-models 的 provider/model 白名单口径，并为每个精确模型
+ * 附加经过 publicSubagentReasoning 裁剪的 reasoning metadata。resolveModelInfo 缺席或
+ * 单个模型解析失败时保留原有目录项（不让整个快照失败）。
+ * @param {object} llm - 宿主 llm 服务。
+ * @param {object|undefined} agentDefaultModel - 宿主 agentDefaultModel 服务（用于 current）。
+ * @returns {Promise<{models: Array<object>, current?: {provider:string, model:string}>}>}
+ */
+async function listSubagentModels(llm, agentDefaultModel) {
+  const catalog = await listSkillModels(llm, agentDefaultModel)
+  const resolve = llm !== undefined && typeof llm.resolveModelInfo === 'function'
+    ? (provider, model) => llm.resolveModelInfo(provider, model)
+    : null
+  const models = []
+  for (const item of catalog.models) {
+    let reasoning
+    if (resolve !== null) {
+      try {
+        const info = await resolve(item.provider, item.id)
+        const publicReasoning = info !== null && typeof info === 'object' ? publicSubagentReasoning(info.reasoning) : undefined
+        if (publicReasoning !== undefined) reasoning = publicReasoning
+      } catch (_) {}
+    }
+    models.push(reasoning !== undefined ? { ...item, reasoning } : item)
+  }
+  return { ...catalog, models }
+}
+
 /** 子代理路由配置的空档（inherit）：与未安装本功能的原生行为完全一致。 */
 function createEmptySubagentRoute() {
   return { version: SUBAGENT_ROUTE_VERSION, mode: 'inherit' }
@@ -3075,7 +3133,9 @@ function parseSubagentRouteText(text) {
   const provider = typeof parsed.provider === 'string' ? parsed.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   const model = typeof parsed.model === 'string' ? parsed.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   if (provider === '' || model === '') return fallback
-  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model }
+  // reasoningEffort 是可选的 adapter 自有等级 ID：只有字符串、trim 后非空才保留（空串视为默认）。
+  const reasoningEffort = typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) }
 }
 
 async function loadSubagentRoute(dshHome) {
@@ -3132,7 +3192,8 @@ function resolveSubagentInjection(request, config, options = {}) {
   }
   if (config?.mode === 'custom' && typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== '') {
     if (options.isRoutable !== undefined && !options.isRoutable(config.provider)) return undefined
-    return { provider: config.provider, model: config.model }
+    const reasoningEffort = typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? config.reasoningEffort : undefined
+    return { provider: config.provider, model: config.model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }
   }
   return undefined
 }
@@ -3508,21 +3569,60 @@ function apply(ctx) {
       }
     }
     const readParentHeader = (parent) => parent?.session?.requestHeader?.()?.config
-    const decorate = (request) => {
-      if (!featureEnabled('subagentRoute')) return request
+    // reasoningEffort 不属于 AgentOptions，不能塞进 subagents.start() 的 options。
+    // 用 AsyncLocalStorage 把「本次创建的 exact child 应注入的等级」带进 agent/created 监听器，
+    // 再经 WeakMap<agent, target> 绑定到该 child；agent/request waterfall 在最终 proposal 阶段补入。
+    const pendingEffortStorage = new AsyncLocalStorage()
+    const managedEfforts = new WeakMap()
+    const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && managedEfforts.has(agent)
+    const applyInjection = (request) => {
+      if (!featureEnabled('subagentRoute')) return { request, effort: undefined }
       const injected = resolveSubagentInjection(request, subagentRouteConfig, { isRoutable, readParentHeader })
-      if (injected === undefined) return request
-      ctx.logger?.info?.(`dsh-service: subagent route seam applied ${injected.provider}/${injected.model} to a subagent without an explicit route`)
-      return { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...injected } }
+      if (injected === undefined) return { request, effort: undefined }
+      const { reasoningEffort, ...agentPatch } = injected
+      if (injected.provider !== undefined && injected.model !== undefined) {
+        ctx.logger?.info?.(`dsh-service: subagent route seam applied ${injected.provider}/${injected.model} to a subagent without an explicit route`)
+      }
+      const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
+      const decorated = { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...agentPatch } }
+      return { request: decorated, effort }
+    }
+    const runWithEffort = (effort, work) => {
+      if (effort === undefined) return work()
+      return pendingEffortStorage.run({ reasoningEffort: effort }, work)
     }
     const originalStart = subagents.start
     const originalStartContinuable = subagents.startContinuable
-    subagents.start = (name, request) => originalStart.call(subagents, name, decorate(request))
-    subagents.startContinuable = (spec) => originalStartContinuable.call(subagents, { ...spec, request: decorate(spec.request) })
+    subagents.start = (name, request) => {
+      const { request: decorated, effort } = applyInjection(request)
+      return runWithEffort(effort, () => originalStart.call(subagents, name, decorated))
+    }
+    subagents.startContinuable = (spec) => {
+      const { request: decorated, effort } = applyInjection(spec.request)
+      return runWithEffort(effort, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
+    }
+    // agent/created：子代理注册时把本次创建携带的等级绑定到 exact child（仅当确有非空等级）。
+    // agent/request：最终 proposal 阶段补入 reasoningEffort；已建立的值（提案自带/其他插件）永不覆盖。
+    // 注册在插件根 ctx：任何作用域标记的 agent 事件都会被未打标的根监听器全局收到（dsh-scope filter）。
+    const disposeCreated = typeof ctx.on === 'function' ? ctx.on('agent/created', ({ agent }) => {
+      const effort = pendingEffortStorage.getStore()?.reasoningEffort
+      if (typeof effort === 'string' && effort !== '' && agent !== null && typeof agent === 'object') managedEfforts.set(agent, effort)
+    }) : null
+    const disposeRequest = typeof ctx.on === 'function' ? ctx.on('agent/request', async (payload, next) => {
+      const proposal = await next()
+      const agent = payload?.agent
+      if (!isSubagentManaged(agent) || !featureEnabled('subagentRoute')) return proposal
+      if (proposal === null || typeof proposal !== 'object') return proposal
+      const effort = managedEfforts.get(agent)
+      if (typeof effort === 'string' && effort !== '' && proposal?.reasoningEffort === undefined) return { ...proposal, reasoningEffort: effort }
+      return proposal
+    }) : null
     subagentSeamInstalled = true
     scope.effect(() => () => {
       subagents.start = originalStart
       subagents.startContinuable = originalStartContinuable
+      if (typeof disposeCreated === 'function') disposeCreated()
+      if (typeof disposeRequest === 'function') disposeRequest()
       subagentSeamInstalled = false
     }, 'dsh-service subagent route seam teardown')
   })
@@ -4466,12 +4566,13 @@ function apply(ctx) {
       try {
         await subagentRouteLoadPromise
         const llm = ctx.get('llm')
-        // 模型清单沿用 skills-models 的白名单口径（llm.listProviders × listModels，单渠道失败跳过）；
+        // 模型清单沿用 skills-models 的白名单口径（llm.listProviders × listModels，单渠道失败跳过），
+        // 并对每个精确模型附加 adapter 的 reasoning metadata（resolveModelInfo 缺席时保留原目录项）；
         // llm 服务缺席时清单为空——自定义模式在保存端也会被拒（llm-unavailable），快照仍可下发。
         let models = []
         let current
         if (llm !== undefined && typeof llm.listProviders === 'function') {
-          const catalog = await listSkillModels(llm, ctx.get('agentDefaultModel'))
+          const catalog = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
           models = catalog.models
           current = catalog.current
         }
@@ -4481,7 +4582,11 @@ function apply(ctx) {
           value: {
             available: subagentSeamInstalled,
             mode: config.mode,
-            ...(config.mode === 'custom' ? { provider: config.provider, model: config.model } : {}),
+            ...(config.mode === 'custom' ? {
+              provider: config.provider,
+              model: config.model,
+              ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
+            } : {}),
             models,
             ...(current !== undefined ? { current } : {}),
           },
@@ -4496,28 +4601,48 @@ function apply(ctx) {
       const mode = payload?.mode
       if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
       try {
+        let reasoningEffort = ''
         if (mode === 'custom') {
           const provider = typeof payload?.provider === 'string' ? payload.provider.trim() : ''
           const model = typeof payload?.model === 'string' ? payload.model.trim() : ''
           if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
           const llm = ctx.get('llm')
           if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
-          // 与 skills-describe 同一道闸：provider/model 必须命中运行时清单白名单。
-          const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
-          if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
+          // 与 skills-describe 同一道闸：provider/model 必须命中运行时清单白名单；同时取该
+          // exact model 的 adapter reasoning metadata 用于校验 reasoningEffort 是否受支持。
+          const whitelist = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
+          const modelEntry = whitelist.models.find((item) => item.provider === provider && item.id === model)
+          if (modelEntry === undefined) return { ok: false, error: 'invalid-model-route' }
+          const rawEffort = payload?.reasoningEffort
+          if (rawEffort !== undefined && rawEffort !== '') {
+            if (typeof rawEffort !== 'string') return { ok: false, error: 'invalid-reasoning-effort' }
+            const effort = rawEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
+            if (effort !== '') {
+              if (!(modelEntry.reasoning?.efforts ?? []).some((entry) => entry.id === effort)) return { ok: false, error: 'invalid-reasoning-effort' }
+              reasoningEffort = effort
+            }
+          }
         }
         return await serializeSubagentRouteWrite(async (config) => {
           if (mode === 'custom') {
             config.mode = 'custom'
             config.provider = typeof payload?.provider === 'string' ? payload.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
             config.model = typeof payload?.model === 'string' ? payload.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+            // 先删旧值，只有新值非空时才写入：空/未提供代表「使用模型默认」。
+            delete config.reasoningEffort
+            if (reasoningEffort !== '') config.reasoningEffort = reasoningEffort
           } else {
             // inherit / follow：不保留 custom 字段，重置回干净形状。
             config.mode = mode
             delete config.provider
             delete config.model
+            delete config.reasoningEffort
           }
-          return { value: { ok: true, mode: config.mode, ...(config.mode === 'custom' ? { provider: config.provider, model: config.model } : {}) } }
+          return { value: { ok: true, mode: config.mode, ...(config.mode === 'custom' ? {
+            provider: config.provider,
+            model: config.model,
+            ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
+          } : {}) } }
         })
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -4545,6 +4670,7 @@ export {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  listSubagentModels,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -4560,6 +4686,7 @@ export {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  publicSubagentReasoning,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,
@@ -4593,6 +4720,7 @@ export default {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  listSubagentModels,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -4608,6 +4736,7 @@ export default {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  publicSubagentReasoning,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,
