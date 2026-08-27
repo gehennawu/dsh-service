@@ -6683,6 +6683,64 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
       }
 
       /**
+       * 会话导航适配层：本文件里唯一允许知道官方外壳 DOM 结构（类哈希、
+       * data 属性、滚动参照系）的地方。「跳上一条用户回复」引擎只跟这里的
+       * 语义操作对话；外壳升级导致结构或类哈希漂移时只改本层，引擎零改动。
+       * 全部方法吞异常，找不到一律回 null / 空数组，调用方按「不存在」处理。
+       */
+      const createConversationNav = () => {
+        const hasScrollAttr = (el) => {
+          if (typeof el.hasAttribute === 'function') {
+            try { return el.hasAttribute('data-conversation-scroll') } catch (_) { return false }
+          }
+          // 真实 DOM 的 attributes 是 NamedNodeMap（没有 .has），不得假设 Map 风格方法。
+          try {
+            return el.attributes !== null && typeof el.attributes.getNamedItem === 'function' &&
+              el.attributes.getNamedItem('data-conversation-scroll') !== null
+          } catch (_) { return false }
+        }
+        return {
+          /** 官方「回到底部」sticky 槽位。 */
+          toBottomSlot: () => {
+            try { return document.querySelector('[class*="Md3f7G_toBottomSlot"]') } catch (_) { return null }
+          },
+          /** 官方回到底部按钮本体（:not 排除命名含 Slot 的槽层）。 */
+          toBottomButton: (slot) => {
+            try { return slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])') } catch (_) { return null }
+          },
+          /** 从槽位向上找会话滚动容器（官方 [data-conversation-scroll]）；走不通时回退槽位父节点。 */
+          scrollportOf: (slot) => {
+            try {
+              let node = slot
+              while (node !== null && node !== document.documentElement && !hasScrollAttr(node)) {
+                node = node.parentNode
+              }
+              return node !== null && node !== document.documentElement ? node : slot.parentNode
+            } catch (_) { return null }
+          },
+          /** 已渲染的用户回复行快照（官方 data-chat-flow-kind="user"）。 */
+          userRows: (scroll) => {
+            const rows = []
+            try {
+              if (typeof scroll.querySelectorAll !== 'function') return rows
+              for (const row of scroll.querySelectorAll('[data-chat-flow-kind="user"]')) rows.push(row)
+            } catch (_) {}
+            return rows
+          },
+          /** 行的滚动视口坐标（0=视口顶、负=已滚出上方，与官方 pagingAnchor 同系）。 */
+          flowTopOf: (scroll, row) => {
+            try { return row.getBoundingClientRect().top - scroll.getBoundingClientRect().top } catch (_) { return 0 }
+          },
+          /** 官方「加载更早」分页按钮（历史加载完即从 DOM 消失）。 */
+          loadOlderButton: (scroll) => {
+            try {
+              return typeof scroll.querySelector === 'function' ? scroll.querySelector('[class*="Md3f7G_older"] button') : null
+            } catch (_) { return null }
+          },
+        }
+      }
+
+      /**
        * 全平台「跳上一条用户回复」引擎：
        * 在官方「回到底部」按钮（Md3f7G_toBottomSlot，sticky 定位上下文）内注入
        * 同款圆形上箭头按钮（absolute bottom:42px → 稳居官方按钮上方 8px），
@@ -6700,6 +6758,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
        */
       const createUserJump = (labelOf) => {
         const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null }
+        const nav = createConversationNav()
         const cancelRetryTimer = () => {
           if (state.retryTimer === null) return
           try { state.retryTimer() } catch (_) {}
@@ -6709,27 +6768,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
           '<path d="M7 10.5V3.5M3.5 7 7 3.5 10.5 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-        const hasScrollAttr = (el) => {
-          if (typeof el.hasAttribute === 'function') {
-            try { return el.hasAttribute('data-conversation-scroll') } catch (_) { return false }
-          }
-          try {
-            return el.attributes !== null && typeof el.attributes.getNamedItem === 'function' &&
-              el.attributes.getNamedItem('data-conversation-scroll') !== null
-          } catch (_) { return false }
-        }
-
-        /** 从回到底部槽位向上找会话滚动容器（官方 [data-conversation-scroll]）。 */
-        const scrollContainerOf = (slot) => {
-          try {
-            let node = slot
-            while (node !== null && node !== document.documentElement && !hasScrollAttr(node)) {
-              node = node.parentNode
-            }
-            return node !== null && node !== document.documentElement ? node : slot.parentNode
-          } catch (_) { return null }
-        }
-
         /**
          * 按钮显隐（v0.36.5 用户点名：达到最顶部后隐藏）：
          * 还有「可跳的上一条」（flowTop<4 的 user 行）或还有官方「加载更早」
@@ -6738,19 +6776,15 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         const updateVisibility = () => {
           if (state.btn === null || !state.btn.isConnected) return
           try {
-            const slot = document.querySelector('[class*="Md3f7G_toBottomSlot"]')
+            const slot = nav.toBottomSlot()
             if (slot === null) return
-            const scroll = scrollContainerOf(slot)
+            const scroll = nav.scrollportOf(slot)
             if (scroll === null || typeof scroll.querySelectorAll !== 'function') return
             let hasTarget = false
-            try {
-              for (const row of scroll.querySelectorAll('[data-chat-flow-kind="user"]')) {
-                const flowTop = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top
-                if (flowTop < 4) { hasTarget = true; break }
-              }
-            } catch (_) {}
-            let hasOlder = false
-            try { hasOlder = scroll.querySelector('[class*="Md3f7G_older"] button') !== null } catch (_) {}
+            for (const row of nav.userRows(scroll)) {
+              if (nav.flowTopOf(scroll, row) < 4) { hasTarget = true; break }
+            }
+            const hasOlder = nav.loadOlderButton(scroll) !== null
             state.btn.style.display = hasTarget || hasOlder ? 'flex' : 'none'
           } catch (_) {}
         }
@@ -6758,7 +6792,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         /** 克隆官方回到底部按钮内的 svg 并旋转 180° → 图标与官方严格一致。 */
         const officialUpSvg = (slot) => {
           try {
-            const source = slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])')
+            const source = nav.toBottomButton(slot)
             const svg = source !== null ? source.querySelector('svg') : null
             if (svg !== null && typeof svg.outerHTML === 'string') {
               return svg.outerHTML.replace(/<svg/i, '<svg style="transform:rotate(180deg)"')
@@ -6770,9 +6804,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         const mount = () => {
           if (state.btn !== null && state.btn.isConnected) return
           try {
-            const slot = document.querySelector('[class*="Md3f7G_toBottomSlot"]')
+            const slot = nav.toBottomSlot()
             if (slot === null || typeof slot.appendChild !== 'function' || typeof slot.querySelector !== 'function') return
-            const official = slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])')
+            const official = nav.toBottomButton(slot)
             const btn = document.createElement('button')
             btn.type = 'button'
             btn.setAttribute('data-dshsvc-user-jump', '')
@@ -6799,12 +6833,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             })
             btn.innerHTML = officialUpSvg(slot)
             btn.addEventListener('click', () => {
-              const scroll = scrollContainerOf(slot)
+              const scroll = nav.scrollportOf(slot)
               if (scroll === null || typeof scroll.querySelectorAll !== 'function') return
               const baseScrollTop = Number(scroll.scrollTop) || 0
-              const flowTopOf = (row) => {
-                try { return row.getBoundingClientRect().top - scroll.getBoundingClientRect().top } catch (_) { return 0 }
-              }
               // flowTop 与 scrollTop 不同系：flowTop 是相对滚动视口的坐标（0=视口顶，
               // 负=上方）。「上一条用户回复」= flowTop<4（已滚出视口顶之上）的最后一行；
               // 目标文档坐标 = scrollTop + flowTop − 顶部留白。
@@ -6819,16 +6850,13 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
                     else scroll.scrollTop = baseScrollTop
                   } catch (_) {}
                 }
-                const rows = []
-                try {
-                  for (const row of scroll.querySelectorAll('[data-chat-flow-kind="user"]')) rows.push(row)
-                } catch (_) { return }
+                const rows = nav.userRows(scroll)
                 let target = null
                 for (let i = rows.length - 1; i >= 0; i -= 1) {
-                  if (flowTopOf(rows[i]) < 4) { target = rows[i]; break }
+                  if (nav.flowTopOf(scroll, rows[i]) < 4) { target = rows[i]; break }
                 }
                 if (target !== null) {
-                  const top = Math.max(0, baseScrollTop + flowTopOf(target) - 12)
+                  const top = Math.max(0, baseScrollTop + nav.flowTopOf(scroll, target) - 12)
                   if (typeof scroll.scrollTo === 'function') scroll.scrollTo({ top, behavior: 'smooth' })
                   else scroll.scrollTop = top
                   return
@@ -6838,8 +6866,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
                 // disabled 只是不重复点击，绝不能因此把约 4.4s 上限变成无限等待。
                 if (state.retryLeft <= 0) return
                 state.retryLeft -= 1
-                let older = null
-                try { older = scroll.querySelector('[class*="Md3f7G_older"] button') } catch (_) { older = null }
+                const older = nav.loadOlderButton(scroll)
                 if (older === null) return // 历史已全部加载且无目标 → 停（按钮随显隐规则隐藏）
                 if (older.disabled !== true) {
                   try { older.click() } catch (_) { /* 官方 loading 态下点击无害 */ }
