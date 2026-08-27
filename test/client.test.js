@@ -691,7 +691,9 @@ test('service panel puts versions first and renders switchable provider-prefixed
 
   await renderer.load()
   const overviewText = renderer.text('settings.section')
-  assert.match(overviewText, /概览.*健康诊断.*模型统计.*备份维护.*重启/)
+  // v0.34.1：重启钉首行右缘（额度查询/通知之后、第二行子代理之前），各标签仍按组序渲染。
+  assert.match(overviewText, /概览.*健康诊断.*模型统计.*额度查询.*通知/)
+  assert.match(overviewText, /通知重启|重启子代理|重启\n/)
   assert.doesNotMatch(overviewText, /⚠ 模型统计|服务控制提醒/)
   assert.match(overviewText, /版本信息.*进程与运行环境.*平台.*Node 版本.*运行时间.*内存 RSS/)
   assert.match(overviewText, /报错信息.*最近 24 小时.*模型报错.*2 类.*工具报错.*2 类/)
@@ -900,9 +902,15 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   const panel = renderer.findByTestId('tab-panel')
   const overviewSurface = renderer.findByTestId('health-display')
   const activeOverviewTab = renderer.findButton('概览')
-  assert.equal(tabs.props.style.borderBottom, '1px solid var(--dsw-alias-border-l1)')
-  assert.equal(activeOverviewTab.props.style.color, 'var(--dsw-alias-brand-primary)')
-  assert.equal(activeOverviewTab.props.style.borderBottom, '2px solid var(--dsw-alias-brand-primary)')
+  // v0.34 激活段区分度加强：品牌色暗化实底（color-mix 叠层）+ 白字——白字的对比度由
+  // 「底也压暗」保证，不再依赖 token 明度；分段条托盘与分组行为照旧。
+  assert.equal(tabs.props.style.borderBottom, undefined)
+  assert.equal(tabs.props.style.flexDirection, 'column')
+  // v0.34.2：激活块配色走双主题变量（浅=原色实底+白字，暗=提亮块+近黑字），组件只引用 var。
+  assert.equal(activeOverviewTab.props.style.color, 'var(--dsh-svc-tab-active-text)')
+  assert.equal(activeOverviewTab.props.style.background, 'var(--dsh-svc-tab-active-bg)')
+  // 分段条样式：激活段 = 条内实底圆角块（非独立胶囊）。
+  assert.equal(activeOverviewTab.props.style.borderRadius, '8px')
   assert.equal(panel.props.style.boxShadow, undefined)
   assert.equal(panel.props.style.border, undefined)
   assert.equal(panel.props.style.background, undefined)
@@ -956,9 +964,63 @@ test('tab and top alerts identify health and backup failures without treating an
   })
   await renderer.load()
   const text = renderer.text('settings.section')
-  assert.match(text, /概览.*⚠ 健康诊断.*⚠ 备份维护/)
+  // v0.31 胶囊分组条：故障 ⚠ 从文字前缀改为角落橙点（tab-dot-* testid）。
+  assert.equal(renderer.hasTest('tab-dot-health'), true)
+  assert.equal(renderer.hasTest('tab-dot-backup'), true)
+  assert.equal(renderer.hasTest('tab-dot-overview'), false, 'overview has no failure')
+  assert.equal(renderer.hasTest('tab-dot-restart'), false, 'restart has no failure')
+  // 两行分组：第一行「状态与数据」（概览→额度查询），第二行「技能与维护」（备份维护→子代理 + 红胶囊重启殿后）。
+  // 每枚胶囊带 top-tab-<id> testid，顺序断言直接用官方辅助方法，不手写树遍历（假渲染树的
+  // 子节点可能是数组节点，自写递归器漏掉会得到空集——曾因此假失败一轮）。
+  // 分组行与竖排侧签各带 testid；前缀收集按 DOM 出现序：行 div 在前、其内部标题随后。
+  // v0.33：竖排侧签标题去掉，只剩行 + 行内分段条；前缀收集顺序=行 → 托盘。
+  assert.deepEqual(renderer.findAllByTestIdPrefix('tab-group-').map((group) => group.props['data-testid']), ['tab-group-data', 'tab-group-data-tray', 'tab-group-maint', 'tab-group-maint-tray'])
+  // 组序（用户点名）：数据行 概览→健康诊断→模型统计→额度查询→通知；维护行 子代理→技能管理→备份维护。
+  // v0.34.1：重启移出托盘、独立胶囊钉在首行右缘 → DOM 序里它出现在首行之后、子代理之前。
+  assert.deepEqual(renderer.findAllByTestIdPrefix('top-tab-').map((node) => node.props['data-testid']), [
+    'top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify',
+    'top-tab-restart', 'top-tab-subagent', 'top-tab-skills', 'top-tab-backup',
+  ], 'order: data row chips, restart pinned right, then maintenance row')
+  // renderer.text() 只认槽名；分组节点文本用本地展平器收集。
+  const flattenText = (node) => {
+    let out = ''
+    const walk = (current) => {
+      if (Array.isArray(current)) { for (const child of current) walk(child); return }
+      if (current === null || typeof current !== 'object') return
+      for (const child of current.children || []) {
+        if (typeof child === 'string') out += child
+        else walk(child)
+      }
+    }
+    walk(node)
+    return out
+  }
+  const dataGroup = renderer.findByTestId('tab-group-data')
+  const maintGroup = renderer.findByTestId('tab-group-maint')
+  assert.doesNotMatch(flattenText(dataGroup), /状态与数据|技能与维护/, 'group titles are removed per user feedback')
+  // v0.34.1：重启钉首行右缘 → 数据行含重启、维护行不含。
+  assert.match(flattenText(dataGroup), /重启/)
+  assert.doesNotMatch(flattenText(dataGroup), /备份维护|子代理|技能(?!管理)/)
+  assert.doesNotMatch(flattenText(maintGroup), /概览|重启/)
+  // 重启胶囊在未激活态也保持危险色描边（组合值含 1px solid 前缀）；激活态淡染由点击流程用例覆盖。
+  // v0.34：重启移出托盘、独立胶囊 margin-left:auto 推到行右缘。
+  const restartChip = renderer.findByTestId('top-tab-restart')
+  assert.equal(restartChip.props.style.border, '0.5px solid var(--dsw-alias-state-error-primary)', 'restart keeps a red outlined capsule when idle')
+  assert.equal(restartChip.props.style.marginLeft, 'auto', 'restart pins to the right edge of the tab area')
+  // 假树的节点没有 parentNode 回链：用「托盘子树文本不含重启段之外的分支」不可行（同名），
+  // 直接断言 maintenance 托盘的直接 children 里没有 top-tab-restart 段。
+  const maintTray = renderer.findByTestId('tab-group-maint-tray')
+  const collectChipTestids = (node, out = []) => {
+    if (Array.isArray(node)) { for (const child of node) collectChipTestids(child, out); return out }
+    if (node === null || typeof node !== 'object') return out
+    if (typeof node.props?.['data-testid'] === 'string' && node.props['data-testid'].startsWith('top-tab-')) { out.push(node.props['data-testid']); return out }
+    for (const child of node.children ?? []) collectChipTestids(child, out)
+    return out
+  }
+  assert.deepEqual(collectChipTestids(maintTray), ['top-tab-subagent', 'top-tab-skills', 'top-tab-backup'], 'maintenance tray holds exactly its three segments; restart floats outside')
+  const dataTray = renderer.findByTestId('tab-group-data-tray')
+  assert.deepEqual(collectChipTestids(dataTray), ['top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify'], 'data tray holds its five segments')
   assert.match(text, /服务控制提醒.*健康诊断.*备份维护/)
-  assert.doesNotMatch(text, /⚠ 概览|⚠ 模型统计|⚠ 重启/)
 })
 
 test('settings mount automatically shows separate DSH and plugin update states with release links', async () => {
@@ -1148,7 +1210,7 @@ test('permission panel shows the host plan and requires explicit confirmation be
   })
 
   await renderer.load()
-  await renderer.findButton('⚠ 健康诊断').props.onClick()
+  await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   const initialText = renderer.text('settings.section')
   assert.match(initialText, /健康诊断.*文件权限/)
@@ -1899,12 +1961,12 @@ test('overview shows platform and node version metrics and diagnostics renders t
   assert.match(renderer.text('settings.section'), /v20\.11\.0/)
   assert.match(renderer.text('settings.section'), /进程与运行环境/)
 
-  // 健康诊断：两个新检查项的可读化文案；runtime-env 警告点亮标签 ⚠。
+  // 健康诊断：两个新检查项的可读化文案；runtime-env 警告以胶囊角落橙点点亮标签。
   await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v20\.11\.0 低于插件要求的 22\.x/)
-  assert.match(renderer.text('settings.section'), /⚠ 健康诊断/)
+  assert.equal(renderer.hasTest('tab-dot-health'), true)
 })
 
 test('diagnostics renders a recognized supervisor and a satisfied node version as ok', async () => {
@@ -1929,7 +1991,7 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /运行环境.*由Docker 容器管理，重启后会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v22\.14\.0，满足 ≥22 要求/)
-  assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
+  assert.equal(renderer.hasTest('tab-dot-health'), false)
 })
 
 test('a manual-launch runtime-env check renders yellow inline but raises no alerts', async () => {
@@ -1981,7 +2043,7 @@ test('an unknown runtime environment renders as informational without warning ma
   assert.match(renderer.text('settings.section'), /运行环境.*未检测到进程管理器，无法确认重启后是否自动拉起/)
   assert.match(renderer.text('settings.section'), /DSH_SERVICE_RUNTIME_ENV=managed/)
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
-  assert.doesNotMatch(renderer.text('settings.section'), /⚠ 健康诊断/)
+  assert.equal(renderer.hasTest('tab-dot-health'), false)
 })
 
 // ── v0.19 额度查询 ──────────────────────────────────────────────────────────────
@@ -3672,9 +3734,9 @@ test('factory-level adopt restores a host-side running batch badge without visit
   renderer.mount('settings.section')
   await renderer.flush()
   await renderer.flush()
-  // 工厂启动即采纳：不进技能页，「技能」标签标题也带 ⟳done/total 角标。
-  // 标签标题带 ⟳done/total 角标（按钮文本带角标后 findButton 精确匹配会漏，改全文断言）。
-  assert.match(renderer.text(), /技能 ⟳1\/3/)
+  // 工厂启动即采纳：不进技能页，「技能」胶囊右上角也挂批量计数小徽标（done/total）。
+  assert.equal(renderer.hasTest('skills-tab-badge'), true)
+  assert.equal(renderer.findByTestId('skills-tab-badge').children[0], '1/3')
   assert.ok(statusCalls >= 1)
   renderer.disposeFactory()
 })

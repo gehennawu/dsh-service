@@ -226,6 +226,7 @@ window.__ModuleLoader__.load({
       'tabs.restart': '重启',
       'tabs.alert.title': '服务控制提醒',
       'tabs.alert.body': '以下功能需要处理：{tabs}',
+      'tabs.alert.dot': '此标签存在故障提醒',
       'permissions.title': '文件权限',
       'permissions.description': '检查 Agent 是否能读取、写入并进入 DSH_HOME 和工作区。深检跳过 .git 内部文件；修复只补充当前用户所需权限并保留执行位，DSH 凭据文件固定为 600。',
       'permissions.target': '目标属主：{owner}',
@@ -727,6 +728,7 @@ window.__ModuleLoader__.load({
       'tabs.restart': 'Restart',
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
+      'tabs.alert.dot': 'Alert on this tab',
       'permissions.title': 'File permissions',
       'permissions.description': 'Checks whether the Agent can read, write, and enter DSH_HOME and workspaces. Deep scans skip internal .git files; repair only adds permissions needed by the current user while preserving execute bits, and keeps the DSH credential file at 600.',
       'permissions.target': 'Target owner: {owner}',
@@ -1020,14 +1022,57 @@ window.__ModuleLoader__.load({
     const NAV_ICON_SVG_OPEN = '%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27black%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E'
     const NAV_ICON_SVG_CLOSE = '%3C/svg%3E'
     const navIconMask = (body) => '-webkit-mask:url("data:image/svg+xml,' + NAV_ICON_SVG_OPEN + body + NAV_ICON_SVG_CLOSE + '") center/contain no-repeat;mask:url("data:image/svg+xml,' + NAV_ICON_SVG_OPEN + body + NAV_ICON_SVG_CLOSE + '") center/contain no-repeat'
-    // 三枚图标（16px 下可读）：服务控制=滑杆组、远端额度=仪表弧+指针、重启=电源符号
-    const NAV_ICON_BODY_SERVICE = '%3Cpath d=%27M4 8h16%27/%3E%3Cpath d=%27M4 16h16%27/%3E%3Ccircle cx=%279%27 cy=%278%27 r=%272.5%27 fill=%27black%27/%3E%3Ccircle cx=%2715%27 cy=%2716%27 r=%272.5%27 fill=%27black%27/%3E'
-    const NAV_ICON_BODY_QUOTA = '%3Cpath d=%27m12 14 4-4%27/%3E%3Cpath d=%27M3.34 19a10 10 0 1 1 17.32 0%27/%3E'
-    const NAV_ICON_BODY_RESTART = '%3Cpath d=%27M12 2v10%27/%3E%3Cpath d=%27M18.4 6.6a9 9 0 1 1-12.77.04%27/%3E'
+    // 线性图标单一事实源（v0.31 用户点名：顶部标签胶囊复用既有 SVG）：每枚 = [tag, attrs]
+    // 元素清单，两处消费——① 顶栏胶囊内联 React SVG；② 左列导航 mask 的 data URI 序列化。
+    // 换图标只改这一处，两处永远同步。风格统一 lucide：24 viewBox、stroke 2、圆角线帽。
+    const SVG_ICONS = {
+      // 服务控制（左列 mask 专用）= 滑杆组
+      service: [['path', { d: 'M4 8h16' }], ['path', { d: 'M4 16h16' }], ['circle', { cx: '9', cy: '8', r: '2.5', fill: 'black' }], ['circle', { cx: '15', cy: '16', r: '2.5', fill: 'black' }]],
+      // 概览 = 仪表盘四宫格
+      overview: [['rect', { x: '3', y: '3', width: '7', height: '9', rx: '1' }], ['rect', { x: '14', y: '3', width: '7', height: '5', rx: '1' }], ['rect', { x: '14', y: '12', width: '7', height: '9', rx: '1' }], ['rect', { x: '3', y: '16', width: '7', height: '5', rx: '1' }]],
+      // 通知 = 铃铛（取 BellIcon 铃体三笔，不带对钩/斜线变体）
+      notify: [['path', { d: 'M10.268 21a2 2 0 0 0 3.464 0' }], ['path', { d: 'M16.8607 4.4824A6 6 0 0 0 6 8C6 12.499 4.589 13.956 3.262 15.326' }], ['path', { d: 'M3.262 15.326A1 1 0 0 0 4 17H20A1 1 0 0 0 20.74 15.327C20.209 14.779 19.665 14.218 19.203 13.454' }]],
+      // 健康诊断 = 盾牌 + 对钩
+      health: [['path', { d: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z' }], ['path', { d: 'm9 12 2 2 4-4' }]],
+      // 模型统计 = 坐标轴 + 三根柱
+      usage: [['path', { d: 'M3 3v16a2 2 0 0 0 2 2h16' }], ['path', { d: 'M18 17V9' }], ['path', { d: 'M13 17V5' }], ['path', { d: 'M8 17v-3' }]],
+      // 额度查询 = 仪表弧 + 指针
+      quota: [['path', { d: 'm12 14 4-4' }], ['path', { d: 'M3.34 19a10 10 0 1 1 17.32 0' }]],
+      // 备份维护 = 归档箱
+      backup: [['rect', { x: '2', y: '3', width: '20', height: '5', rx: '1' }], ['path', { d: 'M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8' }], ['path', { d: 'M10 12h4' }]],
+      // 技能 = 书本轮廓
+      skills: [['path', { d: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20' }], ['path', { d: 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z' }]],
+      // 子代理 = 机器人头
+      subagent: [['path', { d: 'M12 8V4H8' }], ['rect', { width: '16', height: '12', x: '4', y: '8', rx: '2' }], ['path', { d: 'M2 14h2' }], ['path', { d: 'M20 14h2' }], ['path', { d: 'M15 13v2' }], ['path', { d: 'M9 13v2' }]],
+      // 重启 = 电源符号
+      restart: [['path', { d: 'M12 2v10' }], ['path', { d: 'M18.4 6.6a9 9 0 1 1-12.77.04' }]],
+    }
+    // 左列 mask 的 data URI 体序列化：`<tag attr='val'/>` → %3Ctag%20attr=%27val%27/%3E。
+    // 输出 byte 级等于历史上手写的常量（属性分隔用原始空格），外观零漂移。
+    const iconMaskBody = (icon) => icon.map(([tag, attrs]) =>
+      '%3C' + tag + Object.entries(attrs).map(([k, v]) => ` ${k}=%27${v}%27`).join('') + '/%3E').join('')
+    const NAV_ICON_BODY_SERVICE = iconMaskBody(SVG_ICONS.service)
+    const NAV_ICON_BODY_QUOTA = iconMaskBody(SVG_ICONS.quota)
+    const NAV_ICON_BODY_RESTART = iconMaskBody(SVG_ICONS.restart)
     // 技能 = 书本轮廓（lucide book 风格，16px 下可读）
-    const NAV_ICON_BODY_SKILLS = '%3Cpath d=%27M4 19.5A2.5 2.5 0 0 1 6.5 17H20%27/%3E%3Cpath d=%27M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z%27/%3E'
+    const NAV_ICON_BODY_SKILLS = iconMaskBody(SVG_ICONS.skills)
     // 子代理 = 机器人头（lucide bot 风格，16px 下可读）
-    const NAV_ICON_BODY_SUBAGENT = '%3Cpath d=%27M12 8V4H8%27/%3E%3Crect width=%2716%27 height=%2712%27 x=%274%27 y=%278%27 rx=%272%27/%3E%3Cpath d=%27M2 14h2%27/%3E%3Cpath d=%27M20 14h2%27/%3E%3Cpath d=%27M15 13v2%27/%3E%3Cpath d=%27M9 13v2%27/%3E'
+    const NAV_ICON_BODY_SUBAGENT = iconMaskBody(SVG_ICONS.subagent)
+    /** 顶栏胶囊的内联 SVG 图标：跟随 currentColor，尺寸 13px，随文字基线居中。 */
+    function TabIcon({ name }) {
+      const elements = SVG_ICONS[name]
+      if (elements === undefined) return null
+      return React.createElement('svg', {
+        viewBox: '0 0 24 24', width: 13, height: 13, fill: 'none', stroke: 'currentColor',
+        strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true',
+        style: { flexShrink: 0, display: 'block' },
+      }, elements.map(([tag, attrs], index) => React.createElement(tag, Object.assign({ key: index }, attrs))))
+    }
+    // v0.34 顶栏分段条激活段实底色。v0.34.2 用户复核定稿——**按主题分流**：
+    // 浅色主题 = 品牌原色实底 + 白字（黑/深底白字，用户点名）；暗色主题 = 提亮品牌色块
+    // 激活块底色与文字色均由插件样式表的双主题变量决定（写死中性固定色，见 v0.34.2 注释）：
+    // 组件只引用变量，React 内联样式无需感知当前主题。不支持变量的极老内核回退到浅色深块白字。
+    const CHIP_ACTIVE_TEXT = 'var(--dsh-svc-tab-active-text)'
 
     function markSettingsNavRows(rows) {
       if (typeof document === 'undefined' || !document.body) return () => {}
@@ -1083,6 +1128,10 @@ window.__ModuleLoader__.load({
         svcStyle = document.createElement('style')
         svcStyle.textContent = [
           ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}',
+          // 顶栏分段条激活块双主题配色：浅色=深色实底块#16181d+白字，暗色=近白实底块#eef0f4+黑字。
+          // 不用 --dsw-alias-* 令牌（实测其明暗方向与本预期相反，浅色呈白块、深色呈黑块），写死中性固定色。
+          ':root{--dsh-svc-tab-active-bg:#16181d;--dsh-svc-tab-active-danger:#16181d;--dsh-svc-tab-active-text:#ffffff}',
+          'body[data-ds-dark-theme]{--dsh-svc-tab-active-bg:#eef0f4;--dsh-svc-tab-active-danger:#eef0f4;--dsh-svc-tab-active-text:#111318}',
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
           // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
           // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
@@ -4359,9 +4408,8 @@ window.__ModuleLoader__.load({
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
-        // 批量进行中在「技能」标签标题上显示进度角标（⟳done/total）。
+        // 批量进行中在「技能」标签胶囊右上角显示进度计数角标（done/total）。
         const { batch: skillsBadgeBatch } = useSkillsBatch()
-        const skillsBadge = skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running' ? ' ⟳' + skillsBadgeBatch.done + '/' + skillsBadgeBatch.total : ''
         const tabWarnings = {
           overview: false,
           notify: false,
@@ -4404,8 +4452,91 @@ window.__ModuleLoader__.load({
           warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
             React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
-          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', gap: '10px', flexWrap: 'wrap', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-            tabs.map(([id, label]) => React.createElement('button', { key: id, style: Object.assign({}, inlineTab, visibleActiveTab === id ? inlineTabActive : { color: tabWarnings[id] ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } }, `${tabWarnings[id] ? '⚠ ' : ''}${translate(label)}${id === 'skills' ? skillsBadge : ''}`))),
+          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-start' } },
+            (() => {
+              // v0.31 用户点名（终版）：顶栏标签 = 两行分组的紧凑胶囊条。胶囊「图标+文字」，
+              // 激活态用品牌色淡染底 + 品牌色文字（不用实底白字——品牌色在深色主题里偏亮，
+              // 白底白字会直接不可读），重启激活态同理用危险色淡染；未激活重启保持危险色
+              // 描边呼应安全教义。组序（用户点名）：「状态与数据」概览→健康诊断→模型统计→
+              // 额度查询→通知；「技能与维护」子代理→技能管理→备份维护→红描边重启殿后。
+              // 组内功能开关全关时该标签消失，整行全空才不渲染该行。
+              // 故障 ⚠ 从文字前缀改为角落橙点，技能批量计数是右上小徽标。
+              // v0.33 用户参考图终版：每行是**一条连续圆角分段条**——段无各自边框、段间细竖线。
+              // v0.34：激活段区分度加强——品牌色实底 + 白字（实底取「深色上也够暗」的品牌原色，
+              // 不再受主题明度翻转影响；v0.32 的白底白字 BUG 是错把亮色主题交互底当背景所致，
+              // 与本处的区别见 TODO）；重启移出托盘、独立红胶囊钉在标签区最右（margin-left:auto）。
+              const buildTabChip = ([id, label]) => {
+                const isActive = visibleActiveTab === id
+                const isRestart = id === 'restart'
+                let chipStyle = Object.assign(
+                  {
+                    position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '5px',
+                    padding: '4px 9px', margin: 0, border: 0, borderRadius: 0,
+                    background: 'transparent',
+                    color: tabWarnings[id] && !isActive ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)',
+                    fontSize: '12.5px', fontWeight: 550, lineHeight: '16px', cursor: 'pointer',
+                    transition: 'color 120ms, background 120ms',
+                  },
+                )
+                if (isActive) {
+                  chipStyle.background = isRestart ? 'var(--dsh-svc-tab-active-danger)' : 'var(--dsh-svc-tab-active-bg)'
+                  chipStyle.color = CHIP_ACTIVE_TEXT
+                  chipStyle.fontWeight = 650
+                  chipStyle.borderRadius = '8px'
+                }
+                return React.createElement('button', { key: id, 'data-testid': 'top-tab-' + id, style: chipStyle, onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } },
+                  React.createElement(TabIcon, { name: id }),
+                  translate(label),
+                  tabWarnings[id] ? React.createElement('span', { 'data-testid': 'tab-dot-' + id, 'aria-label': translate('tabs.alert.dot'), style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
+                  id === 'skills' && skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running' ? React.createElement('span', { 'data-testid': 'skills-tab-badge', style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: '#fff', fontWeight: 700 } }, skillsBadgeBatch.done + '/' + skillsBadgeBatch.total) : null)
+              }
+              const groupDefs = [
+                ['tabs.group.data', ['overview', 'health', 'usage', 'quota', 'notify']],
+                ['tabs.group.maint', ['subagent', 'skills', 'backup']],
+              ]
+              const rows = []
+              let restartEntry = null
+              for (const [groupKey, ids] of groupDefs) {
+                // 行内顺序跟随 groupDefs 里点名的 id 序（用户点名组序），不是 tabs 源序——
+                // filter 保源序会把「通知」排回第一行第二位，这里按 ids 顺序映射重排。
+                const orderIndex = new Map(ids.map((id, index) => [id, index]))
+                const items = tabs.filter(([id]) => orderIndex.has(id))
+                  .sort((a, b) => orderIndex.get(a[0]) - orderIndex.get(b[0]))
+                if (items.length > 0) rows.push({ items, testid: 'tab-group-' + groupKey.split('.').pop() })
+              }
+              // v0.34：重启不再挤在段列表里，单独拎出（托盘外独立红胶囊）。
+              restartEntry = tabs.find(([id]) => id === 'restart') ?? null
+              // 重启永远可见：可选功能全关到没有任何分组行时自成一行（仍钉最右）。
+              const trayChip = (item, index, list) => {
+                const nodes = []
+                if (index > 0) {
+                  nodes.push(React.createElement('span', { key: 'sep-' + item[0], 'aria-hidden': 'true', style: { width: '1px', height: '14px', background: 'var(--dsw-alias-border-l1)', flexShrink: 0 } }))
+                }
+                nodes.push(buildTabChip(item))
+                return nodes
+              }
+              // v0.34.1：重启胶囊要贴**容器右缘**（不是分段条末尾）。行改成占满宽度的
+              // flex：托盘 inline-flex 收缩在左，重启钮 marginLeft:auto 钉到该行最右；
+              // 托盘自身换行（窄面板）也不影响钮的贴边。挂在首行（右缘视线最好），
+              // 其余行不再重复渲染。
+              return rows.map((row, rowIndex) => React.createElement('div', { key: row.testid, 'data-testid': row.testid, style: { display: 'flex', minWidth: 0, width: '100%' } },
+                React.createElement('div', {
+                  'data-testid': row.testid + '-tray',
+                  style: { display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', minWidth: 0, border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: '12px', overflow: 'hidden' },
+                }, row.items.flatMap(trayChip)),
+                rowIndex === 0 && restartEntry !== null
+                  ? (() => {
+                      const button = buildTabChip(restartEntry)
+                      return React.createElement('button', Object.assign({}, button.props, {
+                        style: Object.assign({}, button.props.style, {
+                          marginLeft: 'auto', border: '0.5px solid var(--dsw-alias-state-error-primary)',
+                          borderRadius: '999px', padding: '4px 12px',
+                          background: visibleActiveTab === 'restart' ? 'var(--dsh-svc-tab-active-danger)' : 'transparent',
+                        }),
+                      }), ...(button.children ?? []))
+                    })()
+                  : null))
+            })()),
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
