@@ -1744,6 +1744,22 @@ function createQuotaThrottle(options = {}) {
       entry.lastUpstreamAt = 0
       return { ok: true }
     },
+    /**
+     * 凭据/适配变更后的闸门重置（保存 API key、Cookie、改适配类型时调用）：既有失败是旧配置
+     * 造成的，退避与最小间隔对「换了一份新凭据」毫无意义——用户填完就该立刻重试，而不是
+     * 傻等最长 15 分钟的指数退避走完（GUI 反馈点名）。单飞在途时不抢占，等本轮自然落定。
+     * 与 force() 的区别：本方法只由宿主写入口触发，可以连硬冷却一并清掉。
+     */
+    resetGates(provider) {
+      const entry = entryOf(provider)
+      if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
+      entry.failures = 0
+      entry.backoffUntil = 0
+      entry.lastManualAt = 0
+      entry.lastUpstreamAt = 0
+      entry.lastSuccessAt = 0
+      return { ok: true }
+    },
     prune(activeProviders) {
       const active = activeProviders instanceof Set ? activeProviders : new Set(activeProviders ?? [])
       for (const [provider, entry] of entries) {
@@ -4343,6 +4359,8 @@ function apply(ctx) {
             }
             config.kinds[providerName] = kind
           }
+          // 适配变更即清闸（v0.29 用户反馈：填完凭据/改完类型就该立刻重试，不继承旧失败的退避）。
+          quotaThrottle.resetGates(providerName)
           return { value: { ok: true } }
         })
       } catch (error) {
@@ -4377,6 +4395,9 @@ function apply(ctx) {
             // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
             return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
           }
+          // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
+          // 客户端紧随其后的 quota-refresh 应立刻发上游，而不是干等退避走完。
+          quotaThrottle.resetGates(providerName)
           return { ok: true }
         }
         if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
@@ -4385,6 +4406,7 @@ function apply(ctx) {
         } catch (error) {
           return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
         }
+        quotaThrottle.resetGates(providerName)
         return { ok: true }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }

@@ -3265,6 +3265,66 @@ test('quota-config pins the cliproxy domain on save and clears it with the kind'
   assert.equal(config.allowedHosts.cpa, undefined)
 })
 
+test('resetGates clears backoff and cooldown so a saved credential retries immediately', async (t) => {
+  // 单元口径：force 保留失败退避（防手动按钮打爆上游），resetGates 只由宿主写入口触发、连硬冷却一起清。
+  const throttle = createQuotaThrottle({ successTtlMs: 0, minIntervalMs: 15_000, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
+  const now = 900_000
+  assert.equal(throttle.attempt('p', now).ok, true)
+  throttle.settle('p', { ok: false, code: 'http-status:401' }, now)
+  assert.equal(throttle.force('p', now + 1).reason, 'backoff')          // 手动刷新仍要等退避
+  assert.equal(throttle.attempt('p', now + 1).reason, 'backoff')
+  throttle.resetGates('p')
+  assert.equal(throttle.attempt('p', now + 2).ok, true)                 // 换凭据后立即放行
+
+  // 单飞在途不抢占，等本轮自然落定。
+  assert.equal(throttle.attempt('q', now).ok, true)
+  assert.equal(throttle.resetGates('q').reason, 'inflight')
+})
+
+test('saving a credential clears the gates and the next snapshot fires upstream right away', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cred-retry-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { mimo: 'xiaomi-token-plan-cn' } }))
+  let cookieValue = 'stale-cookie'
+  let healthy = false
+  const credCalls = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { mimo: { displayName: 'MiMo', baseURL: '', apiKeyEnv: 'MIMO_TP_KEY' } } } : undefined) },
+      credentials: {
+        resolve: async () => ({ value: cookieValue }),
+        describe: async (name) => ({ name, configured: name === 'XIAOMI_MIMO_CONSOLE_COOKIE' }),
+        set: async (name, value) => { credCalls.push([name, value]); cookieValue = value },
+      },
+    },
+  })
+  const requests = stubHttpsRequest(t, (request) => {
+    if (!healthy) return { status: 401 }
+    if (request.url.endsWith('/tokenPlan/detail')) return { payload: XIAOMI_DETAIL_FIXTURE }
+    if (request.url.endsWith('/tokenPlan/usage')) return { payload: XIAOMI_USAGE_FIXTURE }
+    return { status: 404 }
+  })
+
+  // 第一轮：Cookie 失效 → 失败退避（30 秒起步）。
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'first attempt')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  // 存入新 Cookie：宿主清闸。不走真实时钟——若闸门没清，下面的快照 kick 会因退避被拒。
+  healthy = true
+  const saved = await host.handler('quota-credential-set', { provider: 'mimo', name: 'XIAOMI_MIMO_CONSOLE_COOKIE', value: 'fresh-cookie' })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(credCalls, [['XIAOMI_MIMO_CONSOLE_COOKIE', 'fresh-cookie']])
+
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 3, 'immediate retry detail+usage')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'mimo')
+  assert.equal(row.status, 'ok')
+  assert.ok(requests.slice(-2).every((request) => request.cookie === 'fresh-cookie')) // 重试带着新值
+})
+
 test('fetchCliproxyUsage tolerates partial account failures and enforces the call budget', async (t) => {
   const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
   const context = { allowedHosts: { cpa: ['cli.example.org'] } }
