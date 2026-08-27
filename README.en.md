@@ -52,6 +52,8 @@ The Settings "Service Control" panel has ten tabs: **Overview · Notifications �
 
 Under **Plugins → Plugin configuration**, ten host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
+![Plugin configuration](./screenshots/plugin-config_en.png)
+
 ### Version and updates
 
 - Shows the current DSH and plugin versions, linking to GitHub Releases
