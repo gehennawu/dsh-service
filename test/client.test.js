@@ -4318,7 +4318,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /:not\(\[data-sidebar-collapsed\]\) \[data-dshsvc-sidebar\] \{[^}]*left: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
     // 真机第七轮：模态打开藏抽屉钮、关闭钮钉右上角（导航条让位）、composer 底行禁换行
-    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\],\s*html\[data-dshsvc-mobile\] body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-handle\] \{[^}]*display: none !important/s)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
@@ -4630,6 +4630,185 @@ function createSessionRpcMock({ onCall, ...overrides } = {}) {
     throw new Error(`unexpected endpoint ${endpoint}`)
   }
 }
+
+
+test('mobile adaptation immersive engine hides chat chrome on downward gesture (cumulative) and restores via upward gesture, bottom arrival, focus reveal, and the resident handle', async () => {
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.attributes = new Map()
+      this.style = {}; this.dataset = {}; this.parentNode = null; this.className = ''; this.listeners = new Map()
+    }
+    get isConnected() { let n = this; while (n.parentNode !== null) n = n.parentNode; return n === rootNode }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c }
+    remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null } }
+    setAttribute(k, v) { this.attributes.set(k, String(v)) }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null }
+    hasAttribute(k) { return this.attributes.has(k) }
+    removeAttribute(k) { this.attributes.delete(k) }
+    addEventListener(t, h) { (this.listeners.get(t) || this.listeners.set(t, new Set()).get(t)).add(h) }
+    removeEventListener(t, h) { this.listeners.get(t)?.delete(h) }
+    dispatch(t, event) { for (const h of this.listeners.get(t) || []) h(event || {}) }
+  }
+  const rootNode = new FakeElement('#root')
+  const head = new FakeElement('head'); rootNode.appendChild(head)
+  const bodyEl = new FakeElement('body'); rootNode.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); rootNode.appendChild(htmlEl)
+  const frame = new FakeElement('div'); frame.className = 'pI_x6G_frame'; frame.setAttribute('data-sidebar-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'sidebarCol'; frame.appendChild(sidebarCol)
+  const centerCol = new FakeElement('div'); centerCol.className = 'centerCol'; frame.appendChild(centerCol)
+  const detailsCol = new FakeElement('div'); detailsCol.className = 'detailsCol'; frame.appendChild(detailsCol)
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', ''); frame.appendChild(overlayLayer)
+  bodyEl.appendChild(frame)
+
+  // 外壳会话骨架（v0.36.1 真机取证修正：header 藏在官方槽位包裹层里，非直接子元素）
+  // root[data-phase] > div[data-slot=conversation.session.header] > header
+  //                  + scroller[data-conversation-scroll] > composerSeat[data-composer-seat]
+  const convRoot = new FakeElement('div'); convRoot.setAttribute('data-phase', 'active')
+  const headerWrap = new FakeElement('div'); headerWrap.setAttribute('data-slot', 'conversation.session.header')
+  const headerEl = new FakeElement('header')
+  const scroller = new FakeElement('div'); scroller.setAttribute('data-conversation-scroll', '')
+  const seat = new FakeElement('div'); seat.setAttribute('data-composer-seat', '')
+  headerWrap.appendChild(headerEl)
+  convRoot.appendChild(headerWrap)
+  convRoot.appendChild(scroller)
+  scroller.appendChild(seat)
+  centerCol.appendChild(convRoot)
+  scroller.scrollTop = 0
+  scroller.scrollHeight = 2000
+  scroller.clientHeight = 600
+
+  class FakeMutationObserver { constructor() {} observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl, head, body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      const scan = (node) => { if (found === null && node.attributes?.has?.(selector.replace(/[[\]]/g, ''))) found = node; for (const c of node.children || []) scan(c) }
+      scan(rootNode)
+      return found
+    },
+    querySelectorAll(selector) {
+      // 引擎卸载清扫按「逗号分隔属性选择器清单」摘标记——桩需支持该形态
+      const parts = selector.split(',').map((p) => p.trim()).filter(Boolean)
+      const found = []
+      const scan = (node) => {
+        if (node !== rootNode && parts.some((p) => /^\[[a-z-]+\]$/i.test(p) && node.attributes.has(p.slice(1, -1)))) found.push(node)
+        for (const c of node.children || []) scan(c)
+      }
+      scan(rootNode)
+      return found
+    },
+  }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+
+  const immersiveOn = () => htmlEl.attributes.has('data-dshsvc-immersive')
+  const freshGesture = () => htmlEl.dispatch('touchstart', {})
+  const scrollToY = (y) => { scroller.scrollTop = y; htmlEl.dispatch('scroll', { target: scroller }) }
+
+  try {
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: { toggleSidebar() {}, closeDetails() {} } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    globalThis.window.location = { search: '', reload() {} }
+    await renderer.load()
+
+    // 样式层：composer 滑出裁剪区、头部测高变量回退常量、reduced-motion 关动画
+    const styleTag = head.children.find((el) => el.textContent.includes('data-dshsvc-mobile'))
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*transform: translateY\(115%\)/s)
+    assert.match(styleTag.textContent, /margin-top: calc\(0px - var\(--dshsvc-header-h, 76px\)\)/s)
+    assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{\s*html\[data-dshsvc-mobile\]\[data-dshsvc-immersive\]/s)
+
+    // 常驻把手挂载；会话可滚 → 可见；半透明磨砂（真机反馈）
+    const handle = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-handle'))
+    assert.notEqual(handle, undefined, 'resident handle must mount under body')
+    assert.equal(handle.style.display, 'flex')
+    assert.equal(handle.style.opacity, '.72')
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-dshsvc-handle\]:hover,\s*html\[data-dshsvc-mobile\] \[data-dshsvc-handle\]:active \{[^}]*opacity: 1 !important/s)
+
+    // 程序化滚动免疫：无手势窗口时分步位移绝不翻转状态，也绝不残留累加
+    scrollToY(60)
+    scrollToY(120)
+    scrollToY(180)
+    assert.equal(immersiveOn(), false)
+
+    // 真机拖拽形态回归（v0.36.1 核心）：单事件只有几像素、靠连续累加越过阈值
+    const dragTo = (targetY, step) => {
+      const dir = Math.sign(targetY - scroller.scrollTop)
+      let y = scroller.scrollTop
+      while ((dir > 0 && y < targetY) || (dir < 0 && y > targetY)) {
+        const next = Math.abs(targetY - y) < step ? targetY : y + dir * step
+        scroller.scrollTop = next
+        htmlEl.dispatch('scroll', { target: scroller })
+        y = next
+      }
+    }
+
+    // 下滑小步累加（每步 6px，越过 64 即触发）→ 隐藏；标记穿透槽位包裹层、
+    // 落在真正有盒子的 header 上（v0.36.1 真机两连取证：wrapper 是 display:contents）
+    freshGesture()
+    dragTo(264, 6)
+    assert.equal(immersiveOn(), true)
+    assert.equal(headerEl.attributes.has('data-dshsvc-chat-header'), true)
+    assert.equal(headerWrap.attributes.has('data-dshsvc-chat-header'), false)
+
+    // 上滑小步累加越过迟滞带 → 回显
+    freshGesture()
+    dragTo(240, 6)
+    assert.equal(immersiveOn(), false)
+
+    // 底部到达回显：用户手势逐步带回底部时优先于继续隐藏
+    freshGesture()
+    dragTo(420, 20)
+    assert.equal(immersiveOn(), true)
+    freshGesture()
+    dragTo(1450, 40)
+    assert.equal(immersiveOn(), false, 'user-driven arrival near the bottom must reveal chrome')
+
+    // 聚焦回显保留，但不再硬阻断后续滑动（v0.36.1：首版把「打完字读历史」压死）。
+    // 底部区内向下重新收起不受 bottom 分支影响——它只拦「已沉浸时到达底部」。
+    freshGesture()
+    dragTo(1600, 12)
+    assert.equal(immersiveOn(), true)
+    htmlEl.dispatch('focusin', { target: seat })
+    assert.equal(immersiveOn(), false, 'focus inside composer reveals chrome immediately')
+    freshGesture()
+    dragTo(1720, 10)
+    assert.equal(immersiveOn(), true, 'directional hiding works again even right after typing context')
+
+    // 上滑回显，把 Chrome 带回展开态后再测把手开关
+    freshGesture()
+    dragTo(1560, 10)
+    assert.equal(immersiveOn(), false)
+
+    // 把手开关两连击
+    handle.dispatch('click', {})
+    assert.equal(immersiveOn(), true)
+    assert.equal(handle.getAttribute('aria-expanded'), 'false')
+    handle.dispatch('click', {})
+    assert.equal(immersiveOn(), false)
+    assert.equal(handle.getAttribute('aria-expanded'), 'true')
+
+    // 开关热关闭：属性/标记/把手全部对称拆除，二次关闭幂等
+    await renderer.setFeature('mobileAdaptation', false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-immersive'), false)
+    assert.equal(headerEl.attributes.has('data-dshsvc-chat-header'), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false)
+    await renderer.setFeature('mobileAdaptation', false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+    delete globalThis.window.location.search
+  }
+})
 
 
 test('session manager tab lists sessions with archive marks, size info, and deleted filter', async () => {
