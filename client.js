@@ -2891,8 +2891,9 @@ window.__ModuleLoader__.load({
           onClick: opts.onClick,
           style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', cursor: opts.disabled ? 'default' : 'pointer', lineHeight: 0, border: '1px solid ' + (opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: opts.armed ? 'transparent' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: opts.disabled ? 0.5 : 1 },
         }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: checked && !opts.armed ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
-        // v0.31 用户点名：描述/用法/注释/无效行移出「名称|开关」双栏约束，整行占满技能展示区，
-        // 利用原开关列右侧的空余宽度。头部行只保留名称徽标与右侧开关列。
+        // v0.31 用户点名两连修：AI 注释块独占整行占满技能展示区；技能自带的描述/用法行
+        // 回到「文本 | 开关」双栏的左列原宽度，给右侧胶囊开关列留位。头部行 = 名称 +
+        // 自带描述/用法/无效行（左列）+ 右侧开关列，注释块铺满全宽垫底。
         const entryCard = { border: '1px solid var(--dsh-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px' }
 
         const renderEntry = (entry) => {
@@ -2929,12 +2930,9 @@ window.__ModuleLoader__.load({
             data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-' + entry.name, onClick: () => void openDescribe(entry), style: { fontSize: '11px', padding: '3px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-interactive-bg-hover)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' } }, '✨ ' + translate('skills.describe.button')) : null) : null
           return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
             React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' } },
-              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine),
+              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine, descLine, usageLine, invalidLine),
               switches),
-            descLine,
-            usageLine,
-            noteLine,
-            invalidLine)
+            noteLine)
         }
 
         const renderLogBox = (testid, lines, showHeader) => lines.length === 0 ? null : React.createElement('div', { 'data-testid': testid, style: { marginTop: '9px', padding: '7px 10px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l2)', maxHeight: '130px', overflowY: 'auto' } },
