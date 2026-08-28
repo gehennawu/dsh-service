@@ -48,7 +48,7 @@ A service-control and operations plugin for self-hosted DSH Web: safe restart, v
 
 ## 🚀 Features
 
-The Settings "Service Control" panel has ten tabs: **Overview · Notifications · Health · Model stats · Quota lookup · Backups · Skills · Subagents · Sessions · Restart**; Restart, Quota lookup, Skills, Subagents, and Sessions can each enable a **quick entry in the settings left navigation** (off by default).
+The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
 Under **Plugins → Plugin configuration**, ten host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
@@ -67,7 +67,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` also works in conversations; automatically refuses while work is running
 - Probes the new process after restart and reloads the page; manual reload offered after 60 seconds
-- Optional "Restart" entry in the settings left navigation (off by default), sharing the same confirmation flow
+- Optional "Restart" entry in the settings left navigation (off by default), sharing the same confirmation flow as the "Maintenance → Restart" subpage
 - A suspected manual terminal launch warns that nothing will bring the process back and gets a yellow caution in Health
 
 ### Health diagnostics
@@ -169,7 +169,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - **Archive**: archived sessions disappear from the official sidebar (official behavior); the panel marks “archiving is one-way”, and the official UI cannot unarchive
 - **Content search**: full-text semantic search over conversations (case-insensitive, whitespace-flexible) with cross-session hits (matched text is highlighted; multiple matches show seq chips for one-click jumps) → **hit-window view**: opening a result centers a context window on the matched seq (15 events on each side; the matched event gets a HIT badge, is highlighted, **auto-scrolled into view and flashes for 2 seconds**), with **previous / next match** navigation and navigator seq chips for direct jumps (mirroring dsh-session-kb's Locate interaction); the window can keep loading later events; optionally restricted to the archived zone
 - **Delete**: Only archived sessions can be deleted, and a session that becomes live is rejected again immediately before execution; the two-phase confirmation shows its id / title / workspace / size, persists the deletion record atomically first, and only then removes the log directory; deleted records stay visible (read-only) under the Deleted filter
-- Entry: “Sessions” chip in the top “Maintenance” tab group (on by default); the optional settings-sidebar entry is off by default
+- Entry: the “Sessions” subpage under “Maintenance” (on by default); the optional settings-sidebar entry is off by default
 - Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
 
 ### External liveness probe
@@ -184,7 +184,7 @@ The plugin is a Cordis two-half structure: the **Host half (`index.js`)** owns a
 ```mermaid
 flowchart TB
     subgraph Client["🌐 Client browser half (client.js)"]
-        UI["Settings : Service Control panel (9 tabs + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
+        UI["Settings : Service Control panel (six-page navigation + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
     end
 
     subgraph Host["⚙️ Host half (index.js)"]

@@ -13,7 +13,6 @@ window.__ModuleLoader__.load({
       'nav.restart': '重启',
       'features.cardTitle': '服务控制（dsh-service）',
       'features.cardHint': '控制可选功能和外部能力。开关立即生效，无需重启；详细状态与操作位于左侧「服务控制」。',
-      'features.optional': '可选功能',
       'features.external': '外部能力',
       'features.healthDiagnostics': '健康诊断',
       'features.modelUsage': '模型统计',
@@ -130,8 +129,6 @@ window.__ModuleLoader__.load({
       'subagent.reset': '重置回初始配置',
       'subagent.saving': '保存中…',
       'subagent.unavailable': '宿主未提供子代理注册表（subagents 服务缺席），配置不会生效。',
-      'subagent.navToggle': '设置页左列显示「子代理」入口',
-      'subagent.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示子代理模型快捷入口',
       'subagent.error': '操作失败：{error}',
       'subagent.error.feature-disabled': '子代理模型功能已在设置中关闭',
       'subagent.error.llm-unavailable': '宿主 LLM 服务不可用',
@@ -242,7 +239,7 @@ window.__ModuleLoader__.load({
       'skills.batch.failures': '失败 {count} 项',
       'skills.batch.no-candidates': '没有需要补全的候选',
       'skills.batch.model': '模型',
-      'skills.nav.toggle': '设置页左列显示「技能」入口',
+      // v0.39：技能/子代理的左列入口撤销，相关开关文案随之移除。
       'overlay.label': '服务重启状态',
       'recovery.waiting.title': '服务重启中…',
       'recovery.waiting.body': '正在等待新的 DSH Web 进程启动，已等待 {seconds} 秒。',
@@ -303,8 +300,26 @@ window.__ModuleLoader__.load({
       'overview.errors': '报错信息',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
+      // v0.39 六页信息架构：顶层 维护/配置 聚合页 + 配置页两个子页 + 功能分组标题。
+      'tabs.maintenance': '维护',
+      'tabs.configuration': '配置',
+      'tabs.features': '功能',
+      'tabs.notifications': '通知',
+      'maintenance.empty': '所有维护子页均已关闭。可在「配置 → 功能」中开启备份、技能、子代理或会话管理。',
+      'config.notificationsDisabled': '任务通知功能已在「功能」页关闭，以下设置仅作展示；重新开启后通知才会生效。',
+      'features.group.runtime': '运行与观测',
+      'features.group.maintenance': '维护',
+      'features.group.interaction': '交互',
+      // v0.39 页面头部描述（标题复用 tabs.*）。
+      'page.overview.desc': '服务运行状态、版本信息与常用操作的总览。',
+      'page.usage.desc': '按项目与模型查看 token 用量与缓存命中率。',
+      'page.quota.desc': '查询各供应商额度、余额与重置时间。',
+      'page.diagnostics.desc': '健康检查与运行环境诊断，异常时给出处理建议。',
+      'page.maintenance.desc': '会话管理、技能、子代理、备份与重启。',
+      'page.configuration.desc': '功能开关与任务通知设置。',
       'tabs.alert.title': '服务控制提醒',
       'tabs.alert.body': '以下功能需要处理：{tabs}',
+      'tabs.alert.join': '、',
       'tabs.alert.dot': '此标签存在故障提醒',
       'permissions.title': '文件权限',
       'permissions.description': '检查 Agent 是否能读取、写入并进入 DSH_HOME 和工作区。深检跳过 .git 内部文件；修复只补充当前用户所需权限并保留执行位，DSH 凭据文件固定为 600。',
@@ -600,7 +615,6 @@ window.__ModuleLoader__.load({
       'nav.restart': 'Restart',
       'features.cardTitle': 'Service control (dsh-service)',
       'features.cardHint': 'Control optional features and external capabilities. Changes take effect immediately without a restart; detailed status and actions remain in Service Control.',
-      'features.optional': 'Optional features',
       'features.external': 'External capabilities',
       'features.healthDiagnostics': 'Health diagnostics',
       'features.modelUsage': 'Model statistics',
@@ -717,8 +731,6 @@ window.__ModuleLoader__.load({
       'subagent.reset': 'Reset to default',
       'subagent.saving': 'Saving…',
       'subagent.unavailable': 'The host exposes no subagents registry (service missing); this configuration has no effect.',
-      'subagent.navToggle': 'Show "Subagents" entry in settings left nav',
-      'subagent.navToggleHint': 'Off by default; when enabled, a subagent-model entry appears at the bottom of the settings left navigation',
       'subagent.error': 'Operation failed: {error}',
       'subagent.error.feature-disabled': 'Subagent model is switched off in settings',
       'subagent.error.llm-unavailable': 'Host LLM service is unavailable',
@@ -829,7 +841,6 @@ window.__ModuleLoader__.load({
       'skills.batch.failures': '{count} failed',
       'skills.batch.no-candidates': 'Nothing to fill',
       'skills.batch.model': 'Model',
-      'skills.nav.toggle': 'Show Skills entry in the settings sidebar',
       'overlay.label': 'Service restart status',
       'recovery.waiting.title': 'Restarting service…',
       'recovery.waiting.body': 'Waiting for a new DSH Web process. Elapsed: {seconds} seconds.',
@@ -890,8 +901,24 @@ window.__ModuleLoader__.load({
       'overview.errors': 'Errors',
       'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
+      'tabs.maintenance': 'Maintenance',
+      'tabs.configuration': 'Configuration',
+      'tabs.features': 'Features',
+      'tabs.notifications': 'Notifications',
+      'maintenance.empty': 'All maintenance pages are disabled. Enable backup, skills, subagents, or session management under “Configuration → Features”.',
+      'config.notificationsDisabled': 'Task notifications are turned off on the Features page; these settings are shown for reference only until re-enabled.',
+      'features.group.runtime': 'Runtime and observation',
+      'features.group.maintenance': 'Maintenance',
+      'features.group.interaction': 'Interaction',
+      'page.overview.desc': 'An overview of service status, versions, and common actions.',
+      'page.usage.desc': 'Token usage and cache hit rates by project and model.',
+      'page.quota.desc': 'Quota, balance, and reset times across providers.',
+      'page.diagnostics.desc': 'Health checks and runtime environment diagnostics.',
+      'page.maintenance.desc': 'Sessions, skills, subagents, backups, and restart.',
+      'page.configuration.desc': 'Feature switches and task notification settings.',
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
+      'tabs.alert.join': ', ',
       'tabs.alert.dot': 'Alert on this tab',
       'permissions.title': 'File permissions',
       'permissions.description': 'Checks whether the Agent can read, write, and enter DSH_HOME and workspaces. Deep scans skip internal .git files; repair only adds permissions needed by the current user while preserving execute bits, and keeps the DSH credential file at 600.',
@@ -1218,6 +1245,10 @@ window.__ModuleLoader__.load({
       sessions: [['path', { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }], ['path', { d: 'm9 10 2 2 4-4' }]],
       // 重启 = 电源符号
       restart: [['path', { d: 'M12 2v10' }], ['path', { d: 'M18.4 6.6a9 9 0 1 1-12.77.04' }]],
+      // 维护 = 扳手（v0.39 六页导航新 id）
+      maintenance: [['path', { d: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' }]],
+      // 配置 = settings-2 双滑杆组（区别于「服务控制」的横杆滑杆组）
+      configuration: [['path', { d: 'M20 7h-9' }], ['path', { d: 'M14 17H5' }], ['circle', { cx: '17', cy: '17', r: '3' }], ['circle', { cx: '7', cy: '7', r: '3' }]],
     }
     // 左列 mask 的 data URI 体序列化：`<tag attr='val'/>` → %3Ctag%20attr=%27val%27/%3E。
     // 输出 byte 级等于历史上手写的常量（属性分隔用原始空格），外观零漂移。
@@ -1226,10 +1257,6 @@ window.__ModuleLoader__.load({
     const NAV_ICON_BODY_SERVICE = iconMaskBody(SVG_ICONS.service)
     const NAV_ICON_BODY_QUOTA = iconMaskBody(SVG_ICONS.quota)
     const NAV_ICON_BODY_RESTART = iconMaskBody(SVG_ICONS.restart)
-    // 技能 = 书本轮廓（lucide book 风格，16px 下可读）
-    const NAV_ICON_BODY_SKILLS = iconMaskBody(SVG_ICONS.skills)
-    // 子代理 = 机器人头（lucide bot 风格，16px 下可读）
-    const NAV_ICON_BODY_SUBAGENT = iconMaskBody(SVG_ICONS.subagent)
     // 会话管理 = 对话气泡 + 对钩（lucide message-circle check，16px 下可读）
     const NAV_ICON_BODY_SESSIONS = iconMaskBody(SVG_ICONS.sessions)
     /** 顶栏胶囊的内联 SVG 图标：跟随 currentColor，尺寸 13px，随文字基线居中。 */
@@ -1301,44 +1328,104 @@ window.__ModuleLoader__.load({
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
         svcStyle.textContent = [
-          ':root{--dsh-svc-surface-bg:#f3f4f6}body[data-ds-dark-theme]{--dsh-svc-surface-bg:#1e1e20}',
-          // 顶栏分段条激活块双主题配色：浅色=深色实底块#16181d+白字，暗色=近白实底块#eef0f4+黑字。
-          // 不用 --dsw-alias-* 令牌（实测其明暗方向与本预期相反，浅色呈白块、深色呈黑块），写死中性固定色。
-          ':root{--dsh-svc-tab-active-bg:#16181d;--dsh-svc-tab-active-danger:#16181d;--dsh-svc-tab-active-text:#ffffff}',
-          'body[data-ds-dark-theme]{--dsh-svc-tab-active-bg:#eef0f4;--dsh-svc-tab-active-danger:#eef0f4;--dsh-svc-tab-active-text:#111318}',
+          // ── 统一视觉语言令牌（v0.39）：--dsh-svc-* 单一事实源 ──────────────
+          // 令牌链铁律一：--dsh-svc-* 恒为 var(--dsw-alias-*, <兜底>)——DSH 语义变量跟随主题，
+          // 本插件只在别名缺失时提供兜底；暗色主题块仅替换兜底值，不覆盖别名解析结果。
+          // 令牌链铁律二：主题相关令牌一律声明在 **body**（含别名链），绝不在 :root——
+          // 自定义属性里的 var() 在「声明它的元素」上求值：:root 上声明的
+          // `--a: var(--b)` 会在根元素就按根的 --b 定格并向下继承，body[data-ds-dark-theme]
+          // 对 --b 的暗色覆盖永远赶不上（真机实证：深色模式下卡片仍白底）。body 是
+          // data-ds-dark-theme 的宿主元素，别名与主题覆盖在同一作用域交汇，链才活的。
+          'body{--dsh-svc-page-bg:#f4f5f7;--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#ffffff);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#ffffff);--dsh-svc-text:var(--dsw-alias-label-primary,#202124);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#6b7280);--dsh-svc-border:var(--dsw-alias-border-l1,#e5e7eb);--dsh-svc-brand:var(--dsw-alias-brand-primary,#2563eb);--dsh-svc-info:#2563eb;--dsh-svc-success:var(--dsw-alias-state-success-primary,#16a34a);--dsh-svc-warning:var(--dsw-alias-state-warn-primary,#d97706);--dsh-svc-danger:var(--dsw-alias-state-error-primary,#dc2626)}',
+          // 卡片底（v0.39 用户复核：浅色卡片要有可见底色）：插件**写死**浅色浅灰面，
+          // 不走外壳别名——外壳 bg-layer-2 可能就是白色，别名优先会让卡片再度隐形；
+          // 深色按用户点名统一到模型统计同款（bg-layer-2 链）；卡片内层小块（指标格/
+          // 图表底/摘要块）用 --dsh-svc-raised-bg（浅色=白、深色=比卡片亮一级）保证进深。
+          'body{--dsh-svc-card-bg:#eceef1}',
+          'body[data-ds-dark-theme]{--dsh-svc-card-bg:var(--dsw-alias-bg-layer-2,#202126)}',
+          'body[data-ds-dark-theme]{--dsh-svc-page-bg:var(--dsw-alias-bg-layer-1,#17181c);--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#202126);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#292a31);--dsh-svc-text:var(--dsw-alias-label-primary,#f3f4f6);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#a1a1aa);--dsh-svc-border:var(--dsw-alias-border-l1,#3f414a)}',
+          // 几何与密度令牌（与主题无关，:root 即可）：间距 4/8/12/16/20/24/32；圆角 控件8/卡片12/面板16/胶囊999；控件高 紧凑32/默认36/主操作40。
+          ':root{--dsh-svc-space-1:4px;--dsh-svc-space-2:8px;--dsh-svc-space-3:12px;--dsh-svc-space-4:16px;--dsh-svc-space-5:20px;--dsh-svc-space-6:24px;--dsh-svc-space-8:32px;--dsh-svc-radius-control:8px;--dsh-svc-radius-card:12px;--dsh-svc-radius-panel:16px;--dsh-svc-radius-pill:999px;--dsh-svc-control-h:36px;--dsh-svc-control-h-compact:32px;--dsh-svc-control-h-primary:40px;--dsh-svc-content-max:800px;--dsh-svc-dur-fast:120ms;--dsh-svc-dur-view:170ms;--dsh-svc-font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
+          // 兼容别名（旧组件零改动续命）：展示面底 = 卡片底（浅色可见浅灰面）；分段条
+          // 激活块 = 文字反色块（浅色=深块+白字、暗色=近白块+黑字，与 v0.34 写死值同方向）。
+          // 铁律二同样适用：别名链声明在 body，暗色块只改叶值（tab-active-text）。
+          'body{--dsh-svc-surface-bg:var(--dsh-svc-card-bg);--dsh-svc-tab-active-bg:var(--dsh-svc-text);--dsh-svc-tab-active-danger:var(--dsh-svc-text);--dsh-svc-tab-active-text:#ffffff}',
+          'body[data-ds-dark-theme]{--dsh-svc-tab-active-text:#111318}',
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
           // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
           // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
-          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-skills-nav]>svg:first-child,[data-dsh-service-subagent-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-skills-nav]::before,[data-dsh-service-subagent-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
-          '[data-dsh-service-skills-nav]::before{' + navIconMask(NAV_ICON_BODY_SKILLS) + '}',
-          '[data-dsh-service-subagent-nav]::before{' + navIconMask(NAV_ICON_BODY_SUBAGENT) + '}',
           '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
-          // ── 窄面板下的顶栏标签（用户反馈：移动端「太乱、容易误触」）──────────
-          // 作用域是纯媒体查询 ≤640px，**不**挂在 data-dshsvc-mobile 下——这是本插件
-          // 自己的面板 UI，360px 手机上无论移动适配功能开没开都挤成数行碎胶囊。
-          // 方案：每个分组托盘整行横滑（不换行、藏滚动条），触达目标放大到 ≥36px；
-          // 重启胶囊独占第二行整宽居中——危险动作与普通标签物理分离，杜绝误触。
-          // 胶囊 padding/fontSize 是内联样式，覆盖必须 !important。
+          // ── 窄面板下的主导航（v0.39 六页单行条）──────────────────────────
+          // 作用域纯媒体查询 ≤640px，**不**挂 data-dshsvc-mobile——这是本插件自己的
+          // 面板 UI，窄屏上无论移动适配功能开没开都要能横向滑动、触达 ≥36px。
+          // 旧 tab-list/top-tab-* 选择器已随 v0.39 导航替换一并移除，勿再引用。
           '@media (max-width:640px){',
-          /* 保持桌面语义：重启始终钉在首行右缘（marginLeft:auto 内联样式生效的前提
-             是它和托盘同行）。窄屏不再让托盘抢整行把重启挤去换行居中（用户复核：
-             悬在两行中间很离谱），而是托盘收缩可横滑、重启贴右不换行。 */
-          '[data-testid="tab-list"]{gap:10px}',
-          '[data-testid="tab-list"]>div{flex-wrap:nowrap !important;align-items:center}',
-          '[data-testid="tab-list"] [data-testid$="-tray"]{flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:3px}',
-          '[data-testid="tab-list"] [data-testid$="-tray"]::-webkit-scrollbar{display:none}',
-          '[data-testid="tab-list"] [data-testid^="top-tab-"]{padding:9px 13px !important;min-height:36px;box-sizing:border-box;font-size:13px !important;white-space:nowrap;flex:none}',
-          '[data-testid="tab-list"] [data-testid^="top-tab-"] svg{flex:none}',
-          /* 重启胶囊：刚性尺寸——窄屏挤压下 flex 子项会被压宽拉高成瘦椭圆
-            （真机复核），钉死高度/圆角/内边距/不缩不放。 */
-          '[data-testid="top-tab-restart"]{flex:none !important;width:max-content;height:40px;min-height:40px;max-height:40px;padding:0 16px !important;border-radius:999px !important}',
+          '[data-dshsvc-root] .dshsvc-tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:3px}',
+          '[data-dshsvc-root] .dshsvc-tabs::-webkit-scrollbar{display:none}',
+          '[data-dshsvc-root] .dshsvc-tab{padding:9px 13px;min-height:36px;box-sizing:border-box;font-size:13px;white-space:nowrap;flex:none}',
+          '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
           // v0.37 搜索命中定位闪烁（jumpScrollToHit）：命中窗口视图里滚到目标行时叠加 2s 闪烁。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
+          // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类 ──────────────
+          // 作用域锚在 data-dshsvc-root 属性上（ServicePanel 根节点携带），不外溢影响外壳。
+          // 线宽主、阴影次；动效 hover/焦点 120ms、展开收起 170ms；reduced-motion 全部归零。
+          // v0.39 用户点名尝试：内容区铺灰色画布（--dsh-svc-page-bg），卡片在其上分层。
+          '[data-dshsvc-root]{color:var(--dsh-svc-text);font-size:14px;line-height:1.55;background:var(--dsh-svc-page-bg);border-radius:var(--dsh-svc-radius-card);padding:2px}',
+          '[data-dshsvc-root] .dshsvc-page{width:100%;max-width:var(--dsh-svc-content-max);margin:0 auto}',
+          '[data-dshsvc-root] button:focus-visible,[data-dshsvc-root] [role="switch"]:focus-visible,[data-dshsvc-root] select:focus-visible,[data-dshsvc-root] input:focus-visible{outline:2px solid var(--dsh-svc-brand);outline-offset:2px;border-radius:var(--dsh-svc-radius-control)}',
+          '@media (prefers-reduced-motion:reduce){[data-dshsvc-root] *,[data-dshsvc-root] *::before,[data-dshsvc-root] *::after{transition-duration:0.01ms !important;animation-duration:0.01ms !important}}',
+          // 按钮基元：default 次级（描边）/ primary 品牌实底 / danger 危险实底 / ghost 幽灵。
+          '[data-dshsvc-root] .dshsvc-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;box-sizing:border-box;min-height:var(--dsh-svc-control-h);padding:0 14px;border:1px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-control);background:var(--dsh-svc-content-bg);color:var(--dsh-svc-text);font:inherit;font-size:13px;font-weight:550;line-height:1;cursor:pointer;transition:background var(--dsh-svc-dur-fast) ease,color var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
+          '[data-dshsvc-root] .dshsvc-btn:hover{background:var(--dsh-svc-page-bg)}',
+          '[data-dshsvc-root] .dshsvc-btn--primary{background:var(--dsh-svc-brand);border-color:var(--dsh-svc-brand);color:#fff}',
+          '[data-dshsvc-root] .dshsvc-btn--primary:hover{background:var(--dsh-svc-brand);opacity:0.9}',
+          '[data-dshsvc-root] .dshsvc-btn--danger{background:var(--dsh-svc-danger);border-color:var(--dsh-svc-danger);color:#fff}',
+          '[data-dshsvc-root] .dshsvc-btn--danger:hover{background:var(--dsh-svc-danger);opacity:0.9}',
+          '[data-dshsvc-root] .dshsvc-btn--ghost{background:transparent;border-color:transparent;color:var(--dsh-svc-text)}',
+          '[data-dshsvc-root] .dshsvc-btn--ghost:hover{background:var(--dsh-svc-page-bg)}',
+          '[data-dshsvc-root] .dshsvc-btn:disabled{opacity:0.5;cursor:default}',
+          '[data-dshsvc-root] .dshsvc-btn--compact{min-height:var(--dsh-svc-control-h-compact);padding:0 10px;font-size:12px}',
+          '[data-dshsvc-root] .dshsvc-btn--large{min-height:var(--dsh-svc-control-h-primary);padding:0 18px;font-size:14px}',
+          // 卡片/区块基元：细边框 + 卡片圆角 + 卡片底色（浅色可见浅灰面）；阴影只留一层极轻。
+          '[data-dshsvc-root] .dshsvc-card{box-sizing:border-box;background:var(--dsh-svc-card-bg);border:1px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);padding:var(--dsh-svc-space-4)}',
+          // 胶囊徽标：pill 圆角 + 小字号；变体着色。
+          '[data-dshsvc-root] .dshsvc-badge{display:inline-flex;align-items:center;gap:4px;box-sizing:border-box;padding:2px 8px;border-radius:var(--dsh-svc-radius-pill);font-size:12px;font-weight:550;line-height:18px;background:var(--dsh-svc-page-bg);color:var(--dsh-svc-text-muted);border:1px solid var(--dsh-svc-border)}',
+          '[data-dshsvc-root] .dshsvc-badge--success{background:transparent;color:var(--dsh-svc-success);border-color:var(--dsh-svc-success)}',
+          '[data-dshsvc-root] .dshsvc-badge--warning{background:transparent;color:var(--dsh-svc-warning);border-color:var(--dsh-svc-warning)}',
+          '[data-dshsvc-root] .dshsvc-badge--danger{background:transparent;color:var(--dsh-svc-danger);border-color:var(--dsh-svc-danger)}',
+          '[data-dshsvc-root] .dshsvc-badge--info{background:transparent;color:var(--dsh-svc-info);border-color:var(--dsh-svc-info)}',
+          // 状态点：8px 圆 + 语义色；一律配文字，不单靠颜色传义。
+          '[data-dshsvc-root] .dshsvc-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--dsh-svc-success)}',
+          '[data-dshsvc-root] .dshsvc-dot--warning{background:var(--dsh-svc-warning)}',
+          '[data-dshsvc-root] .dshsvc-dot--danger{background:var(--dsh-svc-danger)}',
+          '[data-dshsvc-root] .dshsvc-dot--info{background:var(--dsh-svc-info)}',
+          '[data-dshsvc-root] .dshsvc-dot--muted{background:var(--dsh-svc-text-muted)}',
+          // 开关基元：36×22 视觉、16px 旋钮；on 用语义色由调用方传（成功/品牌）。
+          '[data-dshsvc-root] .dshsvc-switch{position:relative;flex:none;width:36px;height:22px;box-sizing:border-box;margin:0;padding:0;border:1px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-pill);background:var(--dsh-svc-page-bg);cursor:pointer;line-height:0;transition:background var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
+          '[data-dshsvc-root] .dshsvc-switch[aria-checked="true"]{background:var(--dsh-svc-success);border-color:var(--dsh-svc-success)}',
+          '[data-dshsvc-root] .dshsvc-switch:disabled{opacity:0.5;cursor:default}',
+          '[data-dshsvc-root] .dshsvc-switch-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left var(--dsh-svc-dur-fast) ease}',
+          '[data-dshsvc-root] .dshsvc-switch[aria-checked="true"] .dshsvc-switch-knob{left:16px}',
+          // 单行/双行列表行：主信息 + 次级摘要 + 行尾上下文动作。
+          '[data-dshsvc-root] .dshsvc-row{display:flex;align-items:center;gap:var(--dsh-svc-space-3);padding:var(--dsh-svc-space-2) 0;border-bottom:1px solid var(--dsh-svc-border)}',
+          '[data-dshsvc-root] .dshsvc-row:last-child{border-bottom:0}',
+          // 主导航条：单行连续分段条（v0.39 六页）；激活段 = 文字反色块（见 tab-active 别名）。
+          '[data-dshsvc-root] .dshsvc-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;width:100%;box-sizing:border-box;border:0.5px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);overflow:hidden}',
+          '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12.5px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
+          '[data-dshsvc-root] .dshsvc-tab[aria-selected="true"]{background:var(--dsh-svc-tab-active-bg);color:var(--dsh-svc-tab-active-text);font-weight:650;border-radius:8px}',
+          // 二级子标签（维护/配置页内）：下划线标签语言，与模型列表内联标签同源。
+          '[data-dshsvc-root] .dshsvc-subtabs{display:flex;flex-wrap:wrap;gap:2px;margin:10px 0 0;border-bottom:1px solid var(--dsh-svc-border)}',
+          '[data-dshsvc-root] .dshsvc-subtab{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 10px;font:inherit;font-size:13px;font-weight:550;color:var(--dsh-svc-text-muted);cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
+          '[data-dshsvc-root] .dshsvc-subtab[aria-selected="true"]{color:var(--dsh-svc-brand);border-bottom-color:var(--dsh-svc-brand);font-weight:700}',
+          // 页面头部：非吸附标题行（标题 + 主操作/次级组换行共处）+ 一行描述。
+          '[data-dshsvc-root] .dshsvc-page-header{margin:14px 2px 2px}',
+          '[data-dshsvc-root] .dshsvc-page-header-row{display:flex;align-items:center;justify-content:space-between;gap:var(--dsh-svc-space-3);flex-wrap:wrap}',
         ].join('')
         document.head.appendChild(svcStyle)
       }
@@ -1374,8 +1461,6 @@ window.__ModuleLoader__.load({
           { attr: 'data-dsh-service-nav', label: () => t('nav.label') },
           { attr: 'data-dsh-service-quota-nav', label: () => t('tabs.quota') },
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
-          { attr: 'data-dsh-service-skills-nav', label: () => t('tabs.skills') },
-          { attr: 'data-dsh-service-subagent-nav', label: () => t('tabs.subagent') },
           { attr: 'data-dsh-service-sessions-nav', label: () => t('tabs.sessions') },
         ]),
         'dsh-service settings nav icons',
@@ -1384,6 +1469,94 @@ window.__ModuleLoader__.load({
         const [, setSnapshot] = useState(ctx.locale.getSnapshot())
         useEffect(() => ctx.locale.subscribe(() => setSnapshot(ctx.locale.getSnapshot())), [])
         return t
+      }
+      // ── Svc 视觉基元（统一视觉语言 v0.39）：按钮/展示面样式单一事实源 ────
+      // ServicePanel 与 RestartSection 曾各自声明同名样式常量并已漂移，现收敛到工厂级。
+      // variant 语义（安全教义对齐）：dangerGhost 危险描边 = 破坏动作初次出现；
+      // danger 危险实底 = 仅最终确认；brandGhost 低饱和品牌描边 = 非破坏主操作
+      // （创建备份等）；primary 品牌实底 = 唯一主操作；neutral 弱化；ghost 取消类。
+      const SVC_BTN_BASE = { minHeight: 'var(--dsh-svc-control-h, 36px)', padding: '6px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
+      const svcButtonStyle = (variant) => {
+        if (variant === 'primary') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)', color: '#fff' }
+        if (variant === 'danger') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)', color: '#fff' }
+        if (variant === 'dangerGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)' }
+        if (variant === 'brandGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)' }
+        if (variant === 'ghost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
+        if (variant === 'neutral') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-page-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
+        return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-content-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
+      }
+      // 展示面（只读信息容器）：页面级浅底 + 细边框，与操作卡片区分。
+      const svcSurfaceStyle = (extra) => Object.assign({ background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsh-svc-text)', border: '1px solid var(--dsh-svc-border)', borderRadius: 'var(--dsh-svc-radius-control)', padding: '10px' }, extra)
+      // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
+      // 可见性/顺序/回退全部收敛为纯函数（可独立测试）；ServicePanel 只持状态与业务块。
+      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'diagnostics', 'maintenance', 'configuration']
+      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
+      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', diagnostics: 'healthDiagnostics' }
+      const getVisiblePrimaryTabs = (features, warnings) => PRIMARY_TAB_ORDER
+        .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || features[PRIMARY_TAB_FEATURES[id]] !== false)
+        .map((id) => ({ id, labelKey: PRIMARY_TAB_LABELS[id], warning: warnings !== undefined && warnings[id] === true }))
+      // 维护子页顺序（用户点名）：sessions → skills → subagent → backup → restart；
+      // restart 不受功能门控（重启永远可用），维护页实际恒可达。
+      const MAINTENANCE_TAB_ORDER = ['sessions', 'skills', 'subagent', 'backup', 'restart']
+      const MAINTENANCE_TAB_LABELS = { sessions: 'tabs.sessions', skills: 'tabs.skills', subagent: 'tabs.subagent', backup: 'tabs.backup', restart: 'tabs.restart' }
+      const MAINTENANCE_TAB_FEATURES = { sessions: 'sessionManager', skills: 'skillManager', subagent: 'subagentRoute', backup: 'backupMaintenance' }
+      const getVisibleMaintenanceTabs = (features) => MAINTENANCE_TAB_ORDER
+        .filter((id) => MAINTENANCE_TAB_FEATURES[id] === undefined || features[MAINTENANCE_TAB_FEATURES[id]] !== false)
+        .map((id) => ({ id, labelKey: MAINTENANCE_TAB_LABELS[id] }))
+      // 维护子页记忆规整：值必须在当前可见白名单内，否则回退到首个可用页；全关返回 null。
+      const normalizeMaintenanceTab = (value, features) => {
+        const visible = getVisibleMaintenanceTabs(features)
+        if (visible.length === 0) return null
+        return visible.some((item) => item.id === value) ? value : visible[0].id
+      }
+      const CONFIG_TABS = [
+        { id: 'features', labelKey: 'tabs.features' },
+        { id: 'notifications', labelKey: 'tabs.notifications' },
+      ]
+      // v0.39 页面元数据：每页一行描述（标题复用 tabs.* 词条）。
+      const PAGE_DESCRIPTIONS = {
+        overview: 'page.overview.desc',
+        usage: 'page.usage.desc',
+        quota: 'page.quota.desc',
+        diagnostics: 'page.diagnostics.desc',
+        maintenance: 'page.maintenance.desc',
+        configuration: 'page.configuration.desc',
+      }
+      /** 页面头部基元：非吸附轻量标题 + 一行描述；主操作位由各页逐步接入（action prop）。 */
+      function SvcPageHeader({ title, description, action, secondary }) {
+        return React.createElement('header', { 'data-testid': 'svc-page-header', className: 'dshsvc-page-header' },
+          React.createElement('div', { className: 'dshsvc-page-header-row' },
+            React.createElement('h2', { className: 'dshsvc-page-title', style: { margin: 0, fontSize: '18px', fontWeight: 700, lineHeight: 1.4, color: 'var(--dsh-svc-text)' } }, title),
+            action !== undefined && action !== null ? action : null,
+            secondary !== undefined && secondary !== null ? React.createElement('div', { className: 'dshsvc-page-secondary', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, secondary) : null),
+          description ? React.createElement('p', { className: 'dshsvc-page-desc', style: { margin: '2px 0 0', fontSize: '12.5px', color: 'var(--dsh-svc-text-muted)', lineHeight: 1.5 } }, description) : null)
+      }
+      /** 导航条基元：variant 'primary' = 分段条（激活=反色块），'sub' = 下划线子标签。
+       * items=[{id,label,icon?,warning?,badge?}]；role=tablist/tab + aria-selected，
+       * 状态点只做视觉补充，语义由 aria-label 文字承载。 */
+      function SvcTabs({ items, activeId, onChange, testIdPrefix, variant, dotLabel, ariaLabel }) {
+        const isSub = variant === 'sub'
+        return React.createElement('div', { role: 'tablist', 'aria-label': ariaLabel, className: isSub ? 'dshsvc-subtabs' : 'dshsvc-tabs', 'data-testid': testIdPrefix + '-list' },
+          items.map((item) => {
+            const isActive = item.id === activeId
+            const style = isSub
+              ? (isActive ? { color: 'var(--dsh-svc-brand)', borderBottom: '2px solid var(--dsh-svc-brand)', fontWeight: 700 } : null)
+              : (isActive ? { background: 'var(--dsh-svc-tab-active-bg)', color: CHIP_ACTIVE_TEXT, fontWeight: 650, borderRadius: '8px' } : null)
+            return React.createElement('button', {
+              key: item.id,
+              type: 'button',
+              role: 'tab',
+              'aria-selected': String(isActive),
+              'data-testid': testIdPrefix + '-' + item.id,
+              className: isSub ? 'dshsvc-subtab' : 'dshsvc-tab',
+              style,
+              onClick: () => onChange(item.id),
+            },
+              item.icon !== undefined ? React.createElement(TabIcon, { name: item.icon }) : null,
+              item.label,
+              item.warning ? React.createElement('span', { 'data-testid': 'tab-dot-' + item.id, 'aria-label': dotLabel, style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
+              item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: '#fff', fontWeight: 700 } }, item.badge.text) : null)
+          }))
       }
       // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
       let notifyEnabled = false
@@ -1428,9 +1601,20 @@ window.__ModuleLoader__.load({
       // 设置页左列入口开关的通用实现（重启/额度/技能三个入口共用，不再三套复制）：
       // localStorage 持久化、默认关；开启才注册 settings.section 条目、关闭即注销——
       // 导航列单元格由外壳渲染，null 内容不能隐藏导航项。feature 可选：功能关闭时同样注销。
-      const createNavEntryToggle = ({ storageKey, sectionId, order, labelKey, feature, renderContent }) => {
+      const createNavEntryToggle = ({ storageKey, legacyStorageKey, sectionId, order, labelKey, feature, renderContent }) => {
         let enabled = false
-        try { enabled = localStorage.getItem(storageKey) === 'true' } catch (_) {}
+        try {
+          let raw = localStorage.getItem(storageKey)
+          // v0.39 快捷入口键更名（用户点名）：旧键只读一次、迁移写入新键，此后只认新键。
+          if (raw === null && legacyStorageKey !== undefined) {
+            const legacy = localStorage.getItem(legacyStorageKey)
+            if (legacy !== null) {
+              try { localStorage.setItem(storageKey, legacy) } catch (_) {}
+              raw = legacy
+            }
+          }
+          enabled = raw === 'true'
+        } catch (_) {}
         let dispose = null
         const listeners = new Set()
         const sync = () => {
@@ -1462,11 +1646,11 @@ window.__ModuleLoader__.load({
         }
         return { sync, setEnabled, useEnabled, disposeEntry }
       }
-      const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
-      const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
-      const skillsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-skills-nav', sectionId: 'dsh-service-skills', order: 497, labelKey: 'tabs.skills', feature: 'skillManager', renderContent: () => React.createElement(SkillsSection, null) })
-      const subagentNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-subagent-nav', sectionId: 'dsh-service-subagent', order: 496, labelKey: 'tabs.subagent', feature: 'subagentRoute', renderContent: () => React.createElement(SubagentSection, null) })
-      const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
+      // v0.39 快捷入口收敛为三个（用户点名）：重启/额度查询/会话管理，各自独立开关、默认关。
+      // 技能与子代理的左列入口撤销（维护页内仍有完整功能）；存储键统一迁到 shortcut-* 命名。
+      const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-restart', legacyStorageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
+      const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-quota', legacyStorageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
+      const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-sessions', legacyStorageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       let skillsBatchState = null       // 宿主状态快照
       let skillsBatchPlan = null        // 本端计划（含所选模型）
@@ -1967,13 +2151,14 @@ window.__ModuleLoader__.load({
           fetchVersionSnapshot()
         }, [])
         const [navEnabled, setNavEnabled] = restartNavToggle.useEnabled()
-        const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
-        const danger = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
-        const ghost = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
+        // 样式常量统一取自工厂级 svcButtonStyle/svcSurfaceStyle（v0.39 视觉语言收敛）。
+        const danger = svcButtonStyle('danger')
+        const dangerGhost = svcButtonStyle('dangerGhost')
+        const ghost = svcButtonStyle('ghost')
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
-        const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
+        const displaySurface = svcSurfaceStyle()
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
         // 重启后提示：手动启动环境不会自动拉起，等待文案换成手动指引。
@@ -2017,15 +2202,15 @@ window.__ModuleLoader__.load({
             activityWarning,
             React.createElement('div', { style: row },
               flow.stage === 0
-                ? React.createElement('button', { style: danger, 'data-variant': 'danger', onClick: checkRestart, disabled: flow.busy }, translate(flow.busy ? 'update.checking' : 'restart.button'))
+                ? React.createElement('button', { style: dangerGhost, 'data-variant': 'dangerGhost', onClick: checkRestart, disabled: flow.busy }, translate(flow.busy ? 'update.checking' : 'restart.button'))
                 : flow.stage === 1
                   ? [
-                      React.createElement('button', { key: 'confirm', style: danger, onClick: () => restartWeb(false), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.confirm')),
+                      React.createElement('button', { key: 'confirm', style: danger, 'data-variant': 'danger', onClick: () => restartWeb(false), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.confirm')),
                       React.createElement('button', { key: 'cancel', style: ghost, onClick: () => setRestartFlow({ ...restartFlow, activity: null, stage: 0, busy: false, error: null }), disabled: flow.busy }, translate('restart.cancel')),
                     ]
                   : flow.stage === 3
                     ? [
-                        React.createElement('button', { key: 'force', style: danger, onClick: () => restartWeb(true), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.force')),
+                        React.createElement('button', { key: 'force', style: danger, 'data-variant': 'danger', onClick: () => restartWeb(true), disabled: flow.busy }, translate(flow.busy ? 'restart.sending' : 'restart.force')),
                         React.createElement('button', { key: 'cancel', style: ghost, onClick: () => setRestartFlow({ ...restartFlow, activity: null, stage: 0, busy: false, error: null }), disabled: flow.busy }, translate('restart.cancel')),
                       ]
                     : null
@@ -2710,28 +2895,9 @@ window.__ModuleLoader__.load({
 
       function FeatureSettingsCard() {
         const translate = useTranslation()
-        const { snapshot, value } = useFeatures()
+        const { snapshot } = useFeatures()
         const [open, setOpen] = React.useState(false)
-        const [saving, setSaving] = React.useState('')
         const writable = snapshot.status === 'ready' && snapshot.writable === true
-        const row = (key) => React.createElement('div', {
-          key,
-          style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', padding: '7px 0' },
-        },
-        React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('features.' + key)),
-        React.createElement('button', {
-          type: 'button',
-          role: 'switch',
-          'data-testid': 'feature-switch-' + key,
-          'aria-checked': String(value[key] !== false),
-          disabled: !writable || saving !== '',
-          onClick: async () => {
-            setSaving(key)
-            try { await featureScope.set(key, value[key] === false) } catch (_) {}
-            setSaving('')
-          },
-          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
-        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
         return React.createElement('li', {
           style: { listStyle: 'none', border: '1px solid ' + (open ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), borderRadius: '12px', color: 'var(--dsw-alias-label-primary)', background: open ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)' },
         },
@@ -2753,11 +2919,46 @@ window.__ModuleLoader__.load({
           style: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .16s' },
         }, React.createElement('path', { d: 'M3 5.25 7 9l4-3.75', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
         open ? React.createElement('div', { style: { margin: '0 16px', padding: '12px 0 8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
-          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('features.optional')),
-          ['healthDiagnostics', 'modelUsage', 'quotaLookup', 'backupMaintenance', 'taskNotifications', 'skillManager', 'subagentRoute', 'sessionManager', 'mobileAdaptation'].map(row),
-          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginTop: '8px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, translate('features.external')),
-          row('healthz'),
+          // v0.39：开关体收敛为分组式 FeatureGroups（与面板「配置 → 功能」页同一事实源）。
+          React.createElement(FeatureGroups, null),
           !writable ? React.createElement('p', { style: { margin: '6px 0 0', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('features.readOnly')) : null) : null)
+      }
+
+      // ─── 功能开关分组（v0.39）：配置页与官方插件卡共用的分组事实源 ──────────
+      // 运行/观测 + 维护 + 交互 三组默认展开；外部（/healthz）默认折叠。
+      // 两处共用同一分组与同一写入路径（featureScope.set，行级 saving 锁）。
+      const FEATURE_GROUPS = [
+        ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
+        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager'], true],
+        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation'], true],
+        ['features.external', ['healthz'], false],
+      ]
+      function FeatureGroups() {
+        const translate = useTranslation()
+        const { snapshot, value } = useFeatures()
+        const [saving, setSaving] = useState('')
+        const writable = snapshot.status === 'ready' && snapshot.writable === true
+        const row = (key) => React.createElement('div', {
+          key,
+          style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', padding: '7px 0' },
+        },
+        React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('features.' + key)),
+        React.createElement('button', {
+          type: 'button',
+          role: 'switch',
+          'data-testid': 'feature-switch-' + key,
+          'aria-checked': String(value[key] !== false),
+          disabled: !writable || saving === key,
+          onClick: async () => {
+            setSaving(key)
+            try { await featureScope.set(key, value[key] === false) } catch (_) {}
+            setSaving('')
+          },
+          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+        return React.createElement('div', null, FEATURE_GROUPS.map(([groupKey, keys]) => React.createElement('div', { key: groupKey, style: { marginTop: '10px' } },
+          React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '2px' } }, translate(groupKey)),
+          keys.map(row))))
       }
 
       // ─── 子代理模型（v0.27）：三态路由配置 ────────────────────────────────
@@ -2775,7 +2976,7 @@ window.__ModuleLoader__.load({
       function SubagentSection() {
         const translate = useTranslation()
         const { useState, useEffect } = React
-        const [navEnabled, setNavEnabled] = subagentNavToggle.useEnabled()
+        // v0.39：子代理的设置页左列入口已撤销（维护页内有完整功能），不再有段内入口开关。
         const [snapshot, setSnapshot] = useState(null)
         const [mode, setMode] = useState('inherit')
         const [provider, setProvider] = useState('')
@@ -2912,19 +3113,7 @@ window.__ModuleLoader__.load({
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },
             React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
-            mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null),
-          React.createElement('div', { style: { marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
-            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-              React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.navToggle')),
-              React.createElement('span', { style: hintStyle }, translate('subagent.navToggleHint'))),
-            React.createElement('button', {
-              type: 'button',
-              role: 'switch',
-              'data-testid': 'subagent-nav-switch',
-              'aria-checked': String(navEnabled),
-              onClick: () => setNavEnabled(!navEnabled),
-              style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
-            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))))
+            mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null))
       }
 
       // ─── 技能管理（v0.22）：三区列表 / 启停 / AI 补全 / 批量 ────────────────
@@ -3168,7 +3357,7 @@ window.__ModuleLoader__.load({
         // v0.31 用户点名两连修：AI 注释块独占整行占满技能展示区；技能自带的描述/用法行
         // 回到「文本 | 开关」双栏的左列原宽度，给右侧胶囊开关列留位。头部行 = 名称 +
         // 自带描述/用法/无效行（左列）+ 右侧开关列，注释块铺满全宽垫底。
-        const entryCard = { border: '1px solid var(--dsh-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px' }
+        const entryCard = { border: '1px solid var(--dsh-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px', background: 'var(--dsh-svc-card-bg)' }
 
         const renderEntry = (entry) => {
           const invalidLegacy = typeof entry.invalid === 'string' && entry.invalid.startsWith('legacy-invocation-key:')
@@ -3183,7 +3372,7 @@ window.__ModuleLoader__.load({
           const usageLine = entry.usage === '' ? null : React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px', lineHeight: 1.45, overflowWrap: 'anywhere' } },
             translate('skills.apply.usage') + '：' + entry.usage)
           // AI 注释块：只存插件侧车索引、只在面板展示；正文变更后自动标记过期。
-          const noteLine = entry.note !== undefined ? React.createElement('div', { 'data-testid': 'skill-note-' + entry.name, style: { marginTop: '5px', padding: '6px 9px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-secondary)', display: 'flex', gap: '8px', alignItems: 'flex-start' } },
+          const noteLine = entry.note !== undefined ? React.createElement('div', { 'data-testid': 'skill-note-' + entry.name, style: { marginTop: '5px', padding: '6px 9px', borderRadius: '7px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l2)', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-secondary)', display: 'flex', gap: '8px', alignItems: 'flex-start' } },
             React.createElement('div', { style: { minWidth: 0, flex: 1 } },
               entry.note.stale === true ? React.createElement('div', { style: { marginBottom: '3px', color: 'var(--dsw-alias-state-warn-primary)' } }, '⚠ ' + translate('skills.note.stale')) : null,
               React.createElement('div', { style: { overflowWrap: 'anywhere' } },
@@ -3240,7 +3429,7 @@ window.__ModuleLoader__.load({
               React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '3px' } }, translate('skills.apply.' + field)),
               React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', textDecoration: 'line-through', lineHeight: 1.45 } }, translate('skills.apply.old') + '：' + (oldText === '' ? '—' : oldText)),
               React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', lineHeight: 1.45 } }, translate('skills.apply.new') + '：' + (newText === null ? translate('skills.apply.keepusage') : newText))))
-          return React.createElement('div', { 'data-testid': 'skill-describe-dialog', style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '12px', padding: '14px 16px', marginBottom: '14px', background: 'var(--dsw-alias-bg-layer-2)' } },
+          return React.createElement('div', { 'data-testid': 'skill-describe-dialog', style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '12px', padding: '14px 16px', marginBottom: '14px', background: 'var(--dsh-svc-raised-bg)' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' } },
               React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('skills.describe.title', { name: entry.name })),
               React.createElement('button', { type: 'button', onClick: () => setDescribe(null), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '15px' } }, '✕')),
@@ -3318,7 +3507,6 @@ window.__ModuleLoader__.load({
             })() : null)
         }
 
-        const [skillsNav, setSkillsNav] = skillsNavToggle.useEnabled()
         // 批量注释默认折叠成单个入口按钮；有任务在途（运行/待开始）时自动展开。
         const [batchCardOpen, setBatchCardOpen] = useState(false)
         useEffect(() => {
@@ -3328,8 +3516,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
             React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
-              React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.nav.toggle'),
-                pillSwitch(skillsNav, { testid: 'skills-nav-switch', onClick: () => setSkillsNav(!skillsNav) })),
+              // v0.39：技能的设置页左列入口已撤销（维护页内有完整功能），只剩刷新按钮。
               React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻'))),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
           (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error !== '' ? error : batchError)) : null,
@@ -3575,7 +3762,9 @@ window.__ModuleLoader__.load({
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
         const chipButton = { fontSize: '12.5px', padding: '4px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', flexShrink: 0 }
-        const primaryButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' })
+        // v0.39 按钮语义（安全教义）：删除初次出现 = 危险描边，实底红只留给最终确认。
+        const dangerOutlineButton = Object.assign({}, chipButton, { background: 'transparent', borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)' })
+        const dangerSolidButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' })
         const inputStyle = { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '100%', boxSizing: 'border-box' }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -3989,7 +4178,7 @@ window.__ModuleLoader__.load({
               actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
             }
             if (!live && archived) {
-              actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: primaryButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
+              actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           }
           return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
@@ -4116,7 +4305,7 @@ window.__ModuleLoader__.load({
               deleteError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, deleteError) : null,
               React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-cancel', style: chipButton, disabled: deleting, onClick: () => { setDeletePlan(null); setDeleteError('') } }, translate('sessions.delete.cancel')),
-                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: primaryButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? translate('sessions.status.working') : translate('sessions.delete.confirm')))))
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: dangerSolidButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? translate('sessions.status.working') : translate('sessions.delete.confirm')))))
         }
 
         return React.createElement('div', null,
@@ -4428,7 +4617,7 @@ window.__ModuleLoader__.load({
                       onChange: (event) => setCardDraft({ ...cardDraft, [keyName]: event.target.value }),
                       style: inputStyle,
                     }))
-                  return React.createElement('div', { key: row.provider, 'data-testid': `quota-provider-card-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)' } },
+                  return React.createElement('div', { key: row.provider, 'data-testid': `quota-provider-card-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-card-bg)' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
                       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
@@ -4476,7 +4665,7 @@ window.__ModuleLoader__.load({
                           const selectedName = hints.some((hint) => hint.name === credDraft.name) ? credDraft.name : (hints[0]?.name ?? '')
                           const selectedHint = hints.find((hint) => hint.name === selectedName)
                           return [editingCred
-                            ? React.createElement('div', { key: 'cred-editor', 'data-testid': `quota-cred-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
+                            ? React.createElement('div', { key: 'cred-editor', 'data-testid': `quota-cred-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
                                 hints.length > 1
                                   ? React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
                                       translate('quota.credential.nameLabel'),
@@ -4514,7 +4703,7 @@ window.__ModuleLoader__.load({
                         })()
                       : []),
                     ...resetCardNodes,
-                    ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } },
+                    ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
@@ -4927,19 +5116,21 @@ window.__ModuleLoader__.load({
           }
         }
 
-        // 样式
-        const btn = { minHeight: '32px', padding: '6px 14px', borderRadius: '7px', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
-        const primary      = { ...btn, background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-button-contrast-fill)', borderColor: 'var(--dsw-alias-brand-primary)' }
-        const secondary    = { ...btn, background: 'transparent', color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)' }
-        const neutral      = { ...btn, background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
-        const danger       = { ...btn, background: 'var(--dsw-alias-state-error-primary)', color: '#fff', borderColor: 'var(--dsw-alias-state-error-primary)' }
-        const dangerGhost  = { ...btn, background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' }
-        const ghost        = { ...btn, background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-border-l2)' }
+        // 样式（v0.39 收敛：按钮/展示面统一取自工厂级 svcButtonStyle/svcSurfaceStyle，
+        // 本地只保留布局类常量；variant 语义见工厂处注释——破坏动作初次=dangerGhost 描边、
+        // 最终确认=danger 实底，非破坏主操作=brandGhost 品牌描边）。
+        const btn = svcButtonStyle()
+        const primary      = svcButtonStyle('primary')
+        const secondary    = svcButtonStyle('brandGhost')
+        const neutral      = svcButtonStyle('neutral')
+        const danger       = svcButtonStyle('danger')
+        const dangerGhost  = svcButtonStyle('dangerGhost')
+        const ghost        = svcButtonStyle('ghost')
         const toggle = Object.assign({}, btn, { background: 'transparent', color: 'var(--dsw-alias-label-primary)', border: 0, borderTop: '1px solid var(--dsw-alias-border-l1)', borderRadius: 0, padding: '10px 2px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
-        const displaySurface = { background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' }
+        const displaySurface = svcSurfaceStyle()
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
         const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 10px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
         const inlineTabActive = { color: 'var(--dsw-alias-brand-primary)', borderBottom: '2px solid var(--dsw-alias-brand-primary)', fontWeight: 700 }
@@ -4967,7 +5158,7 @@ window.__ModuleLoader__.load({
         }
         const metric = (labelKey, value) => React.createElement('div', {
           key: labelKey,
-          style: { padding: '8px 10px', borderRadius: '6px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)' },
+          style: { padding: '8px 10px', borderRadius: '6px', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)' },
         },
         React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginBottom: '2px' } }, translate(labelKey)),
         React.createElement('div', { style: { fontSize: '14px', fontWeight: 600 } }, value))
@@ -5125,7 +5316,7 @@ window.__ModuleLoader__.load({
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: Object.assign({}, displaySurface, { padding: '12px', borderRadius: '9px' }) },
-                React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '180px', padding: '12px 10px 4px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
+                React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '180px', padding: '12px 10px 4px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
                   React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '144px', fontSize: '10px', color: 'var(--dsw-alias-label-secondary)' } },
                     chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
                   React.createElement('div', { 'data-testid': 'usage-plot', style: { position: 'relative', height: '164px' } },
@@ -5158,7 +5349,7 @@ window.__ModuleLoader__.load({
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),
-                React.createElement('div', { 'data-testid': 'usage-model-list', style: { marginTop: '10px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)' } },
+                React.createElement('div', { 'data-testid': 'usage-model-list', style: { marginTop: '10px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)' } },
                   React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' } },
                     React.createElement('div', { 'data-testid': 'usage-model-sort-hint', style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, translate(`usage.modelSortHint.${modelScope}`)),
                     React.createElement('div', { 'data-testid': 'usage-model-scope-tabs', style: { display: 'flex', gap: '2px' } },
@@ -5256,7 +5447,7 @@ window.__ModuleLoader__.load({
               permissionDetails ? React.createElement('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' } },
                 permissions.items.map((item) => React.createElement('div', {
                   key: item.path,
-                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
+                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)' },
                 },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 600 } }, item.label),
                 React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere' } }, item.path),
@@ -5268,7 +5459,7 @@ window.__ModuleLoader__.load({
                       React.createElement('button', { style: danger, disabled: permissionBusy, onClick: repairPermissions }, translate(permissionBusy ? 'permissions.repairing' : 'permissions.confirm')),
                       React.createElement('button', { style: ghost, disabled: permissionBusy, onClick: () => setPermissionConfirm(false) }, translate('permissions.cancel'))))
                 : permissionNeedsRepair
-                   ? React.createElement('button', { style: Object.assign({}, dangerGhost, { marginTop: '10px' }), 'data-variant': 'danger-filled', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
+                   ? React.createElement('button', { style: Object.assign({}, dangerGhost, { marginTop: '10px' }), 'data-variant': 'dangerGhost', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
                    : null,
               permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null))
           : null
@@ -5283,7 +5474,7 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
           React.createElement('p', { style: hint }, translate('backup.description')),
           React.createElement('div', { style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
-            React.createElement('button', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }), onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
+            React.createElement('button', { style: Object.assign({}, secondary, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }), 'data-variant': 'brandGhost', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
             React.createElement('label', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
               translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
               React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
@@ -5298,7 +5489,7 @@ window.__ModuleLoader__.load({
             ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
                 backups.items.map((item) => React.createElement('div', {
                   key: item.id,
-                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
+                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)' },
                 },
                 React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' } },
                   React.createElement('div', null,
@@ -5313,7 +5504,7 @@ window.__ModuleLoader__.load({
                       : React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
-                      : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'danger-filled', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
+                      : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'dangerGhost', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
                   )),
                 backupDeleteId === item.id
                   ? React.createElement('div', { style: { marginTop: '8px' } },
@@ -5382,11 +5573,11 @@ window.__ModuleLoader__.load({
                   React.createElement('p', { style: { margin: '0 0 6px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } }, translate('update.manualConfirmTitle')),
                   React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('update.manualConfirm')),
                   React.createElement('div', { style: row },
-                    React.createElement('button', { style: dangerGhost, 'data-variant': 'danger', disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.manualProceed')),
+                    React.createElement('button', { style: dangerGhost, 'data-variant': 'dangerGhost', disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.manualProceed')),
                     React.createElement('button', { style: ghost, disabled: upgradeBusy, onClick: () => setUpgradeManualConfirm(false) }, translate('restart.cancel'))))
               : null,
             upgradeManualPending
-              ? React.createElement('div', { 'data-testid': 'upgrade-manual-pending', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-layer-2)' } },
+              ? React.createElement('div', { 'data-testid': 'upgrade-manual-pending', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg)' } },
                   React.createElement('p', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '13px', fontWeight: 650 } }, translate('update.manualRestartTitle')),
                   React.createElement('p', { style: Object.assign({}, hint, { margin: 0 }) }, translate('update.manualRestartBody')))
               : null,
@@ -5432,143 +5623,115 @@ window.__ModuleLoader__.load({
                       // 铃铛显隐独立于通知总开关：藏掉只是收起输入框旁的快捷入口（v0.31 用户点名）。
                       notifyRow('notify-row-bell', translate('notification.bellShow'), null, notifyBellOn, setNotifyBellOn, false))))
         const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
-        // 任务通知独立成顶部标签（v0.14 起不再混在概览里）
-        const notifyBlock = React.createElement('div', null, notificationBlock)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
-        // 批量进行中在「技能」标签胶囊右上角显示进度计数角标（done/total）。
+        // 批量进行中在「维护」标签右上角显示进度计数角标（done/total）。
         const { batch: skillsBadgeBatch } = useSkillsBatch()
+        // v0.39 六页信息架构：顶层 overview→usage→quota→diagnostics→maintenance→configuration。
+        // 通知不再是顶层页：归入 配置→通知（功能关闭时页面保留、置灰标注）。
         const tabWarnings = {
           overview: false,
-          notify: false,
-          health: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
           usage: Boolean(usageError),
-          backup: Boolean(backupError),
-          restart: Boolean(restartFlowState.error),
+          quota: false,
+          diagnostics: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
+          maintenance: Boolean(backupError || restartFlowState.error),
+          configuration: false,
         }
-        const tabs = [
-          ['overview', 'tabs.overview'],
-          ...(features.taskNotifications !== false ? [['notify', 'tabs.notify']] : []),
-          ...(features.healthDiagnostics !== false ? [['health', 'tabs.health']] : []),
-          ...(features.modelUsage !== false ? [['usage', 'tabs.usage']] : []),
-          ...(features.quotaLookup !== false ? [['quota', 'tabs.quota']] : []),
-          ...(features.backupMaintenance !== false ? [['backup', 'tabs.backup']] : []),
-          ...(features.skillManager !== false ? [['skills', 'tabs.skills']] : []),
-          ...(features.subagentRoute !== false ? [['subagent', 'tabs.subagent']] : []),
-          ...(features.sessionManager !== false ? [['sessions', 'tabs.sessions']] : []),
-          ['restart', 'tabs.restart'],
-        ]
-        const warningTabs = tabs.filter(([id]) => tabWarnings[id]).map(([, label]) => translate(label))
-        const visibleActiveTab = tabs.some(([id]) => id === activeTab) ? activeTab : 'overview'
-        const tabContent = visibleActiveTab === 'overview'
+        // 维护子页记忆：首次开面板默认「子代理」（用户点名），此后读写 localStorage；
+        // 非法/被功能关闭的值按 sessions→skills→subagent→backup→restart 回退到首个可用页。
+        // 配置页恒开在 features，无子页记忆（用户点名）。
+        const [maintenanceTab, setMaintenanceTab] = useState('subagent')
+        const [configTab, setConfigTab] = useState('features')
+        useEffect(() => {
+          let stored = null
+          try { stored = localStorage.getItem('dsh-service-maintenance-tab') } catch (_) {}
+          // 无记忆键 = 首次进入：保留「子代理」默认值（不可用时由渲染期 normalize 回退）；
+          // 有键但非法/被关 = 回退白名单首项。
+          setMaintenanceTab(stored === null ? 'subagent' : normalizeMaintenanceTab(stored, features))
+        }, [])
+        const selectMaintenanceTab = (id) => {
+          setMaintenanceTab(id)
+          try { localStorage.setItem('dsh-service-maintenance-tab', id) } catch (_) {}
+        }
+        const primaryTabs = getVisiblePrimaryTabs(features, tabWarnings)
+        const maintenanceTabs = getVisibleMaintenanceTabs(features)
+        const warningTabs = primaryTabs.filter((item) => item.warning).map((item) => translate(item.labelKey))
+        const visiblePrimaryTab = primaryTabs.some((item) => item.id === activeTab) ? activeTab : 'overview'
+        const visibleMaintenanceTab = normalizeMaintenanceTab(maintenanceTab, features)
+        const tabContent = visiblePrimaryTab === 'overview'
           ? overviewBlock
-          : visibleActiveTab === 'notify'
-            ? notifyBlock
-            : visibleActiveTab === 'health'
+          : visiblePrimaryTab === 'usage'
+            ? usageBlock
+            : visiblePrimaryTab === 'quota'
+              ? React.createElement(RemoteQuotaCard, null)
+            : visiblePrimaryTab === 'diagnostics'
               ? healthBlock
-              : visibleActiveTab === 'usage'
-                ? usageBlock
-                : visibleActiveTab === 'quota'
-                  ? React.createElement(RemoteQuotaCard, null)
-                : visibleActiveTab === 'backup'
-                  ? maintenanceBlock
-                : visibleActiveTab === 'skills'
-                  ? React.createElement(SkillsSection, null)
-                : visibleActiveTab === 'subagent'
-                  ? React.createElement(SubagentSection, null)
-                : visibleActiveTab === 'sessions'
-                  ? React.createElement(SessionsSection, null)
-                  : restartBlock
-        return React.createElement('div', null,
-          warningTabs.length > 0 ? React.createElement('div', { style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' } },
+            : visiblePrimaryTab === 'maintenance'
+              ? (visibleMaintenanceTab === null
+                  ? React.createElement('div', { 'data-testid': 'maintenance-empty', style: displaySurface }, translate('maintenance.empty'))
+                  : visibleMaintenanceTab === 'restart'
+                    ? restartBlock
+                    : visibleMaintenanceTab === 'backup'
+                      ? maintenanceBlock
+                      : visibleMaintenanceTab === 'skills'
+                        ? React.createElement(SkillsSection, null)
+                        : visibleMaintenanceTab === 'subagent'
+                          ? React.createElement(SubagentSection, null)
+                          : React.createElement(SessionsSection, null))
+            : configTab === 'notifications'
+              ? React.createElement('div', { 'data-testid': 'config-notifications-page', style: features.taskNotifications === false ? { opacity: 0.55 } : undefined },
+                  notificationBlock,
+                  ...(features.taskNotifications === false ? [React.createElement('p', { key: 'notify-off-hint', style: Object.assign({}, hint, { marginTop: '8px' }) }, translate('config.notificationsDisabled'))] : []))
+              : React.createElement(FeatureGroups, null)
+        // v0.39：根节点带 data-dshsvc-root 作用域锚（焦点环/降动效/reduced-motion 都挂在它下）、
+        // data-dshsvc-page 记录当前内部页、dshsvc-page 类收 800px 内容宽。导航渲染收敛到
+        // SvcTabs 基元（role=tablist/tab + aria-selected）；旧 group/tray/top-tab 结构已移除。
+        return React.createElement('div', { 'data-testid': 'service-panel-root', 'data-dshsvc-root': '', 'data-dshsvc-page': visiblePrimaryTab, className: 'dshsvc-page' },
+          warningTabs.length > 0 ? React.createElement('div', { role: 'alert', style: { marginBottom: '12px', padding: '11px 13px', borderRadius: '8px', background: 'rgba(198,128,0,0.16)', border: '1px solid rgba(198,128,0,0.48)' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('tabs.alert.title')),
-            React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join('、') }))) : null,
-          React.createElement('div', { 'data-testid': 'tab-list', style: { display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-start' } },
-            (() => {
-              // v0.31 用户点名（终版）：顶栏标签 = 两行分组的紧凑胶囊条。胶囊「图标+文字」，
-              // 激活态用品牌色淡染底 + 品牌色文字（不用实底白字——品牌色在深色主题里偏亮，
-              // 白底白字会直接不可读），重启激活态同理用危险色淡染；未激活重启保持危险色
-              // 描边呼应安全教义。组序（用户点名）：「状态与数据」概览→健康诊断→模型统计→
-              // 额度查询→通知；「技能与维护」子代理→技能管理→备份维护→红描边重启殿后。
-              // 组内功能开关全关时该标签消失，整行全空才不渲染该行。
-              // 故障 ⚠ 从文字前缀改为角落橙点，技能批量计数是右上小徽标。
-              // v0.33 用户参考图终版：每行是**一条连续圆角分段条**——段无各自边框、段间细竖线。
-              // v0.34：激活段区分度加强——品牌色实底 + 白字（实底取「深色上也够暗」的品牌原色，
-              // 不再受主题明度翻转影响；v0.32 的白底白字 BUG 是错把亮色主题交互底当背景所致，
-              // 与本处的区别见 TODO）；重启移出托盘、独立红胶囊钉在标签区最右（margin-left:auto）。
-              const buildTabChip = ([id, label]) => {
-                const isActive = visibleActiveTab === id
-                const isRestart = id === 'restart'
-                let chipStyle = Object.assign(
-                  {
-                    position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '5px',
-                    padding: '4px 9px', margin: 0, border: 0, borderRadius: 0,
-                    background: 'transparent',
-                    color: tabWarnings[id] && !isActive ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)',
-                    fontSize: '12.5px', fontWeight: 550, lineHeight: '16px', cursor: 'pointer',
-                    transition: 'color 120ms, background 120ms',
-                  },
-                )
-                if (isActive) {
-                  chipStyle.background = isRestart ? 'var(--dsh-svc-tab-active-danger)' : 'var(--dsh-svc-tab-active-bg)'
-                  chipStyle.color = CHIP_ACTIVE_TEXT
-                  chipStyle.fontWeight = 650
-                  chipStyle.borderRadius = '8px'
-                }
-                return React.createElement('button', { key: id, 'data-testid': 'top-tab-' + id, style: chipStyle, onClick: () => { setActiveTab(id); if (id === 'health') runDiagnostics(false) } },
-                  React.createElement(TabIcon, { name: id }),
-                  translate(label),
-                  tabWarnings[id] ? React.createElement('span', { 'data-testid': 'tab-dot-' + id, 'aria-label': translate('tabs.alert.dot'), style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
-                  id === 'skills' && skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running' ? React.createElement('span', { 'data-testid': 'skills-tab-badge', style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: '#fff', fontWeight: 700 } }, skillsBadgeBatch.done + '/' + skillsBadgeBatch.total) : null)
-              }
-              const groupDefs = [
-                ['tabs.group.data', ['overview', 'health', 'usage', 'quota', 'notify']],
-                ['tabs.group.maint', ['subagent', 'sessions', 'skills', 'backup']],
-              ]
-              const rows = []
-              let restartEntry = null
-              for (const [groupKey, ids] of groupDefs) {
-                // 行内顺序跟随 groupDefs 里点名的 id 序（用户点名组序），不是 tabs 源序——
-                // filter 保源序会把「通知」排回第一行第二位，这里按 ids 顺序映射重排。
-                const orderIndex = new Map(ids.map((id, index) => [id, index]))
-                const items = tabs.filter(([id]) => orderIndex.has(id))
-                  .sort((a, b) => orderIndex.get(a[0]) - orderIndex.get(b[0]))
-                if (items.length > 0) rows.push({ items, testid: 'tab-group-' + groupKey.split('.').pop() })
-              }
-              // v0.34：重启不再挤在段列表里，单独拎出（托盘外独立红胶囊）。
-              restartEntry = tabs.find(([id]) => id === 'restart') ?? null
-              // 重启永远可见：可选功能全关到没有任何分组行时自成一行（仍钉最右）。
-              const trayChip = (item, index, list) => {
-                const nodes = []
-                if (index > 0) {
-                  nodes.push(React.createElement('span', { key: 'sep-' + item[0], 'aria-hidden': 'true', style: { width: '1px', height: '14px', background: 'var(--dsw-alias-border-l1)', flexShrink: 0 } }))
-                }
-                nodes.push(buildTabChip(item))
-                return nodes
-              }
-              // v0.34.1：重启胶囊要贴**容器右缘**（不是分段条末尾）。行改成占满宽度的
-              // flex：托盘 inline-flex 收缩在左，重启钮 marginLeft:auto 钉到该行最右；
-              // 托盘自身换行（窄面板）也不影响钮的贴边。挂在首行（右缘视线最好），
-              // 其余行不再重复渲染。
-              return rows.map((row, rowIndex) => React.createElement('div', { key: row.testid, 'data-testid': row.testid, style: { display: 'flex', minWidth: 0, width: '100%' } },
-                React.createElement('div', {
-                  'data-testid': row.testid + '-tray',
-                  style: { display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', minWidth: 0, border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: '12px', overflow: 'hidden' },
-                }, row.items.flatMap(trayChip)),
-                rowIndex === 0 && restartEntry !== null
-                  ? (() => {
-                      const button = buildTabChip(restartEntry)
-                      return React.createElement('button', Object.assign({}, button.props, {
-                        style: Object.assign({}, button.props.style, {
-                          marginLeft: 'auto', border: '0.5px solid var(--dsw-alias-state-error-primary)',
-                          borderRadius: '999px', padding: '4px 12px',
-                          background: visibleActiveTab === 'restart' ? 'var(--dsh-svc-tab-active-danger)' : 'transparent',
-                        }),
-                      }), ...(button.children ?? []))
-                    })()
-                  : null))
-            })()),
+            React.createElement('div', { style: Object.assign({}, hint, { marginTop: '3px' }) }, translate('tabs.alert.body', { tabs: warningTabs.join(translate('tabs.alert.join')) }))) : null,
+          React.createElement(SvcTabs, {
+            items: primaryTabs.map((item) => ({
+              id: item.id,
+              label: translate(item.labelKey),
+              icon: item.id === 'diagnostics' ? 'health' : item.id,
+              warning: item.warning,
+              badge: item.id === 'maintenance' && skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running'
+                ? { testid: 'skills-tab-badge', text: skillsBadgeBatch.done + '/' + skillsBadgeBatch.total }
+                : null,
+            })),
+            activeId: visiblePrimaryTab,
+            onChange: (id) => { setActiveTab(id); if (id === 'diagnostics') runDiagnostics(false) },
+            testIdPrefix: 'service-tab',
+            dotLabel: translate('tabs.alert.dot'),
+            ariaLabel: translate('nav.label'),
+          }),
+          // v0.39 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS。
+          React.createElement(SvcPageHeader, {
+            title: translate(PRIMARY_TAB_LABELS[visiblePrimaryTab]),
+            description: translate(PAGE_DESCRIPTIONS[visiblePrimaryTab]),
+          }),
+          visiblePrimaryTab === 'maintenance' && maintenanceTabs.length > 0
+            ? React.createElement(SvcTabs, {
+                items: maintenanceTabs.map((item) => ({ id: item.id, label: translate(item.labelKey) })),
+                activeId: visibleMaintenanceTab,
+                onChange: selectMaintenanceTab,
+                testIdPrefix: 'maintenance-tab',
+                variant: 'sub',
+                ariaLabel: translate('tabs.maintenance'),
+              })
+            : null,
+          visiblePrimaryTab === 'configuration'
+            ? React.createElement(SvcTabs, {
+                items: CONFIG_TABS.map((item) => ({ id: item.id, label: translate(item.labelKey) })),
+                activeId: configTab,
+                onChange: setConfigTab,
+                testIdPrefix: 'config-tab',
+                variant: 'sub',
+                ariaLabel: translate('tabs.configuration'),
+              })
+            : null,
           React.createElement('div', { 'data-testid': 'tab-panel', style: tabPanel }, tabContent))
       }
 
@@ -5626,26 +5789,18 @@ window.__ModuleLoader__.load({
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」「额度查询」「技能」「子代理」「会话管理」入口由各自标签内的开关控制，默认不注册
+        // 左列「重启」「额度查询」「会话管理」入口由各自页内的开关控制，默认不注册
         restartNavToggle.sync()
         quotaNavToggle.sync()
-        skillsNavToggle.sync()
-        subagentNavToggle.sync()
         sessionsNavToggle.sync()
         const unsubscribeFeatures = featureScope.subscribe(quotaNavToggle.sync)
-        const unsubscribeFeaturesSkills = featureScope.subscribe(skillsNavToggle.sync)
-        const unsubscribeFeaturesSubagent = featureScope.subscribe(subagentNavToggle.sync)
         const unsubscribeFeaturesSessions = featureScope.subscribe(sessionsNavToggle.sync)
         return () => {
           unsubscribeFeatures()
-          unsubscribeFeaturesSkills()
-          unsubscribeFeaturesSubagent()
           unsubscribeFeaturesSessions()
           disposePanel()
           restartNavToggle.disposeEntry()
           quotaNavToggle.disposeEntry()
-          skillsNavToggle.disposeEntry()
-          subagentNavToggle.disposeEntry()
           sessionsNavToggle.disposeEntry()
         }
       })

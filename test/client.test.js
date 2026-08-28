@@ -533,8 +533,11 @@ test('plugin configuration card saves feature switches and disabled features dis
   featureCardToggle.props.onClick()
   await renderer.flush()
   assert.equal(renderer.findByTestId('feature-card-toggle').props['aria-expanded'], 'true')
-  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*可选功能.*健康诊断.*模型统计.*额度查询.*备份维护.*任务通知.*外部能力.*\/healthz 探活端点/)
-  assert.doesNotMatch(renderer.text('settings.section'), /模型统计|额度查询|备份维护|通知/)
+  // v0.39：卡片开关体 = 分组式 FeatureGroups（运行与观测/维护/交互/外部能力）。
+  assert.match(renderer.text('settings.plugin.item'), /服务控制（dsh-service）.*运行与观测.*健康诊断.*模型统计.*额度查询.*维护.*备份维护.*技能.*子代理.*会话管理.*交互.*任务通知.*移动端适配.*外部能力.*\/healthz 探活端点/)
+  // v0.39：通知不再是顶层标签（配置→通知 常驻，功能关闭时仅置灰标注），
+  // 所以这里只断言被关功能对应的内容不出现。
+  assert.doesNotMatch(renderer.text('settings.section'), /模型统计|额度查询|备份维护/)
   assert.equal(renderer.hasSlot('conversation.input.left'), false)
   assert.equal(renderer.hasSlot('conversation.input.right'), false)
   assert.equal(renderer.sessionSubscriptionCount(), 0)
@@ -550,6 +553,9 @@ test('plugin configuration card saves feature switches and disabled features dis
   assert.equal(calls.includes('usage'), true)
 
   await renderer.setFeature('backupMaintenance', true)
+  // v0.39：备份维护收敛为维护子页——进入「维护」后子导航里应出现「备份维护」。
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   assert.match(renderer.text('settings.section'), /备份维护/)
   assert.equal(calls.includes('backup-list'), true)
 
@@ -713,10 +719,9 @@ test('service panel puts versions first and renders switchable provider-prefixed
 
   await renderer.load()
   const overviewText = renderer.text('settings.section')
-  // v0.34.1：重启钉首行右缘（额度查询/通知之后、第二行子代理之前），各标签仍按组序渲染。
-  assert.match(overviewText, /概览.*健康诊断.*模型统计.*额度查询.*通知/)
-  assert.match(overviewText, /通知重启|重启子代理|重启\n/)
-  assert.doesNotMatch(overviewText, /⚠ 模型统计|服务控制提醒/)
+  // v0.39 六页单行导航：概览→模型统计→额度查询→健康诊断→维护→配置（通知并入配置页）。
+  assert.match(overviewText, /概览.*模型统计.*额度查询.*健康诊断.*维护.*配置/)
+  assert.doesNotMatch(overviewText, /服务控制提醒/)
   assert.match(overviewText, /版本信息.*进程与运行环境.*平台.*Node 版本.*运行时间.*内存 RSS/)
   assert.match(overviewText, /报错信息.*最近 24 小时.*模型报错.*2 类.*工具报错.*2 类/)
   const overviewPanel = renderer.text(renderer.findByTestId('tab-panel'))
@@ -920,56 +925,68 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   })
   await renderer.load()
 
-  const tabs = renderer.findByTestId('tab-list')
+  // v0.39 视觉基础层：面板根节点带命名空间作用域锚 + 当前内部页标记 + 内容宽容器类。
+  const panelRoot = renderer.findByTestId('service-panel-root')
+  assert.equal(panelRoot.props['data-dshsvc-root'], '')
+  assert.equal(panelRoot.props['data-dshsvc-page'], 'overview')
+  assert.equal(panelRoot.props.className, 'dshsvc-page')
+
+  const tabs = renderer.findByTestId('service-tab-list')
   const panel = renderer.findByTestId('tab-panel')
   const overviewSurface = renderer.findByTestId('health-display')
   const activeOverviewTab = renderer.findButton('概览')
-  // v0.34 激活段区分度加强：品牌色暗化实底（color-mix 叠层）+ 白字——白字的对比度由
-  // 「底也压暗」保证，不再依赖 token 明度；分段条托盘与分组行为照旧。
-  assert.equal(tabs.props.style.borderBottom, undefined)
-  assert.equal(tabs.props.style.flexDirection, 'column')
-  // v0.34.2：激活块配色走双主题变量（浅=原色实底+白字，暗=提亮块+近黑字），组件只引用 var。
+  // v0.39：主导航 = 单行六页分段条（.dshsvc-tabs），激活段为条内反色实底圆角块。
+  assert.equal(tabs.props.className, 'dshsvc-tabs')
+  assert.equal(tabs.props.role, 'tablist')
+  // v0.34.2：激活块配色走双主题变量（浅=深块+白字，暗=近白块+黑字），组件只引用 var。
   assert.equal(activeOverviewTab.props.style.color, 'var(--dsh-svc-tab-active-text)')
   assert.equal(activeOverviewTab.props.style.background, 'var(--dsh-svc-tab-active-bg)')
+  assert.equal(activeOverviewTab.props['aria-selected'], 'true')
   // 分段条样式：激活段 = 条内实底圆角块（非独立胶囊）。
   assert.equal(activeOverviewTab.props.style.borderRadius, '8px')
   assert.equal(panel.props.style.boxShadow, undefined)
   assert.equal(panel.props.style.border, undefined)
   assert.equal(panel.props.style.background, undefined)
   assert.equal(overviewSurface.props.style.background, 'var(--dsh-svc-surface-bg)')
-  assert.equal(overviewSurface.props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.equal(overviewSurface.props.style.border, '1px solid var(--dsw-alias-border-l1)')
+  assert.equal(overviewSurface.props.style.color, 'var(--dsh-svc-text)')
+  assert.equal(overviewSurface.props.style.border, '1px solid var(--dsh-svc-border)')
   await renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   const healthRegion = renderer.findByTestId('health-diagnostics-region')
-  assert.equal(healthRegion.props.style.border, '1px solid var(--dsw-alias-border-l1)')
+  assert.equal(healthRegion.props.style.border, '1px solid var(--dsh-svc-border)')
   assert.equal(healthRegion.props.style.background, 'var(--dsh-svc-surface-bg)')
-  assert.equal(healthRegion.props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.equal(healthRegion.props.style.color, 'var(--dsh-svc-text)')
   const healthAction = renderer.findButton('立即健康检查')
   assert.equal(healthAction.props['data-variant'], 'neutral')
-  assert.equal(healthAction.props.style.background, 'var(--dsw-alias-bg-layer-2)')
-  assert.equal(healthAction.props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.equal(healthAction.props.style.borderColor, 'var(--dsw-alias-border-l2)')
+  assert.equal(healthAction.props.style.background, 'var(--dsh-svc-page-bg)')
+  assert.equal(healthAction.props.style.color, 'var(--dsh-svc-text)')
+  assert.equal(healthAction.props.style.borderColor, 'var(--dsh-svc-border)')
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   assert.equal(renderer.findButton('刷新统计').props['data-variant'], 'neutral')
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('备份维护').props.onClick()
   await renderer.flush()
+  // v0.39：创建备份 = 非破坏主操作，低饱和品牌描边（brandGhost），不再是弱化中性钮。
   const createBackup = renderer.findButton('创建备份')
-  assert.equal(createBackup.props['data-variant'], undefined)
-  assert.equal(createBackup.props.style.background, 'var(--dsw-alias-bg-layer-2)')
-  assert.equal(createBackup.props.style.color, 'var(--dsw-alias-label-primary)')
-  assert.equal(createBackup.props.style.borderColor, 'var(--dsw-alias-border-l2)')
+  assert.equal(createBackup.props['data-variant'], 'brandGhost')
+  assert.equal(createBackup.props.style.background, 'transparent')
+  assert.equal(createBackup.props.style.color, 'var(--dsh-svc-brand)')
+  assert.equal(createBackup.props.style.borderColor, 'var(--dsh-svc-brand)')
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   const restartRegion = renderer.findByTestId('restart-region')
-  assert.equal(restartRegion.props.style.border, '1px solid var(--dsw-alias-border-l1)')
+  assert.equal(restartRegion.props.style.border, '1px solid var(--dsh-svc-border)')
   assert.equal(restartRegion.props.style.background, 'var(--dsh-svc-surface-bg)')
-  assert.equal(restartRegion.props.style.color, 'var(--dsw-alias-label-primary)')
+  assert.equal(restartRegion.props.style.color, 'var(--dsh-svc-text)')
+  // v0.39 安全教义回归：重启初次出现 = 危险描边（dangerGhost），实底只留给最终确认。
   const restart = renderer.findButton('重启 dsh web')
-  assert.equal(restart.props['data-variant'], 'danger')
-  assert.equal(restart.props.style.background, 'var(--dsw-alias-state-error-primary)')
-  assert.equal(restart.props.style.color, '#fff')
+  assert.equal(restart.props['data-variant'], 'dangerGhost')
+  assert.equal(restart.props.style.background, 'transparent')
+  assert.equal(restart.props.style.color, 'var(--dsh-svc-danger)')
 })
 
 test('tab and top alerts identify health and backup failures without treating an empty backup list as failure', async () => {
@@ -986,25 +1003,105 @@ test('tab and top alerts identify health and backup failures without treating an
   })
   await renderer.load()
   const text = renderer.text('settings.section')
-  // v0.31 胶囊分组条：故障 ⚠ 从文字前缀改为角落橙点（tab-dot-* testid）。
-  assert.equal(renderer.hasTest('tab-dot-health'), true)
-  assert.equal(renderer.hasTest('tab-dot-backup'), true)
+  // v0.39 六页导航：故障 ⚠ 从子功能聚合到顶层页（诊断=健康/权限故障，维护=备份/重启故障）。
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
+  assert.equal(renderer.hasTest('tab-dot-maintenance'), true)
   assert.equal(renderer.hasTest('tab-dot-overview'), false, 'overview has no failure')
-  assert.equal(renderer.hasTest('tab-dot-restart'), false, 'restart has no failure')
-  // 两行分组：第一行「状态与数据」（概览→额度查询），第二行「技能与维护」（备份维护→子代理 + 红胶囊重启殿后）。
-  // 每枚胶囊带 top-tab-<id> testid，顺序断言直接用官方辅助方法，不手写树遍历（假渲染树的
-  // 子节点可能是数组节点，自写递归器漏掉会得到空集——曾因此假失败一轮）。
-  // 分组行与竖排侧签各带 testid；前缀收集按 DOM 出现序：行 div 在前、其内部标题随后。
-  // v0.33：竖排侧签标题去掉，只剩行 + 行内分段条；前缀收集顺序=行 → 托盘。
-  assert.deepEqual(renderer.findAllByTestIdPrefix('tab-group-').map((group) => group.props['data-testid']), ['tab-group-data', 'tab-group-data-tray', 'tab-group-maint', 'tab-group-maint-tray'])
-  // 组序（用户点名）：数据行 概览→健康诊断→模型统计→额度查询→通知；维护行 子代理→会话管理→技能管理→备份维护。
-  // v0.34.1：重启移出托盘、独立胶囊钉在首行右缘 → DOM 序里它出现在首行之后、子代理之前。
-  assert.deepEqual(renderer.findAllByTestIdPrefix('top-tab-').map((node) => node.props['data-testid']), [
-    'top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify',
-    'top-tab-restart', 'top-tab-subagent', 'top-tab-sessions', 'top-tab-skills', 'top-tab-backup',
-  ], 'order: data row chips, restart pinned right, then maintenance row')
-  // renderer.text() 只认槽名；分组节点文本用本地展平器收集。
-  const flattenText = (node) => {
+  assert.equal(renderer.hasTest('tab-dot-configuration'), false, 'configuration has no failure')
+  assert.equal(renderer.hasTest('tab-dot-usage'), false, 'usage has no failure')
+  // v0.39：单行六页分段条，容器 testid = service-tab-list，按钮 testid = service-tab-<id>。
+  assert.deepEqual(renderer.findAllByTestIdPrefix('service-tab-').map((node) => node.props['data-testid']), [
+    'service-tab-list',
+    'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-diagnostics',
+    'service-tab-maintenance', 'service-tab-configuration',
+  ], 'order: overview → usage → quota → diagnostics → maintenance → configuration')
+  // 重启不再是顶层标签：收敛为维护子页（maintenance-tab-*）。
+  assert.equal(renderer.hasTest('top-tab-restart'), false, 'no legacy top tabs remain')
+  assert.equal(renderer.hasTest('service-tab-restart'), false, 'restart is a maintenance subpage, not a primary tab')
+  assert.match(text, /服务控制提醒.*健康诊断.*维护/)
+})
+
+test('maintenance aggregate page: subagent default, localStorage persistence, and fallback when stored page is disabled', async () => {
+  const rpc = async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+  // 首次进入维护页：默认「子代理」（用户点名），无 localStorage 记忆。
+  const first = createRenderer(rpc)
+  await first.load()
+  await first.findButton('维护').props.onClick()
+  await first.flush()
+  assert.equal(first.findByTestId('maintenance-tab-subagent').props['aria-selected'], 'true')
+  assert.equal(first.findByTestId('service-panel-root').props['data-dshsvc-page'], 'maintenance')
+  // 用户切到「会话管理」：写入记忆键。
+  await first.findByTestId('maintenance-tab-sessions').props.onClick()
+  await first.flush()
+  assert.equal(localStorage.getItem('dsh-service-maintenance-tab'), 'sessions')
+
+  // 冷启动带记忆：直接落在已存储子页。
+  const stored = createRenderer(rpc)
+  localStorage.setItem('dsh-service-maintenance-tab', 'backup')
+  await stored.load()
+  await stored.findButton('维护').props.onClick()
+  await stored.flush()
+  assert.equal(stored.findByTestId('maintenance-tab-backup').props['aria-selected'], 'true')
+
+  // 记忆的子页被功能关闭：整页移除，回退到白名单首项（会话管理）。
+  const fallback = createRenderer(rpc, { featureSettings: { backupMaintenance: false } })
+  localStorage.setItem('dsh-service-maintenance-tab', 'backup')
+  await fallback.load()
+  await fallback.findButton('维护').props.onClick()
+  await fallback.flush()
+  assert.equal(fallback.hasTest('maintenance-tab-backup'), false, 'disabled subpage is removed')
+  assert.equal(fallback.findByTestId('maintenance-tab-sessions').props['aria-selected'], 'true', 'falls back to the first available page')
+})
+
+test('disabling the active primary page returns the panel to overview', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'usage')
+  // 当前页对应功能被关闭：标签即时消失，面板回退概览。
+  await renderer.setFeature('modelUsage', false)
+  await renderer.flush()
+  assert.equal(renderer.hasTest('service-tab-usage'), false)
+  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'overview')
+})
+
+test('configuration page aggregates features and notifications without subpage memory', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+  await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  // 恒开在「功能」子页，无记忆；分组标题渲染。
+  assert.equal(renderer.findByTestId('config-tab-features').props['aria-selected'], 'true')
+  assert.match(renderer.text('settings.section'), /运行与观测/)
+  assert.match(renderer.text('settings.section'), /交互/)
+  // v0.39 页面头部：标题随当前页切换，描述一行呈现（text() 只认槽名，节点文本用展平器）。
+  const header = renderer.findByTestId('svc-page-header')
+  const flattenNode = (node) => {
     let out = ''
     const walk = (current) => {
       if (Array.isArray(current)) { for (const child of current) walk(child); return }
@@ -1017,32 +1114,16 @@ test('tab and top alerts identify health and backup failures without treating an
     walk(node)
     return out
   }
-  const dataGroup = renderer.findByTestId('tab-group-data')
-  const maintGroup = renderer.findByTestId('tab-group-maint')
-  assert.doesNotMatch(flattenText(dataGroup), /状态与数据|技能与维护/, 'group titles are removed per user feedback')
-  // v0.34.1：重启钉首行右缘 → 数据行含重启、维护行不含。
-  assert.match(flattenText(dataGroup), /重启/)
-  assert.doesNotMatch(flattenText(dataGroup), /备份维护|子代理|技能(?!管理)/)
-  assert.doesNotMatch(flattenText(maintGroup), /概览|重启/)
-  // 重启胶囊在未激活态也保持危险色描边（组合值含 1px solid 前缀）；激活态淡染由点击流程用例覆盖。
-  // v0.34：重启移出托盘、独立胶囊 margin-left:auto 推到行右缘。
-  const restartChip = renderer.findByTestId('top-tab-restart')
-  assert.equal(restartChip.props.style.border, '0.5px solid var(--dsw-alias-state-error-primary)', 'restart keeps a red outlined capsule when idle')
-  assert.equal(restartChip.props.style.marginLeft, 'auto', 'restart pins to the right edge of the tab area')
-  // 假树的节点没有 parentNode 回链：用「托盘子树文本不含重启段之外的分支」不可行（同名），
-  // 直接断言 maintenance 托盘的直接 children 里没有 top-tab-restart 段。
-  const maintTray = renderer.findByTestId('tab-group-maint-tray')
-  const collectChipTestids = (node, out = []) => {
-    if (Array.isArray(node)) { for (const child of node) collectChipTestids(child, out); return out }
-    if (node === null || typeof node !== 'object') return out
-    if (typeof node.props?.['data-testid'] === 'string' && node.props['data-testid'].startsWith('top-tab-')) { out.push(node.props['data-testid']); return out }
-    for (const child of node.children ?? []) collectChipTestids(child, out)
-    return out
-  }
-  assert.deepEqual(collectChipTestids(maintTray), ['top-tab-subagent', 'top-tab-sessions', 'top-tab-skills', 'top-tab-backup'], 'maintenance tray holds exactly its four segments; restart floats outside')
-  const dataTray = renderer.findByTestId('tab-group-data-tray')
-  assert.deepEqual(collectChipTestids(dataTray), ['top-tab-overview', 'top-tab-health', 'top-tab-usage', 'top-tab-quota', 'top-tab-notify'], 'data tray holds its five segments')
-  assert.match(text, /服务控制提醒.*健康诊断.*备份维护/)
+  assert.match(flattenNode(header), /配置/)
+  assert.match(flattenNode(header), /功能开关与任务通知设置。/)
+  // 切到「通知」子页；任务通知功能关闭时页面保留并置灰标注。
+  await renderer.findByTestId('config-tab-notifications').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('config-tab-notifications').props['aria-selected'], 'true')
+  await renderer.setFeature('taskNotifications', false)
+  await renderer.flush()
+  assert.equal(renderer.hasTest('config-notifications-page'), true)
+  assert.match(renderer.text('settings.section'), /重新开启后通知才会生效/)
 })
 
 test('settings mount automatically shows separate DSH and plugin update states with release links', async () => {
@@ -1302,6 +1383,8 @@ test('backup panel creates, lists, and requires a second click before deleting a
   })
 
   await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('备份维护').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /备份管理/)
@@ -1345,10 +1428,18 @@ test('service panel lists active work and requires an explicit force restart', a
   })
 
   await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
+
+  // v0.39 按钮语义：最终确认（仍要重启）= 危险实底；取消 = 幽灵描边。
+  const forceConfirm = renderer.findButton('仍要重启')
+  assert.equal(forceConfirm.props['data-variant'], 'danger')
+  assert.equal(forceConfirm.props.style.background, 'var(--dsh-svc-danger)')
+  assert.equal(forceConfirm.props.style.color, '#fff')
 
   assert.match(renderer.text(), /检测到 3 项运行中的工作/)
   assert.match(renderer.text(), /pnpm test/)
@@ -1359,6 +1450,12 @@ test('service panel lists active work and requires an explicit force restart', a
   await renderer.flush()
   assert.doesNotMatch(renderer.text(), /检测到 3 项运行中的工作/)
   assert.equal(calls.some((call) => call.endpoint === 'web'), false)
+
+  // 回到初次出现态：重启入口恢复危险描边（dangerGhost），不是实底。
+  const initialRestart = renderer.findButton('重启 dsh web')
+  assert.equal(initialRestart.props['data-variant'], 'dangerGhost')
+  assert.equal(initialRestart.props.style.background, 'transparent')
+  assert.equal(initialRestart.props.style.color, 'var(--dsh-svc-danger)')
 
   await renderer.findButton('重启 dsh web').props.onClick()
   await renderer.flush()
@@ -1383,9 +1480,11 @@ test('settings left nav restart entry is opt-in, defaults to hidden, and persist
   await renderer.load()
   // 默认关闭：只注册服务控制一页
   assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service'])
-  assert.equal(localStorage.getItem('dsh-service-restart-nav'), null)
+  assert.equal(localStorage.getItem('dsh-service-shortcut-restart'), null)
 
   // 「重启」标签内打开开关后条目注册，位于「服务控制」之下
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   renderer.findByTestId('restart-nav-switch').props.onClick()
@@ -1394,7 +1493,7 @@ test('settings left nav restart entry is opt-in, defaults to hidden, and persist
   assert.deepEqual(sections.map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
   assert.ok(sections[1].order > sections[0].order, 'restart entry sits below the service control page in the left nav')
   assert.equal(sections[1].label(), '重启')
-  assert.equal(localStorage.getItem('dsh-service-restart-nav'), 'true')
+  assert.equal(localStorage.getItem('dsh-service-shortcut-restart'), 'true')
   renderer.setLocale('en')
   await renderer.flush()
   assert.equal(sections[1].label(), 'Restart')
@@ -1405,7 +1504,28 @@ test('settings left nav restart entry is opt-in, defaults to hidden, and persist
   renderer.findByTestId('restart-nav-switch').props.onClick()
   await renderer.flush()
   assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service'])
-  assert.equal(localStorage.getItem('dsh-service-restart-nav'), 'false')
+  assert.equal(localStorage.getItem('dsh-service-shortcut-restart'), 'false')
+})
+
+test('left-nav shortcut keys migrate once to the shortcut-* namespace', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  // 旧键遗留值：迁移只发生一次——首次读取即写入新键，此后只认新键。
+  localStorage.setItem('dsh-service-restart-nav', 'true')
+  localStorage.setItem('dsh-service-quota-nav', 'false')
+  await renderer.load()
+  assert.equal(localStorage.getItem('dsh-service-shortcut-restart'), 'true', 'legacy restart value migrates to the new key')
+  assert.equal(localStorage.getItem('dsh-service-shortcut-quota'), 'false', 'legacy quota value migrates to the new key')
+  // 重启入口按迁移值注册；额度查询保持关闭；skills/subagent 入口已撤销不再可注册。
+  const sections = renderer.registrations()['settings.section']
+  assert.deepEqual(sections.map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
+  // 旧键值不再被读取：改写旧键不影响已迁移状态（新键已是唯一事实源）。
+  localStorage.setItem('dsh-service-restart-nav', 'false')
+  await renderer.load()
+  assert.deepEqual(renderer.registrations()['settings.section'].map((s) => s.id), ['dsh-service', 'dsh-service-restart'])
 })
 
 test('dedicated restart page runs the same activity check, force, and sent flow as the restart tab', async () => {
@@ -1421,6 +1541,8 @@ test('dedicated restart page runs the same activity check, force, and sent flow 
 
   await renderer.load()
   // 默认关闭：先在「重启」标签打开左列入口开关
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   renderer.findByTestId('restart-nav-switch').props.onClick()
@@ -1462,6 +1584,8 @@ test('restart recovery overlay ignores the old instance and reloads for a new in
 
   await renderer.load()
   assert.equal(renderer.hasSlot('shell.overlay'), true)
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
@@ -1501,6 +1625,8 @@ test('runtime locale switch updates the settings panel, activity warning, and re
 
   await renderer.load()
   assert.match(renderer.text('settings.section'), /版本信息/)
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
@@ -1529,6 +1655,8 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   })
 
   await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   await renderer.findButton('重启 dsh web').props.onClick()
@@ -1559,6 +1687,8 @@ test('notification switches render four independent toggles (incl. bell visibili
   // 通知区块已从概览拆出：概览标签无开关，「通知」标签内才有
   assert.equal(renderer.findSwitches().length, 0)
   assert.doesNotMatch(renderer.text('settings.section'), /任务通知/)
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /任务结束或需要你授权、抉择时发送浏览器通知。需要授权浏览器通知权限。/)
@@ -1612,6 +1742,8 @@ test('bell visibility stays hidden on reload after a persisted off choice', asyn
   globalThis.localStorage.setItem('dsh-service-notify-bell', 'false')
   await renderer.load()
   assert.equal((renderer.registrations()['conversation.input.left'] ?? []).some((entry) => entry.id === 'dsh-service-notify'), false, 'persisted bell-off hides the composer entry immediately')
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   const switches = renderer.findSwitches()
@@ -1625,6 +1757,8 @@ test('clicking a browser notification focuses the dsh page and closes the popup'
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   renderer.findSwitches()[0].props.onClick()
@@ -1646,6 +1780,8 @@ test('session edges notify for task completion and pending interaction with kind
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   renderer.findSwitches()[0].props.onClick()
@@ -1678,6 +1814,8 @@ test('notification kinds are gated by the master and per-kind switches', async (
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   const master = () => renderer.findSwitches()[0]
@@ -1714,6 +1852,8 @@ test('connection reset rebuilds the baseline so replayed frames ring nothing', a
   }, { notificationPermission: 'granted' })
 
   await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
   renderer.findSwitches()[0].props.onClick()
@@ -1840,6 +1980,8 @@ test('manual-launch environment confirms before upgrade and shows hand-restart g
   assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, 'no recovery polling while the process keeps running')
 
   // 重启标签：确认流程展示同源警告；发出后等待文案换成手动拉起说明。
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   await renderer.findButton('重启').props.onClick()
   await renderer.flush()
   renderer.findByTestId('restart-manual-warn')
@@ -1988,7 +2130,7 @@ test('overview shows platform and node version metrics and diagnostics renders t
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v20\.11\.0 低于插件要求的 22\.x/)
-  assert.equal(renderer.hasTest('tab-dot-health'), true)
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
 })
 
 test('diagnostics renders a recognized supervisor and a satisfied node version as ok', async () => {
@@ -2532,7 +2674,7 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
 })
 
 test('stepfun cards show money text windows and the credit-pool plan windows with the token credential entry', async () => {
-  // StepFun（v0.38）：余额卡 = ¥ 文本窗（voucher 复用 granted-balance）；Step Plan 卡 = credit-pool/
+  // StepFun（v0.39）：余额卡 = ¥ 文本窗（voucher 复用 granted-balance）；Step Plan 卡 = credit-pool/
   // topup-credit 百分比窗；未配置订阅行的凭据入口分流为「控制台令牌（Oasis-Token）」版。
   const now = Date.now()
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
@@ -2783,7 +2925,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
   navSwitch.props.onClick()
   await renderer.flush()
-  assert.equal(localStorage.getItem('dsh-service-quota-nav'), 'true')
+  assert.equal(localStorage.getItem('dsh-service-shortcut-quota'), 'true')
   assert.equal(renderer.findByTestId('quota-nav-switch').props['aria-checked'], 'true')
   const navEntry = renderer.registrations()['settings.section'].find((entry) => entry.id === 'dsh-service-quota')
   assert.ok(navEntry)
@@ -3360,6 +3502,10 @@ test('settings nav rows get icon markers by localized label and follow text chan
     navButton('子代理'),
     navButton('通用设置'),
   ]
+
+  function assertMarked(button, attr) {
+    assert.equal(button.attrs.has(attr), true)
+  }
   const observers = []
   const injectedStyles = []
   class FakeMutationObserver {
@@ -3389,17 +3535,18 @@ test('settings nav rows get icon markers by localized label and follow text chan
     await renderer.load()
 
     // 首次同步：各行按本地化文案命中并打标；无关行不打。
+    // v0.39：技能/子代理左列入口撤销后，只剩四个标记行；「子代理」是无关行不打标。
     assert.ok(observers.length >= 1, 'expected a MutationObserver for settings nav marking')
-    assert.equal(navButtons[0].attrs.has('data-dsh-service-nav'), true)
-    assert.equal(navButtons[1].attrs.has('data-dsh-service-quota-nav'), true)
-    assert.equal(navButtons[2].attrs.has('data-dsh-service-restart-nav'), true)
-    assert.equal(navButtons[3].attrs.has('data-dsh-service-subagent-nav'), true)
+    assertMarked(navButtons[0], 'data-dsh-service-nav')
+    assertMarked(navButtons[1], 'data-dsh-service-quota-nav')
+    assertMarked(navButtons[2], 'data-dsh-service-restart-nav')
+    assert.equal(navButtons[3].attrs.size, 0)
     assert.equal(navButtons[4].attrs.size, 0)
 
     // 外壳重渲染（观察器重跑 sync）：文案未变则标记幂等保留。
     for (const observer of observers) observer.callback([], undefined)
-    assert.equal(navButtons[0].attrs.has('data-dsh-service-nav'), true)
-    assert.equal(navButtons[1].attrs.has('data-dsh-service-quota-nav'), true)
+    assertMarked(navButtons[0], 'data-dsh-service-nav')
+    assertMarked(navButtons[1], 'data-dsh-service-quota-nav')
 
     // 文案不再匹配（行消失/换名）：标记被摘除，不会残留到别的行。
     navButtons[2].textContent = '别人的同名行'
@@ -3409,10 +3556,21 @@ test('settings nav rows get icon markers by localized label and follow text chan
     // CSS 已随 load 注入：齿轮隐藏规则 + 各条 data 标记的 mask 规则齐全。
     const sheet = injectedStyles.join('')
     assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'gear-hiding rule missing')
-    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav', 'data-dsh-service-subagent-nav']) {
+    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav']) {
       assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
       assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
     }
+    // 撤销入口的选择器不残留。
+    assert.equal(sheet.includes('data-dsh-service-skills-nav'), false, 'skills nav selector must be gone')
+    assert.equal(sheet.includes('data-dsh-service-subagent-nav'), false, 'subagent nav selector must be gone')
+    // v0.39 令牌链铁律二：主题相关令牌必须锚在 body（:root 上声明的 var() 链会在根元素
+    // 被浅色值定格，暗色覆盖失效——真机翻过车）。几何令牌（静态）不受此限。
+    // 内容画布浅色 = 固定浅灰（用户点名：内容区灰色），深色 = 别名优先的暗底。
+    assert.ok(sheet.includes('body{--dsh-svc-page-bg:#f4f5f7'), 'light theme tokens must anchor on body')
+    assert.ok(sheet.includes('body[data-ds-dark-theme]{--dsh-svc-page-bg:var(--dsw-alias-bg-layer-1,#17181c)'), 'dark theme tokens must re-anchor on body')
+    assert.ok(sheet.includes('body{--dsh-svc-surface-bg:var(--dsh-svc-card-bg)'), 'compat alias chain must anchor on body')
+    assert.ok(sheet.includes('body{--dsh-svc-card-bg:#eceef1}') && sheet.includes('body[data-ds-dark-theme]{--dsh-svc-card-bg:var(--dsw-alias-bg-layer-2,#202126)}'), 'card tint must be plugin-fixed in light and page-level in dark')
+    assert.equal(/:root\{--dsh-svc-(page|content|raised|text|border|surface|tab-active)/.test(sheet), false, 'theme tokens must not be declared on :root')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
@@ -3527,6 +3685,8 @@ test('skills tab renders three groups with badges, filters, and double-confirm t
   await renderer.load()
   renderer.mount('settings.section')
   assert.equal(renderer.hasTest('skill-entry-alpha'), false)
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3575,6 +3735,8 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3618,6 +3780,8 @@ test('batch card plans, starts, and settles through the status poll with a refre
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3663,6 +3827,8 @@ test('batch card plans, starts, and settles through the status poll with a refre
   // 日志盒为组件局部状态：重新挂载后回到默认折叠，与真实 React 卸载重置行为一致。
   renderer.findButton('概览').props.onClick()
   await renderer.flush()
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3686,6 +3852,8 @@ test('an adopted planned batch without a local plan recovers through the plan bu
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3715,6 +3883,8 @@ test('skills tab renders localized error text instead of crashing on failed load
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3735,6 +3905,8 @@ test('skills batch plan shows an expandable skipped list with per-entry reasons 
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3762,6 +3934,8 @@ test('AI completion requests carry the active UI language so host prompts follow
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -3790,6 +3964,8 @@ test('describe dialog shows the panel-only disclaimer before saving a note', asy
   const renderer = baseSkillRenderer(fixture)
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -4074,6 +4250,8 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   const { renderer, state } = createSubagentRenderer()
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('子代理').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -4114,24 +4292,23 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   assert.deepEqual(state.saves[2], { mode: 'inherit' })
   assert.equal(renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
 
-  // 左列快捷入口默认关闭，开关后注册 order=496 的独立 settings.section。
-  assert.equal(renderer.findByTestId('subagent-nav-switch').props['aria-checked'], 'false')
-  renderer.findByTestId('subagent-nav-switch').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.findByTestId('subagent-nav-switch').props['aria-checked'], 'true')
-  assert.ok((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent' && entry.order === 496))
+  // v0.39：子代理的设置页左列入口已撤销——段内开关不复存在，也不再注册独立 section。
+  assert.equal(renderer.hasTest('subagent-nav-switch'), false)
+  assert.equal((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
 })
 
 test('subagent tab is feature-gated and renders host errors/unavailable status in localized text', async () => {
   const disabled = createSubagentRenderer({ featureSettings: { subagentRoute: false } }).renderer
   await disabled.load()
   disabled.mount('settings.section')
-  assert.doesNotMatch(disabled.text(disabled.findByTestId('tab-list')), /子代理/)
+  assert.doesNotMatch(disabled.text(disabled.findByTestId('service-tab-list')), /子代理/)
   assert.equal((disabled.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
 
   const unavailable = createSubagentRenderer({ route: { available: false, mode: 'inherit' } }).renderer
   await unavailable.load()
   unavailable.mount('settings.section')
+  unavailable.findButton('维护').props.onClick()
+  await unavailable.flush()
   unavailable.findButton('子代理').props.onClick()
   await unavailable.flush()
   await unavailable.flush()
@@ -4140,6 +4317,8 @@ test('subagent tab is feature-gated and renders host errors/unavailable status i
   const failed = createSubagentRenderer({ saveError: 'invalid-model-route' }).renderer
   await failed.load()
   failed.mount('settings.section')
+  failed.findButton('维护').props.onClick()
+  await failed.flush()
   failed.findButton('子代理').props.onClick()
   await failed.flush()
   await failed.flush()
@@ -4160,6 +4339,8 @@ test('subagent reasoning effort: custom 显示选择器、选项只来自当前�
   const { renderer, state } = createSubagentRenderer({ models: reasoningModels })
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('子代理').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -4213,6 +4394,8 @@ test('subagent reasoning effort: invalid-reasoning-effort 显示正确中文/英
   const { renderer } = createSubagentRenderer({ saveError: 'invalid-reasoning-effort' })
   await renderer.load()
   renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   renderer.findButton('子代理').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -5139,10 +5322,10 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  // 切到「会话管理」标签：v0.35 默认停在「仅归档」视图（不全量拉取）。
-  const sessionsTab = renderer.findByTestId('top-tab-sessions')
-  assert.ok(sessionsTab)
-  sessionsTab.props.onClick()
+  // 切到「维护 → 会话管理」：v0.35 默认停在「仅归档」视图（不全量拉取）。
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   assert.ok(calls.includes('sessions-list:archived'), 'default view requests the archived scope only')
   assert.equal(calls.includes('sessions-list:all'), false, 'no full refresh on open')
@@ -5208,7 +5391,9 @@ test('session manager detail pages events, loads more with seq cursor, and trigg
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
   await renderer.flush()
@@ -5253,7 +5438,9 @@ test('session manager restores the list scroll position after returning from det
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // 点「查看」时带上真实点击事件 → 组件沿祖先链找到滚动容器并记下 scrollTop。
   renderer.findByTestId('sessions-row-view-session-cold').props.onClick({ currentTarget: buttonNode })
@@ -5291,7 +5478,9 @@ test('session manager does not restore scroll onto a different filter, and resto
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // 带事件进详情（保存 640），在详情里滚动到 120，然后切「全部」筛选。
   renderer.findByTestId('sessions-row-view-session-cold').props.onClick({ currentTarget: buttonNode })
@@ -5340,7 +5529,9 @@ test('session manager search opens a hit window with highlight, context, and mat
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   const searchInput = renderer.findByTestId('sessions-search-input')
   searchInput.props.onChange({ target: { value: 'answer' } })
@@ -5397,7 +5588,9 @@ test('session manager hit window navigates between matches via card chips, prev/
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   const searchInput = renderer.findByTestId('sessions-search-input')
   searchInput.props.onChange({ target: { value: 'todo' } })
@@ -5450,7 +5643,9 @@ test('session manager delete is two-phase with consequences and rejects live ses
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // 全部视图：冷会话没有删除入口，归档会话可删除。
   await renderer.findByTestId('sessions-filter-all').props.onClick()
@@ -5497,7 +5692,9 @@ test('session manager fills row sizes lazily and shows no dash placeholder befor
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // 列表已落地但体积仍在途：请求已发出，行内没有任何「—」占位，也没有体积。
   assert.ok(calls.includes('sessions-bytes'), 'bytes request issued lazily after the list lands')
@@ -5525,7 +5722,9 @@ test('session manager reuses loaded scope caches when switching filters, refresh
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // 打开默认仅归档：只拉一次 archived。
   assert.equal(listCalls(), 1)
@@ -5572,7 +5771,9 @@ test('session manager reuses module-level caches when the panel is closed and re
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   assert.equal(listCalls(), 1, 'first open fetches the archived scope once')
   assert.equal(bytesCalls(), 1, 'first open lazily fetches sizes once')
@@ -5586,7 +5787,9 @@ test('session manager reuses module-level caches when the panel is closed and re
   await renderer.flush()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   // v0.36 用户选定「秒显 + 后台静默刷新」：列表即显（下方断言行可见）但会发一次静默刷新。
   assert.equal(listCalls(), 3, 'reopening shows cached data instantly and refreshes quietly once')
@@ -5640,7 +5843,9 @@ test('session manager shows cached data instantly on reopen, refreshes quietly i
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   assert.equal(listCalls(), 1, 'first open fetches archived once')
   assert.equal(renderer.findByTestId('sessions-row-session-archived').children !== undefined, true)
@@ -5649,7 +5854,9 @@ test('session manager shows cached data instantly on reopen, refreshes quietly i
   await renderer.flush()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   assert.equal(listCalls(), 2, 'background silent refresh issued on reopen')
   assert.equal(renderer.hasTest('sessions-row-session-archived'), true, 'cached row is visible instantly while refresh is in flight')
@@ -5680,7 +5887,9 @@ test('session manager detail falls back to plain text when the shell lacks the m
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
   await renderer.flush()
@@ -5701,7 +5910,9 @@ test('session manager unwraps a namespace-wrapped official MarkdownText (ESM int
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
   await renderer.flush()
@@ -5721,7 +5932,9 @@ test('session manager accepts the memo-wrapped official MarkdownText (real shell
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
-  await renderer.findByTestId('top-tab-sessions').props.onClick()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
   await renderer.flush()
   await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
   await renderer.flush()
