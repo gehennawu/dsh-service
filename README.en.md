@@ -97,7 +97,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
-- Provider cards partitioned: identity → core balance (balance-type windows first) → tightest window (highest-usage window badged) → reset records; **advanced configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
+- Provider cards keep the existing window presentation (label + percent / independent bar / reset countdown); **advanced configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
 - A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
 - Built-in adaptations:
 

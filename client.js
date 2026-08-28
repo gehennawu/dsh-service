@@ -320,11 +320,8 @@ window.__ModuleLoader__.load({
       'features.group.maintenance': '维护',
       'features.group.interaction': '交互',
       // v0.39 页面头部描述（标题复用 tabs.*）。
-      'page.overview.desc': '服务运行状态、版本信息与常用操作的总览。',
-      'page.usage.desc': '按项目与模型查看 token 用量与缓存命中率。',
-      'page.quota.desc': '查询各供应商额度、余额与重置时间。',
+      'page.quota.desc': '查询各供应商额度、余额与重置时间。额度圆环跟随当前会话所选模型的供应商；查询由宿主统一节流，不会频繁请求上游。',
       'page.diagnostics.desc': '健康检查与运行环境诊断，异常时给出处理建议。',
-      'page.maintenance.desc': '会话管理、技能、子代理、备份与重启。',
       'page.configuration.desc': '功能开关与任务通知设置。',
       'tabs.alert.title': '服务控制提醒',
       'tabs.alert.body': '以下功能需要处理：{tabs}',
@@ -513,7 +510,6 @@ window.__ModuleLoader__.load({
       'quota.cardTitle': '额度查询',
       'quota.navToggle': '设置页左列显示「额度查询」入口',
       'quota.navToggleHint': '默认关闭；开启后在设置页左侧标签列底部显示「额度查询」快捷入口',
-      'quota.hint': '圆环跟随当前会话所选模型的供应商；查询由宿主统一节流，不会频繁请求上游。',
       'quota.poll': '自动查询',
       'quota.poll.manual': '仅手动',
       'quota.poll.minute': '{count} 分钟',
@@ -545,9 +541,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.expired': '已过期',
       'quota.resetCard.edit': '添加重置卡',
       // v0.39 卡片分区：最紧窗口徽标 / 高级配置折叠 / 重置区标题。
-      'quota.tightest': '最紧窗口',
       'quota.advanced': '高级配置',
-      'quota.section.reset': '重置记录',
       'quota.resetCard.dateLabel': '到期日期',
       'quota.resetCard.nameLabel': '名称（可选）',
       'quota.resetCard.add': '添加',
@@ -936,11 +930,8 @@ window.__ModuleLoader__.load({
       'features.group.runtime': 'Runtime and observation',
       'features.group.maintenance': 'Maintenance',
       'features.group.interaction': 'Interaction',
-      'page.overview.desc': 'An overview of service status, versions, and common actions.',
-      'page.usage.desc': 'Token usage and cache hit rates by project and model.',
-      'page.quota.desc': 'Quota, balance, and reset times across providers.',
+      'page.quota.desc': 'Quota, balance, and reset times across providers. The quota ring follows the provider selected by the current session; queries are throttled by the host and never hammer the upstream.',
       'page.diagnostics.desc': 'Health checks and runtime environment diagnostics.',
-      'page.maintenance.desc': 'Sessions, skills, subagents, backups, and restart.',
       'page.configuration.desc': 'Feature switches and task notification settings.',
       'tabs.alert.title': 'Service control alert',
       'tabs.alert.body': 'These areas need attention: {tabs}',
@@ -1128,7 +1119,6 @@ window.__ModuleLoader__.load({
       'quota.cardTitle': 'Quota lookup',
       'quota.navToggle': 'Show "Quota lookup" entry in settings left nav',
       'quota.navToggleHint': 'Off by default; when enabled, a "Quota lookup" entry appears at the bottom of the settings left navigation',
-      'quota.hint': 'The ring follows the provider selected by the current session; queries are throttled by the host and never hammer the upstream.',
       'quota.poll': 'Auto query',
       'quota.poll.manual': 'Manual only',
       'quota.poll.minute': '{count} min',
@@ -1159,9 +1149,7 @@ window.__ModuleLoader__.load({
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
       'quota.resetCard.edit': 'Add reset card',
-      'quota.tightest': 'Tightest window',
       'quota.advanced': 'Advanced',
-      'quota.section.reset': 'Reset records',
       'quota.resetCard.dateLabel': 'Expiry date',
       'quota.resetCard.nameLabel': 'Name (optional)',
       'quota.resetCard.add': 'Add',
@@ -1547,12 +1535,10 @@ window.__ModuleLoader__.load({
         { id: 'notifications', labelKey: 'tabs.notifications' },
       ]
       // v0.39 页面元数据：每页一行描述（标题复用 tabs.* 词条）。
+      // 用户复核：概览/模型统计/维护 的描述取消（undefined = 不渲染）；额度描述并入圆环/节流说明。
       const PAGE_DESCRIPTIONS = {
-        overview: 'page.overview.desc',
-        usage: 'page.usage.desc',
         quota: 'page.quota.desc',
         diagnostics: 'page.diagnostics.desc',
-        maintenance: 'page.maintenance.desc',
         configuration: 'page.configuration.desc',
       }
       /** 页面头部基元：非吸附轻量标题 + 一行描述；主操作位由各页逐步接入（action prop）。 */
@@ -4535,7 +4521,6 @@ window.__ModuleLoader__.load({
         const [addKind, setAddKind] = useState('')
         return React.createElement('div', { 'data-testid': 'remote-quota-card', style: { marginTop: '18px' } },
           React.createElement('div', { style: sectionTitle }, translate('quota.cardTitle')),
-          React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('quota.hint')),
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' } },
             React.createElement('label', { htmlFor: 'dsh-service-quota-poll-select', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('quota.poll')),
             React.createElement('select', {
@@ -4603,24 +4588,9 @@ window.__ModuleLoader__.load({
                         }, translate('quota.kindAuto'))
                       : null)
                   const windows = Array.isArray(row.windows) ? row.windows : []
-                  // 分区顺序：余额类（text 窗口）在前 = 核心余额；额度类（percent 窗口）随后，
-                  // 其中 percent 最大的窗口标「最紧窗口」（避免「额度与余额谁先谁后」的各卡漂移）。
-                  const textWindows = windows.filter((window) => typeof window.text === 'string')
-                  const percentWindows = windows.filter((window) => typeof window.text !== 'string')
-                  const orderedWindows = [...textWindows, ...percentWindows]
-                  const tightestId = percentWindows.length > 0
-                    ? percentWindows.reduce((max, window) => (Number(window.percent) > Number(max.percent) ? window : max), percentWindows[0]).id
-                    : null
                   const isAdvanced = advancedOpen === row.provider
                   // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行（renderQuotaWindowRow 统一渲染）。
-                  const windowBlocks = orderedWindows.map((window) => {
-                    const rowNode = renderQuotaWindowRow(window, translate, row.provider)
-                    return window.id === tightestId
-                      ? React.createElement('div', { key: window.id, 'data-testid': `quota-tightest-${row.provider}`, style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-                          React.createElement('span', { 'data-testid': `quota-tightest-badge-${row.provider}`, style: { flex: 'none', fontSize: '10px', lineHeight: '16px', padding: '0 6px', borderRadius: 999, border: '1px solid var(--dsw-alias-state-warn-primary)', color: 'var(--dsw-alias-state-warn-primary)', whiteSpace: 'nowrap' } }, translate('quota.tightest')),
-                          rowNode)
-                      : rowNode
-                  })
+                  const windowBlocks = windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
                   let body
                   if (row.refreshing === true && windows.length === 0) {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
@@ -5858,7 +5828,7 @@ window.__ModuleLoader__.load({
           // v0.39 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS。
           React.createElement(SvcPageHeader, {
             title: translate(PRIMARY_TAB_LABELS[visiblePrimaryTab]),
-            description: translate(PAGE_DESCRIPTIONS[visiblePrimaryTab]),
+            description: PAGE_DESCRIPTIONS[visiblePrimaryTab] !== undefined ? translate(PAGE_DESCRIPTIONS[visiblePrimaryTab]) : null,
           }),
           visiblePrimaryTab === 'maintenance' && maintenanceTabs.length > 0
             ? React.createElement(SvcTabs, {

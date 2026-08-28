@@ -2820,11 +2820,6 @@ test('stepfun cards show money text windows and the credit-pool plan windows wit
   assert.equal(renderer.hasTest('quota-card-reset-sfplan-topup-credit'), false)
   assert.match(text, /加油包 Credit/)
   assert.match(text, /1%/)
-  // v0.39 分区：余额类（text 窗）在前；percent 最大的窗口标「最紧窗口」徽标（10% > 1%）。
-  assert.equal(renderer.hasTest('quota-tightest-badge-sfplan'), true)
-  const sectionOrder = renderer.text('settings.section')
-  assert.ok(sectionOrder.indexOf('余额') < sectionOrder.indexOf('最紧窗口'), 'balance windows come first')
-  assert.ok(sectionOrder.indexOf('最紧窗口') < sectionOrder.indexOf('月度 Credit 池'), 'tightest badge precedes its window row')
   // v0.39：凭据入口在折叠的「高级配置」区，先展开 sfplan2 卡。
   renderer.findByTestId('quota-advanced-toggle-sfplan2').props.onClick()
   await renderer.flush()
