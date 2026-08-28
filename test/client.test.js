@@ -960,7 +960,7 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   assert.equal(healthAction.props['data-variant'], 'neutral')
   assert.equal(healthAction.props.style.background, 'var(--dsh-svc-page-bg)')
   assert.equal(healthAction.props.style.color, 'var(--dsh-svc-text)')
-  assert.equal(healthAction.props.style.borderColor, 'var(--dsh-svc-border)')
+  assert.equal(healthAction.props.style.borderColor, 'var(--dsh-svc-border-strong)')
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   assert.equal(renderer.findButton('刷新统计').props['data-variant'], 'neutral')

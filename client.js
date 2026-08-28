@@ -1363,6 +1363,9 @@ window.__ModuleLoader__.load({
           // 深色按用户点名统一到模型统计同款（bg-layer-2 链）；卡片内层小块（指标格/
           // 图表底/摘要块）用 --dsh-svc-raised-bg（浅色=白、深色=比卡片亮一级）保证进深。
           'body{--dsh-svc-card-bg:#eceef1}',
+          // 加强边框（v0.39 用户复核：中性操作钮描边要可辨）：浅色深灰、深色亮灰，只用于按钮描边。
+          'body{--dsh-svc-border-strong:#b9c0ca}',
+          'body[data-ds-dark-theme]{--dsh-svc-border-strong:#52565f}',
           'body[data-ds-dark-theme]{--dsh-svc-card-bg:var(--dsw-alias-bg-layer-2,#202126)}',
           'body[data-ds-dark-theme]{--dsh-svc-page-bg:var(--dsw-alias-bg-layer-1,#17181c);--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#202126);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#292a31);--dsh-svc-text:var(--dsw-alias-label-primary,#f3f4f6);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#a1a1aa);--dsh-svc-border:var(--dsw-alias-border-l1,#3f414a)}',
           // 几何与密度令牌（与主题无关，:root 即可）：间距 4/8/12/16/20/24/32；圆角 控件8/卡片12/面板16/胶囊999；控件高 紧凑32/默认36/主操作40。
@@ -1503,8 +1506,9 @@ window.__ModuleLoader__.load({
         if (variant === 'dangerGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)' }
         if (variant === 'brandGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)' }
         if (variant === 'ghost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
-        if (variant === 'neutral') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-page-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
-        return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-content-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
+        // v0.39 用户复核：中性操作钮也要可辨——边框用加强令牌，不再与卡片/画布同色。
+        if (variant === 'neutral') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-page-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
+        return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-content-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
       }
       // 展示面（只读信息容器）：页面级浅底 + 细边框，与操作卡片区分。
       const svcSurfaceStyle = (extra) => Object.assign({ background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsh-svc-text)', border: '1px solid var(--dsh-svc-border)', borderRadius: 'var(--dsh-svc-radius-control)', padding: '10px' }, extra)
@@ -3540,7 +3544,7 @@ window.__ModuleLoader__.load({
               React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => void load() }, '↻'))),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
           (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error !== '' ? error : batchError)) : null,
-          data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
+          data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsh-svc-border-strong)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
           batchCardOpen && data !== null && data.llmAvailable ? renderBatchCard() : null,
           renderDescribeDialog(),
           renderGroups())
@@ -4572,7 +4576,7 @@ window.__ModuleLoader__.load({
                   'aria-pressed': String(reorderMode),
                   title: translate('quota.reorder'),
                   onClick: () => setReorderMode(!reorderMode),
-                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l2)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsh-svc-border-strong)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                 }, translate('quota.reorder')))]
             : []),
           adaptedRows.length === 0
@@ -4697,7 +4701,7 @@ window.__ModuleLoader__.load({
                         'data-testid': `quota-advanced-toggle-${row.provider}`,
                         'aria-expanded': String(isAdvanced),
                         onClick: () => setAdvancedOpen(isAdvanced ? null : row.provider),
-                        style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                        style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                       }, `${isAdvanced ? '▾' : '▸'} ${translate('quota.advanced')}`)),
                     ...(isAdvanced && row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
                       ? (() => {
