@@ -3131,7 +3131,7 @@ window.__ModuleLoader__.load({
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },
-            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
+            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12.5px', padding: '6px 16px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
             mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null))
       }
 
@@ -3536,7 +3536,8 @@ window.__ModuleLoader__.load({
             React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12.5px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
               // v0.39：技能的设置页左列入口已撤销（维护页内有完整功能），只剩刷新按钮。
-              React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', onClick: () => void load(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, '↻'))),
+              // v0.39 统一：刷新钮三胞胎（usage/skills/sessions）同一紧凑 neutral 视觉。
+              React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => void load() }, '↻'))),
           loading && data === null ? React.createElement('p', { style: hint }, '…') : null,
           (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error !== '' ? error : batchError)) : null,
           data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12.5px', padding: '6px 14px', borderRadius: '7px', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l2)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
@@ -4331,11 +4332,20 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: sectionTitle }, translate('sessions.title')),
           React.createElement('p', { style: hint }, translate('sessions.hint')),
           // v0.35 用户点名：设置页左列入口开关放在面板靠上、筛选标签之前。
-          React.createElement('div', { 'data-testid': 'sessions-nav-toggle', style: { margin: '2px 0 8px', fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)' } },
-            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' } },
-              React.createElement('input', { type: 'checkbox', checked: navEnabled, onChange: (event) => setNavEnabled(event.target.checked) }),
-              translate('sessions.navToggle')),
-            React.createElement('div', null, translate('sessions.navToggleHint'))),
+          // v0.39 统一：与重启/额度同款胶囊开关（此前是复选框，与其他入口开关不一致）。
+          React.createElement('div', { 'data-testid': 'sessions-nav-toggle', style: { margin: '2px 0 8px' } },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+              React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('sessions.navToggle')),
+                React.createElement('span', { style: hint }, translate('sessions.navToggleHint'))),
+              React.createElement('button', {
+                type: 'button',
+                role: 'switch',
+                'data-testid': 'sessions-nav-switch',
+                'aria-checked': String(navEnabled),
+                onClick: () => setNavEnabled(!navEnabled),
+                style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+              }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))),
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px' } },
             (['all', 'archived', 'deleted']).map((key) => React.createElement('button', { key, type: 'button', 'data-testid': 'sessions-filter-' + key, style: { ...chipButton, background: filter === key ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: filter === key ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-primary)', fontWeight: filter === key ? 650 : 400 }, onClick: () => changeFilter(key) }, translate('sessions.filter.' + key))),
             React.createElement('select', { 'data-testid': 'sessions-sort', style: selectStyle, value: sort, onChange: (event) => setSort(event.target.value) },
@@ -4343,7 +4353,7 @@ window.__ModuleLoader__.load({
               React.createElement('option', { value: 'createdAsc' }, translate('sessions.sort.createdAsc')),
               React.createElement('option', { value: 'title' }, translate('sessions.sort.title'))),
             // v0.36：切换筛选复用已取过的 scope 缓存；「刷新」才强制重拉当前 scope。
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', style: chipButton, onClick: () => refreshList() }, translate('sessions.refresh'))),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => refreshList() }, translate('sessions.refresh'))),
           filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
             React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => setSearch(event.target.value), style: inputStyle }),
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
@@ -5524,7 +5534,7 @@ window.__ModuleLoader__.load({
           : null
 
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('tabs.health')),
+          // v0.39 省空间：页头标题即「健康诊断」，去掉内容区重复区块标题。
           healthSummaryBlock,
           permissionBlock)
 
