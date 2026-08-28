@@ -4214,7 +4214,7 @@ window.__ModuleLoader__.load({
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           }
-          return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
+          return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)' } },
             React.createElement('div', { style: { minWidth: 0 } },
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
                 React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
@@ -5381,6 +5381,13 @@ window.__ModuleLoader__.load({
             : null,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: Object.assign({}, displaySurface, { padding: '12px', borderRadius: '9px' }) },
+                // v0.39 头部行统一：图例（输入/输出/缓存）+ 刷新钮收进统计区头部，不再散落图下与列表尾。
+                React.createElement('div', { 'data-testid': 'usage-region-header', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' } },
+                  React.createElement('div', { style: { display: 'flex', gap: '14px', flexWrap: 'wrap', fontSize: '11px' } },
+                    usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+                      React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
+                      translate(label)))),
+                  React.createElement('button', { type: 'button', 'data-testid': 'usage-refresh', 'data-variant': 'neutral', style: neutral, onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))),
                 React.createElement('div', { 'data-testid': 'usage-chart', style: { position: 'relative', display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr)', height: '180px', padding: '12px 10px 4px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l1)', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
                   React.createElement('div', { 'data-testid': 'usage-y-axis', 'aria-label': translate('usage.axis'), style: { position: 'relative', height: '144px', fontSize: '10px', color: 'var(--dsw-alias-label-secondary)' } },
                     chartTicks.map((tick, index) => React.createElement('span', { key: index, style: { position: 'absolute', right: '7px', top: `${index * 25}%`, transform: index === 4 ? 'translateY(-100%)' : 'translateY(-50%)' } }, formatTokenValue(tick)))),
@@ -5406,10 +5413,7 @@ window.__ModuleLoader__.load({
                           }))))),
                     React.createElement('div', { 'data-testid': 'usage-x-axis', style: { position: 'absolute', left: 0, right: 0, bottom: '0', height: '20px', display: 'flex', gap: '8px', alignItems: 'end' } },
                       usageDays.map((day) => React.createElement('div', { key: day.key, style: { flex: 1, minWidth: 0, textAlign: 'center', fontSize: '10px', color: 'var(--dsw-alias-label-secondary)' } }, day.label))))),
-                React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', marginTop: '8px', fontSize: '11px' } },
-                  usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
-                    React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
-                    translate(label)))),
+
                 // 可访问的文本图表摘要：视觉上不可见，屏幕阅读器可见（v0.39 确认规格）。
                 React.createElement('div', { 'data-testid': 'usage-chart-summary', style: { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' } },
                   translate('usage.chartSummary', { total: formatTokenValue(chartValues.reduce((a, b) => a + b, 0)) })),
@@ -5449,7 +5453,7 @@ window.__ModuleLoader__.load({
                   }),
                   hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null))
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
-          React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh'))))
+          ...(usage && usage.indexedSessions > 0 ? [] : [React.createElement('div', { key: 'usage-refresh-fallback', style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh')))]))
 
         // 平台标签：process.platform 映射为常见系统名，arch 跟在后面（均为专有名词，不走词典）。
         const platformNames = { win32: 'Windows', darwin: 'macOS', linux: 'Linux', freebsd: 'FreeBSD', openbsd: 'OpenBSD' }
@@ -5574,7 +5578,8 @@ window.__ModuleLoader__.load({
             ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
                 backups.items.map((item) => React.createElement('div', {
                   key: item.id,
-                  style: { padding: '9px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsw-alias-label-primary)' },
+                  // v0.39 轻行：分隔线代替独立卡片底；主行=文件名，次行=体积 · 时间，行尾上下文操作。
+                  style: { padding: '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', color: 'var(--dsw-alias-label-primary)' },
                 },
                 React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' } },
                   React.createElement('div', null,

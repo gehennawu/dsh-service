@@ -54,6 +54,11 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ![Plugin configuration](./screenshots/plugin-config_en.png)
 
+### Overview (six sections)
+
+- Status summary (error → warning → info → normal aggregation with a status dot) → actionable items (only when present) → version and runtime → metrics grid → fixed core actions (health check / quota lookup / create backup, gated by feature switches) → recent errors (rendered only when non-empty, collapsed by default)
+- Aggregation rules: any health/diagnostics/backup/statistics/quota/restart failure is error; permission issues, non-advisory diagnostic warnings, and quota windows at ≥80% usage are warning; available updates, manual-start runtime, and no backups yet are info
+
 ### Version and updates
 
 - Shows the current DSH and plugin versions, linking to GitHub Releases
@@ -75,24 +80,24 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 ![Health diagnostics](./screenshots/health-diagnostics_en.png)
 
 - Uptime, memory, session count, active agents, and background jobs; a "Process and runtime" card shows platform, architecture, and Node version
-- Full diagnostics: session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node version
-- File-permission deep scan and repair (two-step confirmation)
+- Full diagnostics: session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, and Node version — rendered as a two-line check list (name + status dot / detail) with abnormal rows locally emphasized
+- File-permission deep scan and repair (two-step confirmation) behind a collapsed "Permissions & repair" section
 - Suspected manual launch → yellow "no restart assurance" caution; no backups is informational only and never lights the ⚠
 
 ### Model statistics
 
 ![Model statistics](./screenshots/model-usage_en.png)
 
-- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values
+- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values; legend and refresh live in a unified region header; an accessible text summary accompanies the chart
 - Per-model horizontal bars with a "Today / Last 7 days / All time" toggle
-- Last-24-hour model/tool errors (collapsed by default)
+- Last-24-hour model/tool errors (collapsed by default, rendered only when present)
 - Steps whose provider reports no token usage are excluded
 
 ### Quota lookup
 
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
-- Provider cards: per-window percentage, independent bar, and reset countdown; force refresh, official usage-page links, and card reordering
+- Provider cards partitioned: identity → core balance (balance-type windows first) → tightest window (highest-usage window badged) → reset records; **advanced configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
 - A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
 - Built-in adaptations:
 
@@ -115,6 +120,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 ### Backup management
 
 ![Backup management](./screenshots/backup-management_en.png)
+
+- Backup records use light two-line rows (name on the first line, size · time on the second, separator layout; same style as the session list)
 
 - Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests
 - Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned
