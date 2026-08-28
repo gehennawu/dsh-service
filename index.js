@@ -3075,20 +3075,21 @@ async function saveSkillsIndex(dshHome, entries) {
   await rename(temporary, target)
 }
 
-/** 批量候选：可写、非 invalid、非遮蔽、且侧车记录缺失或正文哈希过期。 */
+/** 批量候选：非 invalid、非遮蔽；未注释或正文已变的进候选，已注释（正文未变）单列待确认覆盖。 */
 function selectSkillBatchCandidates(entries, index) {
   const candidates = []
+  const annotated = []
   const skipped = []
   for (const entry of entries) {
     if (entry.invalid !== undefined) skipped.push({ id: entry.id, name: entry.name ?? '', reason: entry.invalid })
     else if (entry.shadowed === true) skipped.push({ id: entry.id, name: entry.name, reason: 'shadowed' })
     else {
       const record = index[entry.path]
-      if (record?.note !== undefined && record.bodyHash === entry.bodyHash) skipped.push({ id: entry.id, name: entry.name, reason: 'annotated-current' })
+      if (record?.note !== undefined && record.bodyHash === entry.bodyHash) annotated.push({ id: entry.id, name: entry.name, source: entry.source })
       else candidates.push({ id: entry.id, name: entry.name, source: entry.source })
     }
   }
-  return { candidates, skipped }
+  return { candidates, annotated, skipped }
 }
 
 function publicSkillEntry(entry, index) {
@@ -4889,10 +4890,12 @@ function apply(ctx) {
         if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
         const index = await skillsIndexPromise
         const { entries } = await scanSkillEntries(ctx, dshHome)
-        const { candidates, skipped } = selectSkillBatchCandidates(entries, index)
+        const { candidates, annotated, skipped } = selectSkillBatchCandidates(entries, index)
         const planId = randomUUID()
-        skillsBatch = { phase: 'planned', planId, provider, model, items: candidates, total: candidates.length, done: 0, failures: [], aborted: false, running: false, current: null, logs: [], estBytes: entries.filter((entry) => candidates.some((candidate) => candidate.id === entry.id)).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) }
-        return { ok: true, value: { planId, candidates, skipped, estBytes: skillsBatch.estBytes } }
+        // 已注释条目也进计划（单列待客户端确认），体积估算含两者——确认后整批运行。
+        const planIds = new Set([...candidates, ...annotated].map((candidate) => candidate.id))
+        skillsBatch = { phase: 'planned', planId, provider, model, candidates, annotated, items: candidates, total: candidates.length + annotated.length, done: 0, failures: [], aborted: false, running: false, current: null, logs: [], estBytes: entries.filter((entry) => planIds.has(entry.id)).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) }
+        return { ok: true, value: { planId, candidates, annotated, skipped, estBytes: skillsBatch.estBytes } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -4902,6 +4905,13 @@ function apply(ctx) {
       if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
       if (skillsBatch === null || skillsBatch.planId !== payload?.planId) return { ok: false, error: 'unknown-batch-plan' }
       if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
+      // 已注释条目的强制覆盖确认闸：计划含已注释条目时，客户端必须显式确认
+      // （forceAnnotated: true）才允许启动——注释过不等于永远不能再次补全，但覆盖旧注释要有确认。
+      const planAnnotated = Array.isArray(skillsBatch.annotated) ? skillsBatch.annotated : []
+      if (planAnnotated.length > 0 && payload?.forceAnnotated !== true) return { ok: false, error: 'annotated-confirm-required' }
+      // 确认后新注释覆盖旧注释：候选 + 已注释合并成一个运行清单，进度口径随之更新。
+      skillsBatch.items = [...(skillsBatch.candidates ?? []), ...planAnnotated]
+      skillsBatch.total = skillsBatch.items.length
       skillsBatch.phase = 'running'
       skillsBatch.running = true
       // 补全语言在 run 时刻定格（而非 plan 时刻）：计划确认前切换界面语言，按新语言补全。

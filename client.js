@@ -153,6 +153,7 @@ window.__ModuleLoader__.load({
       'skills.error.unknown-batch-plan': '批量计划已失效，请重新生成',
       'skills.error.batch-already-done': '该批量计划已完成',
       'skills.error.batch-already-cancelled': '该批量计划已取消',
+      'skills.error.annotated-confirm-required': '已注释技能需再次确认后才能被覆盖',
       'skills.empty': '未发现任何技能',
       'skills.filter': '按名称过滤…',
       'skills.colon': '：',
@@ -211,14 +212,16 @@ window.__ModuleLoader__.load({
       'skills.apply.done': '注释已保存',
       'skills.apply.keepusage': '（保留现有）',
       'skills.llm.unavailable': '宿主 LLM 服务不可用，无法 AI 补全。',
-      'skills.batch.title': '批量补全未注释技能',
-      'skills.batch.hint': '逐条调用所选模型为未注释或正文有变的技能生成说明；结果仅存插件内并展示在条目下方。',
+      'skills.batch.title': '批量补全技能说明',
+      'skills.batch.hint': '逐条调用所选模型为未注释或正文有变的技能生成说明；已注释技能在计划中单列，再次确认后才会被覆盖。结果仅存插件内并展示在条目下方。',
       'skills.batch.plan': '生成计划',
       'skills.batch.candidates': '候选 {count} 项',
       'skills.batch.estBytes': '约发送 {size} 内容',
-      'skills.batch.skipped': '跳过 {count} 项（无效 / 已注释 / 被遮蔽）',
+      'skills.batch.skipped': '跳过 {count} 项（无效 / 被遮蔽）',
+      'skills.batch.annotated': '已注释将覆盖 {count} 项',
+      'skills.batch.annotatedList': '将覆盖清单',
+      'skills.batch.forceConfirm': '确认强制补全（覆盖 {count} 项已注释）',
       'skills.skippedList': '跳过清单',
-      'skills.skip.annotated-current': '已注释',
       'skills.skip.shadowed': '被遮蔽',
       'skills.skip.invalid': '无效（{reason}）',
       'skills.skip.reason.missing-frontmatter': '缺 frontmatter',
@@ -767,6 +770,7 @@ window.__ModuleLoader__.load({
       'skills.error.unknown-batch-plan': 'Batch plan is stale; regenerate it',
       'skills.error.batch-already-done': 'That batch already finished',
       'skills.error.batch-already-cancelled': 'That batch was already cancelled',
+      'skills.error.annotated-confirm-required': 'Annotated skills need an explicit confirm before being overwritten',
       'skills.empty': 'No skills found',
       'skills.filter': 'Filter by name…',
       'skills.colon': ': ',
@@ -825,14 +829,16 @@ window.__ModuleLoader__.load({
       'skills.apply.done': 'Note saved',
       'skills.apply.keepusage': '(keep existing)',
       'skills.llm.unavailable': 'Host LLM service unavailable; AI fill disabled.',
-      'skills.batch.title': 'Batch-fill unannotated skills',
-      'skills.batch.hint': 'Call the selected model per skill to draft explanations for uncommented or changed skills; results stay in the plugin and render below the entry.',
+      'skills.batch.title': 'Batch-fill skill descriptions',
+      'skills.batch.hint': 'Call the selected model per skill to draft explanations for uncommented or changed skills; annotated skills are listed separately and are only overwritten after an explicit confirm. Results stay in the plugin and render below the entry.',
       'skills.batch.plan': 'Plan batch',
       'skills.batch.candidates': '{count} candidates',
       'skills.batch.estBytes': '~{size} of content will be sent',
-      'skills.batch.skipped': '{count} skipped (invalid / annotated / shadowed)',
+      'skills.batch.skipped': '{count} skipped (invalid / shadowed)',
+      'skills.batch.annotated': '{count} annotated will be overwritten',
+      'skills.batch.annotatedList': 'To be overwritten',
+      'skills.batch.forceConfirm': 'Confirm forced refill ({count} annotated)',
       'skills.skippedList': 'Skipped',
-      'skills.skip.annotated-current': 'annotated',
       'skills.skip.shadowed': 'shadowed',
       'skills.skip.invalid': 'invalid ({reason})',
       'skills.skip.reason.missing-frontmatter': 'no frontmatter',
@@ -1732,14 +1738,21 @@ window.__ModuleLoader__.load({
         const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-plan', { provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })
         if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
         skillsBatchPlan = { ...res.value, modelItem: skillsBatchModelItem }
-        skillsBatchState = { phase: 'planned', total: res.value.candidates.length, done: 0, failures: [], current: null, estBytes: res.value.estBytes, logs: [] }
+        const annotatedCount = Array.isArray(res.value.annotated) ? res.value.annotated.length : 0
+        skillsBatchState = { phase: 'planned', total: res.value.candidates.length + annotatedCount, done: 0, failures: [], current: null, estBytes: res.value.estBytes, logs: [] }
         syncSkillsBatchPolling()
         publishSkillsBatch()
         return true
       }
-      const startSkillsBatchShared = async () => {
+      const startSkillsBatchShared = async (forceAnnotated = false) => {
         if (skillsBatchPlan === null || skillsBatchState === null) return false
-        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', { planId: skillsBatchPlan.planId, lang: currentUiLocale() })
+        // 计划含已注释条目时宿主要求显式确认（annotated-confirm-required 兜底），客户端只在
+        // 两段式武装确认后传 forceAnnotated: true。
+        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', {
+          planId: skillsBatchPlan.planId,
+          lang: currentUiLocale(),
+          ...(forceAnnotated === true ? { forceAnnotated: true } : {}),
+        })
         if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
         skillsBatchState = { ...skillsBatchState, phase: 'running' }
         syncSkillsBatchPolling()
@@ -3156,11 +3169,15 @@ window.__ModuleLoader__.load({
         return item
       }
 
-      // 宿主下发的日志条目是结构化 {at, name?, code, params}：时间戳本地拼、文案词典渲染，
-      // 词典没有的 code 原样透出（不吞异常事件）。
+      // 宿主下发的日志条目是结构化 {at, name?, code, params}：时间戳按本机时区格式化（用户点名：
+      // 原先 toISOString 出 UTC 时刻，看日志对不上本地钟）、文案词典渲染，词典没有的 code 原样透出。
       const formatSkillLogLine = (translate, entry) => {
         if (entry === null || typeof entry !== 'object') return String(entry)
-        const time = new Date(entry.at).toISOString().slice(11, 19)
+        const date = new Date(entry.at)
+        const pad = (value) => String(value).padStart(2, '0')
+        const time = Number.isFinite(date.getTime())
+          ? pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+          : '--:--:--'
         const key = 'skills.log.' + entry.code
         const label = translate(key, entry.params ?? {})
         return '[' + time + ']' + (entry.name !== undefined ? ' [' + entry.name + ']' : '') + ' ' + (label === key ? entry.code : label)
@@ -3186,6 +3203,7 @@ window.__ModuleLoader__.load({
         if (code === 'unknown-batch-plan') return translate('skills.error.unknown-batch-plan')
         if (code === 'batch-already-done') return translate('skills.error.batch-already-done')
         if (code === 'batch-already-cancelled') return translate('skills.error.batch-already-cancelled')
+        if (code === 'annotated-confirm-required') return translate('skills.error.annotated-confirm-required')
         if (typeof code === 'string' && code.startsWith('empty-output')) {
           const kind = code.slice('empty-output:'.length)
           return translate('skills.error.empty-output', { kind: kind === '' ? '?' : kind })
@@ -3212,6 +3230,10 @@ window.__ModuleLoader__.load({
         const [batchLogOpen, setBatchLogOpen] = useState(false)
         // 跳过清单：默认折叠，点开看逐条原因。
         const [skippedOpen, setSkippedOpen] = useState(false)
+        // 计划含已注释条目时的强制覆盖确认：第一击只武装（3 秒自动复位），第二击才真正启动。
+        const [batchAnnotatedArmed, setBatchAnnotatedArmed] = useState(false)
+        // 将覆盖清单（已注释条目）：默认折叠，点开看被覆盖的技能名。
+        const [annotatedListOpen, setAnnotatedListOpen] = useState(false)
         // 批量进度/计划/模型来自工厂共享作用域：跨标签与设置面板开关存活。
         const { batch, plan: batchPlan, models: batchModels, modelItem: batchModelItem, error: batchError } = useSkillsBatch()
         // 运行日志盒：生成中自动展开；落定自动折叠为一行开关，可手动展开回看。
@@ -3276,6 +3298,13 @@ window.__ModuleLoader__.load({
           const handle = setTimeout(() => setConfirmingKey(null), 3000)
           return () => clearTimeout(handle)
         }, [confirmingKey])
+        // 强制覆盖确认同样 3 秒自动复位；批量相位/计划变化（落定、重新计划）时武装状态作废。
+        useEffect(() => {
+          if (!batchAnnotatedArmed) return undefined
+          const handle = setTimeout(() => setBatchAnnotatedArmed(false), 3000)
+          return () => clearTimeout(handle)
+        }, [batchAnnotatedArmed])
+        useEffect(() => { setBatchAnnotatedArmed(false) }, [batchPhaseForLog, batchPlan])
         const toggleSkill = async (entry, field) => {
           const key = entry.id + ':' + field
           // 两段式：第一击只进入待确认态，3 秒内再击才下发；超时点别处自然复位。
@@ -3344,8 +3373,13 @@ window.__ModuleLoader__.load({
           try { await planSkillsBatchShared() } finally { setBatchBusy(false) }
         }
         const startBatch = async () => {
+          // 计划含已注释条目：第一击只武装「确认强制补全」，第二击（3 秒内）才真正启动并携带
+          // forceAnnotated；无已注释条目时行为与原来一致，单击即启。
+          const annotatedCount = Array.isArray(batchPlan?.annotated) ? batchPlan.annotated.length : 0
+          if (annotatedCount > 0 && !batchAnnotatedArmed) { setBatchAnnotatedArmed(true); return }
+          setBatchAnnotatedArmed(false)
           setBatchBusy(true)
-          try { await startSkillsBatchShared() } finally { setBatchBusy(false) }
+          try { await startSkillsBatchShared(annotatedCount > 0) } finally { setBatchBusy(false) }
         }
         const cancelBatch = async () => { await cancelSkillsBatchShared() }
 
@@ -3456,9 +3490,9 @@ window.__ModuleLoader__.load({
             draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
         }
 
-        // 跳过原因 → 本地化标签：已知原因走词典，未知原因原样透出。
+        // 跳过原因 → 本地化标签：已知原因走词典，未知原因原样透出（已注释条目不再进跳过清单，
+        // 而是单列「将覆盖」候选，见 renderBatchCard）。
         const skipReasonLabel = (reason) => {
-          if (reason === 'annotated-current') return translate('skills.skip.annotated-current')
           if (reason === 'shadowed') return translate('skills.skip.shadowed')
           if (typeof reason === 'string' && reason.startsWith('legacy-invocation-key')) return translate('skills.skip.reason.legacy-invocation-key')
           const mapped = translate('skills.skip.reason.' + reason)
@@ -3471,6 +3505,7 @@ window.__ModuleLoader__.load({
           const effectivePhase = batch !== null && batch.phase === 'planned' && batchPlan === null ? 'idle' : batch !== null ? batch.phase : 'idle'
           const phaseLabel = effectivePhase
           const progress = batch !== null && batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0
+          const batchAnnotatedCount = Array.isArray(batchPlan?.annotated) ? batchPlan.annotated.length : 0
           return React.createElement('div', { 'data-testid': 'skills-batch-card', style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '12px', padding: '13px 15px', margin: '14px 0' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' } },
               React.createElement('div', { style: { fontSize: '13.5px', fontWeight: 700 } }, translate('skills.batch.title')),
@@ -3482,11 +3517,11 @@ window.__ModuleLoader__.load({
                   batchModels.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name)))) : null,
               effectivePhase === 'idle' || effectivePhase === 'done' || effectivePhase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: Object.assign({}, svcButtonStyle('neutral'), { cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 }) }, translate('skills.batch.plan')) : null,
               batchPlan !== null ? React.createElement('span', { 'data-testid': 'skills-batch-candidates', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
-                translate('skills.batch.candidates', { count: batchPlan.candidates.length }) + (batchPlan.estBytes > 0 ? ' · ' + translate('skills.batch.estBytes', { size: formatSkillBytes(batchPlan.estBytes) }) : '') + ' · ' + translate('skills.batch.skipped', { count: batchPlan.skipped.length })) : null,
-              batchPlan !== null && effectivePhase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || batchPlan.candidates.length === 0, onClick: () => void startBatch(), style: { fontSize: '12px', padding: '5px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.start')) : null,
+                translate('skills.batch.candidates', { count: batchPlan.candidates.length }) + (batchPlan.estBytes > 0 ? ' · ' + translate('skills.batch.estBytes', { size: formatSkillBytes(batchPlan.estBytes) }) : '') + (batchAnnotatedCount > 0 ? ' · ' + translate('skills.batch.annotated', { count: batchAnnotatedCount }) : '') + ' · ' + translate('skills.batch.skipped', { count: batchPlan.skipped.length })) : null,
+              batchPlan !== null && effectivePhase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || (batchPlan.candidates.length === 0 && batchAnnotatedCount === 0), onClick: () => void startBatch(), title: batchAnnotatedArmed ? translate('skills.switch.confirm') : undefined, style: { fontSize: '12px', padding: '5px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: batchAnnotatedArmed ? 'var(--dsh-svc-warning)' : 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, batchAnnotatedArmed && batchAnnotatedCount > 0 ? translate('skills.batch.forceConfirm', { count: batchAnnotatedCount }) : translate('skills.batch.start')) : null,
               batch !== null && batch.phase === 'running' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-cancel', onClick: () => void cancelBatch(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' } }, translate('skills.batch.cancel')) : null,
               batch !== null ? React.createElement('span', { 'data-testid': 'skills-batch-phase', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('skills.batch.phase.' + phaseLabel)) : null),
-            batchPlan !== null && batchPlan.candidates.length === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
+            batchPlan !== null && batchPlan.candidates.length === 0 && batchAnnotatedCount === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
             // 跳过清单不只报数量：可展开查看每条的名称与原因（宿主本来就下发了 name+reason）。
             (() => {
               if (batchPlan === null || batchPlan.skipped.length === 0) return null
@@ -3496,6 +3531,17 @@ window.__ModuleLoader__.load({
                 skippedOpen ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11.5px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } },
                   batchPlan.skipped.map((item, index) => React.createElement('div', { key: item.id ?? index, 'data-testid': 'skills-batch-skipped-item' },
                     (item.name === '' ? item.id : item.name) + translate('skills.colon') + skipReasonLabel(item.reason)))) : null)
+            })(),
+            // 将覆盖清单：已注释条目单列，展开看名称（强制覆盖前先看后果清单，两段式确认具象化）。
+            (() => {
+              const annotatedItems = Array.isArray(batchPlan?.annotated) ? batchPlan.annotated : []
+              if (batchPlan === null || annotatedItems.length === 0) return null
+              return React.createElement('div', { 'data-testid': 'skills-batch-annotated', style: { marginTop: '6px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-annotated-toggle', onClick: () => setAnnotatedListOpen((value) => !value), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '11.5px', padding: 0 } },
+                  (annotatedListOpen ? '▾ ' : '▸ ') + translate('skills.batch.annotatedList') + '（' + annotatedItems.length + '）'),
+                annotatedListOpen ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11.5px', lineHeight: 1.6, color: 'var(--dsh-svc-warning)' } },
+                  annotatedItems.map((item, index) => React.createElement('div', { key: item.id ?? index, 'data-testid': 'skills-batch-annotated-item' },
+                    (item.name === '' ? item.id : item.name)))) : null)
             })(),
             batch !== null && batch.total > 0 && effectivePhase !== 'idle' ? (() => {
               const failuresNode = Array.isArray(batch.failures) && batch.failures.length > 0 ? React.createElement('div', { 'data-testid': 'skills-batch-failures', style: { marginTop: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)', lineHeight: 1.5 } },

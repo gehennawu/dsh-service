@@ -2746,13 +2746,15 @@ test('skills-describe validates the model whitelist and applies a sanitized draf
   })
 })
 
-test('skills batch plan/run/status fills unannotated candidates and skips annotated ones', async (t) => {
+test('skills batch plan/run/status fills unannotated candidates, lists annotated ones, and gates their forced re-fill on explicit confirm', async (t) => {
   const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
   const llmState = {
     streamCalls: [],
     responses: [
       '{"description":"Delta desc","whenToUse":"Delta usage"}',
       '{"description":"Gamma desc","whenToUse":"Gamma usage"}',
+      '{"description":"Alpha redone","whenToUse":""}',
+      '{"description":"Beta redone","whenToUse":""}',
     ],
   }
   const { handler } = createHost({
@@ -2768,6 +2770,7 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
     assert.equal(planned.ok, true)
     // 候选 = alpha(project winner，未注释) + beta；alpha 的 user-agents 遮蔽副本与 gamma(invalid) 跳过。
     assert.deepEqual(planned.value.candidates.map((candidate) => candidate.name), ['alpha', 'beta'])
+    assert.deepEqual(planned.value.annotated, [])
     assert.equal(planned.value.skipped.some((item) => item.reason === 'shadowed'), true)
     assert.equal(planned.value.skipped.some((item) => item.reason.startsWith('legacy-invocation-key:')), true)
 
@@ -2807,9 +2810,42 @@ test('skills batch plan/run/status fills unannotated candidates and skips annota
       assert.match(record.note.description, /(Delta|Gamma) desc/)
       assert.equal(typeof record.bodyHash, 'string')
     }
-    // 二次规划：两条都已注释，不再出现候选。
+    // 二次规划：两条都已注释，不再进候选，但单列为 annotated（注释过≠不能再次补全）。
     const replanned = await handler('skills-batch-plan', { provider: 'prov', model: 'm1' })
+    assert.equal(replanned.ok, true)
     assert.equal(replanned.value.candidates.length, 0)
+    assert.deepEqual(replanned.value.annotated.map((candidate) => candidate.name), ['alpha', 'beta'])
+    // 未显式确认的强制覆盖被拒绝：计划保持 planned、零 LLM 调用。
+    const rejected = await handler('skills-batch-run', { planId: replanned.value.planId, lang: 'zh' })
+    assert.equal(rejected.ok, false)
+    assert.equal(rejected.error, 'annotated-confirm-required')
+    assert.equal(llmState.streamCalls.length, 2)
+    assert.equal((await handler('skills-batch-status', {})).value.phase, 'planned')
+    // 显式确认后强制重跑：已注释条目被覆盖、进度按合并清单计。
+    const forced = await handler('skills-batch-run', { planId: replanned.value.planId, lang: 'zh', forceAnnotated: true })
+    assert.equal(forced.ok, true)
+    let forcedStatus = null
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await handler('skills-batch-status', {})
+      if (status.value.phase !== 'running') {
+        forcedStatus = status.value
+        assert.equal(status.value.phase, 'done')
+        assert.equal(status.value.done, 2)
+        assert.equal(status.value.failures.length, 0)
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.notEqual(forcedStatus, null)
+    assert.equal(llmState.streamCalls.length, 4)
+    assert.match(llmState.streamCalls[2].messages[0].content[0].text, /Alpha body/)
+    assert.match(llmState.streamCalls[3].messages[0].content[0].text, /Beta body/)
+    const overwritten = JSON.parse(await readFile(join(dshHome, 'dsh-service-skills-index.json'), 'utf8'))
+    const notes = Object.values(overwritten.entries).map((record) => record.note.description)
+    assert.ok(notes.includes('Alpha redone') && notes.includes('Beta redone'))
+    // 技能文件依旧零改动；两名条目保持已注释（覆盖后仍是注释态，不会再次进未确认候选）。
+    assert.equal(await readFile(join(workspace, '.dsh', 'skills', 'alpha', 'SKILL.md'), 'utf8'), SKILL_FILE_ALPHA)
+    assert.equal(await readFile(join(agentsHome, 'skills', 'beta.md'), 'utf8'), SKILL_FILE_BETA)
   })
 })
 

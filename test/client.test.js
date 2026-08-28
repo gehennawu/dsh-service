@@ -3788,7 +3788,7 @@ function createSkillsRpcFixture() {
     }
     if (endpoint === 'skills-batch-plan') {
       state.batchPlans.push(payload)
-      return { ok: true, value: { planId: 'plan-1', candidates: [{ id: 'id-beta', name: 'beta', source: 'user-agents' }], skipped: [{ id: 'id-alpha', name: 'alpha', reason: 'annotated-current' }], estBytes: 2048 } }
+      return { ok: true, value: { planId: 'plan-1', candidates: [{ id: 'id-beta', name: 'beta', source: 'user-agents' }], annotated: [{ id: 'id-alpha', name: 'alpha', source: 'project-dsh' }], skipped: [{ id: 'id-gamma', name: 'gamma', reason: 'missing-frontmatter' }], estBytes: 2048 } }
     }
     if (endpoint === 'skills-batch-run') {
       state.batchRuns.push(payload)
@@ -3919,6 +3919,43 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('dsh-service-skills-model')), { provider: 'p', model: 'm1' })
 })
 
+test('skill run logs render timestamps in local time instead of UTC', async () => {
+  const fixture = createSkillsRpcFixture()
+  const at = 1735689600000 // 2026-01-01T00:00:00Z
+  const originalHandler = fixture.handler
+  fixture.handler = async (channel, endpoint, payload) => {
+    if (endpoint === 'skills-describe-log') {
+      return { ok: true, value: { logs: [
+        { at, code: 'located', params: { name: 'alpha', chars: 128 } },
+        { at: at + 1000, code: 'parsed', params: {} },
+      ] } }
+    }
+    return originalHandler(channel, endpoint, payload)
+  }
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-describe-run').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  const pad = (value) => String(value).padStart(2, '0')
+  const date = new Date(at)
+  const expectedLocal = pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+  const utcTime = pad(date.getUTCHours()) + ':' + pad(date.getUTCMinutes()) + ':' + pad(date.getUTCSeconds())
+  // 日志前缀随本机时区渲染；本机时区与 UTC 不同的环境里，UTC 时钟不得出现。
+  assert.match(renderer.text(), new RegExp('\\[' + expectedLocal + '\\]'))
+  if (utcTime !== expectedLocal) assert.doesNotMatch(renderer.text(), new RegExp('\\[' + utcTime + '\\]'))
+})
+
 test('batch card plans, starts, and settles through the status poll with a refreshed catalog', async () => {
   const fixture = createSkillsRpcFixture()
   const renderer = baseSkillRenderer(fixture)
@@ -3948,15 +3985,30 @@ test('batch card plans, starts, and settles through the status poll with a refre
   renderer.findByTestId('skills-batch-plan').props.onClick()
   await renderer.flush()
   assert.match(renderer.text(), /候选 1 项/)
+  assert.match(renderer.text(), /已注释将覆盖 1 项/)
   assert.match(renderer.text(), /待开始（核对候选后点击「开始批量补全」）/)
   assert.match(renderer.text(), /跳过 1 项/)
+
+  // 计划含已注释条目：第一击只武装「确认强制补全」（不发 RPC），第二击才真正启动并带 forceAnnotated。
+  renderer.findByTestId('skills-batch-start').props.onClick()
+  await renderer.flush()
+  assert.equal(fixture.state.batchRuns.length, 0)
+  assert.equal(renderer.findByTestId('skills-batch-start').children.join(''), '确认强制补全（覆盖 1 项已注释）')
+  // 将覆盖清单可展开：逐条显示被覆盖的技能名。
+  assert.equal(renderer.hasTest('skills-batch-annotated-item'), false)
+  renderer.findByTestId('skills-batch-annotated-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skills-batch-annotated-item'), true)
+  const annotatedItems = renderer.findAllByTestIdPrefix('skills-batch-annotated-item')
+  assert.equal(annotatedItems.length, 1)
+  assert.equal(annotatedItems[0].children.join(''), 'alpha')
 
   renderer.findByTestId('skills-batch-start').props.onClick()
   await renderer.flush()
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(fixture.state.batchPlans, [{ provider: 'p', model: 'm1' }])
-  assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1', lang: 'zh' }])
+  assert.deepEqual(fixture.state.batchRuns, [{ planId: 'plan-1', lang: 'zh', forceAnnotated: true }])
   assert.match(renderer.text(), /已完成/)
   assert.match(renderer.text(), /进度 1\/1/)
   // 落定后运行日志自动折叠：只留开关行；点击展开回看过程记录。
@@ -4060,17 +4112,19 @@ test('skills batch plan shows an expandable skipped list with per-entry reasons 
   await renderer.flush()
   await renderer.flush()
 
-  // 摘要不再宣称「只读」跳过（只读目录早已是合法候选）。
+  // 摘要不再宣称「只读」跳过（只读目录早已是合法候选）；已注释条目另列「将覆盖」不计入跳过。
   const summary = renderer.findByTestId('skills-batch-candidates').children.join('')
   assert.doesNotMatch(summary, /只读/)
   assert.match(summary, /跳过 1 项/)
+  assert.doesNotMatch(summary, /已注释将覆盖 0 项/)
 
-  // 跳过清单可展开：逐条显示名称与本地化原因。
+  // 跳过清单可展开：逐条显示名称与本地化原因（已注释条目不再混在跳过清单里）。
   assert.equal(renderer.hasTest('skills-batch-skipped-item'), false)
   renderer.findByTestId('skills-batch-skipped-toggle').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('skills-batch-skipped-item'), true)
-  assert.match(renderer.text(), /alpha：已注释/)
+  assert.match(renderer.text(), /gamma：缺 frontmatter/)
+  assert.doesNotMatch(renderer.text(), /alpha：已注释/)
 })
 
 test('AI completion requests carry the active UI language so host prompts follow the DSH locale', async () => {

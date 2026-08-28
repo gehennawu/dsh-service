@@ -134,7 +134,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Lists local skills in three sections — **auto-loaded / manual-only / fully disabled**; same-name shadowing marks both copies, bundled directories are read-only
 - Two switches edit the SKILL.md frontmatter directly (`disable-model-invocation` / `user-invocable`); changes go live within ~200 ms
 - Entries with legacy camelCase keys are dropped by the official parser: ⚠ warning + one-click canonical fix
-- ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled
+- ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled. Already-annotated skills are listed separately in the plan and are only overwritten after a "Confirm forced refill" second confirmation (annotating no longer blocks future batch fills forever); completion-log timestamps use your local timezone
 
 ### Subagent model
 
