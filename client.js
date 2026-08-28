@@ -541,6 +541,10 @@ window.__ModuleLoader__.load({
       'quota.resetCard.expires': '{date} 到期',
       'quota.resetCard.expired': '已过期',
       'quota.resetCard.edit': '添加重置卡',
+      // v0.39 卡片分区：最紧窗口徽标 / 高级配置折叠 / 重置区标题。
+      'quota.tightest': '最紧窗口',
+      'quota.advanced': '高级配置',
+      'quota.section.reset': '重置记录',
       'quota.resetCard.dateLabel': '到期日期',
       'quota.resetCard.nameLabel': '名称（可选）',
       'quota.resetCard.add': '添加',
@@ -1150,6 +1154,9 @@ window.__ModuleLoader__.load({
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
       'quota.resetCard.edit': 'Add reset card',
+      'quota.tightest': 'Tightest window',
+      'quota.advanced': 'Advanced',
+      'quota.section.reset': 'Reset records',
       'quota.resetCard.dateLabel': 'Expiry date',
       'quota.resetCard.nameLabel': 'Name (optional)',
       'quota.resetCard.add': 'Add',
@@ -4372,6 +4379,9 @@ window.__ModuleLoader__.load({
         const [configError, setConfigError] = useState('')
         const providers = quota.providers || []
         const [cardEditor, setCardEditor] = useState(null)
+        // v0.39 卡片分区（确认规格：身份 → 核心余额 → 最紧窗口 → 重置 → 折叠高级配置）。
+        // 高级配置（凭据入口/类型切换/手动重置录入）按卡折叠，一次只开一张。
+        const [advancedOpen, setAdvancedOpen] = useState(null)
         // v0.20 免次数：草稿只有到期时间与名称；添加成功后清空并保持打开，方便连续追加多条。
         const [cardDraft, setCardDraft] = useState({ expiresAt: '', label: '' })
         const openCardEditor = (row) => {
@@ -4588,8 +4598,24 @@ window.__ModuleLoader__.load({
                         }, translate('quota.kindAuto'))
                       : null)
                   const windows = Array.isArray(row.windows) ? row.windows : []
+                  // 分区顺序：余额类（text 窗口）在前 = 核心余额；额度类（percent 窗口）随后，
+                  // 其中 percent 最大的窗口标「最紧窗口」（避免「额度与余额谁先谁后」的各卡漂移）。
+                  const textWindows = windows.filter((window) => typeof window.text === 'string')
+                  const percentWindows = windows.filter((window) => typeof window.text !== 'string')
+                  const orderedWindows = [...textWindows, ...percentWindows]
+                  const tightestId = percentWindows.length > 0
+                    ? percentWindows.reduce((max, window) => (Number(window.percent) > Number(max.percent) ? window : max), percentWindows[0]).id
+                    : null
+                  const isAdvanced = advancedOpen === row.provider
                   // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行（renderQuotaWindowRow 统一渲染）。
-                  const windowBlocks = windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
+                  const windowBlocks = orderedWindows.map((window) => {
+                    const rowNode = renderQuotaWindowRow(window, translate, row.provider)
+                    return window.id === tightestId
+                      ? React.createElement('div', { key: window.id, 'data-testid': `quota-tightest-${row.provider}`, style: { display: 'flex', alignItems: 'center', gap: '6px' } },
+                          React.createElement('span', { 'data-testid': `quota-tightest-badge-${row.provider}`, style: { flex: 'none', fontSize: '10px', lineHeight: '16px', padding: '0 6px', borderRadius: 999, border: '1px solid var(--dsw-alias-state-warn-primary)', color: 'var(--dsw-alias-state-warn-primary)', whiteSpace: 'nowrap' } }, translate('quota.tightest')),
+                          rowNode)
+                      : rowNode
+                  })
                   let body
                   if (row.refreshing === true && windows.length === 0) {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
@@ -4679,7 +4705,16 @@ window.__ModuleLoader__.load({
                           : null)),
                     body,
                     ...(peakTimeline !== null ? [peakTimeline] : []),
-                    ...(row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
+                    // 高级配置折叠钮（凭据/类型切换/手录重置都收进折叠区）。
+                    React.createElement('div', { key: 'advanced-toggle-row', style: { display: 'flex', marginTop: '2px' } },
+                      React.createElement('button', {
+                        type: 'button',
+                        'data-testid': `quota-advanced-toggle-${row.provider}`,
+                        'aria-expanded': String(isAdvanced),
+                        onClick: () => setAdvancedOpen(isAdvanced ? null : row.provider),
+                        style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                      }, `${isAdvanced ? '▾' : '▸'} ${translate('quota.advanced')}`)),
+                    ...(isAdvanced && row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
                       ? (() => {
                           const editingCred = credEditor !== null && credEditor.provider === row.provider
                           const hints = row.credentialHints
@@ -4724,14 +4759,15 @@ window.__ModuleLoader__.load({
                         })()
                       : []),
                     ...resetCardNodes,
-                    ...(editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
+                    ...(isAdvanced && editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
                     )] : []),
-                    // 卡片脚部：类型下拉（当前选中 / 跟随自动识别 / 停用查询）；重置卡入口独占一行，避免被挤压截断。
-                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+                    // 卡片脚部（高级配置区）：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡录入入口。
+                    ...(isAdvanced ? [
+                      React.createElement('div', { key: 'advanced-footer', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
                       React.createElement('select', {
                         'data-testid': `quota-kind-select-${row.provider}`,
                         value: row.kind,
@@ -4753,7 +4789,8 @@ window.__ModuleLoader__.load({
                         'data-testid': `quota-card-edit-${row.provider}`,
                         onClick: () => openCardEditor(row),
                         style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
-                      }, translate('quota.resetCard.edit')))] : []))
+                      }, translate('quota.resetCard.edit')))] : []),
+                    ] : []))
                 })),
           ...(candidateRows.length > 0 ? [React.createElement('div', { key: 'quota-add-adapt', 'data-testid': 'quota-add-adapt', style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginTop: adaptedRows.length > 0 ? '2px' : '4px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)' } },
             React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.addAdapt')),

@@ -2738,9 +2738,12 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
   // 有效期作为 resetsAt → 重置倒计时行（时长随执行耗时漂移，只断行存在与文案前缀）。
   const resetLine = renderer.findByTestId('quota-card-reset-mimo-total_token')
   assert.match(String(resetLine.children[0]), /^重置于 /)
+  // v0.39：凭据入口收进折叠的「高级配置」，先展开 mimo2 卡。
+  renderer.findByTestId('quota-advanced-toggle-mimo2').props.onClick()
+  await renderer.flush()
   // 未配置行的凭据入口文案按 kind 分流为 Cookie 版。
   assert.ok(renderer.hasTest('quota-cred-edit-mimo2'))
-  assert.match(text, /填写控制台 Cookie（网页登录态）/)
+  assert.match(renderer.text('settings.section'), /填写控制台 Cookie（网页登录态）/)
 })
 
 test('stepfun cards show money text windows and the credit-pool plan windows with the token credential entry', async () => {
@@ -2810,9 +2813,17 @@ test('stepfun cards show money text windows and the credit-pool plan windows wit
   assert.equal(renderer.hasTest('quota-card-reset-sfplan-topup-credit'), false)
   assert.match(text, /加油包 Credit/)
   assert.match(text, /1%/)
+  // v0.39 分区：余额类（text 窗）在前；percent 最大的窗口标「最紧窗口」徽标（10% > 1%）。
+  assert.equal(renderer.hasTest('quota-tightest-badge-sfplan'), true)
+  const sectionOrder = renderer.text('settings.section')
+  assert.ok(sectionOrder.indexOf('余额') < sectionOrder.indexOf('最紧窗口'), 'balance windows come first')
+  assert.ok(sectionOrder.indexOf('最紧窗口') < sectionOrder.indexOf('月度 Credit 池'), 'tightest badge precedes its window row')
+  // v0.39：凭据入口在折叠的「高级配置」区，先展开 sfplan2 卡。
+  renderer.findByTestId('quota-advanced-toggle-sfplan2').props.onClick()
+  await renderer.flush()
   // 未配置订阅行的凭据入口分流为「控制台令牌（Oasis-Token）」版。
   assert.ok(renderer.hasTest('quota-cred-edit-sfplan2'))
-  assert.match(text, /填写控制台令牌（Oasis-Token，浏览器登录态）/)
+  assert.match(renderer.text('settings.section'), /填写控制台令牌（Oasis-Token，浏览器登录态）/)
 })
 
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
@@ -2918,6 +2929,9 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
+  // v0.39：类型切换在折叠的「高级配置」区，先展开 openrouter 卡。
+  renderer.findByTestId('quota-advanced-toggle-openrouter').props.onClick()
+  await renderer.flush()
   // 已适配卡片脚部下拉预选当前 kind。
   assert.equal(renderer.findByTestId('quota-kind-select-openrouter').props.value, 'opencode-go')
   // 已适配行展示窗口与更新时间；每个窗口带独立进度条（无「已用」头条）。
@@ -3020,6 +3034,9 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   await renderer.flush()
   assert.ok(renderer.hasTest('quota-provider-card-zai-coding-cn'))
+  // v0.39：手录重置入口在折叠的「高级配置」区，先展开 zai 卡。
+  renderer.findByTestId('quota-advanced-toggle-zai-coding-cn').props.onClick()
+  await renderer.flush()
   const addCardTrigger = renderer.findByTestId('quota-card-edit-zai-coding-cn')
   assert.match(String(addCardTrigger.children[0]), /添加重置卡/)
   assert.deepEqual(cardCalls, [])
@@ -4160,6 +4177,9 @@ test('unconfigured quota rows offer an inline credential form that writes via th
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
+  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
+  await renderer.flush()
   // 未配置行：错误文案旁出现表单入口；cliproxy 行的按钮文案是「管理密钥」而非「API 密钥」
   // ——那是 CPA 网页登录的 remote-management key，写错标签会诱导用户填代理 key 撞封禁。
   assert.match(renderer.text(), /凭据未配置/)
@@ -4203,6 +4223,9 @@ test('credential form defaults to the configured alias and marks the primary nam
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
+  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
   await renderer.flush()
   // 默认选中「已配置」的别名（不是主名）；下拉按发现顺序列出两个别名槽。
@@ -4230,6 +4253,9 @@ test('classic-kind credential rows keep the API-key label while cliproxy uses th
 
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // v0.39：凭据入口在折叠的「高级配置」区，先展开 or 卡。
+  renderer.findByTestId('quota-advanced-toggle-or').props.onClick()
   await renderer.flush()
   // 经典 kind 的凭据确实是 API key，文案保持「填写 API 密钥」。
   assert.equal(renderer.findByTestId('quota-cred-edit-or').children.join(''), '填写 API 密钥')
@@ -4259,6 +4285,9 @@ test('clearing a stored credential requires a second confirming click', async ()
 
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
   await renderer.flush()
   renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
   await renderer.flush()
