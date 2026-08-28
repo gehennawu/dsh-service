@@ -5,8 +5,8 @@
 # 🛠️ dsh-service
 
 <p align="center">
-  <strong>面向自托管 DeepSeek Harness (DSH) Web 的服务控制与运维插件</strong><br>
-  <em>A service-control &amp; operations plugin for self-hosted DeepSeek Harness (DSH) Web.</em>
+  <strong>DeepSeek Harness (DSH) Web 服务控制与运维插件</strong><br>
+  <em>A service-control &amp; operations plugin for DeepSeek Harness (DSH) Web.</em>
 </p>
 
 [![Version](https://img.shields.io/badge/version-0.40.0-3b82f6.svg?style=flat-square)](package.json)
@@ -32,7 +32,7 @@
 
 </div>
 
-面向自托管 DSH Web 的服务控制与运维插件：安全重启、版本管理与一键升级、健康诊断、模型用量统计、额度查询、备份管理、任务通知、技能管理、会话管理与 Linux 文件权限维护。
+DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级、健康诊断、模型用量统计、额度查询、备份管理、任务通知、技能管理、会话管理与 Linux 文件权限维护。
 
 ![概览](./screenshots/overview.png)
 
