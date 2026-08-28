@@ -338,6 +338,9 @@ window.__ModuleLoader__.load({
       'permissions.confirm': '确认修复',
       'permissions.confirmHint': '将跳过 .git，递归恢复当前用户属主并补充 Agent 读写权限，保留已有执行位。请确认后继续。',
       'permissions.cancel': '取消',
+      // v0.39 折叠区开关文案。
+      'permissions.show': '权限与修复',
+      'permissions.hide': '收起',
       'permissions.error': '权限操作失败',
       'permissions.summary.ok': '{count} 个根目录检查正常',
       'permissions.summary.warning': '发现 {count} 个根目录异常',
@@ -951,6 +954,8 @@ window.__ModuleLoader__.load({
       'permissions.confirm': 'Confirm repair',
       'permissions.confirmHint': 'This skips .git, restores ownership to the current user, and adds Agent read/write access while preserving existing execute bits. Confirm to continue.',
       'permissions.cancel': 'Cancel',
+      'permissions.show': 'Permissions & repair',
+      'permissions.hide': 'Collapse',
       'permissions.error': 'Permission operation failed',
       'permissions.summary.ok': '{count} root path(s) passed the check',
       'permissions.summary.warning': '{count} root path(s) need attention',
@@ -4826,6 +4831,8 @@ window.__ModuleLoader__.load({
         const [permissionBusy, setPermissionBusy] = useState(false)
         const [permissionError, setPermissionError] = useState(null)
         const [permissionDetails, setPermissionDetails] = useState(false)
+        // v0.39：权限与修复默认折叠（确认规格：汇总 → 两行检查清单 → 折叠权限/深检/修复区）。
+        const [permissionOpen, setPermissionOpen] = useState(false)
         const [permissionDeep, setPermissionDeep] = useState(null)
         const [permissionDeepBusy, setPermissionDeepBusy] = useState(false)
         const [backups, setBackups] = useState({ items: [], totalBytes: 0 })
@@ -5476,25 +5483,41 @@ window.__ModuleLoader__.load({
         const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
           React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
           diagnostics && diagnostics.status !== 'ok'
-            ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: `1px solid ${diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)'}` } },
+            ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: '1px solid ' + (diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)') } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
-                React.createElement('div', { style: hint }, translate('health.alert.diagnostics', { status: translate(`health.overall.${diagnostics.status}`) })))
+                React.createElement('div', { style: hint }, translate('health.alert.diagnostics', { status: translate('health.overall.' + diagnostics.status) })))
             : null,
           diagnostics
             ? React.createElement('div', { 'data-testid': 'health-check-list', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '8px 10px' }) },
-                diagnostics.checks.map((check, index) => React.createElement('div', { key: check.id, style: { display: 'flex', justifyContent: 'space-between', gap: '14px', fontSize: '12px', padding: '9px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsw-alias-border-l1)' } },
-                  React.createElement('span', null, translate(`health.check.${check.id}`)),
-                  React.createElement('span', { style: { color: check.status === 'ok' ? 'var(--dsw-alias-state-success-primary)' : check.status === 'warning' ? 'var(--dsw-alias-state-warn-primary)' : check.status === 'info' ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-state-error-primary)', textAlign: 'right' } }, diagnosticDetail(check)))))
+                // v0.39 两行检查清单：主行=检查名+状态点，次行=详情；异常行（error/非 advisory warning）
+                // 局部淡染强调，正常行低对比。
+                diagnostics.checks.map((check, index) => {
+                  const abnormal = check.status === 'error' || (check.status === 'warning' && check.advisory !== true)
+                  const dotColor = check.status === 'ok' ? 'var(--dsh-svc-success)' : check.status === 'warning' ? 'var(--dsh-svc-warning)' : check.status === 'info' ? 'var(--dsh-svc-info)' : 'var(--dsh-svc-danger)'
+                  return React.createElement('div', { key: check.id, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 10px', borderRadius: '6px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)', background: abnormal ? (check.status === 'error' ? 'rgba(211,51,51,0.08)' : 'rgba(198,128,0,0.10)') : 'transparent' } },
+                    React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '5px', background: dotColor } }),
+                    React.createElement('div', { style: { minWidth: 0, flex: 1 } },
+                      React.createElement('div', { style: { fontSize: '12px', fontWeight: abnormal ? 650 : 550, color: 'var(--dsh-svc-text)' } }, translate('health.check.' + check.id)),
+                      React.createElement('div', { style: { fontSize: '11px', lineHeight: 1.5, marginTop: '2px', color: check.status === 'ok' ? 'var(--dsh-svc-text-muted)' : abnormal ? (check.status === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)') : 'var(--dsh-svc-text-muted)' } }, diagnosticDetail(check))))
+                }))
             : null)
-
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length
           : 0
         const permissionNeedsRepair = permissionAbnormal > 0 || (permissionDeep && (permissionDeep.ownerIssues > 0 || permissionDeep.directoryModeIssues > 0 || permissionDeep.fileModeIssues > 0 || permissionDeep.unreadable > 0))
         const permissionBlock = permissions && permissions.supported === true
           ? React.createElement('div', { key: 'permissions-section', style: { marginTop: '18px' } },
-              React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
-              React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' } },
+                React.createElement('div', { style: sectionTitle }, translate('permissions.title')),
+                React.createElement('button', {
+                  type: 'button',
+                  'data-testid': 'permissions-toggle',
+                  'aria-expanded': String(permissionOpen),
+                  onClick: () => setPermissionOpen((value) => !value),
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                }, `${permissionOpen ? '▾' : '▸'} ${translate(permissionOpen ? 'permissions.hide' : 'permissions.show')}${permissionAbnormal > 0 ? ` · ${permissionAbnormal}` : ''}`)),
+              permissionOpen
+                ? React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
               React.createElement('p', { style: hint }, translate('permissions.description')),
               permissionAbnormal > 0 ? React.createElement('div', { style: { marginTop: '8px', padding: '9px 11px', borderRadius: '7px', background: 'rgba(198,128,0,0.12)', border: '1px solid rgba(198,128,0,0.3)' } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
@@ -5522,7 +5545,8 @@ window.__ModuleLoader__.load({
                 : permissionNeedsRepair
                    ? React.createElement('button', { style: Object.assign({}, dangerGhost, { marginTop: '10px' }), 'data-variant': 'dangerGhost', disabled: permissionBusy, onClick: () => setPermissionConfirm(true) }, translate('permissions.repair'))
                    : null,
-              permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null))
+              permissionError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, permissionError) : null)
+              : null)
           : null
 
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
