@@ -5455,7 +5455,7 @@ window.__ModuleLoader__.load({
                 React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
                 toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('tool', toolErrors)) : null))))
         const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
-          React.createElement('div', { style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))),
+          // v0.39 用户复核：重新诊断按钮移入页面头右侧（SvcPageHeader action 位），此处不再独占一行。
           diagnostics && diagnostics.status !== 'ok'
             ? React.createElement('div', { style: { marginTop: '10px', padding: '9px 11px', borderRadius: '7px', background: diagnostics.status === 'error' ? 'rgba(211,51,51,0.1)' : 'rgba(198,128,0,0.12)', border: '1px solid ' + (diagnostics.status === 'error' ? 'rgba(211,51,51,0.3)' : 'rgba(198,128,0,0.3)') } },
                 React.createElement('div', { style: { fontSize: '12px', fontWeight: 700 } }, translate('health.alert.title')),
@@ -5825,10 +5825,14 @@ window.__ModuleLoader__.load({
             dotLabel: translate('tabs.alert.dot'),
             ariaLabel: translate('nav.label'),
           }),
-          // v0.39 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS。
+          // v0.39 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS；
+          // 诊断页的「重新诊断」按钮驻留头部右缘（用户复核点名），内容区不再独占一行。
           React.createElement(SvcPageHeader, {
             title: translate(PRIMARY_TAB_LABELS[visiblePrimaryTab]),
             description: PAGE_DESCRIPTIONS[visiblePrimaryTab] !== undefined ? translate(PAGE_DESCRIPTIONS[visiblePrimaryTab]) : null,
+            action: visiblePrimaryTab === 'diagnostics'
+              ? React.createElement('button', { type: 'button', 'data-testid': 'diagnostics-recheck', 'data-variant': 'neutral', style: neutral, onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))
+              : null,
           }),
           visiblePrimaryTab === 'maintenance' && maintenanceTabs.length > 0
             ? React.createElement(SvcTabs, {
