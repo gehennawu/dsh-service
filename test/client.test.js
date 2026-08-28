@@ -1082,6 +1082,76 @@ test('disabling the active primary page returns the panel to overview', async ()
   assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'overview')
 })
 
+test('overview six-section layout aggregates status, actionable items, and core actions', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: false, error: 'storage unavailable' }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 备份失败（error 级）→ 状态摘要 error 文案 + 可行动项出现；错误项带「备份」文本。
+  const orderText = renderer.text('settings.section')
+  assert.match(orderText, /有 1 项需要处理/)
+  assert.equal(renderer.hasTest('overview-actionables'), true)
+  assert.match(renderer.text('settings.section'), /备份操作失败/)
+  // 六段顺序：状态摘要 → 版本卡 → 进程与运行环境 → 核心操作。
+  // 页面头描述也含「版本信息」字样，锚点用版本卡标题+内容连排「版本信息dsh-service」。
+  const firstVersion = orderText.indexOf('版本信息dsh-service')
+  assert.ok(orderText.indexOf('有 1 项需要处理') < firstVersion, 'status summary precedes version card')
+  assert.ok(firstVersion < orderText.indexOf('进程与运行环境'), 'version card precedes runtime metrics')
+  assert.ok(orderText.indexOf('进程与运行环境') < orderText.indexOf('健康检查'), 'metrics precede core actions')
+  // 核心操作导航：额度查询 → 额度页；健康检查 → 诊断页；创建备份 → 维护·备份子页。
+  await renderer.findByTestId('overview-action-quota').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'quota')
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('overview-action-health').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'diagnostics')
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('overview-action-backup').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'maintenance')
+  assert.equal(renderer.findByTestId('maintenance-tab-backup').props['aria-selected'], 'true')
+})
+
+test('overview status is informational when only update or empty-backup hints exist, and hidden when nothing is wrong beyond that', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '0.8.0', latest: '0.9.0', upToDate: false, url: 'https://github.com/gehennawu/dsh-service/releases' } } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 有可用更新 + 空备份 → info 级：两条提示进可行动项，状态摘要为提示文案。
+  assert.match(renderer.text('settings.section'), /有 2 条提示/)
+  assert.match(renderer.text('settings.section'), /检测到新版本可用/)
+  assert.match(renderer.text('settings.section'), /还没有备份，建议创建一份/)
+  // 干净场景（已是最新 + 已有备份）：无任何可行动项，状态摘要为正常运行。
+  const clean = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await clean.load()
+  assert.equal(clean.hasTest('overview-actionables'), false, 'no actionable region when nothing needs attention')
+  assert.match(clean.text('settings.section'), /所有系统运行正常/)
+})
+
 test('configuration page aggregates features and notifications without subpage memory', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }

@@ -298,6 +298,15 @@ window.__ModuleLoader__.load({
       'tabs.quota': '额度查询',
       'overview.container': '进程与运行环境',
       'overview.errors': '报错信息',
+      // v0.39 概览六段式：状态摘要/可行动项/核心操作文案。
+      'overview.status.normal': '所有系统运行正常',
+      'overview.status.info': '有 {count} 条提示',
+      'overview.status.warning': '有 {count} 项需要注意',
+      'overview.status.error': '有 {count} 项需要处理',
+      'overview.quotaCritical': '存在使用量已达 80% 的额度窗口',
+      'overview.backupEmpty': '还没有备份，建议创建一份',
+      'overview.updateAvailable': '检测到新版本可用',
+      'overview.action.health': '健康检查',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
       // v0.39 六页信息架构：顶层 维护/配置 聚合页 + 配置页两个子页 + 功能分组标题。
@@ -459,6 +468,8 @@ window.__ModuleLoader__.load({
       'usage.empty': '尚未建立使用统计索引。点击刷新统计开始只读建立索引。',
       'usage.error': '无法读取模型使用统计',
       'usage.allProjects': '全部项目',
+      'usage.chartSummary': '七天内累计用量 {total} token',
+      'usage.barDay': '{day} 总用量 {total} token',
       'usage.total': 'token 总量',
       'usage.steps': '成功模型步骤',
       'usage.stepsValue': '{count} 次',
@@ -899,6 +910,14 @@ window.__ModuleLoader__.load({
       'tabs.quota': 'Quota lookup',
       'overview.container': 'Process and runtime',
       'overview.errors': 'Errors',
+      'overview.status.normal': 'All systems nominal',
+      'overview.status.info': 'You have {count} note(s)',
+      'overview.status.warning': 'You have {count} item(s) to review',
+      'overview.status.error': 'You have {count} item(s) needing attention',
+      'overview.quotaCritical': 'A quota window has reached 80% usage',
+      'overview.backupEmpty': 'No backups yet — consider creating one',
+      'overview.updateAvailable': 'A new version is available',
+      'overview.action.health': 'Health check',
       'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
       'tabs.maintenance': 'Maintenance',
@@ -1058,6 +1077,8 @@ window.__ModuleLoader__.load({
       'usage.empty': 'No usage index yet. Select Refresh usage to build the read-only index.',
       'usage.error': 'Could not read model usage',
       'usage.allProjects': 'All projects',
+      'usage.chartSummary': 'Total usage over seven days: {total} tokens',
+      'usage.barDay': '{day} total {total} tokens',
       'usage.total': 'Total tokens',
       'usage.steps': 'Successful model steps',
       'usage.stepsValue': '{count} times',
@@ -5322,7 +5343,7 @@ window.__ModuleLoader__.load({
                   React.createElement('div', { 'data-testid': 'usage-plot', style: { position: 'relative', height: '164px' } },
                     React.createElement('div', { style: { position: 'absolute', inset: '0 0 20px', display: 'flex', alignItems: 'end', gap: '8px', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
                       chartTicks.map((_, index) => React.createElement('div', { key: index, 'data-testid': `usage-grid-${index}`, style: { position: 'absolute', left: 0, right: 0, top: `${index * 25}%`, borderTop: '1px solid var(--dsw-alias-border-l1)', pointerEvents: 'none' } })),
-                      usageDays.map((day, index) => React.createElement('div', { key: day.key, style: { position: 'relative', zIndex: 1, flex: 1, minWidth: 0, alignSelf: 'end' } },
+                      usageDays.map((day, index) => React.createElement('div', { key: day.key, 'aria-label': translate('usage.barDay', { day: day.label, total: formatTokenValue(chartValues[index]) }), style: { position: 'relative', zIndex: 1, flex: 1, minWidth: 0, alignSelf: 'end' } },
                         React.createElement('div', { 'data-testid': `usage-bar-${day.key}`, style: { height: `${Math.max(2, chartValues[index] / chartMax * 144)}px`, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', borderRadius: '4px 4px 0 0', overflow: 'hidden' } },
                           usageSegments.map(([metricName, label, color]) => {
                             const value = usageValue(chartTotals[index], metricName)
@@ -5345,6 +5366,9 @@ window.__ModuleLoader__.load({
                   usageSegments.map(([, label, color]) => React.createElement('span', { key: label, style: { display: 'inline-flex', alignItems: 'center', gap: '5px' } },
                     React.createElement('span', { style: { width: '9px', height: '9px', borderRadius: '2px', background: color } }),
                     translate(label)))),
+                // 可访问的文本图表摘要：视觉上不可见，屏幕阅读器可见（v0.39 确认规格）。
+                React.createElement('div', { 'data-testid': 'usage-chart-summary', style: { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' } },
+                  translate('usage.chartSummary', { total: formatTokenValue(chartValues.reduce((a, b) => a + b, 0)) })),
                 hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'pre-line', textAlign: 'left' } }, `${translate('usage.tooltip.date', { date: hoveredUsageSegment.date })}\n${translate('usage.tooltip.input', { value: Number(hoveredUsageSegment.totals.inputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.output', { value: Number(hoveredUsageSegment.totals.outputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.cache', { value: Number((hoveredUsageSegment.totals.cacheReadTokens || 0) + (hoveredUsageSegment.totals.cacheWriteTokens || 0)).toLocaleString() })}`) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
                   summaryBlock('today', 'usage.today', todayTotals),
@@ -5622,7 +5646,65 @@ window.__ModuleLoader__.load({
                       notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn),
                       // 铃铛显隐独立于通知总开关：藏掉只是收起输入框旁的快捷入口（v0.31 用户点名）。
                       notifyRow('notify-row-bell', translate('notification.bellShow'), null, notifyBellOn, setNotifyBellOn, false))))
-        const overviewBlock = React.createElement('div', null, versionBlock, containerInfoBlock, overviewErrorsBlock)
+        // ── 概览状态聚合与六段式布局（v0.39 确认规格）──────────────────────
+        // 状态摘要 → 可行动项（仅在存在时）→ 版本/运行时 → 指标格 → 核心操作 → 近期错误。
+        // 严重度 error > warning > info > normal：error=RPC/健康/诊断/备份/统计/额度/重启错误；
+        // warning=权限异常/非 advisory 诊断警告/额度窗口 ≥80%；info=可更新/运行环境提示/无备份。
+        const quotaSnapshot = quotaStore.getSnapshot()
+        const quotaCritical = Array.isArray(quotaSnapshot.providers)
+          ? quotaSnapshot.providers.some((row) => Array.isArray(row.windows) && row.windows.some((window) => typeof window.percent === 'number' && window.percent >= 80))
+          : false
+        const updateOutdated = updateInfo !== null && updateInfo !== undefined &&
+          ((updateInfo.dsh && updateInfo.dsh.upToDate === false) || (updateInfo.plugin && updateInfo.plugin.upToDate === false))
+        const backupLoaded = backups !== null && !backupBusy && !backupError
+        const failingChecks = (diagnostics?.checks || []).filter((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true && check.id !== 'permissions'))
+        const statusItems = []
+        if (healthError) statusItems.push({ level: 'error', text: healthError })
+        if (usageError) statusItems.push({ level: 'error', text: usageError })
+        if (backupError) statusItems.push({ level: 'error', text: backupError })
+        if (restartFlowState.error) statusItems.push({ level: 'error', text: String(restartFlowState.error) })
+        if (permissionError) statusItems.push({ level: 'error', text: permissionError })
+        for (const check of failingChecks) {
+          statusItems.push({ level: check.status === 'error' ? 'error' : 'warning', text: translate(`health.check.${check.id}`) + '：' + diagnosticDetail(check) })
+        }
+        if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
+        if (quotaCritical) statusItems.push({ level: 'warning', text: translate('overview.quotaCritical') })
+        if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
+        if (runtimeEnv !== null && runtimeEnv.manualStartLikely === true) statusItems.push({ level: 'info', text: translate('health.detail.runtime-env.manual') })
+        if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })
+        const statusLevel = statusItems.some((item) => item.level === 'error') ? 'error'
+          : statusItems.some((item) => item.level === 'warning') ? 'warning'
+            : statusItems.some((item) => item.level === 'info') ? 'info' : 'normal'
+        const statusText = statusLevel === 'normal'
+          ? translate('overview.status.normal')
+          : translate(`overview.status.${statusLevel}`, { count: statusItems.length })
+        const overviewStatusBlock = React.createElement('div', { 'data-testid': 'overview-status', style: Object.assign({}, displaySurface, { display: 'flex', alignItems: 'center', gap: '10px' }) },
+          React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '10px', height: '10px', borderRadius: '50%', background: statusLevel === 'normal' ? 'var(--dsh-svc-success)' : statusLevel === 'warning' ? 'var(--dsh-svc-warning)' : statusLevel === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-info)' } }),
+          React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsh-svc-text)' } }, statusText))
+        const overviewActionablesBlock = statusItems.length === 0
+          ? null
+          : React.createElement('div', { 'data-testid': 'overview-actionables', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '4px 10px' }) },
+              statusItems.map((item, index) => React.createElement('div', { key: `${item.level}-${index}`, style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 2px', fontSize: '12px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
+                React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', background: item.level === 'error' ? 'var(--dsh-svc-danger)' : item.level === 'warning' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' } }),
+                React.createElement('span', { style: { color: 'var(--dsh-svc-text)' } }, item.text))))
+        // 固定核心操作：健康检查 / 额度查询 / 创建备份（导航型快捷入口，非破坏主操作）。
+        // 各按钮随对应功能开关门控；全关时整行不渲染。
+        const overviewActions = [
+          features.healthDiagnostics !== false ? React.createElement('button', { key: 'health', type: 'button', 'data-testid': 'overview-action-health', style: neutral, onClick: () => { setActiveTab('diagnostics'); runDiagnostics(false) } }, translate('overview.action.health')) : null,
+          features.quotaLookup !== false ? React.createElement('button', { key: 'quota', type: 'button', 'data-testid': 'overview-action-quota', style: neutral, onClick: () => setActiveTab('quota') }, translate('tabs.quota')) : null,
+          features.backupMaintenance !== false ? React.createElement('button', { key: 'backup', type: 'button', 'data-testid': 'overview-action-backup', style: neutral, onClick: () => { setActiveTab('maintenance'); selectMaintenanceTab('backup') } }, translate('backup.create')) : null,
+        ].filter((node) => node !== null)
+        const overviewActionsBlock = overviewActions.length === 0
+          ? null
+          : React.createElement('div', { 'data-testid': 'overview-core-actions', style: { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '18px' } }, overviewActions)
+        // 近期错误只在非空时渲染（模型/工具报错默认折叠）。
+        const overviewBlock = React.createElement('div', null,
+          overviewStatusBlock,
+          overviewActionablesBlock,
+          versionBlock,
+          containerInfoBlock,
+          overviewActionsBlock,
+          modelErrors.length > 0 || toolErrors.length > 0 ? overviewErrorsBlock : null)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
