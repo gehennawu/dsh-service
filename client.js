@@ -1505,11 +1505,13 @@ window.__ModuleLoader__.load({
         if (variant === 'danger') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)', color: '#fff' }
         if (variant === 'dangerGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)' }
         if (variant === 'brandGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)' }
-        if (variant === 'ghost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border)' }
+        if (variant === 'ghost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
         // v0.39 用户复核：中性操作钮也要可辨——边框用加强令牌，不再与卡片/画布同色。
         if (variant === 'neutral') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-page-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
         return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-content-bg)', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
       }
+      // v0.39 行尾上下文动作（查看/导出/归档/恢复…）：统一幽灵底 + 加强描边 + 紧凑尺寸。
+      const svcRowActionStyle = (overrides) => Object.assign({}, SVC_BTN_BASE, { background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)', minHeight: '28px', padding: '4px 10px', fontSize: '12px', borderRadius: 'var(--dsh-svc-radius-control)' }, overrides)
       // 展示面（只读信息容器）：页面级浅底 + 细边框，与操作卡片区分。
       const svcSurfaceStyle = (extra) => Object.assign({ background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsh-svc-text)', border: '1px solid var(--dsh-svc-border)', borderRadius: 'var(--dsh-svc-radius-control)', padding: '10px' }, extra)
       // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
@@ -3462,7 +3464,7 @@ window.__ModuleLoader__.load({
               React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.describe.model')),
               React.createElement('select', { 'data-testid': 'skill-describe-model', value: modelItem === null ? '' : skillModelKey(modelItem), onChange: (event) => setDescribe((prev) => prev === null ? prev : { ...prev, modelItem: models.find((item) => skillModelKey(item) === event.target.value) ?? null }), style: inputStyle },
                 models.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name))),
-              draft === null ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-run', disabled: busy || modelItem === null, onClick: () => void runDescribe(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', cursor: busy ? 'default' : 'pointer', opacity: busy || modelItem === null ? 0.55 : 1 } }, busy ? translate('skills.describe.running') : translate('skills.describe.run')) : null) : null,
+              draft === null ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-run', disabled: busy || modelItem === null, onClick: () => void runDescribe(), style: Object.assign({}, svcButtonStyle('neutral'), { fontSize: '12px', minHeight: '28px', padding: '4px 12px', cursor: busy ? 'default' : 'pointer', opacity: busy || modelItem === null ? 0.55 : 1 }) }, busy ? translate('skills.describe.running') : translate('skills.describe.run')) : null) : null,
             error !== '' ? React.createElement('p', { 'data-testid': 'skill-describe-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error)) : null,
             renderLogBox('skill-describe-log', describeLogs.map((line) => formatSkillLogLine(translate, line))),
             diffRows,
@@ -3495,7 +3497,7 @@ window.__ModuleLoader__.load({
               batchModels !== null && batchModels.length > 0 ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.batch.model'),
                 React.createElement('select', { 'data-testid': 'skills-batch-model', value: batchModelItem === null ? '' : skillModelKey(batchModelItem), disabled: batchBusy || (batch !== null && batch.phase === 'running'), onChange: (event) => changeSkillsBatchModel(event.target.value), style: { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' } },
                   batchModels.map((item) => React.createElement('option', { key: skillModelKey(item), value: skillModelKey(item) }, item.providerName + ' / ' + item.name)))) : null,
-              effectivePhase === 'idle' || effectivePhase === 'done' || effectivePhase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: { fontSize: '12.5px', padding: '5px 14px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.plan')) : null,
+              effectivePhase === 'idle' || effectivePhase === 'done' || effectivePhase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: Object.assign({}, svcButtonStyle('neutral'), { cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 }) }, translate('skills.batch.plan')) : null,
               batchPlan !== null ? React.createElement('span', { 'data-testid': 'skills-batch-candidates', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
                 translate('skills.batch.candidates', { count: batchPlan.candidates.length }) + (batchPlan.estBytes > 0 ? ' · ' + translate('skills.batch.estBytes', { size: formatSkillBytes(batchPlan.estBytes) }) : '') + ' · ' + translate('skills.batch.skipped', { count: batchPlan.skipped.length })) : null,
               batchPlan !== null && effectivePhase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || batchPlan.candidates.length === 0, onClick: () => void startBatch(), style: { fontSize: '12.5px', padding: '5px 14px', borderRadius: '7px', border: '1px solid transparent', background: 'var(--dsw-alias-state-success-primary)', color: '#fff', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, translate('skills.batch.start')) : null,
@@ -3785,7 +3787,7 @@ window.__ModuleLoader__.load({
 
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
-        const chipButton = { fontSize: '12.5px', padding: '4px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', flexShrink: 0 }
+        const chipButton = svcRowActionStyle()
         // v0.39 按钮语义（安全教义）：删除初次出现 = 危险描边，实底红只留给最终确认。
         const dangerOutlineButton = Object.assign({}, chipButton, { background: 'transparent', borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)' })
         const dangerSolidButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' })
@@ -4735,7 +4737,7 @@ window.__ModuleLoader__.load({
                                   })),
                                 React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-save', onClick: () => saveCredential(row.provider), disabled: credDraft.value.trim() === '', style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: credDraft.value.trim() === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: credDraft.value.trim() === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: credDraft.value.trim() === '' ? 'default' : 'pointer', fontSize: '12px' } }, translate('quota.credential.save')),
                                 ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', title: credClearArmed ? translate('quota.credential.clearConfirm') : undefined, onClick: () => { if (!credClearArmed) { setCredClearArmed(true); return } setCredClearArmed(false); void clearCredential(row.provider, selectedName) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-state-error-primary)', background: credClearArmed ? 'var(--dsw-alias-state-error-primary)' : 'transparent', color: credClearArmed ? '#fff' : 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' } }, translate(credClearArmed ? 'quota.credential.clearConfirm' : 'quota.credential.clear'))] : []),
-                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: closeCredEditor, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
+                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: closeCredEditor, style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
                               )
                             : React.createElement('div', { key: 'cred-entry', style: { display: 'flex' } },
                                 React.createElement('button', {
@@ -4752,7 +4754,7 @@ window.__ModuleLoader__.load({
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
-                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.cancel')),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
                     )] : []),
                     // 卡片脚部（高级配置区）：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡录入入口。
                     ...(isAdvanced ? [
@@ -4777,7 +4779,7 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         'data-testid': `quota-card-edit-${row.provider}`,
                         onClick: () => openCardEditor(row),
-                        style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                        style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
                       }, translate('quota.resetCard.edit')))] : []),
                     ] : []))
                 })),
@@ -5502,7 +5504,7 @@ window.__ModuleLoader__.load({
                   'data-testid': 'permissions-toggle',
                   'aria-expanded': String(permissionOpen),
                   onClick: () => setPermissionOpen((value) => !value),
-                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)', cursor: 'pointer' },
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                 }, `${permissionOpen ? '▾' : '▸'} ${translate(permissionOpen ? 'permissions.hide' : 'permissions.show')}${permissionAbnormal > 0 ? ` · ${permissionAbnormal}` : ''}`)),
               permissionOpen
                 ? React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
@@ -5572,10 +5574,10 @@ window.__ModuleLoader__.load({
                   React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
-                      : React.createElement('button', { style: Object.assign({}, ghost, { minHeight: '28px', padding: '4px 9px' }), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
+                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
-                      : React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '28px', padding: '4px 9px' }), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
+                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
                       : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'dangerGhost', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
