@@ -1477,6 +1477,25 @@ window.__ModuleLoader__.load({
       }
       // v0.39 行尾上下文动作（查看/导出/归档/恢复…）：统一幽灵底 + 加强描边 + 紧凑尺寸。
       const svcRowActionStyle = (overrides) => Object.assign({}, SVC_BTN_BASE, { background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)', minHeight: '28px', padding: '4px 10px', fontSize: '12px', borderRadius: 'var(--dsh-svc-radius-control)' }, overrides)
+      // v0.39 徽标工厂：状态/标签统一 pill 语言（10px 字 + 语义淡色底 + 语义文字）——
+      // 一处改动 = 全面板徽章联动（此前会话标签/额度 auto/技能徽章各写各的 rgba）。
+      const svcBadgeStyle = (tone, extra) => Object.assign({
+        display: 'inline-flex',
+        alignItems: 'center',
+        flex: 'none',
+        fontSize: '10px',
+        lineHeight: '16px',
+        padding: '1px 6px',
+        borderRadius: 999,
+        whiteSpace: 'nowrap',
+        ...({
+          success: { background: 'rgba(16,185,129,0.16)', color: 'var(--dsh-svc-success)' },
+          warning: { background: 'rgba(198,128,0,0.14)', color: 'var(--dsh-svc-warning)' },
+          danger: { background: 'rgba(220,38,38,0.12)', color: 'var(--dsh-svc-danger)' },
+          info: { background: 'rgba(37,99,235,0.10)', color: 'var(--dsh-svc-info)' },
+          neutral: { background: 'var(--dsh-svc-page-bg)', color: 'var(--dsh-svc-text-muted)' },
+        }[tone] || {}),
+      }, extra)
       // 展示面（只读信息容器）：页面级浅底 + 细边框，与操作卡片区分。
       const svcSurfaceStyle = (extra) => Object.assign({ background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsh-svc-text)', border: '1px solid var(--dsh-svc-border)', borderRadius: 'var(--dsh-svc-radius-control)', padding: '10px' }, extra)
       // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
@@ -3332,7 +3351,7 @@ window.__ModuleLoader__.load({
 
         // ── 渲染 ──
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const badge = (text, tone) => React.createElement('span', { key: text, style: { marginLeft: '6px', fontSize: '10px', padding: '1px 7px', borderRadius: 999, verticalAlign: 'middle', background: tone === 'warn' ? 'rgba(198,128,0,0.18)' : tone === 'danger' ? 'rgba(196,64,64,0.16)' : 'var(--dsw-alias-interactive-bg-hover)', color: tone === 'warn' ? 'var(--dsw-alias-state-warn-primary)' : tone === 'danger' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-tertiary)' } }, text)
+        const badge = (text, tone) => React.createElement('span', { key: text, style: svcBadgeStyle(tone === 'warn' ? 'warning' : tone === 'danger' ? 'danger' : 'neutral', { marginLeft: '6px', padding: '1px 7px', verticalAlign: 'middle' }) }, text)
         const pillSwitch = (checked, opts) => React.createElement('button', {
           type: 'button',
           role: 'switch',
@@ -4175,9 +4194,9 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { minWidth: 0 } },
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
                 React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
-                live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(16,185,129,0.16)', color: 'var(--dsw-alias-state-success-primary)' } }, translate('sessions.row.live')) : null,
-                archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(198,128,0,0.14)', color: 'var(--dsw-alias-state-warn-primary)' } }, translate('sessions.row.archived')) : null,
-                isDeleted ? React.createElement('span', { style: { fontSize: '10.5px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(220,38,38,0.12)', color: 'var(--dsw-alias-state-error-primary)' } }, translate('sessions.row.deleted')) : null),
+                live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: svcBadgeStyle('success') }, translate('sessions.row.live')) : null,
+                archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: svcBadgeStyle('warning') }, translate('sessions.row.archived')) : null,
+                isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null),
               React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · '))),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions))
         }
@@ -4564,7 +4583,7 @@ window.__ModuleLoader__.load({
                     row.kindSource === 'auto'
                       ? React.createElement('span', {
                           'data-testid': `quota-auto-tag-${row.provider}`,
-                          style: { marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-tertiary)', verticalAlign: 'middle' },
+                          style: svcBadgeStyle('neutral', { marginLeft: '6px', verticalAlign: 'middle' }),
                         }, translate('quota.kindAuto'))
                       : null)
                   const windows = Array.isArray(row.windows) ? row.windows : []
