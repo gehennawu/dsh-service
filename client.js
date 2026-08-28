@@ -5734,11 +5734,12 @@ window.__ModuleLoader__.load({
                 React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', background: item.level === 'error' ? 'var(--dsh-svc-danger)' : item.level === 'warning' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' } }),
                 React.createElement('span', { style: { color: 'var(--dsh-svc-text)' } }, item.text))))
         // 固定核心操作：健康检查 / 额度查询 / 创建备份（导航型快捷入口，非破坏主操作）。
+        // v0.39 用户复核：品牌描边（brandGhost）与中性钮区分，直观可辨为按钮。
         // 各按钮随对应功能开关门控；全关时整行不渲染。
         const overviewActions = [
-          features.healthDiagnostics !== false ? React.createElement('button', { key: 'health', type: 'button', 'data-testid': 'overview-action-health', style: neutral, onClick: () => { setActiveTab('diagnostics'); runDiagnostics(false) } }, translate('overview.action.health')) : null,
-          features.quotaLookup !== false ? React.createElement('button', { key: 'quota', type: 'button', 'data-testid': 'overview-action-quota', style: neutral, onClick: () => setActiveTab('quota') }, translate('tabs.quota')) : null,
-          features.backupMaintenance !== false ? React.createElement('button', { key: 'backup', type: 'button', 'data-testid': 'overview-action-backup', style: neutral, onClick: () => { setActiveTab('maintenance'); selectMaintenanceTab('backup') } }, translate('backup.create')) : null,
+          features.healthDiagnostics !== false ? React.createElement('button', { key: 'health', type: 'button', 'data-testid': 'overview-action-health', 'data-variant': 'brandGhost', style: secondary, onClick: () => { setActiveTab('diagnostics'); runDiagnostics(false) } }, translate('overview.action.health')) : null,
+          features.quotaLookup !== false ? React.createElement('button', { key: 'quota', type: 'button', 'data-testid': 'overview-action-quota', 'data-variant': 'brandGhost', style: secondary, onClick: () => setActiveTab('quota') }, translate('tabs.quota')) : null,
+          features.backupMaintenance !== false ? React.createElement('button', { key: 'backup', type: 'button', 'data-testid': 'overview-action-backup', 'data-variant': 'brandGhost', style: secondary, onClick: () => { setActiveTab('maintenance'); selectMaintenanceTab('backup') } }, translate('backup.create')) : null,
         ].filter((node) => node !== null)
         const overviewActionsBlock = overviewActions.length === 0
           ? null
