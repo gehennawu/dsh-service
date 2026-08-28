@@ -1768,7 +1768,7 @@ test('notification switches render four independent toggles (incl. bell visibili
   await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /任务结束或需要授权、抉择时发送浏览器通知。/)
+  assert.match(renderer.text('settings.section'), /主会话任务结束，或会话需要授权、抉择时发送浏览器通知；子代理完成任务不通知。/)
   assert.doesNotMatch(renderer.text('settings.section'), /关闭时下面两个开关暂停生效|页面刷新后保持|会话完成一轮任务时提醒|需要授权、审阅计划或选择答案时提醒/)
   const notifyRows = renderer.findAllByTestIdPrefix('notify-row-')
   assert.equal(notifyRows.length, 4)
@@ -1882,6 +1882,61 @@ test('session edges notify for task completion and pending interaction with kind
   assert.deepEqual(renderer.notifications().slice(2), [
     { title: '需要你的确认', body: '重构面板（等待授权）' },
   ])
+})
+
+test('subagent completion stays silent while root completion and subagent interactions notify', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: true },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: true },
+  })
+  assert.deepEqual(renderer.notifications(), [], 'baseline snapshot rings nothing')
+
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false },
+  })
+  assert.deepEqual(renderer.notifications(), [
+    { title: '任务完成', body: '主会话 已完成本轮任务' },
+  ], 'root completion notifies but subagent completion stays silent')
+
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'approval' },
+  })
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false },
+  })
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'plan-review' },
+  })
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false },
+  })
+  renderer.setSessions({
+    root: { id: 'root', displayTitle: '主会话', running: false },
+    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'question' },
+  })
+  assert.deepEqual(renderer.notifications().slice(1), [
+    { title: '需要你的确认', body: '子代理（等待授权）' },
+    { title: '需要你的确认', body: '子代理（等待审阅计划）' },
+    { title: '需要你的确认', body: '子代理（等待选择答案）' },
+  ], 'subagent approval, plan review, and question notifications remain enabled')
 })
 
 test('notification kinds are gated by the master and per-kind switches', async () => {

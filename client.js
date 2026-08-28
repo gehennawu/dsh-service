@@ -489,7 +489,7 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
       'notification.title': '通知',
-      'notification.description': '任务结束或需要授权、抉择时发送浏览器通知。',
+      'notification.description': '主会话任务结束，或会话需要授权、抉择时发送浏览器通知；子代理完成任务不通知。',
       'notification.enable': '开启通知',
       'notification.enabled': '通知已开启',
       'notification.disable': '关闭通知',
@@ -1098,7 +1098,7 @@ window.__ModuleLoader__.load({
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
       'notification.title': 'Notifications',
-      'notification.description': 'Browser notifications when a task finishes or approval/choice is needed.',
+      'notification.description': 'Browser notifications when a root task finishes or approval/choice is needed; subagent completion stays silent.',
       'notification.enable': 'Enable notifications',
       'notification.enabled': 'Notifications enabled',
       'notification.disable': 'Disable notifications',
@@ -1822,7 +1822,7 @@ window.__ModuleLoader__.load({
             const next = { running: summary.running === true, pending: summary.pendingInteraction !== undefined }
             const prev = observed.get(id)
             if (prev !== undefined) {
-              if (prev.running && !next.running && featureEnabled('taskNotifications') && notifyEnabled && notifyDone) {
+              if (prev.running && !next.running && summary.origin !== 'subagent' && featureEnabled('taskNotifications') && notifyEnabled && notifyDone) {
                 fireNotification(t('notification.doneTitle'), t('notification.doneBody', { title: summary.displayTitle || id }))
               }
               if (!prev.pending && next.pending && featureEnabled('taskNotifications') && notifyEnabled && notifyInput) {

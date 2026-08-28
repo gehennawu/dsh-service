@@ -151,7 +151,8 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 ![Task notifications](./screenshots/task-notifications_en.png)
 
-- Browser notification when a session finishes its turn or your approval / plan review / answer is needed; clicking focuses the page
+- Browser notification when a root session finishes its turn or any session needs approval / plan review / an answer; subagent completion is silent; clicking focuses the page
+- Subagent approval / plan-review / question requests still notify
 - Four independent toggles: master, task completion, approvals & questions, composer-bell visibility
 - The composer bell toggles the master switch quickly; all toggles persist across reloads
 
