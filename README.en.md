@@ -59,6 +59,15 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Status summary (error → warning → info → normal aggregation with a status dot) → actionable items (only when present) → version and runtime → metrics grid → fixed core actions (health check / quota lookup / create backup, gated by feature switches) → recent errors (rendered only when non-empty, collapsed by default)
 - Aggregation rules: any health/diagnostics/backup/statistics/quota/restart failure is error; permission issues, non-advisory diagnostic warnings, and quota windows at ≥80% usage are warning; available updates, manual-start runtime, and no backups yet are info
 
+### Maintenance and Configuration pages
+
+![Maintenance page](./screenshots/maintenance_en.png)
+
+![Configuration page](./screenshots/configuration_en.png)
+
+- Maintenance groups Sessions, Skills, Subagents, Backups, and Restart; it remembers the most recent subpage and falls back to an available item when a feature is disabled
+- Configuration groups feature switches and task notifications; switches are grouped and apply live, while the Notifications entry stays visible but disabled when that feature is off
+
 ### Version and updates
 
 - Shows the current DSH and plugin versions, linking to GitHub Releases
