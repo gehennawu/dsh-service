@@ -1768,7 +1768,7 @@ test('notification switches render four independent toggles (incl. bell visibili
   await renderer.flush()
   await renderer.findButton('通知').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /任务结束或需要你授权、抉择时发送浏览器通知。需要授权浏览器通知权限。/)
+  assert.match(renderer.text('settings.section'), /任务结束或需要授权、抉择时发送浏览器通知。/)
   assert.doesNotMatch(renderer.text('settings.section'), /关闭时下面两个开关暂停生效|页面刷新后保持|会话完成一轮任务时提醒|需要授权、审阅计划或选择答案时提醒/)
   const notifyRows = renderer.findAllByTestIdPrefix('notify-row-')
   assert.equal(notifyRows.length, 4)
