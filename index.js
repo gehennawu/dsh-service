@@ -502,10 +502,90 @@ function markBackupError(error, fallback = 'backup-failed') {
   return wrapped
 }
 
+const RPC_TECHNICAL_FAILURE = Symbol('dsh-service.rpc-technical-failure')
+
 function rpcFailure(error) {
   const normalized = markBackupError(error)
-  const message = normalized.message || normalized.code
+  const message = normalized.message || normalized.code || 'internal-error'
   return { ok: false, error: { code: 'internal', message, details: {} } }
+}
+
+function rpcTechnicalFailure(error, extras = {}) {
+  const result = { ...rpcFailure(error), ...extras }
+  Object.defineProperty(result, RPC_TECHNICAL_FAILURE, { value: error })
+  return result
+}
+
+function validateRpcPayload(payload) {
+  // 兼容既有 optional-chaining 语义：无载荷与 primitive 都按空对象处理；数组/对象保留给端点 validator。
+  if (payload === undefined || payload === null || (typeof payload !== 'object' && typeof payload !== 'function')) return {}
+  return payload
+}
+
+function strictRpcResult(result) {
+  if (result === null || typeof result !== 'object' || typeof result.ok !== 'boolean') throw new Error('invalid-rpc-response')
+  if (result.ok === true) return result
+  const error = result.error
+  if (
+    error !== null && typeof error === 'object'
+    && error.code === 'internal'
+    && typeof error.message === 'string'
+    && error.details !== null && typeof error.details === 'object' && !Array.isArray(error.details)
+  ) return result
+  return { ...result, error: rpcFailure(error instanceof Error ? error : new Error(typeof error === 'string' ? error : 'internal-error')).error }
+}
+
+function rpcErrorMessage(result) {
+  if (result?.ok !== false) return undefined
+  if (typeof result.error === 'string') return result.error
+  if (result.error !== null && typeof result.error === 'object' && typeof result.error.message === 'string') return result.error.message
+  return 'internal-error'
+}
+
+function createRpcDispatcher({ endpoints, featureEnabled = () => true, logger, now = Date.now }) {
+  const registry = new Map(Object.entries(endpoints))
+  const logTechnicalError = (endpoint, error) => {
+    try {
+      logger?.error?.(`dsh-service: rpc technical error endpoint=${endpoint}: ${error?.stack || error?.message || String(error)}`)
+    } catch (_) {}
+  }
+  return async (endpoint, payload) => {
+    const definition = typeof endpoint === 'string' ? registry.get(endpoint) : undefined
+    if (definition === undefined) return rpcFailure(new Error('unknown-endpoint'))
+    const startedAt = now()
+    const audit = (outcome, result) => {
+      if (definition.audit !== true) return
+      const code = rpcErrorMessage(result)
+      try {
+        logger?.info?.(`dsh-service: rpc audit endpoint=${endpoint} outcome=${outcome} durationMs=${Math.max(0, now() - startedAt)}${code === undefined ? '' : ` code=${code}`}`)
+      } catch (_) {}
+    }
+    if (definition.feature !== undefined && !featureEnabled(definition.feature)) {
+      const result = rpcFailure(new Error('feature-disabled'))
+      audit('rejected', result)
+      return result
+    }
+    let normalizedPayload
+    try {
+      normalizedPayload = (definition.validate ?? validateRpcPayload)(payload)
+    } catch (error) {
+      const result = rpcFailure(error)
+      audit('rejected', result)
+      return result
+    }
+    try {
+      const result = strictRpcResult(await definition.handle(normalizedPayload, endpoint))
+      const technicalError = result[RPC_TECHNICAL_FAILURE]
+      if (technicalError !== undefined) logTechnicalError(endpoint, technicalError)
+      audit(technicalError !== undefined ? 'failed' : result.ok ? 'ok' : 'rejected', result)
+      return result
+    } catch (error) {
+      logTechnicalError(endpoint, error)
+      const result = rpcFailure(error)
+      audit('failed', result)
+      return result
+    }
+  }
 }
 
 async function assertSafeBackupTree(path) {
@@ -4851,16 +4931,15 @@ function apply(ctx) {
     }), 'dsh-service backup download route')
   }
 
-  // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能放在 endpoint 中。
-  // 合法示例：channel=/dsh-service，endpoint=version/check-update/activity/web。
-  ctx.connection.rpc.handle('/dsh-service', async (endpoint, payload) => {
-    if (endpoint === 'version') {
+  // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能统一登记在内部注册表。
+  const rpcEndpoints = {
+    'version': { handle: async (payload, rpcEndpoint) => {
       // runtimeEnv 随进程身份（instanceId）一起返回：概览展示、升级前置确认与重启警告共用，
       // 客户端对缺字段的老宿主静默降级。
       return { ok: true, value: { current: dshVersion, pluginVersion, instanceId, runtimeEnv } }
-    }
 
-    if (endpoint === 'check-update') {
+    } },
+    'check-update': { handle: async (payload, rpcEndpoint) => {
       const now = Date.now()
       if (updateCache && now - updateCache.checkedAt < updateCache.ttl) {
         return updateCache.ok
@@ -4891,105 +4970,72 @@ function apply(ctx) {
         updateCache = { ok: false, error: message, checkedAt: now, ttl: 60 * 1000 }
         return { ok: false, error: message, cached: false }
       }
-    }
 
-    if (endpoint === 'upgrade') {
+    } },
+    'upgrade': { audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await upgradePlugin(ctx, dshHome, runtimeEnv) }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'activity') {
+    } },
+    'activity': { handle: async (payload, rpcEndpoint) => {
       return { ok: true, value: collectActiveWork(ctx) }
-    }
 
-    if (endpoint === 'health') {
-      try {
-        return { ok: true, value: await collectHealth(ctx) }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+    } },
+    'health': { handle: async (payload, rpcEndpoint) => {
+      return { ok: true, value: await collectHealth(ctx) }
+
+    } },
+    'diagnostics': { feature: 'healthDiagnostics', handle: async (payload, rpcEndpoint) => {
+      return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
+
+    } },
+    'usage': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {
+      return { ok: true, value: publicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
+
+    } },
+    'usage-refresh': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {
+      if (usageRefreshPromise === undefined) {
+        usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
       }
-    }
+      return { ok: true, value: publicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
 
-    if (endpoint === 'diagnostics') {
-      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
-      try {
-        return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
+    } },
+    'permissions-plan': { feature: 'healthDiagnostics', audit: true, handle: async (payload, rpcEndpoint) => {
+      return { ok: true, value: await permissionSnapshot(ctx, dshHome, permissionPlans) }
 
-    if (endpoint === 'usage') {
-      if (!featureEnabled('modelUsage')) return { ok: false, error: 'feature-disabled' }
-      try {
-        return { ok: true, value: publicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
+    } },
+    'permissions-deep': { feature: 'healthDiagnostics', handle: async (payload, rpcEndpoint) => {
+      const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
+      if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
+      return { ok: true, value }
 
-    if (endpoint === 'usage-refresh') {
-      if (!featureEnabled('modelUsage')) return { ok: false, error: 'feature-disabled' }
-      try {
-        if (usageRefreshPromise === undefined) {
-          usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
-        }
-        return { ok: true, value: publicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
-
-    if (endpoint === 'permissions-plan') {
-      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
-      try {
-        return { ok: true, value: await permissionSnapshot(ctx, dshHome, permissionPlans) }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
-
-    if (endpoint === 'permissions-deep') {
-      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
-      try {
-        const value = await deepCheckPermissions(dshHome, permissionPlans, payload?.planId)
-        if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
-        return { ok: true, value }
-      } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
-      }
-    }
-
-    if (endpoint === 'permissions-repair') {
-      if (!featureEnabled('healthDiagnostics')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'permissions-repair': { feature: 'healthDiagnostics', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const value = await repairPermissions(ctx, dshHome, permissionPlans, payload?.planId)
         if (value === undefined) return { ok: false, error: 'unknown-permission-plan' }
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-list') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-list': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await listBackups(dshHome) }
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-progress') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-progress': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
       return { ok: true, value: { ...backupProgress } }
-    }
 
-    if (endpoint === 'backup-create') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-create': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await withBackupLock(() => {
           const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
@@ -5001,10 +5047,9 @@ function apply(ctx) {
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-export') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-export': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const value = await exportBackup(dshHome, downloadTokens, payload?.id)
         if (value === undefined) return rpcFailure(new Error('unknown-backup'))
@@ -5012,10 +5057,9 @@ function apply(ctx) {
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-delete') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-delete': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const value = await deleteBackup(dshHome, payload?.id)
         if (value === undefined) return rpcFailure(new Error('unknown-backup'))
@@ -5023,10 +5067,9 @@ function apply(ctx) {
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-inspect') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-inspect': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
       try {
         const value = await backupIntegrity.inspectBackup(payload?.id)
         if (value === undefined) return rpcFailure(new Error('unknown-backup'))
@@ -5034,33 +5077,29 @@ function apply(ctx) {
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-restore-prepare') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-restore-prepare': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id) }
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-restore-commit') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-restore-commit': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await backupIntegrity.commitRestore(payload?.planId) }
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'backup-restore') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-restore': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
       return rpcFailure(new Error('restore-preflight-required'))
-    }
 
-    if (endpoint === 'backup-import') {
-      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+    } },
+    'backup-import': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const value = await importBackup(dshHome, payload?.name, payload?.data, async (source) => {
           const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
@@ -5071,10 +5110,9 @@ function apply(ctx) {
       } catch (error) {
         return rpcFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-list') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-list': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       try {
         const index = await skillsIndexPromise
         const { roots, entries } = await scanSkillEntries(ctx, dshHome)
@@ -5087,23 +5125,21 @@ function apply(ctx) {
           },
         }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-models') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-models': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       const llm = ctx.get('llm')
       if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
       try {
         return { ok: true, value: await listSkillModels(llm, ctx.get('agentDefaultModel')) }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-toggle') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-toggle': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const field = payload?.field === 'model' || payload?.field === 'user' ? payload.field : null
       if (field === null) return { ok: false, error: 'invalid-field' }
       if (typeof payload?.enable !== 'boolean') return { ok: false, error: 'invalid-enable' }
@@ -5113,12 +5149,11 @@ function apply(ctx) {
         if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
         return { ok: true, value: { entry: outcome.entry } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-fix-keys') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-fix-keys': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const index = await skillsIndexPromise
         const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, true, (raw) => {
@@ -5128,12 +5163,11 @@ function apply(ctx) {
         if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
         return { ok: true, value: { entry: outcome.entry } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-describe') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-describe': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       const llm = ctx.get('llm')
       if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
       const provider = typeof payload?.provider === 'string' ? payload.provider : ''
@@ -5160,18 +5194,16 @@ function apply(ctx) {
           call.done()
         }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error), ...(error?.message === 'describe-timeout' ? { detail: 'timeout' } : {}) }
+        return rpcTechnicalFailure(error, error?.message === 'describe-timeout' ? { detail: 'timeout' } : {})
       }
-    }
 
-    if (endpoint === 'skills-describe-log') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-describe-log': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       const job = describeJobs.get(typeof payload?.id === 'string' ? payload.id : '')
       return { ok: true, value: { logs: job ? [...job.logs] : [] } }
-    }
 
-    if (endpoint === 'skills-note-save') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-note-save': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const description = sanitizeSkillDraftText(payload?.patch?.description, SKILL_DESCRIPTION_MAX_CHARS)
       const usage = sanitizeSkillDraftText(payload?.patch?.usage ?? '', SKILL_USAGE_MAX_CHARS)
       if (description === '') return { ok: false, error: 'invalid-description' }
@@ -5191,12 +5223,11 @@ function apply(ctx) {
         })
         return { ok: true, value: { entry: publicSkillEntry({ ...entry }, index) } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-note-clear') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-note-clear': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const { entries } = await scanSkillEntries(ctx, dshHome)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
@@ -5207,12 +5238,11 @@ function apply(ctx) {
         })
         return { ok: true, value: { entry: publicSkillEntry(entry, index) } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-batch-plan') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-batch-plan': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       // 覆盖竞态守卫：运行中生成新计划会让在途循环错位到新清单，直接拒绝。
       if (skillsBatch !== null && (skillsBatch.running || skillsBatch.phase === 'running')) return { ok: false, error: 'batch-already-running' }
       const provider = typeof payload?.provider === 'string' ? payload.provider : ''
@@ -5233,12 +5263,11 @@ function apply(ctx) {
         skillsBatch = { phase: 'planned', planId, provider, model, candidates, annotated, items: candidates, total: candidates.length + annotated.length, done: 0, failures: [], aborted: false, running: false, current: null, logs: [], estBytes: entries.filter((entry) => planIds.has(entry.id)).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) }
         return { ok: true, value: { planId, candidates, annotated, skipped, estBytes: skillsBatch.estBytes } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'skills-batch-run') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-batch-run': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       if (skillsBatch === null || skillsBatch.planId !== payload?.planId) return { ok: false, error: 'unknown-batch-plan' }
       if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
       // 已注释条目的强制覆盖确认闸：计划含已注释条目时，客户端必须显式确认
@@ -5305,10 +5334,9 @@ function apply(ctx) {
         skillsBatch.running = false
       })()
       return { ok: true, value: { started: true, total: skillsBatch.total } }
-    }
 
-    if (endpoint === 'skills-batch-status') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-batch-status': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       if (skillsBatch === null) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [] } }
       return {
         ok: true,
@@ -5322,20 +5350,18 @@ function apply(ctx) {
           logs: skillsBatch.logs.slice(-30),
         },
       }
-    }
 
-    if (endpoint === 'skills-batch-cancel') {
-      if (!featureEnabled('skillManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'skills-batch-cancel': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       if (skillsBatch !== null) skillsBatch.aborted = true
       // 立即中断在途 LLM 调用：不等当前条目跑满 90s 超时/重试链。
       for (const call of skillsActiveControllers) {
         try { call.abort(new Error('batch-cancelled')) } catch (_) {}
       }
       return { ok: true, value: { phase: skillsBatch?.phase ?? 'idle' } }
-    }
 
-    if (endpoint === 'quota') {
-      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'quota': { feature: 'quotaLookup', handle: async (payload, rpcEndpoint) => {
       try {
         const providers = readQuotaProfiles(ctx.get('settings'), ctx.get('llm'))
         quotaThrottle.prune(new Set(providers.map((profile) => profile.name)))
@@ -5418,12 +5444,11 @@ function apply(ctx) {
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'quota-refresh') {
-      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'quota-refresh': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
         // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
@@ -5441,12 +5466,11 @@ function apply(ctx) {
         kickQuotaRefresh(profile, kind, config)
         return { ok: true }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'quota-config') {
-      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'quota-config': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
@@ -5486,15 +5510,11 @@ function apply(ctx) {
           return { value: { ok: true } }
         })
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    // 凭据填写窗口（v0.24）：面板输入密钥 → 宿主写进凭据提供方（dsh-credentials-local 即
-    // $DSH_HOME/.credentials.yaml 的 refs 分节，热生效无需重启）。名字只收宿主派生的线索白名单，
-    // 值只在写入方向流动——describe/快照永远不回传密钥内容。unset 供清除文件层存量。
-    if (endpoint === 'quota-credential-set' || endpoint === 'quota-credential-unset') {
-      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'quota-credential-set': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
@@ -5506,7 +5526,7 @@ function apply(ctx) {
         if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
         const credentials = ctx.get('credentials')
         if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
-        if (endpoint === 'quota-credential-set') {
+        if (rpcEndpoint === 'quota-credential-set') {
           if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
           // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
           const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
@@ -5531,12 +5551,52 @@ function apply(ctx) {
         quotaThrottle.resetGates(providerName)
         return { ok: true }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'quota-reset-card') {
-      if (!featureEnabled('quotaLookup')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'quota-credential-unset': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
+      try {
+        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
+        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
+        const config = await refreshQuotaConfigCache()
+        const { kind } = resolveQuotaKind(config, profileForProvider)
+        if (kind === undefined) return { ok: false, error: 'not-adapted' }
+        const name = typeof payload?.name === 'string' ? payload.name : ''
+        if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
+        const credentials = ctx.get('credentials')
+        if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
+        if (rpcEndpoint === 'quota-credential-set') {
+          if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
+          // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
+          const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
+          if (value === '' || value.length > 4096) return { ok: false, error: 'invalid-value' }
+          try {
+            await credentials.set(name, value)
+          } catch (error) {
+            // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
+            return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+          }
+          // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
+          // 客户端紧随其后的 quota-refresh 应立刻发上游，而不是干等退避走完。
+          quotaThrottle.resetGates(providerName)
+          return { ok: true }
+        }
+        if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
+        try {
+          await credentials.unset(name)
+        } catch (error) {
+          return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+        }
+        quotaThrottle.resetGates(providerName)
+        return { ok: true }
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+
+    } },
+    'quota-reset-card': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
         // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，
@@ -5562,11 +5622,11 @@ function apply(ctx) {
           return { value: { ok: true } }
         })
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'web') {
+    } },
+    'web': { audit: true, handle: async (payload, rpcEndpoint) => {
       const activity = collectActiveWork(ctx)
       if (activity.hasActive && payload?.force !== true) {
         return { ok: false, error: 'active-work', value: activity }
@@ -5580,11 +5640,9 @@ function apply(ctx) {
           instanceId,
         },
       }
-    }
 
-    // ── 子代理路由（v0.27）：快照 + 三态保存 ─────────────────────────────
-    if (endpoint === 'subagent-route') {
-      if (!featureEnabled('subagentRoute')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'subagent-route': { feature: 'subagentRoute', handle: async (payload, rpcEndpoint) => {
       try {
         await subagentRouteLoadPromise
         const llm = ctx.get('llm')
@@ -5614,12 +5672,11 @@ function apply(ctx) {
           },
         }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'subagent-route-save') {
-      if (!featureEnabled('subagentRoute')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'subagent-route-save': { feature: 'subagentRoute', audit: true, handle: async (payload, rpcEndpoint) => {
       const mode = payload?.mode
       if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
       try {
@@ -5667,26 +5724,22 @@ function apply(ctx) {
           } : {}) } }
         })
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    // ── 会话管理（v0.35）：查看/导出/归档/搜索/删除 ─────────────────────
-    if (endpoint === 'sessions-list') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-list': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const scope = payload?.scope === 'archived' || payload?.scope === 'deleted' ? payload.scope : 'all'
       try {
         const value = await listSessionsForManage(ctx, dshHome, scope)
         // 已删除记录独立下发（供「已删除」筛选）：字段只为展示，绝不包含内容。
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    // 体积懒加载（v0.36）：列表不下发体积，行内按需批量取；宿主内存缓存跨刷新复用。
-    if (endpoint === 'sessions-bytes') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-bytes': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const raw = Array.isArray(payload?.ids) ? payload.ids : []
       const ids = []
       const seen = new Set()
@@ -5702,12 +5755,11 @@ function apply(ctx) {
         // 宿主侧记录（locate），浏览器不提供任何路径。
         return { ok: true, value: { bytes: await resolveSessionBytesForIds(ctx, ids, sessionBytesCache) } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-view') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-view': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : undefined
@@ -5715,23 +5767,21 @@ function apply(ctx) {
       try {
         return await viewSessionPage(ctx, id, cursor, sessionViewCache, SESSIONS_VIEW_PAGE_SIZE, center)
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-search') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-search': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const query = typeof payload?.query === 'string' ? payload.query : ''
       const scope = payload?.scope === 'archived' ? 'archived' : 'all'
       try {
         return { ok: true, value: await searchSessionsContent(ctx, dshHome, query, scope) }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-export') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-export': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       try {
@@ -5740,12 +5790,11 @@ function apply(ctx) {
         const url = `/api/session.export?sessionId=${encodeURIComponent(id)}&includeDescendants=true`
         return { ok: true, value: { url, includesDescendants: true } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-archive') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-archive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       const workspaceRegistry = ctx.get('workspaceRegistry')
@@ -5761,12 +5810,11 @@ function apply(ctx) {
         }
       } catch (error) {
         if (error?.name === 'WorkspaceUnknownSessionError') return { ok: false, error: 'session-not-found' }
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-delete-plan') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-delete-plan': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''
       if (id === '') return { ok: false, error: 'invalid-session-id' }
       try {
@@ -5795,12 +5843,11 @@ function apply(ctx) {
           },
         }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
 
-    if (endpoint === 'sessions-delete') {
-      if (!featureEnabled('sessionManager')) return { ok: false, error: 'feature-disabled' }
+    } },
+    'sessions-delete': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const planId = typeof payload?.planId === 'string' ? payload.planId : ''
       const plan = sessionDeletePlans.get(planId)
       if (plan === undefined) return { ok: false, error: 'unknown-delete-plan' }
@@ -5831,12 +5878,12 @@ function apply(ctx) {
         if (sessionViewCache.id === plan.id) sessionViewCache.id = null
         return { ok: true, value: { deleted: true, id: plan.id } }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcTechnicalFailure(error)
       }
-    }
-
-    return { ok: false, error: 'unknown endpoint: ' + String(endpoint) }
-  }, { authority: 'loopback' })
+    } },
+  }
+  const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
+  ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
 }
 
 export {

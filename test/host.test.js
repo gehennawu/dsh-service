@@ -112,6 +112,7 @@ function createHost(overrides = {}) {
   const registeredCommands = []
   const registeredSettings = []
   const eventHandlers = new Map()
+  const logs = { info: [], warn: [], error: [] }
   let updateFeatureSettings = async () => {}
   const services = new Map(Object.entries(overrides.services || {}))
   const injectors = []
@@ -175,7 +176,13 @@ function createHost(overrides = {}) {
     },
   })
 
+  const logger = overrides.logger ?? {
+    info(message) { logs.info.push(String(message)) },
+    warn(message) { logs.warn.push(String(message)) },
+    error(message) { logs.error.push(String(message)) },
+  }
   const ctx = {
+    logger,
     get settings() {
       return services.get('settings')
     },
@@ -252,10 +259,13 @@ function createHost(overrides = {}) {
   }
   const publicHandler = async (...args) => {
     const result = await handlers[0].handler(...args)
-    if (result?.ok === false && typeof result.error === 'object') return { ...result, error: result.error.message }
+    if (result?.ok === false && typeof result.error === 'object') {
+      const detail = typeof result.error.details?.detail === 'string' ? result.error.details.detail : result.detail
+      return { ...result, error: result.error.message, ...(detail !== undefined ? { detail } : {}) }
+    }
     return result
   }
-  return { handler: publicHandler, rawHandler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  return { handler: publicHandler, rawHandler: handlers[0].handler, rpcRegistration: handlers[0], logs, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -986,6 +996,53 @@ test('feature gate covers backup integrity and restore preflight endpoints', asy
   for (const endpoint of ['backup-inspect', 'backup-restore-prepare', 'backup-restore-commit']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
+})
+
+test('RPC dispatcher registers one loopback channel and normalizes every wire failure', async () => {
+  const host = createHost({ featureSettings: { healthDiagnostics: false } })
+  assert.equal(host.rpcRegistration.channel, '/dsh-service')
+  assert.deepEqual(host.rpcRegistration.options, { authority: 'loopback' })
+
+  const cases = [
+    ['diagnostics', 42, 'feature-disabled'],
+    ['sessions-view', 42, 'invalid-session-id'],
+    ['skills-toggle', { field: 'bad', enable: true }, 'invalid-field'],
+    ['sessions-view', {}, 'invalid-session-id'],
+    ['missing-endpoint', { secret: 'must-not-be-logged' }, 'unknown-endpoint'],
+  ]
+  for (const [endpoint, payload, message] of cases) {
+    const raw = await host.rawHandler(endpoint, payload)
+    assert.equal(raw.ok, false, endpoint)
+    assert.deepEqual(raw.error, { code: 'internal', message, details: {} }, endpoint)
+    assert.equal((await host.handler(endpoint, payload)).error, message, endpoint)
+  }
+})
+
+test('RPC dispatcher records unexpected handler failures as technical errors', async () => {
+  const host = createHost({
+    services: {
+      sessionQuery: {
+        async listSessions() { throw new Error('database-offline') },
+      },
+    },
+  })
+  const raw = await host.rawHandler('health', {})
+  assert.deepEqual(raw, { ok: false, error: { code: 'internal', message: 'database-offline', details: {} } })
+  assert.equal(host.logs.error.length, 1)
+  assert.match(host.logs.error[0], /technical error endpoint=health/)
+  assert.match(host.logs.error[0], /database-offline/)
+})
+
+test('RPC dispatcher preserves failure extras and audits operations without payload data', async () => {
+  const host = createHost({ services: { agents: { list: () => [{ id: 'agent-1', status: 'running' }] } } })
+  const raw = await host.rawHandler('web', { force: false, secret: 'must-not-be-logged' })
+  assert.equal(raw.ok, false)
+  assert.equal(raw.error.message, 'active-work')
+  assert.equal(raw.value.hasActive, true)
+  assert.equal(host.logs.info.length, 1)
+  assert.match(host.logs.info[0], /rpc audit endpoint=web outcome=rejected/)
+  assert.equal(host.logs.info[0].includes('must-not-be-logged'), false)
+  assert.deepEqual(host.logs.error, [])
 })
 
 test('feature settings namespace registers when the settings service appears after plugin startup', () => {

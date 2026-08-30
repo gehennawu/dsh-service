@@ -1419,12 +1419,14 @@ window.__ModuleLoader__.load({
 
     function normalizeRpcResult(result) {
       if (!result || result.ok !== false || typeof result.error !== 'object' || result.error === null) return result
+      const detail = typeof result.error.details?.detail === 'string' ? result.error.details.detail : result.detail
       const message = typeof result.error.message === 'string' ? result.error.message : result.error.code
-      return { ...result, error: message || 'unknown' }
+      return { ...result, error: message || 'unknown', ...(detail !== undefined ? { detail } : {}) }
     }
 
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
+      const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload))
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
@@ -1763,7 +1765,7 @@ window.__ModuleLoader__.load({
         if (shouldPoll && skillsBatchPollHandle === null) {
           const tick = async () => {
             try {
-              const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-status', {})
+              const res = await rpcCall('skills-batch-status', {})
               if (!res.ok) return
               const previousPhase = skillsBatchState !== null ? skillsBatchState.phase : null
               skillsBatchState = res.value
@@ -1782,7 +1784,7 @@ window.__ModuleLoader__.load({
       const fetchSkillsBatchModels = async () => {
         if (skillsBatchModels !== null) return skillsBatchModels
         try {
-          const res = await ctx.connection.rpc.call('/dsh-service', 'skills-models', {})
+          const res = await rpcCall('skills-models', {})
           if (!res.ok) { skillsBatchModels = []; return skillsBatchModels }
           skillsBatchModels = res.value.models ?? []
           if (skillsBatchModelItem === null) skillsBatchModelItem = resolveSkillModelChoice(skillsBatchModels, res.value.current)
@@ -1799,7 +1801,7 @@ window.__ModuleLoader__.load({
       }
       const adoptSkillsBatchStatus = async () => {
         try {
-          const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-status', {})
+          const res = await rpcCall('skills-batch-status', {})
           if (res.ok && res.value.phase !== 'idle') {
             skillsBatchState = res.value
             syncSkillsBatchPolling()
@@ -1813,7 +1815,7 @@ window.__ModuleLoader__.load({
         const models = await fetchSkillsBatchModels()
         if (models.length === 0 || skillsBatchModelItem === null) { skillsBatchError = 'models-empty'; publishSkillsBatch(); return false }
         try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })) } catch (_) {}
-        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-plan', { provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })
+        const res = await rpcCall('skills-batch-plan', { provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })
         if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
         skillsBatchPlan = { ...res.value, modelItem: skillsBatchModelItem }
         const annotatedCount = Array.isArray(res.value.annotated) ? res.value.annotated.length : 0
@@ -1826,7 +1828,7 @@ window.__ModuleLoader__.load({
         if (skillsBatchPlan === null || skillsBatchState === null) return false
         // 计划含已注释条目时宿主要求显式确认（annotated-confirm-required 兜底），客户端只在
         // 两段式武装确认后传 forceAnnotated: true。
-        const res = await ctx.connection.rpc.call('/dsh-service', 'skills-batch-run', {
+        const res = await rpcCall('skills-batch-run', {
           planId: skillsBatchPlan.planId,
           lang: currentUiLocale(),
           ...(forceAnnotated === true ? { forceAnnotated: true } : {}),
@@ -1838,7 +1840,7 @@ window.__ModuleLoader__.load({
         return true
       }
       const cancelSkillsBatchShared = async () => {
-        try { await ctx.connection.rpc.call('/dsh-service', 'skills-batch-cancel', {}) } catch (_) {}
+        try { await rpcCall('skills-batch-cancel', {}) } catch (_) {}
       }
       const useSkillsBatch = () => {
         const [, bump] = useState(0)
@@ -2039,7 +2041,7 @@ window.__ModuleLoader__.load({
       let versionSnapshotPromise = null
       const fetchVersionSnapshot = () => {
         if (versionSnapshotPromise === null) {
-          versionSnapshotPromise = ctx.connection.rpc.call('/dsh-service', 'version', {}).then(normalizeRpcResult)
+          versionSnapshotPromise = rpcCall('version', {})
             .then((res) => {
               if (res && res.ok) applyVersionRuntimeEnv(res.value)
               return res
@@ -2057,7 +2059,7 @@ window.__ModuleLoader__.load({
       const checkRestart = async () => {
         setRestartFlow({ ...restartFlow, busy: true, error: null })
         try {
-          const res = await ctx.connection.rpc.call('/dsh-service', 'activity', {})
+          const res = await rpcCall('activity', {})
           if (res && res.ok === false) {
             console.error('dsh-service: activity check failed', res.error)
             throw new Error(t('error.activity'))
@@ -2071,7 +2073,7 @@ window.__ModuleLoader__.load({
       const restartWeb = async (force) => {
         setRestartFlow({ ...restartFlow, busy: true, error: null })
         try {
-          const res = await ctx.connection.rpc.call('/dsh-service', 'web', { force: force === true })
+          const res = await rpcCall('web', { force: force === true })
           if (res && res.ok === false) {
             if (res.error === 'active-work' && res.value) {
               setRestartFlow({ ...restartFlow, activity: res.value, stage: 3, busy: false, error: null })
@@ -2119,7 +2121,7 @@ window.__ModuleLoader__.load({
           elapsedMs += waitMs
           setRecoveryState({ status: 'waiting', elapsedMs })
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'version', {})
+            const res = await rpcCall('version', {})
             const nextInstanceId = res && res.ok ? res.value && res.value.instanceId : undefined
             if (typeof nextInstanceId === 'string' && nextInstanceId.length > 0 && nextInstanceId !== previousInstanceId) {
               window.location.reload()
@@ -2408,7 +2410,7 @@ window.__ModuleLoader__.load({
         }
         quotaSnapshotPromise = Promise.resolve().then(async () => {
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota', requested)
+            const res = await rpcCall('quota', requested)
             if (res?.ok === true && res.value && typeof res.value === 'object' && Array.isArray(res.value.providers)) {
               quotaStore.publish(res.value)
               scheduleQuotaSettlePull(res.value, requested)
@@ -3092,7 +3094,7 @@ window.__ModuleLoader__.load({
         const load = async () => {
           setLoading(true)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'subagent-route', {})
+            const res = await rpcCall('subagent-route', {})
             if (res.ok) {
               setSnapshot(res.value)
               setMode(res.value.mode)
@@ -3157,7 +3159,7 @@ window.__ModuleLoader__.load({
             const payload = nextMode === 'custom'
               ? { mode: 'custom', provider: effectiveProvider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) }
               : { mode: nextMode }
-            const res = await ctx.connection.rpc.call('/dsh-service', 'subagent-route-save', payload)
+            const res = await rpcCall('subagent-route-save', payload)
             if (res.ok) {
               setSavedTick((tick) => tick + 1)
               await load()
@@ -3217,7 +3219,7 @@ window.__ModuleLoader__.load({
 
       // ─── 技能管理（v0.22）：三区列表 / 启停 / AI 补全 / 批量 ────────────────
       const SKILLS_MODEL_STORAGE_KEY = 'dsh-service-skills-model'
-      const SKILL_RPC = (endpoint, payload) => ctx.connection.rpc.call('/dsh-service', endpoint, payload)
+      const SKILL_RPC = (endpoint, payload) => rpcCall(endpoint, payload)
       function formatSkillBytes(size) {
         return size >= 1024 * 1024 ? (size / 1024 / 1024).toFixed(1) + ' MB' : size >= 1024 ? (size / 1024).toFixed(1) + ' KB' : String(size) + ' B'
       }
@@ -3923,7 +3925,7 @@ window.__ModuleLoader__.load({
             setLoading(true)
           }
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-list', { scope: target })
+            const res = await rpcCall('sessions-list', { scope: target })
             if (res.ok) {
               sessionPanelListCache[target] = res.value
               // 竞态防护：静默/普通刷新响应回来时用户可能已切到别的 scope——缓存照写、
@@ -3970,7 +3972,7 @@ window.__ModuleLoader__.load({
           const MAX_PER_REQUEST = 100
           const fetchSlice = async (sliceIds) => {
             try {
-              const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-bytes', { ids: sliceIds })
+              const res = await rpcCall('sessions-bytes', { ids: sliceIds })
               if (cancelled) return
               const map = res && res.ok && res.value && typeof res.value.bytes === 'object' ? res.value.bytes : {}
               if (Object.keys(map).length > 0) {
@@ -4006,7 +4008,7 @@ window.__ModuleLoader__.load({
           if (query.trim() === '') { setSearchResult(null); return }
           setSearchRunning(true)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-search', {
+            const res = await rpcCall('sessions-search', {
               query: query.trim(),
               scope: searchScopeArchived ? 'archived' : 'all',
             })
@@ -4048,7 +4050,7 @@ window.__ModuleLoader__.load({
         const loadDetailPage = async (sessionId, cursor, view) => {
           setDetailLoading(true)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-view', { id: sessionId, cursor })
+            const res = await rpcCall('sessions-view', { id: sessionId, cursor })
             if (res.ok) {
               setDetail((current) => {
                 const merged = current === null ? {} : current
@@ -4078,7 +4080,7 @@ window.__ModuleLoader__.load({
           setDetailLoading(true)
           setDetailError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-view', { id: sessionId, center: seq })
+            const res = await rpcCall('sessions-view', { id: sessionId, center: seq })
             if (res.ok) {
               setDetail((current) => {
                 const merged = current === null ? {} : current
@@ -4109,7 +4111,7 @@ window.__ModuleLoader__.load({
           setExportingId(sessionId)
           setExportError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-export', { id: sessionId })
+            const res = await rpcCall('sessions-export', { id: sessionId })
             if (!res.ok) {
               setExportError(mapSessionError(translate, res.error || 'unknown'))
               return
@@ -4136,7 +4138,7 @@ window.__ModuleLoader__.load({
           setArchivingId(sessionId)
           setArchiveError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-archive', { id: sessionId })
+            const res = await rpcCall('sessions-archive', { id: sessionId })
             if (res.ok) {
               // 本地同步模块级缓存（不重拉）：all/archived 缓存里该行标 archived，
               // archived 缓存缺此行则补入（切「仅归档」/重开面板直接命中新行）。
@@ -4173,7 +4175,7 @@ window.__ModuleLoader__.load({
           if (deletePlan !== null || deleting) return
           setDeleteError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-delete-plan', { id: sessionId })
+            const res = await rpcCall('sessions-delete-plan', { id: sessionId })
             if (res.ok) {
               setDeletePlan(res.value)
             } else {
@@ -4188,7 +4190,7 @@ window.__ModuleLoader__.load({
           setDeleting(true)
           setDeleteError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'sessions-delete', { planId: deletePlan.planId })
+            const res = await rpcCall('sessions-delete', { planId: deletePlan.planId })
             if (res.ok) {
               const removedId = deletePlan.session?.id ?? ''
               setDeletePlan(null)
@@ -4535,7 +4537,7 @@ window.__ModuleLoader__.load({
         const saveCredential = async (providerName) => {
           setConfigError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-credential-set', { provider: providerName, name: credDraft.name, value: credDraft.value })
+            const res = await rpcCall('quota-credential-set', { provider: providerName, name: credDraft.name, value: credDraft.value })
             if (res?.ok !== true) {
               setConfigError(credentialFailCopy(res))
               return
@@ -4549,7 +4551,7 @@ window.__ModuleLoader__.load({
         const clearCredential = async (providerName, name) => {
           setConfigError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-credential-unset', { provider: providerName, name })
+            const res = await rpcCall('quota-credential-unset', { provider: providerName, name })
             if (res?.ok !== true) {
               setConfigError(credentialFailCopy(res))
               return
@@ -4566,7 +4568,7 @@ window.__ModuleLoader__.load({
             const payload = { provider: cardEditor.provider }
             if (cardDraft.expiresAt !== '') payload.expiresAt = cardDraft.expiresAt
             if (cardDraft.label !== '') payload.label = cardDraft.label
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', payload)
+            const res = await rpcCall('quota-reset-card', payload)
             if (res?.ok !== true) {
               setConfigError(translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
@@ -4583,7 +4585,7 @@ window.__ModuleLoader__.load({
         const removeResetCard = async (providerName, cardId) => {
           setConfigError('')
           try {
-            await ctx.connection.rpc.call('/dsh-service', 'quota-reset-card', { provider: providerName, remove: true, id: cardId })
+            await rpcCall('quota-reset-card', { provider: providerName, remove: true, id: cardId })
             await fetchQuotaSnapshot({ scope: 'all' })
           } catch (_) {
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
@@ -4594,7 +4596,7 @@ window.__ModuleLoader__.load({
         const refreshProvider = async (providerName) => {
           setConfigError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-refresh', { provider: providerName })
+            const res = await rpcCall('quota-refresh', { provider: providerName })
             if (res?.ok !== true) {
               setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : res?.error === 'not-adapted' ? translate('quota.unadapted') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
@@ -4607,7 +4609,7 @@ window.__ModuleLoader__.load({
         const requestQuotaConfig = async (payload) => {
           setConfigError('')
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'quota-config', payload)
+            const res = await rpcCall('quota-config', payload)
             if (res?.ok !== true) {
               setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
               return
@@ -4981,7 +4983,7 @@ window.__ModuleLoader__.load({
         }, [])
         useEffect(() => {
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'check-update', {}).then(normalizeRpcResult).then((res) => {
+          rpcCall('check-update', {}).then((res) => {
             if (!active || !res || res.ok === false) { if (active) setUpdateError(translate('update.unavailable')); return }
             setUpdateInfo(res.value)
             setUpdateError(null)
@@ -4993,7 +4995,7 @@ window.__ModuleLoader__.load({
           // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
           if (!featureEnabled('healthDiagnostics')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then(normalizeRpcResult).then((res) => {
+          rpcCall('permissions-plan', {}).then((res) => {
             if (!active) return
             if (!res || res.ok === false) setPermissionError(translate('permissions.error'))
             else setPermissions(res.value)
@@ -5005,13 +5007,13 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!featureEnabled('modelUsage')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'usage', usageRequestPayload).then(normalizeRpcResult).then(async (res) => {
+          rpcCall('usage', usageRequestPayload).then(async (res) => {
             if (!active) return
             if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
             setUsage(res.value)
             if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
             try {
-              const refreshed = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', usageRequestPayload)
+              const refreshed = await rpcCall('usage-refresh', usageRequestPayload)
               if (active && refreshed && refreshed.ok) setUsage(refreshed.value)
             } catch (_) {}
           }).catch(() => {
@@ -5022,7 +5024,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!featureEnabled('backupMaintenance')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then(normalizeRpcResult).then((res) => {
+          rpcCall('backup-list', {}).then((res) => {
             if (!active) return
             if (!res || res.ok === false) setBackupError(translate('backup.error'))
             else setBackups(res.value)
@@ -5036,7 +5038,7 @@ window.__ModuleLoader__.load({
           let cancelNext = () => {}
           const poll = async () => {
             try {
-              const res = await ctx.connection.rpc.call('/dsh-service', 'health', {})
+              const res = await rpcCall('health', {})
               if (!active) return
               if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
               setHealth(res.value)
@@ -5059,7 +5061,7 @@ window.__ModuleLoader__.load({
           if (!force && diagnosticsLoadedAt > 0 && Date.now() - diagnosticsLoadedAt <= 30000) return
           setDiagnosticsBusy(true)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'diagnostics', {})
+            const res = await rpcCall('diagnostics', {})
             if (!res || res.ok === false) throw new Error('diagnostics failed')
             setDiagnostics(res.value)
             setDiagnosticsLoadedAt(Date.now())
@@ -5074,7 +5076,7 @@ window.__ModuleLoader__.load({
           setUsageBusy(true)
           setUsageError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'usage-refresh', usageRequestPayload)
+            const res = await rpcCall('usage-refresh', usageRequestPayload)
             if (!res || res.ok === false) throw new Error('usage refresh failed')
             setUsage(res.value)
           } catch (_) {
@@ -5089,7 +5091,7 @@ window.__ModuleLoader__.load({
           setPermissionDeepBusy(true)
           setPermissionError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'permissions-deep', { planId: permissions.planId })
+            const res = await rpcCall('permissions-deep', { planId: permissions.planId })
             if (!res || res.ok === false) throw new Error('deep permission check failed')
             setPermissionDeep(res.value)
           } catch (_) {
@@ -5104,7 +5106,7 @@ window.__ModuleLoader__.load({
           setPermissionBusy(true)
           setPermissionError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'permissions-repair', { planId: permissions.planId })
+            const res = await rpcCall('permissions-repair', { planId: permissions.planId })
             if (!res || res.ok === false) throw new Error('permission repair failed')
             setPermissions(res.value)
             setPermissionConfirm(false)
@@ -5126,14 +5128,14 @@ window.__ModuleLoader__.load({
           const poll = async () => {
             if (stopped) return
             try {
-              const res = await ctx.connection.rpc.call('/dsh-service', 'backup-progress', {}).then(normalizeRpcResult)
+              const res = await rpcCall('backup-progress', {})
               if (!stopped && res && res.ok) setBackupProgress(res.value?.active === true ? res.value : null)
             } catch (_) {}
             if (!stopped) cancelNext = ctx.timer.timeout(poll, 400)
           }
           poll()
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-create', {}).then(normalizeRpcResult)
+            const res = await rpcCall('backup-create', {})
             if (!res || res.ok === false) throw Object.assign(new Error('backup failed'), { code: res?.error })
             setBackups({ items: res.value.items, totalBytes: res.value.totalBytes })
           } catch (error) {
@@ -5150,7 +5152,7 @@ window.__ModuleLoader__.load({
           setBackupBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-delete', { id }).then(normalizeRpcResult)
+            const res = await rpcCall('backup-delete', { id })
             if (!res || res.ok === false) throw new Error('backup failed')
             setBackups(res.value)
             setBackupDeleteId(null)
@@ -5165,7 +5167,7 @@ window.__ModuleLoader__.load({
           setBackupExportBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id }).then(normalizeRpcResult)
+            const res = await rpcCall('backup-export', { id })
             if (!res || res.ok === false) throw new Error('export failed')
             const a = document.createElement('a')
             a.href = res.value.url
@@ -5194,11 +5196,11 @@ window.__ModuleLoader__.load({
           setBackupRestorePlan(null)
           setBackupRestoreId(id)
           try {
-            const inspected = await ctx.connection.rpc.call('/dsh-service', 'backup-inspect', { id }).then(normalizeRpcResult)
+            const inspected = await rpcCall('backup-inspect', { id })
             if (!inspected || inspected.ok === false) throw Object.assign(new Error('backup inspect failed'), { code: inspected?.error })
             setBackupRestoreReport(inspected.value)
             if (inspected.value.validForRestore !== true) return
-            const prepared = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-prepare', { id }).then(normalizeRpcResult)
+            const prepared = await rpcCall('backup-restore-prepare', { id })
             if (!prepared || prepared.ok === false) throw Object.assign(new Error('backup prepare failed'), { code: prepared?.error })
             setBackupRestorePlan(prepared.value)
           } catch (error) {
@@ -5213,7 +5215,7 @@ window.__ModuleLoader__.load({
           setBackupBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-commit', { planId: backupRestorePlan.planId }).then(normalizeRpcResult)
+            const res = await rpcCall('backup-restore-commit', { planId: backupRestorePlan.planId })
             if (!res || res.ok === false) throw Object.assign(new Error('backup restore failed'), { code: res?.error })
             setBackupRestoreId(null)
             setBackupRestoreReport(null)
@@ -5251,7 +5253,7 @@ window.__ModuleLoader__.load({
                const bytes = new Uint8Array(reader.result)
                let binary = ''
                for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-               const res = await ctx.connection.rpc.call('/dsh-service', 'backup-import', { name: file.name, data: btoa(binary) }).then(normalizeRpcResult)
+               const res = await rpcCall('backup-import', { name: file.name, data: btoa(binary) })
                if (!res || res.ok === false) throw Object.assign(new Error('backup import failed'), { code: res?.error })
                setBackups(res.value)
              } catch (error) {
@@ -5307,7 +5309,7 @@ window.__ModuleLoader__.load({
             setUpgradeError(null)
             const versionRes = await fetchVersionSnapshot()
             const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
-            const res = await ctx.connection.rpc.call('/dsh-service', 'upgrade', {})
+            const res = await rpcCall('upgrade', {})
             if (!res || res.ok === false) {
               const code = res && typeof res.error === 'string' ? res.error.trim() : ''
               const mapped = typeof code === 'string' && code.length > 0 ? UPGRADE_FAILURES[code] : undefined
