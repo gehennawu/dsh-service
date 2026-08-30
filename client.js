@@ -1415,7 +1415,7 @@ window.__ModuleLoader__.load({
           // `--a: var(--b)` 会在根元素就按根的 --b 定格并向下继承，body[data-ds-dark-theme]
           // 对 --b 的暗色覆盖永远赶不上（真机实证：深色模式下卡片仍白底）。body 是
           // data-ds-dark-theme 的宿主元素，别名与主题覆盖在同一作用域交汇，链才活的。
-          'body{--dsh-svc-page-bg:#f4f5f7;--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#ffffff);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#ffffff);--dsh-svc-text:var(--dsw-alias-label-primary,#202124);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#6b7280);--dsh-svc-border:var(--dsw-alias-border-l1,#e5e7eb);--dsh-svc-brand:var(--dsw-alias-brand-primary,#2563eb);--dsh-svc-info:#2563eb;--dsh-svc-success:var(--dsw-alias-state-success-primary,#16a34a);--dsh-svc-warning:var(--dsw-alias-state-warn-primary,#d97706);--dsh-svc-danger:var(--dsw-alias-state-error-primary,#dc2626)}',
+          'body{--dsh-svc-page-bg:#f4f5f7;--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#ffffff);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#ffffff);--dsh-svc-text:var(--dsw-alias-label-primary,#202124);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#6b7280);--dsh-svc-border:var(--dsw-alias-border-l1,#e5e7eb);--dsh-svc-brand:var(--dsw-alias-brand-primary,#2563eb);--dsh-svc-brand-text:var(--dsw-alias-label-primary-foreground,#ffffff);--dsh-svc-info:#2563eb;--dsh-svc-success:var(--dsw-alias-state-success-primary,#16a34a);--dsh-svc-warning:var(--dsw-alias-state-warn-primary,#d97706);--dsh-svc-danger:var(--dsw-alias-state-error-primary,#dc2626)}',
           // 卡片底（v0.39 用户复核：浅色卡片要有可见底色）：插件**写死**浅色浅灰面，
           // 不走外壳别名——外壳 bg-layer-2 可能就是白色，别名优先会让卡片再度隐形；
           // 深色按用户点名统一到模型统计同款（bg-layer-2 链）；卡片内层小块（指标格/
@@ -1426,6 +1426,10 @@ window.__ModuleLoader__.load({
           'body[data-ds-dark-theme]{--dsh-svc-border-strong:#52565f}',
           'body[data-ds-dark-theme]{--dsh-svc-card-bg:var(--dsw-alias-bg-layer-2,#202126)}',
           'body[data-ds-dark-theme]{--dsh-svc-page-bg:var(--dsw-alias-bg-layer-1,#17181c);--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#202126);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#292a31);--dsh-svc-text:var(--dsw-alias-label-primary,#f3f4f6);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#a1a1aa);--dsh-svc-border:var(--dsw-alias-border-l1,#3f414a)}',
+          // 品牌实底按钮文字（v0.42.2 用户反馈）：深色下 --dsw-alias-brand-primary 是近白，
+          // 写死 #fff 必白字贴白底——文字走官方主按钮前景令牌（浅=白、深=近黑），
+          // 外壳缺席该令牌时回落 #fff，暗色叶值 #111318 兜底（与 tab-active-text 同法）。
+          'body[data-ds-dark-theme]{--dsh-svc-brand-text:#111318}',
           // 几何与密度令牌（与主题无关，:root 即可）：间距 4/8/12/16/20/24/32；圆角 控件8/卡片12/面板16/胶囊999；控件高 紧凑32/默认36/主操作40。
           ':root{--dsh-svc-space-1:4px;--dsh-svc-space-2:8px;--dsh-svc-space-3:12px;--dsh-svc-space-4:16px;--dsh-svc-space-5:20px;--dsh-svc-space-6:24px;--dsh-svc-space-8:32px;--dsh-svc-radius-control:8px;--dsh-svc-radius-card:12px;--dsh-svc-radius-panel:16px;--dsh-svc-radius-pill:999px;--dsh-svc-control-h:36px;--dsh-svc-control-h-compact:32px;--dsh-svc-control-h-primary:40px;--dsh-svc-content-max:800px;--dsh-svc-dur-fast:120ms;--dsh-svc-dur-view:170ms;--dsh-svc-font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
           // 兼容别名（旧组件零改动续命）：展示面底 = 卡片底（浅色可见浅灰面）；分段条
@@ -1524,8 +1528,8 @@ window.__ModuleLoader__.load({
       // （创建备份等）；primary 品牌实底 = 唯一主操作；neutral 弱化；ghost 取消类。
       const SVC_BTN_BASE = { minHeight: 'var(--dsh-svc-control-h, 36px)', padding: '6px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease', lineHeight: '20px' }
       const svcButtonStyle = (variant) => {
-        if (variant === 'primary') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)', color: '#fff' }
-        if (variant === 'danger') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)', color: '#fff' }
+        if (variant === 'primary') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)', color: 'var(--dsh-svc-brand-text)' }
+        if (variant === 'danger') return { ...SVC_BTN_BASE, background: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)', color: 'var(--dsh-svc-brand-text)' }
         if (variant === 'dangerGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-danger)', borderColor: 'var(--dsh-svc-danger)' }
         if (variant === 'brandGhost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-brand)', borderColor: 'var(--dsh-svc-brand)' }
         if (variant === 'ghost') return { ...SVC_BTN_BASE, background: 'transparent', color: 'var(--dsh-svc-text)', borderColor: 'var(--dsh-svc-border-strong)' }
@@ -1622,7 +1626,7 @@ window.__ModuleLoader__.load({
               item.icon !== undefined ? React.createElement(TabIcon, { name: item.icon }) : null,
               item.label,
               item.warning ? React.createElement('span', { 'data-testid': 'tab-dot-' + item.id, 'aria-label': dotLabel, style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
-              item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: '#fff', fontWeight: 700 } }, item.badge.text) : null)
+              item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsh-svc-brand-text)', fontWeight: 700 } }, item.badge.text) : null)
           }))
       }
       // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
@@ -2124,7 +2128,7 @@ window.__ModuleLoader__.load({
         return React.createElement('button', {
           type: 'button',
           onClick: () => setUpdateDetailsOpen(true),
-          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: '#d80', color: '#fff', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
+          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: 'var(--dsh-svc-warning)', color: 'var(--dsh-svc-brand-text)', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
         }, translate('update.badge'))
       }
 
@@ -3185,7 +3189,7 @@ window.__ModuleLoader__.load({
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },
-            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
+            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
             mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12px', padding: '6px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null))
       }
 
@@ -3539,7 +3543,7 @@ window.__ModuleLoader__.load({
             diffRows,
             applied ? React.createElement('p', { 'data-testid': 'skill-apply-done', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('skills.apply.done')) : null,
             draft !== null && !applied ? React.createElement('p', { 'data-testid': 'skill-note-disclaimer', style: { ...hint, fontSize: '11px' } }, translate('skills.note.panelOnly')) : null,
-            draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
+            draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
         }
 
         // 跳过原因 → 本地化标签：已知原因走词典，未知原因原样透出（已注释条目不再进跳过清单，
@@ -3570,7 +3574,7 @@ window.__ModuleLoader__.load({
               effectivePhase === 'idle' || effectivePhase === 'done' || effectivePhase === 'cancelled' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-plan', disabled: batchBusy, onClick: () => void planBatch(), style: Object.assign({}, svcButtonStyle('neutral'), { cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 }) }, translate('skills.batch.plan')) : null,
               batchPlan !== null ? React.createElement('span', { 'data-testid': 'skills-batch-candidates', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
                 translate('skills.batch.candidates', { count: batchPlan.candidates.length }) + (batchPlan.estBytes > 0 ? ' · ' + translate('skills.batch.estBytes', { size: formatSkillBytes(batchPlan.estBytes) }) : '') + (batchAnnotatedCount > 0 ? ' · ' + translate('skills.batch.annotated', { count: batchAnnotatedCount }) : '') + ' · ' + translate('skills.batch.skipped', { count: batchPlan.skipped.length })) : null,
-              batchPlan !== null && effectivePhase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || (batchPlan.candidates.length === 0 && batchAnnotatedCount === 0), onClick: () => void startBatch(), title: batchAnnotatedArmed ? translate('skills.switch.confirm') : undefined, style: { fontSize: '12px', padding: '5px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: batchAnnotatedArmed ? 'var(--dsh-svc-warning)' : 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, batchAnnotatedArmed && batchAnnotatedCount > 0 ? translate('skills.batch.forceConfirm', { count: batchAnnotatedCount }) : translate('skills.batch.start')) : null,
+              batchPlan !== null && effectivePhase === 'planned' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-start', disabled: batchBusy || (batchPlan.candidates.length === 0 && batchAnnotatedCount === 0), onClick: () => void startBatch(), title: batchAnnotatedArmed ? translate('skills.switch.confirm') : undefined, style: { fontSize: '12px', padding: '5px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: batchAnnotatedArmed ? 'var(--dsh-svc-warning)' : 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: batchBusy ? 'default' : 'pointer', opacity: batchBusy ? 0.55 : 1 } }, batchAnnotatedArmed && batchAnnotatedCount > 0 ? translate('skills.batch.forceConfirm', { count: batchAnnotatedCount }) : translate('skills.batch.start')) : null,
               batch !== null && batch.phase === 'running' ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-cancel', onClick: () => void cancelBatch(), style: { fontSize: '12px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer' } }, translate('skills.batch.cancel')) : null,
               batch !== null ? React.createElement('span', { 'data-testid': 'skills-batch-phase', style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('skills.batch.phase.' + phaseLabel)) : null),
             batchPlan !== null && batchPlan.candidates.length === 0 && batchAnnotatedCount === 0 ? React.createElement('p', { style: hint }, translate('skills.batch.no-candidates')) : null,
@@ -3871,7 +3875,7 @@ window.__ModuleLoader__.load({
         const chipButton = svcRowActionStyle()
         // v0.39 按钮语义（安全教义）：删除初次出现 = 危险描边，实底红只留给最终确认。
         const dangerOutlineButton = Object.assign({}, chipButton, { background: 'transparent', borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)' })
-        const dangerSolidButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: '#fff' })
+        const dangerSolidButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: 'var(--dsh-svc-brand-text)' })
         const inputStyle = { fontSize: '12px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '100%', boxSizing: 'border-box' }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -4816,8 +4820,8 @@ window.__ModuleLoader__.load({
                                     autoComplete: 'off',
                                     style: inputStyle,
                                   })),
-                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-save', onClick: () => saveCredential(row.provider), disabled: credDraft.value.trim() === '', style: { minHeight: '28px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-brand-primary)', background: credDraft.value.trim() === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: credDraft.value.trim() === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: credDraft.value.trim() === '' ? 'default' : 'pointer', fontSize: '12px' } }, translate('quota.credential.save')),
-                                ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', title: credClearArmed ? translate('quota.credential.clearConfirm') : undefined, onClick: () => { if (!credClearArmed) { setCredClearArmed(true); return } setCredClearArmed(false); void clearCredential(row.provider, selectedName) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: credClearArmed ? 'var(--dsw-alias-state-error-primary)' : 'transparent', color: credClearArmed ? '#fff' : 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' } }, translate(credClearArmed ? 'quota.credential.clearConfirm' : 'quota.credential.clear'))] : []),
+                                React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-save', onClick: () => saveCredential(row.provider), disabled: credDraft.value.trim() === '', style: { minHeight: '28px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-brand-primary)', background: credDraft.value.trim() === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: credDraft.value.trim() === '' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsh-svc-brand-text)', cursor: credDraft.value.trim() === '' ? 'default' : 'pointer', fontSize: '12px' } }, translate('quota.credential.save')),
+                                ...(selectedHint?.configured === true && selectedHint?.writable !== false ? [React.createElement('button', { type: 'button', key: 'cred-clear', 'data-testid': 'quota-cred-clear', title: credClearArmed ? translate('quota.credential.clearConfirm') : undefined, onClick: () => { if (!credClearArmed) { setCredClearArmed(true); return } setCredClearArmed(false); void clearCredential(row.provider, selectedName) }, style: { minHeight: '28px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: credClearArmed ? 'var(--dsw-alias-state-error-primary)' : 'transparent', color: credClearArmed ? 'var(--dsh-svc-brand-text)' : 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', fontSize: '12px', whiteSpace: 'nowrap' } }, translate(credClearArmed ? 'quota.credential.clearConfirm' : 'quota.credential.clear'))] : []),
                                 React.createElement('button', { type: 'button', 'data-testid': 'quota-cred-cancel', onClick: closeCredEditor, style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
                               )
                             : React.createElement('div', { key: 'cred-entry', style: { display: 'flex' } },
@@ -4834,7 +4838,7 @@ window.__ModuleLoader__.load({
                     ...(isAdvanced && editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
                       resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
                       resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
-                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: '#fff', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
                       React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
                     )] : []),
                     // 卡片脚部（高级配置区）：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡录入入口。
@@ -4881,7 +4885,7 @@ window.__ModuleLoader__.load({
                 setAddProvider('')
                 setAddKind('')
               },
-              style: { fontSize: '12px', padding: '3px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: addProvider === '' || addKind === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: addProvider === '' || addKind === '' ? 'var(--dsw-alias-label-tertiary)' : '#fff', cursor: addProvider === '' || addKind === '' ? 'default' : 'pointer' },
+              style: { fontSize: '12px', padding: '3px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: addProvider === '' || addKind === '' ? 'transparent' : 'var(--dsw-alias-brand-primary)', color: addProvider === '' || addKind === '' ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsh-svc-brand-text)', cursor: addProvider === '' || addKind === '' ? 'default' : 'pointer' },
             }, translate('quota.adapt')))] : []))
       }
 

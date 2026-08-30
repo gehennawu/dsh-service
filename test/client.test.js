@@ -1612,10 +1612,11 @@ test('service panel lists active work and requires an explicit force restart', a
   await renderer.flush()
 
   // v0.39 按钮语义：最终确认（仍要重启）= 危险实底；取消 = 幽灵描边。
+  // v0.42.2 深色修复：实底按钮文字走 --dsh-svc-brand-text（浅=白、深=近黑），不再写死 #fff。
   const forceConfirm = renderer.findButton('仍要重启')
   assert.equal(forceConfirm.props['data-variant'], 'danger')
   assert.equal(forceConfirm.props.style.background, 'var(--dsh-svc-danger)')
-  assert.equal(forceConfirm.props.style.color, '#fff')
+  assert.equal(forceConfirm.props.style.color, 'var(--dsh-svc-brand-text)')
 
   assert.match(renderer.text(), /检测到 3 项运行中的工作/)
   assert.match(renderer.text(), /pnpm test/)
