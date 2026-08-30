@@ -364,9 +364,35 @@ window.__ModuleLoader__.load({
       'backup.exporting': '导出中…',
       'backup.exportError': '备份导出失败',
       'backup.restore': '恢复',
+      'backup.inspecting': '检查中…',
       'backup.restoreConfirm': '确认恢复',
-      'backup.restoreHint': '确认恢复此备份？当前会话和配置将被覆盖，恢复后服务将自动重启。',
+      'backup.restoreHint': '完整性检查通过。确认后会按下方计划覆盖数据；提交前宿主会再次检查归档和当前目标是否发生变化。',
       'backup.restoreError': '备份恢复失败',
+      'backup.integrity.ok': '完整性检查通过',
+      'backup.integrity.invalid': '归档不可恢复',
+      'backup.integrity.summary': '共 {entries} 个条目，解压后 {size}；会话文件 {sessions}，配置文件 {config}，profile 清单 {profiles}。',
+      'backup.plan.sessions': '会话目录将整体替换',
+      'backup.plan.config': '配置覆盖 {replace} 项，移除 {remove} 项',
+      'backup.plan.profiles': '覆盖 {count} 个 profile 的 package.json，保留 node_modules 与其他文件',
+      'backup.plan.expires': '恢复计划有效至 {time}',
+      'backup.manualRestartTitle': '恢复完成，需要手动重启',
+      'backup.manualRestartBody': '数据已恢复，但当前进程仍在运行旧状态。请在运行 dsh 的终端按 Ctrl+C，然后重新启动 dsh。',
+      'backup.error.backup-gzip-invalid': '归档不是有效的 gzip 文件或已损坏。',
+      'backup.error.backup-tar-invalid': 'tar 结构或校验和无效。',
+      'backup.error.backup-entry-traversal': '归档含越界或不安全路径。',
+      'backup.error.backup-entry-absolute': '归档含绝对路径。',
+      'backup.error.backup-entry-link': '归档含符号链接或硬链接。',
+      'backup.error.backup-entry-type': '归档含不支持的特殊条目。',
+      'backup.error.backup-entry-unexpected': '归档含备份范围外的文件。',
+      'backup.error.backup-profile-invalid': 'profile package.json 无效。',
+      'backup.error.backup-section-missing': '归档缺少必要分区。',
+      'backup.error.backup-size-limit': '归档超过安全大小或条目限制。',
+      'backup.error.backup-archive-invalid': '归档未通过完整性检查。',
+      'backup.error.active-work': '检测到运行中的工作，暂不能恢复。',
+      'backup.error.restore-plan-expired': '恢复计划已过期，请重新检查。',
+      'backup.error.restore-source-changed': '备份归档在确认前发生变化，请重新检查。',
+      'backup.error.restore-target-changed': '当前数据在确认前发生变化，请重新检查。',
+      'backup.error.restore-target-unsafe': '当前目标含不安全的链接或特殊文件。',
       'backup.import': '导入备份',
       'backup.importing': '导入中…',
       'backup.showRecords': '展开备份记录',
@@ -976,9 +1002,35 @@ window.__ModuleLoader__.load({
       'backup.exporting': 'Exporting…',
       'backup.exportError': 'Backup export failed',
       'backup.restore': 'Restore',
+      'backup.inspecting': 'Inspecting…',
       'backup.restoreConfirm': 'Confirm restore',
-      'backup.restoreHint': 'Restore this backup? Current sessions and configuration will be overwritten. The service will restart automatically after restoration.',
+      'backup.restoreHint': 'The integrity check passed. Confirm to apply the plan below; the host will recheck the archive and current targets immediately before committing.',
       'backup.restoreError': 'Backup restore failed',
+      'backup.integrity.ok': 'Integrity check passed',
+      'backup.integrity.invalid': 'Archive cannot be restored',
+      'backup.integrity.summary': '{entries} entries, {size} expanded; {sessions} session file(s), {config} config file(s), {profiles} profile manifest(s).',
+      'backup.plan.sessions': 'The sessions directory will be replaced in full',
+      'backup.plan.config': 'Replace {replace} config file(s), remove {remove}',
+      'backup.plan.profiles': 'Replace package.json for {count} profile(s); keep node_modules and all other files',
+      'backup.plan.expires': 'Restore plan expires at {time}',
+      'backup.manualRestartTitle': 'Restore completed — manual restart required',
+      'backup.manualRestartBody': 'The data is restored, but the current process is still running its old state. Press Ctrl+C in the terminal running dsh, then start dsh again.',
+      'backup.error.backup-gzip-invalid': 'The archive is not a valid gzip file or is damaged.',
+      'backup.error.backup-tar-invalid': 'The tar structure or checksum is invalid.',
+      'backup.error.backup-entry-traversal': 'The archive contains an unsafe path traversal.',
+      'backup.error.backup-entry-absolute': 'The archive contains an absolute path.',
+      'backup.error.backup-entry-link': 'The archive contains a symbolic or hard link.',
+      'backup.error.backup-entry-type': 'The archive contains an unsupported special entry.',
+      'backup.error.backup-entry-unexpected': 'The archive contains files outside the backup scope.',
+      'backup.error.backup-profile-invalid': 'A profile package.json is invalid.',
+      'backup.error.backup-section-missing': 'The archive is missing a required section.',
+      'backup.error.backup-size-limit': 'The archive exceeds a safe size or entry limit.',
+      'backup.error.backup-archive-invalid': 'The archive failed its integrity check.',
+      'backup.error.active-work': 'Running work was detected; restore is blocked for now.',
+      'backup.error.restore-plan-expired': 'The restore plan expired. Inspect the backup again.',
+      'backup.error.restore-source-changed': 'The backup changed before confirmation. Inspect it again.',
+      'backup.error.restore-target-changed': 'Current data changed before confirmation. Inspect it again.',
+      'backup.error.restore-target-unsafe': 'A restore target contains an unsafe link or special file.',
       'backup.import': 'Import backup',
       'backup.importing': 'Importing…',
       'backup.showRecords': 'Show backup records',
@@ -4855,6 +4907,9 @@ window.__ModuleLoader__.load({
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
         const [backupRestoreId, setBackupRestoreId] = useState(null)
+        const [backupRestoreReport, setBackupRestoreReport] = useState(null)
+        const [backupRestorePlan, setBackupRestorePlan] = useState(null)
+        const [backupManualRestart, setBackupManualRestart] = useState(false)
         const [backupExportBusy, setBackupExportBusy] = useState(false)
         const [backupImportBusy, setBackupImportBusy] = useState(false)
         const [backupDetails, setBackupDetails] = useState(false)
@@ -5079,23 +5134,63 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const restoreBackup = async (id) => {
+        const mapBackupRestoreError = (code) => {
+          const key = 'backup.error.' + String(code || '')
+          const translated = translate(key)
+          return translated === key ? translate('backup.restoreError') : translated
+        }
+
+        const prepareBackupRestore = async (id) => {
           setBackupBusy(true)
           setBackupError(null)
+          setBackupManualRestart(false)
+          setBackupRestoreReport(null)
+          setBackupRestorePlan(null)
+          setBackupRestoreId(id)
           try {
-            const versionRes = await ctx.connection.rpc.call('/dsh-service', 'version', {})
-            const previousInstanceId = versionRes && versionRes.ok ? versionRes.value.instanceId : undefined
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore', { id })
-            if (!res || res.ok === false) throw new Error('backup restore failed')
-            setBackupRestoreId(null)
-            if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
-              startRecovery(previousInstanceId).catch(() => {})
-            }
-          } catch (_) {
-            setBackupError(translate('backup.restoreError'))
+            const inspected = await ctx.connection.rpc.call('/dsh-service', 'backup-inspect', { id })
+            if (!inspected || inspected.ok === false) throw Object.assign(new Error('backup inspect failed'), { code: inspected?.error })
+            setBackupRestoreReport(inspected.value)
+            if (inspected.value.validForRestore !== true) return
+            const prepared = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-prepare', { id })
+            if (!prepared || prepared.ok === false) throw Object.assign(new Error('backup prepare failed'), { code: prepared?.error })
+            setBackupRestorePlan(prepared.value)
+          } catch (error) {
+            setBackupError(mapBackupRestoreError(error?.code))
           } finally {
             setBackupBusy(false)
           }
+        }
+
+        const commitBackupRestore = async () => {
+          if (!backupRestorePlan || backupBusy) return
+          setBackupBusy(true)
+          setBackupError(null)
+          try {
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-commit', { planId: backupRestorePlan.planId })
+            if (!res || res.ok === false) throw Object.assign(new Error('backup restore failed'), { code: res?.error })
+            setBackupRestoreId(null)
+            setBackupRestoreReport(null)
+            setBackupRestorePlan(null)
+            if (res.value?.restart?.requiresManualRestart === true) {
+              setBackupManualRestart(true)
+            } else {
+              const previousInstanceId = res.value?.restart?.previousInstanceId || res.value?.previousInstanceId
+              if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) startRecovery(previousInstanceId).catch(() => {})
+            }
+          } catch (error) {
+            setBackupRestorePlan(null)
+            setBackupError(mapBackupRestoreError(error?.code))
+          } finally {
+            setBackupBusy(false)
+          }
+        }
+
+        const cancelBackupRestore = () => {
+          if (backupBusy) return
+          setBackupRestoreId(null)
+          setBackupRestoreReport(null)
+          setBackupRestorePlan(null)
         }
 
          const importBackup = (event) => {
@@ -5111,10 +5206,10 @@ window.__ModuleLoader__.load({
                let binary = ''
                for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
                const res = await ctx.connection.rpc.call('/dsh-service', 'backup-import', { name: file.name, data: btoa(binary) })
-               if (!res || res.ok === false) throw new Error('backup import failed')
+               if (!res || res.ok === false) throw Object.assign(new Error('backup import failed'), { code: res?.error })
                setBackups(res.value)
-             } catch (_) {
-               setBackupError(translate('backup.error'))
+             } catch (error) {
+               setBackupError(error?.code ? mapBackupRestoreError(error.code) : translate('backup.error'))
              } finally {
                setBackupImportBusy(false)
              }
@@ -5583,6 +5678,9 @@ window.__ModuleLoader__.load({
               translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
               React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
           React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
+          backupManualRestart ? React.createElement('div', { 'data-testid': 'backup-manual-restart', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
+            React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('backup.manualRestartTitle')),
+            React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate('backup.manualRestartBody'))) : null,
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
           backups.items.length === 0
             ? React.createElement('p', { style: hint }, translate('backup.empty'))
@@ -5606,7 +5704,7 @@ window.__ModuleLoader__.load({
                       : React.createElement('button', { style: svcRowActionStyle(), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
-                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupBusy, onClick: () => setBackupRestoreId(item.id) }, translate('backup.restore')),
+                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupBusy, onClick: () => prepareBackupRestore(item.id) }, translate(backupBusy && backupRestoreId === item.id ? 'backup.inspecting' : 'backup.restore')),
                     backupDeleteId === item.id || backupRestoreId === item.id
                       ? null
                       : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'dangerGhost', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
@@ -5618,11 +5716,34 @@ window.__ModuleLoader__.load({
                         React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
                         React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
                   : backupRestoreId === item.id
-                    ? React.createElement('div', { style: { marginTop: '8px' } },
-                        React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
-                        React.createElement('div', { style: { display: 'flex', gap: '8px' } },
-                          React.createElement('button', { style: primary, disabled: backupBusy, onClick: () => restoreBackup(item.id) }, translate('backup.restoreConfirm')),
-                          React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupRestoreId(null) }, translate('backup.cancel'))))
+                    ? React.createElement('div', { 'data-testid': 'backup-restore-preflight', style: { marginTop: '8px', padding: '10px', borderRadius: '8px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
+                        backupBusy && backupRestoreReport === null
+                          ? React.createElement('p', { style: hint }, translate('backup.inspecting'))
+                          : backupRestoreReport !== null
+                            ? React.createElement('div', null,
+                                React.createElement('div', { style: { fontWeight: 650, color: backupRestoreReport.validForRestore ? 'var(--dsh-svc-success)' : 'var(--dsh-svc-danger)' } }, translate(backupRestoreReport.validForRestore ? 'backup.integrity.ok' : 'backup.integrity.invalid')),
+                                React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate('backup.integrity.summary', {
+                                  entries: backupRestoreReport.archive?.entryCount || 0,
+                                  size: formatSize(backupRestoreReport.archive?.logicalBytes || 0),
+                                  sessions: backupRestoreReport.sections?.sessions?.files || 0,
+                                  config: backupRestoreReport.sections?.config?.files?.length || 0,
+                                  profiles: backupRestoreReport.sections?.profiles?.count || 0,
+                                })),
+                                backupRestoreReport.validForRestore !== true
+                                  ? React.createElement('ul', { style: Object.assign({}, hint, { margin: '6px 0 0', paddingLeft: '18px', color: 'var(--dsh-svc-danger)' }) }, (backupRestoreReport.issues || []).map((issue, index) => React.createElement('li', { key: index }, mapBackupRestoreError(issue.code))))
+                                  : null)
+                            : null,
+                        backupRestorePlan !== null ? React.createElement('div', { style: { marginTop: '8px' } },
+                          React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
+                          React.createElement('ul', { style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px' }) },
+                            React.createElement('li', null, translate('backup.plan.sessions')),
+                            React.createElement('li', null, translate('backup.plan.config', { replace: backupRestorePlan.targets?.config?.replace?.length || 0, remove: backupRestorePlan.targets?.config?.remove?.length || 0 })),
+                            React.createElement('li', null, translate('backup.plan.profiles', { count: backupRestorePlan.targets?.profiles?.upsert?.length || 0 }))),
+                          React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('backup.plan.expires', { time: new Date(backupRestorePlan.expiresAt).toLocaleTimeString() })),
+                          React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                            React.createElement('button', { style: danger, disabled: backupBusy, onClick: commitBackupRestore }, translate('backup.restoreConfirm')),
+                            React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel'))))
+                          : React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel')))
                     : null)))
             : null))
 

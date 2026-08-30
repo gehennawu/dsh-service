@@ -134,8 +134,10 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Backup records use light two-line rows (name on the first line, size · time on the second, separator layout; same style as the session list)
 
 - Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests
-- Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned
-- Restore: extract and overwrite to the corresponding paths, then restarts automatically after confirmation
+- Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned; imported archives must pass the same integrity inspection used by restore
+- **Integrity inspection** validates gzip/tar structure, paths, and entry types. Only `sessions`, the three allowlisted config files, and `profiles/<name>/package.json` are accepted; traversal, links, special files, unknown content, corrupt archives, and invalid profile manifests are rejected
+- **Restore preflight** produces a single-use five-minute plan showing the full sessions replacement, config replacements/removals, and profile-manifest updates. Final commit rechecks the archive SHA-256 and current-target fingerprint; any drift rejects the restore
+- Restore uses a transaction journal and rollback directory: sessions are replaced in full, config is made exact to the snapshot, and profiles update package.json only while keeping node_modules, credentials, and attachments. Managed runtimes restart automatically; manual launches receive hand-restart instructions
 
 ### Skills management
 
@@ -347,7 +349,7 @@ The token expired (the official `oasis-token is embezzled` error means the token
 <details>
 <summary><strong>What does restoring a backup do?</strong></summary>
 
-It extracts and overwrites the corresponding paths (sessions, config, plugin profiles) and restarts automatically after the two-step confirmation. Deleting a backup also requires two-step confirmation.
+The host first runs an integrity inspection and presents a restore-preflight plan for final confirmation. Immediately before commit it rechecks the backup SHA-256, current-target fingerprint, and running work; any change aborts without a partial overwrite or restart. A successful commit replaces sessions in full, makes the allowlisted config files exact to the snapshot, and updates only each profile's package.json (node_modules, credentials, and attachments stay untouched). Docker/systemd/pm2-style managed runtimes restart automatically; likely terminal-launched instances show manual-restart instructions. Deleting a backup also requires two-step confirmation.
 </details>
 
 <details>

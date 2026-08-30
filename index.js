@@ -13,6 +13,7 @@ import https from 'node:https'
 import { brotliCompress, constants as zlibConstants, gzip } from 'node:zlib'
 import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
+import { createBackupIntegrity } from './backup-integrity.js'
 
 const require = createRequire(import.meta.url)
 const name = 'dsh-service'
@@ -430,6 +431,14 @@ async function pathExists(path) {
   }
 }
 
+async function backupItemForId(dshHome, id) {
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const snapshot = await listBackups(dshHome)
+  const item = snapshot.items.find((candidate) => candidate.id === id)
+  if (item === undefined) return undefined
+  return { ...item, path: join(dshHome, 'backups', basename(item.name)), mtimeMs: Date.parse(item.createdAt) }
+}
+
 async function listBackups(dshHome) {
   const backupDir = join(dshHome, 'backups')
   await mkdir(backupDir, { recursive: true, mode: 0o700 })
@@ -492,7 +501,7 @@ async function createBackup(ctx, dshHome) {
     await mkdir(profilesTarget, { recursive: true })
     if (await pathExists(profilesSource)) {
       for (const entry of await readdir(profilesSource, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue
+        if (!entry.isDirectory() || entry.name === '.' || entry.name === '..' || entry.name.includes('/') || entry.name.includes('\\')) continue
         const manifest = join(profilesSource, entry.name, 'package.json')
         if (!(await pathExists(manifest))) continue
         const target = join(profilesTarget, entry.name)
@@ -517,46 +526,6 @@ async function createBackup(ctx, dshHome) {
   }
 }
 
-async function restoreBackup(ctx, dshHome, id) {
-  if (typeof id !== 'string' || id.length === 0) return undefined
-  const snapshot = await listBackups(dshHome)
-  const item = snapshot.items.find((candidate) => candidate.id === id)
-  if (item === undefined) return undefined
-  const staging = join(dshHome, 'backups', `.restore-${randomUUID()}`)
-  await mkdir(staging, { recursive: true, mode: 0o700 })
-  try {
-    await runTar(ctx, join(dshHome, 'backups'), ['-xzf', basename(item.name), '-C', staging])
-    const extractedSessions = join(staging, 'sessions')
-    if (await pathExists(extractedSessions)) {
-      const targetSessions = join(dshHome, 'sessions')
-      await rm(targetSessions, { recursive: true, force: true })
-      await cp(extractedSessions, targetSessions, { recursive: true })
-    }
-    const extractedConfig = join(staging, 'config')
-    if (await pathExists(extractedConfig)) {
-      for (const file of ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']) {
-        const source = join(extractedConfig, file)
-        if (await pathExists(source)) await cp(source, join(dshHome, file), { recursive: true })
-      }
-    }
-    const extractedProfiles = join(staging, 'profiles')
-    if (await pathExists(extractedProfiles)) {
-      const targetProfiles = join(dshHome, 'profiles')
-      for (const entry of await readdir(extractedProfiles, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue
-        const manifest = join(extractedProfiles, entry.name, 'package.json')
-        if (!(await pathExists(manifest))) continue
-        const target = join(targetProfiles, entry.name)
-        await mkdir(target, { recursive: true })
-        await cp(manifest, join(target, 'package.json'))
-      }
-    }
-    return { restoredFrom: item.name }
-  } finally {
-    await rm(staging, { recursive: true, force: true })
-  }
-}
-
 async function deleteBackup(dshHome, id) {
   if (typeof id !== 'string' || id.length === 0) return undefined
   const snapshot = await listBackups(dshHome)
@@ -576,10 +545,11 @@ async function exportBackup(dshHome, downloadTokens, id) {
   return { name: item.name, url: `/dsh-backup-download?token=${token}` }
 }
 
-async function importBackup(dshHome, name, encoded) {
+async function importBackup(dshHome, name, encoded, validatePath) {
   if (typeof name !== 'string' || !BACKUP_NAME.test(name) || typeof encoded !== 'string' || encoded.length === 0) return undefined
+  if (encoded.length > Math.ceil(MAX_BACKUP_TRANSFER_BYTES / 3) * 4 + 8 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return undefined
   const data = Buffer.from(encoded, 'base64')
-  if (data.length === 0 || data.length > MAX_BACKUP_TRANSFER_BYTES) return undefined
+  if (data.length === 0 || data.length > MAX_BACKUP_TRANSFER_BYTES || data.toString('base64') !== encoded) return undefined
   const backupDir = join(dshHome, 'backups')
   await mkdir(backupDir, { recursive: true, mode: 0o700 })
   const target = join(backupDir, basename(name))
@@ -587,6 +557,10 @@ async function importBackup(dshHome, name, encoded) {
   const temporary = join(backupDir, `.${name}.${randomUUID()}.import`)
   try {
     await writeFile(temporary, data, { mode: 0o600 })
+    if (typeof validatePath === 'function') {
+      const report = await validatePath({ id: backupId(name), name, path: temporary, sizeBytes: data.length, mtimeMs: Date.now() })
+      if (report?.validForRestore !== true) throw Object.assign(new Error('backup-archive-invalid'), { code: 'backup-archive-invalid' })
+    }
     await rename(temporary, target)
   } finally {
     await rm(temporary, { force: true })
@@ -4155,6 +4129,15 @@ function apply(ctx) {
   const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
   const downloadTokens = new Map()
+  const backupIntegrity = createBackupIntegrity({
+    dshHome,
+    resolveBackup: (id) => backupItemForId(dshHome, id),
+    getActiveWork: () => collectActiveWork(ctx),
+    isEnabled: () => featureEnabled('backupMaintenance'),
+    runtimeEnv,
+    previousInstanceId: instanceId,
+    scheduleRestart: () => scheduleRestart(ctx),
+  })
   // 会话管理（v0.35）：删除两段式计划（planId → {id, path, bytes}），TTL 过期自动驱逐。
   const sessionDeletePlans = new Map()
   // 会话体积懒加载缓存（v0.36）：宿主进程不重启就一直在——浏览器刷新/面板重开直接命中，
@@ -4500,6 +4483,7 @@ function apply(ctx) {
     if (!queued && !quotaDisposed) quotaThrottle.settle(profile.name, { ok: false, code: 'cancelled' })
   }
   ctx.effect(() => () => permissionPlans.clear(), 'dsh-service permission plans')
+  ctx.effect(() => () => { backupIntegrity.dispose().catch(() => {}) }, 'dsh-service backup restore plans')
   ctx.effect(() => () => sessionDeletePlans.clear(), 'dsh-service session delete plans')
   ctx.effect(() => () => sessionBytesCache.clear(), 'dsh-service session bytes cache')
   ctx.effect(() => { sessionViewCache.id = null; sessionViewCache.snapshot = null }, 'dsh-service session view cache')
@@ -4758,26 +4742,51 @@ function apply(ctx) {
       }
     }
 
-    if (endpoint === 'backup-restore') {
+    if (endpoint === 'backup-inspect') {
       if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
-        const value = await restoreBackup(ctx, dshHome, payload?.id)
+        const value = await backupIntegrity.inspectBackup(payload?.id)
         if (value === undefined) return { ok: false, error: 'unknown-backup' }
-        scheduleRestart(ctx)
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return { ok: false, error: error?.code || error?.message || String(error) }
       }
+    }
+
+    if (endpoint === 'backup-restore-prepare') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      try {
+        return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id) }
+      } catch (error) {
+        return { ok: false, error: error?.code || error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-restore-commit') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      try {
+        return { ok: true, value: await backupIntegrity.commitRestore(payload?.planId) }
+      } catch (error) {
+        return { ok: false, error: error?.code || error?.message || String(error) }
+      }
+    }
+
+    if (endpoint === 'backup-restore') {
+      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      return { ok: false, error: 'restore-preflight-required' }
     }
 
     if (endpoint === 'backup-import') {
       if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
       try {
-        const value = await importBackup(dshHome, payload?.name, payload?.data)
+        const value = await importBackup(dshHome, payload?.name, payload?.data, async (source) => {
+          const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
+          try { return await validator.inspectBackup(source.id) } finally { await validator.dispose() }
+        })
         if (value === undefined) return { ok: false, error: 'invalid-backup' }
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return { ok: false, error: error?.code || error?.message || String(error) }
       }
     }
 

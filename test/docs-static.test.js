@@ -29,6 +29,17 @@ test('README image references exist and screenshots ship in the npm package', ()
   assert.ok(packageJson.files.includes('screenshots'), 'package files must include screenshots used by the READMEs')
 })
 
+test('backup integrity and restore preflight are documented in both languages and shipped', () => {
+  const zh = section(read('README.md'), '### 备份管理')
+  const en = section(read('README.en.md'), '### Backup management')
+  const packageJson = JSON.parse(read('package.json'))
+  assert.match(zh, /完整性检查.*恢复预检/s)
+  assert.match(zh, /SHA-256.*目标指纹/s)
+  assert.match(en, /Integrity inspection.*Restore preflight/s)
+  assert.match(en, /SHA-256.*target fingerprint/s)
+  assert.equal(packageJson.files.includes('backup-integrity.js'), true)
+})
+
 test('session deletion documentation is archived-only in both languages and the roadmap', () => {
   const zh = section(read('README.md'), '### 会话管理')
   const en = section(read('README.en.md'), '### Session manager')

@@ -1486,6 +1486,105 @@ test('backup panel creates, lists, and requires a second click before deleting a
   assert.match(renderer.text('settings.section'), /总体积：2 KB/)
 })
 
+test('backup restore inspects, prepares, renders consequences, and commits only the host plan id', async () => {
+  const calls = []
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const report = {
+    validForRestore: true,
+    status: 'ok',
+    archive: { entryCount: 12, logicalBytes: 4096 },
+    sections: { sessions: { files: 3, dirs: 2, bytes: 2048 }, config: { files: [{ name: 'settings.yaml' }] }, profiles: { count: 1 } },
+    issues: [],
+  }
+  const plan = {
+    planId: 'restore-plan-1',
+    expiresAt: Date.now() + 300000,
+    targets: { sessions: { action: 'replace' }, config: { replace: ['settings.yaml'], remove: ['AGENTS.md'] }, profiles: { upsert: ['web'], untouched: true } },
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') { assert.deepEqual(payload, { id: item.id }); return { ok: true, value: report } }
+    if (endpoint === 'backup-restore-prepare') { assert.deepEqual(payload, { id: item.id }); return { ok: true, value: plan } }
+    if (endpoint === 'backup-restore-commit') { assert.deepEqual(payload, { planId: plan.planId }); return { ok: true, value: { restoredFrom: item.name, restart: { scheduled: true, previousInstanceId: 'old-instance' } } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+
+  assert.deepEqual(calls.filter((call) => call.endpoint.startsWith('backup-restore') || call.endpoint === 'backup-inspect').map((call) => call.endpoint), ['backup-inspect', 'backup-restore-prepare'])
+  assert.doesNotMatch(calls.map((call) => call.endpoint).join(','), /backup-restore,/)
+  const text = renderer.text('settings.section')
+  assert.match(text, /完整性检查通过/)
+  assert.match(text, /共 12 个条目，解压后 4 KB/)
+  assert.match(text, /会话目录将整体替换/)
+  assert.match(text, /配置覆盖 1 项，移除 1 项/)
+  assert.match(text, /覆盖 1 个 profile/)
+
+  await renderer.findButton('确认恢复').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'backup-restore-commit').length, 1)
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [1000])
+})
+
+test('backup restore blocks confirmation for an invalid integrity report', async () => {
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: false, status: 'error', archive: { entryCount: 1, logicalBytes: 0 }, sections: { sessions: { files: 0 }, config: { files: [] }, profiles: { count: 0 } }, issues: [{ code: 'backup-entry-traversal' }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /归档不可恢复.*归档含越界或不安全路径/)
+  assert.equal(calls.some((call) => call.endpoint === 'backup-restore-prepare'), false)
+  assert.throws(() => renderer.findButton('确认恢复'))
+})
+
+test('backup restore manual result shows restart instructions without starting recovery polling', async () => {
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  let versionCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') { versionCalls += 1; return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: true, archive: { entryCount: 3, logicalBytes: 10 }, sections: { sessions: { files: 1 }, config: { files: [] }, profiles: { count: 0 } }, issues: [] } }
+    if (endpoint === 'backup-restore-prepare') return { ok: true, value: { planId: 'manual-plan', expiresAt: Date.now() + 300000, targets: { config: { replace: [], remove: [] }, profiles: { upsert: [] } } } }
+    if (endpoint === 'backup-restore-commit') return { ok: true, value: { restart: { scheduled: false, requiresManualRestart: true, previousInstanceId: 'old-instance' } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('确认恢复').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /恢复完成，需要手动重启.*Ctrl\+C/)
+  assert.equal(versionCalls, 1)
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [], 'recovery polling did not start')
+})
+
 test('service panel lists active work and requires an explicit force restart', async () => {
   const calls = []
   const activity = {

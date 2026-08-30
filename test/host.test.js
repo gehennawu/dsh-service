@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import http from 'node:http'
 import https from 'node:https'
+import { gzipSync } from 'node:zlib'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
@@ -23,6 +24,62 @@ try {
     installedDshVersion = JSON.parse(readFileSync('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')).version
   }
 } catch (_) {}
+
+function tarOctal(value, length) {
+  const digits = Math.max(1, length - 1)
+  return value.toString(8).padStart(digits - 1, '0') + '\0'
+}
+
+function tarString(value, length) {
+  const bytes = Buffer.alloc(length)
+  Buffer.from(value).copy(bytes, 0, 0, length)
+  return bytes
+}
+
+function tarArchive(entries) {
+  const blocks = []
+  for (const entry of entries) {
+    const type = entry.type ?? '0'
+    const data = type === '0' || type === '\0' ? Buffer.from(entry.data ?? '') : Buffer.alloc(0)
+    const header = Buffer.alloc(512)
+    tarString(entry.name, 100).copy(header, 0)
+    tarString(tarOctal(type === '5' ? 0o755 : 0o644, 8), 8).copy(header, 100)
+    tarString(tarOctal(0, 8), 8).copy(header, 108)
+    tarString(tarOctal(0, 8), 8).copy(header, 116)
+    tarString(tarOctal(data.length, 12), 12).copy(header, 124)
+    tarString(tarOctal(0, 12), 12).copy(header, 136)
+    Buffer.from('        ').copy(header, 148)
+    header[156] = type.charCodeAt(0)
+    tarString(entry.linkname ?? '', 100).copy(header, 157)
+    tarString('ustar\0', 6).copy(header, 257)
+    tarString('00', 2).copy(header, 263)
+    let checksum = 0
+    for (const byte of header) checksum += byte
+    tarString(checksum.toString(8).padStart(6, '0') + '\0 ', 8).copy(header, 148)
+    blocks.push(header)
+    if (data.length > 0) {
+      blocks.push(data)
+      const padding = (512 - (data.length % 512)) % 512
+      if (padding > 0) blocks.push(Buffer.alloc(padding))
+    }
+  }
+  blocks.push(Buffer.alloc(1024))
+  return gzipSync(Buffer.concat(blocks))
+}
+
+function validBackupArchive(overrides = {}) {
+  const entries = [
+    { name: 'sessions/', type: '5' },
+    { name: 'sessions/workspace/', type: '5' },
+    { name: 'sessions/workspace/session-1.jsonl', data: '{"type":"restored"}\n' },
+    { name: 'config/', type: '5' },
+    { name: 'config/settings.yaml', data: 'theme: restored\n' },
+    { name: 'profiles/', type: '5' },
+    { name: 'profiles/web/', type: '5' },
+    { name: 'profiles/web/package.json', data: '{"name":"web-profile","restored":true}\n' },
+  ]
+  return tarArchive(overrides.entries ?? entries)
+}
 
 function localSubprocess() {
   return {
@@ -125,7 +182,7 @@ function createHost(overrides = {}) {
       return services.get('subagents')
     },
     connection: {
-      rpc: {        handle(channel, handler, options) {
+      rpc: { handle(channel, handler, options) {
           handlers.push({ channel, handler, options })
           return () => {}
         },
@@ -642,15 +699,153 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.deepEqual(forged, { ok: false, error: 'unknown-backup' })
   assert.equal(await readFile(archivePath).then(() => true), true)
 
-  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: Buffer.from('imported archive').toString('base64') })
+  const importedArchive = validBackupArchive()
+  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: importedArchive.toString('base64') })
   assert.equal(imported.ok, true)
   assert.equal(imported.value.items.length, 2)
-  const duplicate = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: Buffer.from('imported archive').toString('base64') })
+  const duplicate = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: importedArchive.toString('base64') })
   assert.deepEqual(duplicate, { ok: false, error: 'invalid-backup' })
   const deleted = await handler('backup-delete', { id: listed.value.items[0].id })
   assert.equal(deleted.ok, true)
   assert.equal(deleted.value.items.length, 1)
   assert.equal(deleted.value.totalBytes, imported.value.items.find((item) => item.name === 'dsh-backup-20250819-120000.tar.gz').sizeBytes)
+})
+
+test('backup integrity preflight inspects, plans, restores once, and rejects replay', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-preflight-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await mkdir(join(dshHome, 'sessions', 'old'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web', 'node_modules', 'kept'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'old', 'event.jsonl'), '{"type":"old"}\n')
+  await writeFile(join(dshHome, 'settings.yaml'), 'theme: old\n')
+  await writeFile(join(dshHome, 'AGENTS.md'), 'remove me\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"old-profile"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'node_modules', 'kept', 'module.txt'), 'keep me')
+  await writeFile(join(dshHome, '.credentials.yaml'), 'secret: keep\n')
+  const name = 'dsh-backup-20250819-120000.tar.gz'
+  await writeFile(join(dshHome, 'backups', name), validBackupArchive())
+
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: dshHome } })
+  const listed = await handler('backup-list', {})
+  const id = listed.value.items[0].id
+
+  const inspected = await handler('backup-inspect', { id })
+  assert.equal(inspected.ok, true)
+  assert.equal(inspected.value.validForRestore, true)
+  assert.equal(inspected.value.status, 'ok')
+  assert.equal(inspected.value.source.name, name)
+  assert.match(inspected.value.source.sha256, /^[a-f0-9]{64}$/)
+  assert.deepEqual(inspected.value.sections.config.files.map((item) => item.name), ['settings.yaml'])
+  assert.equal(inspected.value.sections.profiles.count, 1)
+  assert.equal(inspected.value.sections.sessions.files, 1)
+
+  const prepared = await handler('backup-restore-prepare', { id })
+  assert.equal(prepared.ok, true)
+  assert.equal(typeof prepared.value.planId, 'string')
+  assert.equal(prepared.value.source.sha256, inspected.value.source.sha256)
+  assert.equal(prepared.value.targets.sessions.action, 'replace')
+  assert.deepEqual(prepared.value.targets.config.remove, ['AGENTS.md'])
+  assert.deepEqual(prepared.value.targets.profiles.upsert, ['web'])
+
+  const committed = await handler('backup-restore-commit', { planId: prepared.value.planId })
+  assert.equal(committed.ok, true)
+  assert.equal(committed.value.restoredFrom, name)
+  assert.equal(committed.value.restart.scheduled, true)
+  assert.equal(committed.value.restart.previousInstanceId, committed.value.previousInstanceId)
+  assert.equal(scheduled.some((entry) => entry.delay === 500), true)
+  assert.equal(await readFile(join(dshHome, 'sessions', 'workspace', 'session-1.jsonl'), 'utf8'), '{"type":"restored"}\n')
+  await assert.rejects(readFile(join(dshHome, 'sessions', 'old', 'event.jsonl')), { code: 'ENOENT' })
+  assert.equal(await readFile(join(dshHome, 'settings.yaml'), 'utf8'), 'theme: restored\n')
+  await assert.rejects(readFile(join(dshHome, 'AGENTS.md')), { code: 'ENOENT' })
+  assert.equal(JSON.parse(await readFile(join(dshHome, 'profiles', 'web', 'package.json'), 'utf8')).restored, true)
+  assert.equal(await readFile(join(dshHome, 'profiles', 'web', 'node_modules', 'kept', 'module.txt'), 'utf8'), 'keep me')
+  assert.equal(await readFile(join(dshHome, '.credentials.yaml'), 'utf8'), 'secret: keep\n')
+
+  assert.deepEqual(await handler('backup-restore-commit', { planId: prepared.value.planId }), { ok: false, error: 'restore-plan-used' })
+  assert.deepEqual(await handler('backup-restore', { id }), { ok: false, error: 'restore-preflight-required' })
+})
+
+test('backup integrity rejects traversal, links, duplicates, unexpected entries, malformed manifests, and invalid imports', async (t) => {
+  const cases = [
+    ['traversal', [{ name: '../escape', data: 'bad' }], 'backup-entry-traversal'],
+    ['link', [{ name: 'sessions/', type: '5' }, { name: 'sessions/link', type: '2', linkname: '/tmp/target' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' }], 'backup-entry-link'],
+    ['duplicate', [{ name: 'sessions/', type: '5' }, { name: 'sessions/a', data: 'one' }, { name: 'sessions/a', data: 'two' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' }], 'backup-entry-duplicate'],
+    ['unexpected', [{ name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'config/.credentials.yaml', data: 'secret' }, { name: 'profiles/', type: '5' }], 'backup-entry-unexpected'],
+    ['profile', [{ name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' }, { name: 'profiles/web/', type: '5' }, { name: 'profiles/web/package.json', data: 'not json' }], 'backup-profile-invalid'],
+  ]
+  for (const [label, entries, issueCode] of cases) {
+    const dshHome = await mkdtemp(join(tmpdir(), `dsh-service-backup-invalid-${label}-`))
+    t.after(() => rm(dshHome, { recursive: true, force: true }))
+    await mkdir(join(dshHome, 'backups'), { recursive: true })
+    const name = 'dsh-backup-20250819-120000.tar.gz'
+    await writeFile(join(dshHome, 'backups', name), tarArchive(entries))
+    const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+    const listed = await handler('backup-list', {})
+    const inspected = await handler('backup-inspect', { id: listed.value.items[0].id })
+    assert.equal(inspected.ok, true, label)
+    assert.equal(inspected.value.validForRestore, false, label)
+    assert.equal(inspected.value.status, 'error', label)
+    assert.equal(inspected.value.issues.some((issue) => issue.code === issueCode), true, label)
+    assert.deepEqual(await handler('backup-restore-prepare', { id: listed.value.items[0].id }), { ok: false, error: 'backup-archive-invalid' }, label)
+  }
+
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-invalid-import-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: Buffer.from('not a tar archive').toString('base64') })
+  assert.deepEqual(imported, { ok: false, error: 'backup-archive-invalid' })
+  assert.equal((await handler('backup-list', {})).value.items.length, 0)
+})
+
+test('restore preflight consumes expired and drifted plans without changing live data or scheduling restart', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-drift-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await mkdir(join(dshHome, 'sessions'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'current.jsonl'), 'current\n')
+  const name = 'dsh-backup-20250819-120000.tar.gz'
+  const archivePath = join(dshHome, 'backups', name)
+  await writeFile(archivePath, validBackupArchive())
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: dshHome } })
+  const id = (await handler('backup-list', {})).value.items[0].id
+
+  const sourcePlan = await handler('backup-restore-prepare', { id })
+  await writeFile(archivePath, validBackupArchive({ entries: [
+    { name: 'sessions/', type: '5' }, { name: 'sessions/changed', data: 'changed' },
+    { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' },
+  ] }))
+  assert.deepEqual(await handler('backup-restore-commit', { planId: sourcePlan.value.planId }), { ok: false, error: 'restore-source-changed' })
+  assert.deepEqual(await handler('backup-restore-commit', { planId: sourcePlan.value.planId }), { ok: false, error: 'restore-plan-used' })
+
+  await writeFile(archivePath, validBackupArchive())
+  const targetPlan = await handler('backup-restore-prepare', { id })
+  await writeFile(join(dshHome, 'sessions', 'current.jsonl'), 'changed-after-plan\n')
+  assert.deepEqual(await handler('backup-restore-commit', { planId: targetPlan.value.planId }), { ok: false, error: 'restore-target-changed' })
+  assert.equal(await readFile(join(dshHome, 'sessions', 'current.jsonl'), 'utf8'), 'changed-after-plan\n')
+  assert.equal(scheduled.some((entry) => entry.delay === 500), false)
+})
+
+test('manual runtime restore commits without scheduling exit and returns hand-restart guidance', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-manual-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await writeFile(join(dshHome, 'backups', 'dsh-backup-20250819-120000.tar.gz'), validBackupArchive())
+  const { handler, scheduled } = createHost({ env: { DSH_HOME: dshHome, DSH_SERVICE_RUNTIME_ENV: 'manual' } })
+  const id = (await handler('backup-list', {})).value.items[0].id
+  const plan = await handler('backup-restore-prepare', { id })
+  const committed = await handler('backup-restore-commit', { planId: plan.value.planId })
+  assert.equal(committed.ok, true)
+  assert.equal(committed.value.restart.scheduled, false)
+  assert.equal(committed.value.restart.requiresManualRestart, true)
+  assert.deepEqual(scheduled, [])
+})
+
+test('feature gate covers backup integrity and restore preflight endpoints', async () => {
+  const { handler } = createHost({ featureSettings: { backupMaintenance: false } })
+  for (const endpoint of ['backup-inspect', 'backup-restore-prepare', 'backup-restore-commit']) {
+    assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
+  }
 })
 
 test('feature settings namespace registers when the settings service appears after plugin startup', () => {
@@ -708,7 +903,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
