@@ -1468,6 +1468,39 @@ const CLIPROXY_ANTIGRAVITY_QUOTA_URLS = [
 ]
 const CLIPROXY_SUPPORTED_ACCOUNT_KINDS = new Set(['codex', 'gemini', 'gemini-cli', 'antigravity'])
 
+const CODEX_WINDOW_ORDER = new Map([
+  ['codex-5h', 0],
+  ['codex-day', 1],
+  ['codex-week', 2],
+  ['codex-month', 3],
+  ['codex-primary', 4],
+  ['codex-secondary', 5],
+])
+
+function stableTextCompare(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/** 非 Codex 窗口按稳定的 kindKey/id 排序；额度百分比只影响颜色/进度，不影响位置。 */
+function sortCliproxyWindows(windows) {
+  return windows
+    .map((window, index) => ({ window, index, key: String(window.kindKey ?? window.id ?? '').toLowerCase() }))
+    .sort((left, right) => stableTextCompare(left.key, right.key) || left.index - right.index)
+    .map(({ window }) => window)
+}
+
+/** Codex 窗口固定按时间跨度展示；同一桶位碰撞时保持上游字段顺序。 */
+function sortCodexWindows(windows) {
+  return windows
+    .map((window, index) => ({ window, index, key: String(window.kindKey ?? window.id ?? '').toLowerCase() }))
+    .sort((left, right) => {
+      const leftRank = CODEX_WINDOW_ORDER.get(String(left.window.kindKey ?? '')) ?? Number.MAX_SAFE_INTEGER
+      const rightRank = CODEX_WINDOW_ORDER.get(String(right.window.kindKey ?? '')) ?? Number.MAX_SAFE_INTEGER
+      return leftRank - rightRank || stableTextCompare(left.key, right.key) || left.index - right.index
+    })
+    .map(({ window }) => window)
+}
+
 /** Codex 窗口长度 → 展示桶位代码：按上游下发的实际秒数判，绝不按 primary/secondary 位置猜
  * （真实部署里主槽位完全可能就是周额度——2026-08-25 用户实测踩中）。 */
 function codexWindowCode(key, window) {
@@ -1496,8 +1529,8 @@ function normalizeCodexRateLimit(rateLimit) {
     const resetsAt = normalizeResetTimestamp(window.reset_at)
     windows.push({ id: code, kindKey: code, percent, ...(resetsAt !== undefined ? { resetsAt } : {}) })
   }
-  // 已用多的排前面（与 gemini/antigravity 解析器同一关注序）。
-  return windows.sort((a, b) => b.percent - a.percent)
+  // 展示顺序固定为短周期到长周期，不随使用率变化；未知桶按代码稳定排序。
+  return sortCodexWindows(windows)
 }
 
 /** GeminiCLI retrieveUserQuota 的 buckets → 窗口（remainingFraction∈[0,1] 折算为已用 %）。 */
@@ -1645,11 +1678,11 @@ async function fetchCliproxyUsage({ profile, config, credential, signal }) {
   }
   if (accounts.length === 0) return []
 
-  const windows = []
+  // 每个账号独立收集，最后按 auth-files 的稳定顺序统一展平，避免并发请求完成顺序污染账号排序。
+  const accountResults = new Map()
   const failures = []
-  const seenWindowIds = new Set()
   let callBudget = MAX_QUOTA_CPA_CALLS
-  const runAccount = async (account) => {
+  const runAccount = async (account, accountIndex) => {
     for (const call of account.calls) {
       if (callBudget <= 0 || signal?.aborted === true) return
       callBudget -= 1
@@ -1662,43 +1695,54 @@ async function fetchCliproxyUsage({ profile, config, credential, signal }) {
           body: JSON.stringify({ auth_index: account.authIndex, method: call.method, url: call.url, header: call.header, data: call.data }),
         })
       } catch (error) {
-        failures.push(quotaErrorCode(error))
+        failures.push({ index: accountIndex, code: quotaErrorCode(error) })
         return
       }
       const { statusCode, payload } = unwrapCliproxyApiCallEnvelope(envelope)
       const parsed = statusCode === 200 && payload !== null ? parseCliproxyUpstream(account.provider, payload) : []
       if (parsed.length > 0) {
-        for (const window of parsed) {
-          if (windows.length >= MAX_QUOTA_CPA_WINDOWS) return
-          // 窗口 id 必须全局唯一：同账号两窗撞码（如 codex primary/secondary 恰好同秒长度折算同桶）
-          // 或不同模型名 slug 化撞名，都会复制出重复的 React key/testid——后缀 ~ 保持唯一；
-          // kindKey 不动，展示名仍按窗口码本地化。
-          let windowId = `${account.slug}-${window.id}`
-          while (seenWindowIds.has(windowId)) windowId += '~'
-          seenWindowIds.add(windowId)
-          windows.push({
-            id: windowId,
-            kindKey: window.kindKey ?? window.id,
-            ...(account.label !== '' ? { label: account.label } : {}),
-            percent: window.percent,
-            ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
-          })
-        }
+        accountResults.set(accountIndex, parsed)
         return
       }
-      failures.push(statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}`)
+      failures.push({ index: accountIndex, code: statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}` })
       // antigravity 候选链：当前候选失败换下一个；其余单调用类型直接结束该账号。
       if (account.provider !== 'antigravity') return
     }
+    accountResults.set(accountIndex, [])
   }
-  const queue = [...accounts]
+  const queue = accounts.map((account, index) => ({ account, index }))
   await Promise.all(Array.from({ length: Math.min(QUOTA_CPA_CONCURRENCY, queue.length) }, async () => {
-    while (queue.length > 0 && signal?.aborted !== true && windows.length < MAX_QUOTA_CPA_WINDOWS) {
-      await runAccount(queue.shift())
+    while (queue.length > 0 && signal?.aborted !== true) {
+      const item = queue.shift()
+      await runAccount(item.account, item.index)
     }
   }))
   if (signal?.aborted === true) throw new Error('cancelled')
-  if (windows.length === 0 && failures.length > 0) throw new Error(failures[0])
+
+  const windows = []
+  const seenWindowIds = new Set()
+  for (const [accountIndex, account] of accounts.entries()) {
+    for (const window of accountResults.get(accountIndex) ?? []) {
+      if (windows.length >= MAX_QUOTA_CPA_WINDOWS) break
+      // 窗口 id 必须全局唯一：同账号两窗撞码（如 codex primary/secondary 恰好同秒长度折算同桶）
+      // 或不同模型名 slug 化撞名，都会复制出重复的 React key/testid——后缀 ~ 保持唯一；
+      // kindKey 不动，展示名仍按窗口码本地化。
+      let windowId = `${account.slug}-${window.id}`
+      while (seenWindowIds.has(windowId)) windowId += '~'
+      seenWindowIds.add(windowId)
+      windows.push({
+        id: windowId,
+        kindKey: window.kindKey ?? window.id,
+        ...(account.label !== '' ? { label: account.label } : {}),
+        percent: window.percent,
+        ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
+      })
+    }
+  }
+  if (windows.length === 0 && failures.length > 0) {
+    failures.sort((left, right) => left.index - right.index)
+    throw new Error(failures[0].code)
+  }
   return windows
 }
 

@@ -3186,8 +3186,8 @@ function stubHttpsRequest(t, handler) {
     request.destroy = () => {}
     request.write = (chunk) => { entry.body = String(chunk) }
     request.end = () => {
-      process.nextTick(() => {
-        const outcome = handler(entry)
+      process.nextTick(async () => {
+        const outcome = await handler(entry)
         response.statusCode = outcome.status ?? 200
         callback(response)
         if (outcome.payload !== undefined) response.emit('data', JSON.stringify(outcome.payload))
@@ -3451,6 +3451,34 @@ test('fetchCliproxyUsage keeps window ids unique when codex windows collide on t
   assert.equal(windows.length, 2)
   assert.deepEqual(windows.map((window) => window.id), ['u-example-com-0-codex-5h', 'u-example-com-0-codex-5h~'])
   assert.deepEqual(windows.map((window) => window.kindKey), ['codex-5h', 'codex-5h'])
+})
+
+test('fetchCliproxyUsage keeps account and Codex window order stable when calls finish out of order', async (t) => {
+  const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
+  const context = { allowedHosts: { cpa: ['cli.example.org'] } }
+  const files = {
+    files: [
+      { auth_index: 'idx-a', provider: 'codex', email: 'a@example.com' },
+      { auth_index: 'idx-b', provider: 'codex', email: 'b@example.com' },
+    ],
+  }
+  const payloadFor = (authIndex) => authIndex === 'idx-a'
+    ? { rate_limit: { primary_window: { used_percent: 80, limit_window_seconds: 18000 }, secondary_window: { used_percent: 10, limit_window_seconds: 604800 } } }
+    : { rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000 }, secondary_window: { used_percent: 80, limit_window_seconds: 604800 } } }
+  stubHttpsRequest(t, async (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: files }
+    const body = JSON.parse(request.body ?? '{}')
+    if (body.auth_index === 'idx-a') await new Promise((resolve) => setTimeout(resolve, 15))
+    return { payload: { status_code: 200, body: JSON.stringify(payloadFor(body.auth_index)) } }
+  })
+
+  const windows = await fetchCliproxyUsage({ profile, config: context, credential: 'Bearer k', signal: undefined })
+  assert.deepEqual(windows.map((window) => [window.label, window.kindKey]), [
+    ['a@example.com', 'codex-5h'],
+    ['a@example.com', 'codex-week'],
+    ['b@example.com', 'codex-5h'],
+    ['b@example.com', 'codex-week'],
+  ])
 })
 
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）────────────────────────────
