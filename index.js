@@ -15,6 +15,38 @@ import { promisify } from 'node:util'
 import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { createBackupIntegrity } from './backup-integrity.js'
+import {
+  buildCliproxyAccountPlan as buildCliproxyAccountPlanAdapter,
+  cliproxyFetchGuard as cliproxyFetchGuardAdapter,
+  cliproxyPinHostFromBaseURL as cliproxyPinHostFromBaseURLAdapter,
+  cliproxyProjectFor as cliproxyProjectForAdapter,
+  createQuotaAdapterCatalog,
+  fetchCliproxyUsage as fetchCliproxyAdapterUsage,
+  fetchStepFunStepPlanUsage as fetchStepFunStepPlanAdapterUsage,
+  fetchXiaomiTokenPlanUsage as fetchXiaomiTokenPlanAdapterUsage,
+  normalizeAntigravityModels as normalizeAntigravityModelsAdapter,
+  normalizeCodexRateLimit as normalizeCodexRateLimitAdapter,
+  normalizeDeepseekBalance as normalizeDeepseekBalanceAdapter,
+  normalizeGeminiBuckets as normalizeGeminiBucketsAdapter,
+  normalizeKimiBalance as normalizeKimiBalanceAdapter,
+  normalizeOpencodeUsage as normalizeOpencodeUsageAdapter,
+  normalizeOpenRouterCredits as normalizeOpenRouterCreditsAdapter,
+  normalizeSiliconFlowInfo as normalizeSiliconFlowInfoAdapter,
+  normalizeStepfunBalance as normalizeStepfunBalanceAdapter,
+  normalizeStepFunStepPlanUsage as normalizeStepFunStepPlanUsageAdapter,
+  normalizeXiaomiTokenPlanUsage as normalizeXiaomiTokenPlanUsageAdapter,
+  normalizeZaiCodingUsage as normalizeZaiCodingUsageAdapter,
+  prepareQuotaAdapterConfig,
+  quotaAdapterEndpoints,
+  quotaAdapterUsageUrl,
+  quotaErrorCode as quotaAdapterErrorCode,
+  recognizeQuotaAdapter,
+  safeCliproxyOrigin as safeCliproxyOriginAdapter,
+  sanitizeQuotaErrorDetail as sanitizeQuotaErrorDetailAdapter,
+  stepfunWebIdFromToken as stepfunWebIdFromTokenAdapter,
+  unwrapCliproxyApiCallEnvelope as unwrapCliproxyApiCallEnvelopeAdapter,
+  unwrapXiaomiConsoleEnvelope as unwrapXiaomiConsoleEnvelopeAdapter,
+} from './quota-adapters.js'
 
 const require = createRequire(import.meta.url)
 const name = 'dsh-service'
@@ -104,119 +136,14 @@ const SESSION_NOISE_TYPES = new Set([
   'token/meter', 'compaction', 'session/created', 'goal/status',
 ])
 
-// 远端额度（v0.18）：kind 白名单与节律参数。节律数值只在此处与 TODO.md 里程碑两处出现。
+// 远端额度（v0.18）：Adapter seam 与节律参数。每个具体 Adapter 都只通过统一 interface 被调用：
+// { kind, recognize(profile), credentialPolicy(profile), fetchUsage(context), normalize(payload) }。
+// 新增额度渠道只扩充 quota-adapters.js；index.js 负责节流、生命周期、RPC 装配，不再识别方言形状。
 const QUOTA_CONFIG_VERSION = 1
 const QUOTA_CONFIG_FILE = 'dsh-service-quota.json'
-// kind 注册表：新增供应商方言只改这一处（此前散在 5 张表里，加 kind 要改 5 处）。
-// parser 是归一化函数（函数声明有提升，可在定义之前引用）；
-// 归一化窗口可选字段 remaining:true 表示 percentage 原生就是「剩余百分比」（如 MiniMax 的
-// remaining_percent）——客户端据此把「已用」切换为「剩余」，进度条预警阈值反向；缺省按已用口径。
-// endpoints 是宿主常量候选链——按序尝试，401/403 换下一候选（智谱双域 Key 不互通），
-// 其余错误终止；缺省走 {baseURL}/usage 约定（baseURL 为空时链为空 → 稳定错误码 no-base-url）。
-// keyHints 是 Key 发现线索名（settings 声明 → DSH 凭据库 → 环境变量，含旧名兼容）；
-// hosts 供 baseURL 唯一命中自动推断（0 条或歧义都不猜）。
-const KIND_REGISTRY = {
-  'opencode-go': {
-    parser: normalizeOpencodeUsage,
-    keyHints: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
-    hosts: ['opencode.ai'],
-    // 官网用户页（卡片标题外链；宿主常量，零浏览器输入）。
-    usageUrl: 'https://opencode.ai/',
-  },
-  'zai-coding-cn': {
-    parser: normalizeZaiCodingUsage,
-    endpoints: [
-      'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
-      'https://api.z.ai/api/monitor/usage/quota/limit',
-    ],
-    keyHints: ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'BIGMODEL_API_KEY'],
-    hosts: ['open.bigmodel.cn', 'bigmodel.cn'],
-    usageUrl: 'https://open.bigmodel.cn/coding-plan/personal/usage',
-  },
-  openrouter: {
-    parser: normalizeOpenRouterCredits,
-    endpoints: ['https://openrouter.ai/api/v1/credits'],
-    keyHints: ['OPENROUTER_API_KEY'],
-    hosts: ['openrouter.ai'],
-  },
-  kimi: {
-    parser: normalizeKimiBalance,
-    endpoints: ['https://api.moonshot.cn/v1/users/me/balance'],
-    keyHints: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
-    hosts: ['moonshot.cn', 'kimi.com'],
-  },
-  siliconflow: {
-    parser: normalizeSiliconFlowInfo,
-    endpoints: ['https://api.siliconflow.cn/v1/user/info'],
-    keyHints: ['SILICONFLOW_API_KEY'],
-    hosts: ['siliconflow.cn'],
-  },
-  // DeepSeek 开放平台官方余额（v0.25）：GET /user/balance，Bearer 即 API key。
-  // balance_infos[] 每项一个币种（文档枚举 CNY/USD），金额是字符串，total = granted + topped_up。
-  deepseek: {
-    parser: normalizeDeepseekBalance,
-    endpoints: ['https://api.deepseek.com/user/balance'],
-    keyHints: ['DEEPSEEK_API_KEY'],
-    hosts: ['api.deepseek.com', 'deepseek.com'],
-    usageUrl: 'https://platform.deepseek.com/usage',
-  },
-  // CLIProxyAPI（router-for-me/CLIProxyAPI）管理面：查它托管的 OAuth 上游账号官方额度。
-  // 无固定 endpoints / 全局 hosts——每个部署一个域名，保存适配时把 settings baseURL 的
-  // hostname 钉进配置 allowedHosts[provider]（见 quota-config 写入口），外呼前复验精确命中。
-  // credentialPolicy 把「凭据从哪里取、是否包 Bearer、客户端入口文案」收进 kind 注册；
-  // configEndpointPolicy:'pinned' 表示保存适配时把 settings baseURL 主机钉入 allowedHosts。
-  // CLIProxyAPI 的 remote-management.secret-key 绝不使用 settings apiKeyEnv（代理 key），避免撞 fail2ban。
-  cliproxy: {
-    fetcher: fetchCliproxyUsage,
-    fetcherGuard: cliproxyFetchGuard,
-    keyHints: ['CPA_MANAGEMENT_KEY', 'CLIPROXY_MANAGEMENT_KEY'],
-    hosts: [],
-    credentialPolicy: { includeProfileHint: false, format: 'bearer', entryKey: 'editManagement' },
-    configEndpointPolicy: 'pinned',
-  },
-  // 小米 MiMo Token Plan（v0.29）：推理网关（token-plan-cn.xiaomimimo.com）只有 /v1 推理路径，
-  // 无任何 API-key 形态的额度查询端点（逐路径探测 404；OpenClaw 官方插件的 fetchUsageSnapshot
-  // 是空窗口占位）。额度数据只在控制台同源 API（platform.xiaomimimo.com/api/v1/tokenPlan/*），
-  // 认证是网页登录态 Cookie：凭据按裸值交给 fetcher，settings apiKeyEnv（tp- 推理密钥）绝不进入
-  // 控制台凭据链；configEndpointPolicy:'fixed' 表示查询平面由宿主常量固定、与 baseURL 无关。
-  'xiaomi-token-plan-cn': {
-    fetcher: fetchXiaomiTokenPlanUsage,
-    keyHints: ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'],
-    hosts: ['token-plan-cn.xiaomimimo.com'],
-    usageUrl: 'https://platform.xiaomimimo.com/console/usage',
-    credentialPolicy: { includeProfileHint: false, format: 'raw', entryKey: 'editCookie' },
-    configEndpointPolicy: 'fixed',
-  },
-  // StepFun（阶跃星辰）余额（v0.38，按量计费）：官方文档 GET /v1/accounts，Bearer 即 API key，
-  // 响应 {object,type,balance,total_cash_balance,total_voucher_balance}，金额是 float。
-  // com（国内）与 ai（海外）双域候选链，401/403 换域。
-  stepfun: {
-    parser: normalizeStepfunBalance,
-    endpoints: [
-      'https://api.stepfun.com/v1/accounts',
-      'https://api.stepfun.ai/v1/accounts',
-    ],
-    keyHints: ['STEPFUN_API_KEY'],
-    hosts: ['api.stepfun.com', 'stepfun.com', 'api.stepfun.ai', 'stepfun.ai'],
-    usageUrl: 'https://platform.stepfun.com/plan-usage',
-  },
-  // StepFun Step Plan 订阅（v0.38）：无 API-key 形态额度查询端点（api.stepfun.com/step_plan/v1/*
-  // 逐路径探测 404），唯一数据面是控制台同源 Connect-JSON BFF
-  // （platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit）。
-  // 认证 = Oasis-Token（网页登录态令牌，access...refresh 对）+ Oasis-Webid（必须等于 token JWT
-  // 的 device_id，由 token 派生，不匹配报 "oasis-token is embezzled"）+ Oasis-appID/Oasis-Platform 头。
-  // 凭据按裸 token 交给 fetcher；settings apiKeyEnv（API 密钥）绝不进入控制台凭据链；
-  // configEndpointPolicy:'fixed' 表示查询平面由宿主常量固定、与 baseURL 无关（与 xiaomi 同款）。
-  'stepfun-step-plan': {
-    fetcher: fetchStepFunStepPlanUsage,
-    keyHints: ['STEPFUN_TOKEN', 'STEPFUN_OASIS_TOKEN'],
-    hosts: [],
-    usageUrl: 'https://platform.stepfun.com/plan-usage',
-    credentialPolicy: { includeProfileHint: false, format: 'raw', entryKey: 'editToken' },
-    configEndpointPolicy: 'fixed',
-  },
-}
-const QUOTA_KINDS = Object.keys(KIND_REGISTRY)
+const QUOTA_ADAPTERS = createQuotaAdapterCatalog()
+const QUOTA_ADAPTER_BY_KIND = new Map(QUOTA_ADAPTERS.map((adapter) => [adapter.kind, adapter]))
+const QUOTA_KINDS = [...QUOTA_ADAPTER_BY_KIND.keys()]
 const QUOTA_UPSTREAM_TIMEOUT_MS = 15000
 const QUOTA_PROVIDER_DEADLINE_MS = 50 * 1000
 const QUOTA_SUCCESS_TTL_MS = 60000
@@ -232,14 +159,6 @@ const MAX_QUOTA_PROVIDERS = 256
 const MAX_QUOTA_PROVIDER_NAME = 128
 const MAX_QUOTA_RESET_CARDS = 500
 const MAX_QUOTA_RESET_CARDS_PER_PROVIDER = 10
-const MAX_QUOTA_ERROR_DETAIL = 256
-// CLIProxyAPI 编排参数（v0.24）：账号数 / api-call 总次数（antigravity 候选 URL 也计入）/
-// 并发 / 窗口总数上限。数值只在此处与 TODO.md 里程碑两处出现。
-const MAX_QUOTA_CPA_ACCOUNTS = 8
-const MAX_QUOTA_CPA_CALLS = 12
-const QUOTA_CPA_CONCURRENCY = 3
-const MAX_QUOTA_CPA_WINDOWS = 32
-
 // 子代理路由（v0.27）：三态配置的常量。inherit=不干预（原生继承），
 // follow=派生时读父会话最近一次请求路由注入，custom=固定 provider/model。
 // 数值只在此处与 TODO.md 里程碑两处出现。
@@ -1135,19 +1054,9 @@ function readLlmProviders(settings) {
     }))
 }
 
-/**
- * 运行时 LLM 渠道别名表（v0.25）：DSH 有 settings 之外的内置 LLM 渠道（如 dsh-llm-deepseek
- * 注册的 deepseek-official 路由），它们不出现在 llm-pi-ai.providers 清单里，额度查询却同样适用。
- * 只有「kind 固定端点 + keyHints 齐备」的渠道才允许进表——进表即自证兼容（官方域名、凭据线索
- * 宿主常量），延续零意外外呼口径：不在表内的运行时渠道一概不产生行。
- */
-const QUOTA_RUNTIME_CHANNEL_KINDS = {
-  'deepseek-official': 'deepseek',
-}
-
-/** 运行时 llm 服务已注册渠道 → 合成 provider 行（runtimeKind 标记别名来源）。服务缺席/异常返回空表。
+/** 运行时 llm 服务已注册渠道 → 交给 Adapter.recognize(profile) 判定是否形成额度行。
  * 注意 listProviders() 的真实契约（dsh-llm 源码核实）：下发 [{id,name,…}] 对象数组、注册顺序，
- * 不是字符串——v0.25 首版按字符串过滤导致全部条目被静默跳过（测试假桩喂字符串掩盖了 bug）。 */
+ * 不是字符串——字符串条目仅作向后兼容。运行时渠道别名属于具体 Adapter，不再由 index.js 维护表。 */
 function readRuntimeQuotaChannels(llm) {
   if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') return []
   let providers
@@ -1161,13 +1070,13 @@ function readRuntimeQuotaChannels(llm) {
   for (const entry of providers) {
     const id = typeof entry === 'string' ? entry : entry !== null && typeof entry === 'object' ? entry.id : undefined
     if (typeof id !== 'string' || id.length === 0 || id.length > MAX_QUOTA_PROVIDER_NAME) continue
-    if (!Object.prototype.hasOwnProperty.call(QUOTA_RUNTIME_CHANNEL_KINDS, id)) continue
-    const kind = QUOTA_RUNTIME_CHANNEL_KINDS[id]
-    if (KIND_REGISTRY[kind] === undefined) continue
+    const profile = { name: id, baseURL: '', apiKeyEnv: '', runtimeChannel: id }
+    const adapter = recognizeQuotaAdapter(QUOTA_ADAPTERS, profile)
+    if (adapter === undefined) continue
     const displayName = typeof entry === 'object' && entry !== null && typeof entry.name === 'string' && entry.name.trim() !== ''
       ? entry.name.trim().slice(0, 128)
       : id
-    channels.push({ name: id, displayName, baseURL: '', apiKeyEnv: '', runtimeKind: kind })
+    channels.push({ ...profile, displayName, runtimeKind: adapter.kind })
   }
   return channels
 }
@@ -1186,97 +1095,22 @@ function readQuotaProfiles(settings, llm) {
  * opencode-go 方言 → 统一窗口形状。真实端点只有 percent 与 resetsAt（ISO），
  * 没有金额字段：percent 是一等公民，缺字段/非数字跳过该窗口，percent 截到 [0,100]。
  */
-function normalizeOpencodeUsage(payload) {
-  const windows = []
-  const usage = payload?.usage
-  if (typeof usage !== 'object' || usage === null) return { windows }
-  for (const id of ['rolling', 'weekly', 'monthly']) {
-    const window = usage[id]
-    if (typeof window !== 'object' || window === null) continue
-    if (typeof window.percent !== 'number' || !Number.isFinite(window.percent)) continue
-    windows.push({
-      id,
-      percent: Math.max(0, Math.min(100, Math.round(window.percent))),
-      ...(typeof window.resetsAt === 'string' && window.resetsAt.length > 0 ? { resetsAt: window.resetsAt } : {}),
-    })
-  }
-  return { windows }
-}
+const normalizeOpencodeUsage = normalizeOpencodeUsageAdapter
 
-function quotaHostnameMatches(hostname, registeredHost) {
-  const actual = String(hostname || '').toLowerCase().replace(/\.$/, '')
-  const expected = String(registeredHost || '').toLowerCase().replace(/\.$/, '')
-  return actual === expected || actual.endsWith(`.${expected}`)
-}
-
-function safeQuotaBaseUrl(kind, baseURL) {
-  const registered = KIND_REGISTRY[kind]
-  if (registered === undefined || !Array.isArray(registered.hosts) || registered.hosts.length === 0) return undefined
-  let parsed
-  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
-  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
-  if (parsed.port !== '' && parsed.port !== '443') return undefined
-  if (!registered.hosts.some((host) => quotaHostnameMatches(parsed.hostname, host))) return undefined
-  parsed.hash = ''
-  parsed.search = ''
-  parsed.pathname = parsed.pathname.replace(/\/+$/, '')
-  return parsed
-}
-
-/** kind → 上游查询端点候选数组：注册表登记的 kind 用宿主常量链；动态端点仅接受 HTTPS + 注册 host。 */
+/** kind → 上游端点候选数组（兼容既有纯函数测试；事实与校验都由 Adapter 持有）。 */
 function quotaEndpointFor(kind, baseURL) {
-  const registered = KIND_REGISTRY[kind]
-  if (registered !== undefined && Array.isArray(registered.endpoints)) return [...registered.endpoints]
-  const base = safeQuotaBaseUrl(kind, baseURL)
-  if (base === undefined) return []
-  base.pathname = `${base.pathname}/usage`.replace(/\/{2,}/g, '/')
-  return [base.toString()]
+  return quotaAdapterEndpoints(QUOTA_ADAPTER_BY_KIND.get(kind), { baseURL })
 }
 
-/** 由 baseURL 推断 kind：按 URL hostname 精确/子域匹配；0 条或歧义都不猜。 */
+/** 由 profile 形状唯一识别 Adapter；0 条或歧义都不猜。 */
 function inferQuotaKind(baseURL) {
-  let parsed
-  try { parsed = new URL(String(baseURL || '').trim()) } catch (_) { return undefined }
-  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
-  const hits = Object.entries(KIND_REGISTRY).filter(([, registered]) =>
-    (registered.hosts ?? []).some((host) => quotaHostnameMatches(parsed.hostname, host)))
-  return hits.length === 1 ? hits[0][0] : undefined
+  return recognizeQuotaAdapter(QUOTA_ADAPTERS, { baseURL })?.kind
 }
 
-/** 保存适配时的钉住派生（服务端从 settings baseURL 取值，浏览器零输入）：
- * 仅接受 HTTPS、无 userinfo、默认端口、DNS 域名（拒 IP 字面量）；不合格返回 undefined。 */
-function cliproxyPinHostFromBaseURL(baseURL) {
-  let parsed
-  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
-  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
-  if (parsed.port !== '' && parsed.port !== '443') return undefined
-  return normalizeQuotaHostname(parsed.hostname)
-}
-
-/**
- * CLIProxyAPI 管理面 origin 守卫：baseURL 必须整体 HTTPS，且 hostname 与保存适配时
- * 钉入 allowedHosts[provider] 的记录**精确相等**——不做子串/子域猜测，管理密钥只发往
- * 用户钉过的那个域；settings 里改了 baseURL 就必须重新保存适配才恢复外呼。
- * 返回规范化 origin（scheme://host[:443]，无路径）或 undefined。
- */
-function safeCliproxyOrigin(baseURL, pinnedHosts) {
-  if (!Array.isArray(pinnedHosts) || pinnedHosts.length === 0) return undefined
-  let parsed
-  try { parsed = new URL(String(baseURL ?? '').trim()) } catch (_) { return undefined }
-  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return undefined
-  if (parsed.port !== '' && parsed.port !== '443') return undefined
-  const host = normalizeQuotaHostname(parsed.hostname)
-  if (host === undefined || !pinnedHosts.includes(host)) return undefined
-  return parsed.origin
-}
-
-/** fetcher 类 kind 的外呼前置守卫：返回稳定错误码或 null（放行）。在解凭据之前跑，省一次凭据查找。 */
-function cliproxyFetchGuard(profile, config) {
-  const base = String(profile?.baseURL ?? '').trim()
-  if (base === '') return 'no-base-url'
-  const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
-  return safeCliproxyOrigin(base, pinned) === undefined ? 'host-not-pinned' : null
-}
+// 兼容既有公共导出：实现与配置安全事实已经归入 quota-adapters.js。
+const cliproxyPinHostFromBaseURL = cliproxyPinHostFromBaseURLAdapter
+const safeCliproxyOrigin = safeCliproxyOriginAdapter
+const cliproxyFetchGuard = cliproxyFetchGuardAdapter
 
 /**
  * 单个 provider 的 kind 解析（quota 与 quota-refresh 共用）。
@@ -1287,32 +1121,11 @@ function resolveQuotaKind(config, profile) {
   if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
     const configured = config.kinds[profile.name]
     if (configured === null) return {}
-    if (KIND_REGISTRY[configured] !== undefined) return { kind: configured, kindSource: 'config' }
-    return {}
+    const adapter = QUOTA_ADAPTER_BY_KIND.get(configured)
+    return adapter === undefined ? {} : { adapter, kind: adapter.kind, kindSource: 'config' }
   }
-  const inferred = inferQuotaKind(profile.baseURL)
-    ?? (profile.runtimeKind !== undefined && KIND_REGISTRY[profile.runtimeKind] !== undefined ? profile.runtimeKind : undefined)
-  if (inferred !== undefined && KIND_REGISTRY[inferred] !== undefined) return { kind: inferred, kindSource: 'auto' }
-  return {}
-}
-
-/** 百分比归一：调用方（zai 等）的 percentage 与反推值都是 0-100 口径，只做截断取整；非法 → null。
- * 注意不做「≤1 视为小数比例」启发式——zai 原生 percentage:1 就是 1%，放大会得到 100%。 */
-function normalizePercentValue(value) {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) return null
-  return Math.min(100, Math.round(n))
-}
-
-/** 重置时刻归一：ISO 字符串 / unix 秒 / unix 毫秒 → ISO 字符串；非法 → undefined。 */
-function normalizeResetTimestamp(value) {
-  if (typeof value === 'string' && value.length > 0) {
-    const ms = Date.parse(value)
-    if (Number.isFinite(ms)) return new Date(ms).toISOString()
-  }
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return undefined
-  return new Date(n > 1e12 ? n : n * 1000).toISOString()
+  const adapter = recognizeQuotaAdapter(QUOTA_ADAPTERS, profile)
+  return adapter === undefined ? {} : { adapter, kind: adapter.kind, kindSource: 'auto' }
 }
 
 /**
@@ -1320,28 +1133,15 @@ function normalizeResetTimestamp(value) {
  * 凭据填写窗口（quota-credential-set/unset）只接受这份清单里的名字——零输入拼接：浏览器传来的
  * 名字必须命中宿主派生的白名单，顺带保证 CredentialRef 文法（POSIX shell 标识符）合法。
  */
-function quotaCredentialPolicy(kind) {
-  const registered = KIND_REGISTRY[kind]
-  return {
-    includeProfileHint: registered?.credentialPolicy?.includeProfileHint !== false,
-    format: registered?.credentialPolicy?.format === 'raw' ? 'raw' : 'bearer',
-    entryKey: typeof registered?.credentialPolicy?.entryKey === 'string' && registered.credentialPolicy.entryKey !== ''
-      ? registered.credentialPolicy.entryKey
-      : 'edit',
-  }
+function quotaCredentialPolicy(kind, profile = {}) {
+  const adapter = QUOTA_ADAPTER_BY_KIND.get(kind)
+  return adapter === undefined
+    ? { hints: [], entryKey: 'edit', format: (value) => `Bearer ${value}` }
+    : adapter.credentialPolicy(profile)
 }
 
 function quotaCredentialHintNames(kind, profile) {
-  const names = []
-  const registered = KIND_REGISTRY[kind]
-  const policy = quotaCredentialPolicy(kind)
-  // 独立管理面/控制台面的 kind 通过 policy 排除 settings apiKeyEnv；那通常是代理/推理 key，
-  // 不属于额度查询凭据，错误回退既无效也扩大泄露面。
-  if (policy.includeProfileHint && profile.apiKeyEnv !== '') names.push(profile.apiKeyEnv)
-  for (const name of registered?.keyHints ?? []) {
-    if (!names.includes(name)) names.push(name)
-  }
-  return names
+  return [...quotaCredentialPolicy(kind, profile).hints]
 }
 
 /**
@@ -1351,9 +1151,9 @@ function quotaCredentialHintNames(kind, profile) {
  * 与「从未配置」的 credential-missing 区分。
  */
 async function discoverQuotaCredential(ctx, kind, profile) {
-  const attempted = quotaCredentialHintNames(kind, profile)
-  const policy = quotaCredentialPolicy(kind)
-  const formatCredential = (value) => policy.format === 'raw' ? value : `Bearer ${value}`
+  const policy = quotaCredentialPolicy(kind, profile)
+  const attempted = [...policy.hints]
+  const formatCredential = (value) => policy.format(value)
   const envHas = (name) => typeof process.env[name] === 'string' && process.env[name].trim() !== ''
   const credentials = ctx.get('credentials')
   if (credentials !== undefined && typeof credentials.resolve === 'function') {
@@ -1399,62 +1199,23 @@ async function quotaCredentialConfigured(ctx, kind, profile) {
  */
 // zai 窗口展示序：Token 窗（5 小时/本周）在前、点数窗次之、MCP 月度垫底。
 // 上游固定把 TIME_LIMIT 放首个，而用户最关心编码 Token 窗（GUI 反馈点名 MCP 放第三排）。
-const ZAI_WINDOW_TYPE_ORDER = { 'tokens-limit': 0, 'credit-limit': 1, 'time-limit': 2 }
 function normalizeZaiCodingUsage(payload) {
-  const windows = []
-  const limits = payload?.data?.limits
-  if (!Array.isArray(limits)) return { windows }
-  for (const [index, limit] of limits.entries()) {
-    if (limit === null || typeof limit !== 'object') continue
-    // percentage 缺失时用 currentValue/usage 反推（CREDIT_LIMIT 新版套餐常见形态）。
-    let percent = typeof limit.percentage === 'number' && Number.isFinite(limit.percentage)
-      ? limit.percentage
-      : (Number(limit.usage) > 0 && Number.isFinite(Number(limit.currentValue))
-          ? (Number(limit.currentValue) / Number(limit.usage)) * 100
-          : NaN)
-    percent = normalizePercentValue(percent)
-    if (percent === null) continue
-    const type = typeof limit.type === 'string' && limit.type.length > 0 ? limit.type.toLowerCase().replace(/[^a-z0-9]+/g, '-') : `limit-${index}`
-    const hasShape = Number.isFinite(limit.unit) && Number.isFinite(limit.number)
-    const id = hasShape ? `${type}-u${limit.unit}-n${limit.number}` : `${type}-${index}`
-    windows.push({
-      id,
-      percent,
-      ...(normalizeResetTimestamp(limit.nextResetTime) !== undefined ? { resetsAt: normalizeResetTimestamp(limit.nextResetTime) } : {}),
-    })
-  }
-  // stable sort：同类型内保持上游相对顺序（5 小时窗仍在本周窗前），未知类型排最后。
-  const orderOf = (id) => ZAI_WINDOW_TYPE_ORDER[String(id).split('-').slice(0, 2).join('-')] ?? 3
-  windows.sort((a, b) => orderOf(a.id) - orderOf(b.id))
-  return { windows }
+  return normalizeZaiCodingUsageAdapter(payload)
 }
 
 /** OpenRouter credits（{data:{total_credits,total_usage}}）→ 单百分比窗口。 */
 function normalizeOpenRouterCredits(payload) {
-  const d = payload?.data !== null && typeof payload?.data === 'object' ? payload.data : payload
-  const total = Number(d?.total_credits ?? d?.credits)
-  const used = Number(d?.total_usage ?? d?.usage)
-  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(used)) return { windows: [] }
-  const percent = Math.max(0, Math.min(100, Math.round((used / total) * 100)))
-  return { windows: [{ id: 'credits', percent }] }
+  return normalizeOpenRouterCreditsAdapter(payload)
 }
 
 /** Kimi / Moonshot 余额（{available_balance:<分>}）→ 文本窗口（无总量不适合百分比）。 */
 function normalizeKimiBalance(payload) {
-  const raw = payload?.available_balance ?? payload?.balance ?? payload?.cash_balance ?? payload?.data?.available_balance
-  const fen = Number(raw)
-  if (!Number.isFinite(fen) || fen < 0) return { windows: [] }
-  const yuan = fen >= 100 ? fen / 100 : fen
-  return { windows: [{ id: 'balance', text: `¥${(Math.round(yuan * 100) / 100).toFixed(2)}` }] }
+  return normalizeKimiBalanceAdapter(payload)
 }
 
 /** SiliconFlow 用户信息（{data:{balance}}）→ 文本窗口。 */
 function normalizeSiliconFlowInfo(payload) {
-  const d = payload?.data !== null && typeof payload?.data === 'object' ? payload.data : payload
-  const raw = d?.balance ?? d?.amount ?? d?.remain ?? d?.remaining
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n < 0) return { windows: [] }
-  return { windows: [{ id: 'balance', text: `¥${(Math.round(n * 100) / 100).toFixed(2)}` }] }
+  return normalizeSiliconFlowInfoAdapter(payload)
 }
 
 /**
@@ -1465,42 +1226,11 @@ function normalizeSiliconFlowInfo(payload) {
  * 数字本身已说明问题，不伪造状态文案。
  */
 function normalizeDeepseekBalance(payload) {
-  const infos = Array.isArray(payload?.balance_infos) ? payload.balance_infos : []
-  const windows = []
-  const seenCurrencies = new Set()
-  for (const info of infos) {
-    if (info === null || typeof info !== 'object') continue
-    const rawCurrency = typeof info.currency === 'string' ? info.currency.trim().toUpperCase() : ''
-    // 文档枚举 CNY/USD；其他三~八字母码照收（上游扩展不炸），形状不对的条目丢弃。
-    const currency = /^[A-Z]{3,8}$/.test(rawCurrency) ? rawCurrency : ''
-    if (currency === '' || seenCurrencies.has(currency)) continue
-    const total = normalizeDeepseekMoney(info.total_balance)
-    if (total === null) continue
-    seenCurrencies.add(currency)
-    const idSuffix = currency.toLowerCase()
-    windows.push({ id: `balance-${idSuffix}`, text: deepseekMoneyText(total, currency), label: currency, kindKey: 'balance' })
-    const granted = normalizeDeepseekMoney(info.granted_balance)
-    if (granted !== null && Number(granted) > 0) {
-      windows.push({ id: `granted-${idSuffix}`, text: deepseekMoneyText(granted, currency), label: currency, kindKey: 'granted-balance' })
-    }
-  }
-  return { windows }
+  return normalizeDeepseekBalanceAdapter(payload)
 }
 
 /** DeepSeek 金额字段归一：字符串/数字均可（官方下发字符串），负数或非有限值拒绝；
  * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00。保留两位小数。 */
-function normalizeDeepseekMoney(value) {
-  if (typeof value === 'string' && value.trim() === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) return null
-  return (Math.round(n * 100) / 100).toFixed(2)
-}
-
-function deepseekMoneyText(amount, currency) {
-  const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : ''
-  return symbol === '' ? `${amount} ${currency}` : `${symbol}${amount}`
-}
-
 /**
  * StepFun 余额（v0.38）：{object, type, balance, total_cash_balance, total_voucher_balance} →
  * 文本窗口。官方响应无币种字段（控制台按人民币计费），金额按人民币惯例显示（与 kimi 同口径）；
@@ -1508,43 +1238,19 @@ function deepseekMoneyText(amount, currency) {
  * balance 缺失/非法丢弃整条（不伪造 ¥0.00——Number('') 是 0 的坑见 normalizeDeepseekMoney 注释）。
  */
 function normalizeStepfunBalance(payload) {
-  const balance = normalizeStepfunMoney(payload?.balance)
-  if (balance === null) return { windows: [] }
-  const windows = [{ id: 'balance', text: `¥${balance}`, kindKey: 'balance' }]
-  const voucher = normalizeStepfunMoney(payload?.total_voucher_balance)
-  if (voucher !== null && Number(voucher) > 0) {
-    windows.push({ id: 'granted-balance', text: `¥${voucher}`, kindKey: 'granted-balance' })
-  }
-  return { windows }
+  return normalizeStepfunBalanceAdapter(payload)
 }
 
 /** StepFun 金额字段归一：数字/数字字符串均可（官方文档 float，兼容字符串下发）；负数或非有限值拒绝；
  * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00（与 normalizeDeepseekMoney 同款坑）。 */
-function normalizeStepfunMoney(value) {
-  if (typeof value === 'string' && value.trim() === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) return null
-  return (Math.round(n * 100) / 100).toFixed(2)
-}
-
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）控制台查询 ─────────────────
 // 数据源是控制台同源 API（platform.xiaomimimo.com SPA bundle 核实）：前端统一走
 // `/api/v1` 前缀 + same-origin Cookie，无任何 API-key 查询端点。两个 GET 都是宿主常量，
 // Cookie 凭据只发往这两个固定地址。「套餐使用情况」页 = detail（套餐名/有效期）+ usage（额度桶）。
-const XIAOMI_TOKEN_PLAN_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail'
-const XIAOMI_TOKEN_PLAN_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage'
-
 /** 控制台信封解包：{code,message,data}，code∈{0,200} 视为成功（与控制台前端同一口径）。
  * code=401（登录态失效）→ 稳定错误码 credential-rejected；其余非零码 → bad-payload 并透出 message。 */
 function unwrapXiaomiConsoleEnvelope(payload) {
-  if (payload === null || typeof payload !== 'object') throw new Error('bad-payload')
-  const code = Number(payload.code)
-  if (!Number.isFinite(code)) throw new Error('bad-payload')
-  if (code === 0 || code === 200) return payload.data !== null && typeof payload.data === 'object' ? payload.data : {}
-  const detail = sanitizeQuotaErrorDetail(typeof payload.message === 'string' ? payload.message : undefined)
-  const error = new Error(code === 401 ? 'credential-rejected' : 'bad-payload')
-  if (detail !== undefined) error.detail = detail
-  throw error
+  return unwrapXiaomiConsoleEnvelopeAdapter(payload)
 }
 
 /**
@@ -1557,32 +1263,7 @@ function unwrapXiaomiConsoleEnvelope(payload) {
  * resetsAt 附到百分比窗口（订阅有效期即额度清零点；已失效套餐不再挂未来时刻误导倒计时）。
  */
 function normalizeXiaomiTokenPlanUsage(detailData, usageData) {
-  const windows = []
-  const planName = typeof detailData?.planName === 'string' ? detailData.planName.trim().slice(0, MAX_QUOTA_PROVIDER_NAME) : ''
-  if (planName !== '') windows.push({ id: 'plan', kindKey: 'plan-name', text: planName })
-  const periodEnd = detailData?.expired === true ? undefined : normalizeResetTimestamp(detailData?.currentPeriodEnd)
-  const items = Array.isArray(usageData?.usage?.items) ? usageData.usage.items : []
-  const seenNames = new Set()
-  for (const item of items) {
-    if (item === null || typeof item !== 'object') continue
-    const name = typeof item.name === 'string' ? item.name.trim() : ''
-    if (name === '' || seenNames.has(name)) continue
-    if (name === 'compensation_total_token' && Number(item.limit) === 0) continue
-    const fraction = Number(item.percent)
-    if (!Number.isFinite(fraction)) continue
-    seenNames.add(name)
-    const used = Number(item.used)
-    const limit = Number(item.limit)
-    windows.push({
-      id: name,
-      kindKey: name,
-      percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
-      ...(Number.isFinite(used) && used >= 0 ? { used } : {}),
-      ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
-      ...(periodEnd !== undefined ? { resetsAt: periodEnd } : {}),
-    })
-  }
-  return windows
+  return normalizeXiaomiTokenPlanUsageAdapter(detailData, usageData)
 }
 
 /**
@@ -1592,22 +1273,7 @@ function normalizeXiaomiTokenPlanUsage(detailData, usageData) {
  * credential-rejected（Cookie 失效是唯一常见故障，别让用户猜状态码）。
  */
 async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
-  const cookie = String(credential ?? '').trim().replace(/^cookie:\s*/i, '')
-  if (cookie === '') throw new Error('credential-missing')
-  const fetchEnvelope = async (url) => {
-    try {
-      return unwrapXiaomiConsoleEnvelope(await requestQuotaJson(url, { cookie, signal }))
-    } catch (error) {
-      if (error?.message === 'http-status:401' || error?.message === 'http-status:403') throw new Error('credential-rejected')
-      throw error
-    }
-  }
-  const detailData = await fetchEnvelope(XIAOMI_TOKEN_PLAN_DETAIL_URL)
-  const usageData = await fetchEnvelope(XIAOMI_TOKEN_PLAN_USAGE_URL)
-  const hasPlan = typeof detailData?.planCode === 'string' && detailData.planCode.trim() !== ''
-  const windows = normalizeXiaomiTokenPlanUsage(detailData, usageData)
-  if (!hasPlan && windows.length === 0) throw new Error('no-subscription')
-  return windows
+  return fetchXiaomiTokenPlanAdapterUsage({ credential, signal, requestJson: requestQuotaJson })
 }
 
 
@@ -1616,51 +1282,10 @@ async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
 // POST /api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit，body {}，认证走
 // Oasis-Token + Oasis-Webid 头（web_id 必须等于 token JWT 的 device_id）。无候选链、
 // 无钉住域——查询平面与 settings baseURL 完全无关。
-const STEPFUN_STEP_PLAN_RATE_LIMIT_URL = 'https://platform.stepfun.com/api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit'
-
 /** 从 Oasis-Token 解出 Oasis-Webid：device_id 在 JWT payload；token 可能是
  * `access...refresh` 对（浏览器 Oasis-Token cookie 形态），refresh 半优先（CodexBar 同款）。 */
 function stepfunWebIdFromToken(token) {
-  const halves = String(token ?? '').split('...')
-  for (let index = halves.length - 1; index >= 0; index--) {
-    const deviceId = stepfunJwtDeviceId(halves[index])
-    if (deviceId !== undefined) return deviceId
-  }
-  return undefined
-}
-
-function stepfunJwtDeviceId(jwt) {
-  const parts = String(jwt ?? '').split('.')
-  if (parts.length < 2) return undefined
-  let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/')
-  while (payload.length % 4 !== 0) payload += '='
-  try {
-    const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'))
-    return typeof json?.device_id === 'string' && json.device_id !== '' ? json.device_id : undefined
-  } catch (_) {
-    return undefined
-  }
-}
-
-/** 响应字段 snake/camel 双形态读取（Connect protobuf JSON 两形态都出现过）。 */
-function pickQuotaField(target, snake, camel) {
-  if (target === null || typeof target !== 'object') return undefined
-  return target[snake] !== undefined ? target[snake] : target[camel]
-}
-
-/** 单个「剩余比例 0..1 → 已用 %」窗口；率缺失跳过；重置时刻过期/为 0（无窗口）不挂。 */
-function pushStepFunRateWindow(windows, id, rawRate, rawReset) {
-  const rate = Number(rawRate)
-  if (!Number.isFinite(rate)) return
-  const fraction = Math.max(0, Math.min(1, rate))
-  let resetsAt
-  if (rawReset !== undefined) resetsAt = normalizeResetTimestamp(rawReset)
-  windows.push({
-    id,
-    kindKey: id,
-    percent: Math.round((1 - fraction) * 100),
-    ...(resetsAt !== undefined ? { resetsAt } : {}),
-  })
+  return stepfunWebIdFromTokenAdapter(token)
 }
 
 /**
@@ -1674,54 +1299,7 @@ function pushStepFunRateWindow(windows, id, rawRate, rawReset) {
  *   subscription/topup 两个剩余比例窗；resetsAt 取 subscription_credit_reset_time（月池清零时刻）。
  */
 function normalizeStepFunStepPlanUsage(payload) {
-  const windows = []
-  if (payload === null || typeof payload !== 'object') return windows
-  if (Number(payload.status) !== 1) return windows
-  const fiveHourReset = Number(pickQuotaField(payload, 'five_hour_usage_reset_time', 'fiveHourUsageResetTime') ?? 0)
-  const weeklyReset = Number(pickQuotaField(payload, 'weekly_usage_reset_time', 'weeklyUsageResetTime') ?? 0)
-  if (fiveHourReset > 0 || weeklyReset > 0) {
-    pushStepFunRateWindow(windows, 'five-hour',
-      pickQuotaField(payload, 'five_hour_usage_left_rate', 'fiveHourUsageLeftRate'),
-      pickQuotaField(payload, 'five_hour_usage_reset_time', 'fiveHourUsageResetTime'))
-    pushStepFunRateWindow(windows, 'weekly',
-      pickQuotaField(payload, 'weekly_usage_left_rate', 'weeklyUsageLeftRate'),
-      pickQuotaField(payload, 'weekly_usage_reset_time', 'weeklyUsageResetTime'))
-    return windows
-  }
-  const credit = pickQuotaField(payload, 'plan_credit_rate_limit', 'planCreditRateLimit')
-  if (credit === undefined || typeof credit !== 'object') return windows
-  const resetAt = normalizeResetTimestamp(pickQuotaField(credit, 'subscription_credit_reset_time', 'subscriptionCreditResetTime'))
-  const buckets = pickQuotaField(credit, 'credit_buckets', 'creditBuckets')
-  const entries = Array.isArray(buckets) ? buckets : []
-  let totalSum = 0
-  let residualSum = 0
-  let bucketsValid = entries.length > 0
-  for (const bucket of entries) {
-    if (bucket === null || typeof bucket !== 'object') { bucketsValid = false; break }
-    const total = Number(pickQuotaField(bucket, 'credit_total', 'creditTotal'))
-    const residual = Number(pickQuotaField(bucket, 'credit_residual', 'creditResidual'))
-    if (!Number.isFinite(total) || !Number.isFinite(residual) || total <= 0 || residual < 0 || residual > total) {
-      bucketsValid = false
-      break
-    }
-    totalSum += total
-    residualSum += residual
-  }
-  if (bucketsValid && totalSum > 0) {
-    windows.push({
-      id: 'credit-pool',
-      kindKey: 'credit-pool',
-      percent: Math.max(0, Math.min(100, Math.round((1 - residualSum / totalSum) * 100))),
-      ...(resetAt !== undefined ? { resetsAt: resetAt } : {}),
-    })
-  } else {
-    pushStepFunRateWindow(windows, 'credit-pool',
-      pickQuotaField(credit, 'subscription_credit_left_rate', 'subscriptionCreditLeftRate'),
-      pickQuotaField(credit, 'subscription_credit_reset_time', 'subscriptionCreditResetTime'))
-    pushStepFunRateWindow(windows, 'topup-credit',
-      pickQuotaField(credit, 'topup_credit_left_rate', 'topupCreditLeftRate'))
-  }
-  return windows
+  return normalizeStepFunStepPlanUsageAdapter(payload)
 }
 
 /**
@@ -1732,36 +1310,7 @@ function normalizeStepFunStepPlanUsage(payload) {
  * status==1 但无任何窗口 → no-subscription（未订阅 Step Plan）。
  */
 async function fetchStepFunStepPlanUsage({ credential, signal }) {
-  const token = String(credential ?? '').trim().replace(/^oasis-token:\s*/i, '').replace(/^cookie:\s*/i, '')
-  if (token === '') throw new Error('credential-missing')
-  const webId = stepfunWebIdFromToken(token)
-  if (webId === undefined) throw new Error('credential-rejected')
-  let payload
-  try {
-    payload = await requestQuotaJson(STEPFUN_STEP_PLAN_RATE_LIMIT_URL, {
-      method: 'POST',
-      body: '{}',
-      signal,
-      headers: {
-        'Oasis-Token': token,
-        'Oasis-Webid': webId,
-        'Oasis-appID': '10300',
-        'Oasis-Platform': 'web',
-      },
-    })
-  } catch (error) {
-    if (error?.message === 'http-status:401' || error?.message === 'http-status:403') throw new Error('credential-rejected')
-    throw error
-  }
-  if (payload === null || typeof payload !== 'object' || Number(payload.status) !== 1) {
-    const desc = sanitizeQuotaErrorDetail(payload !== null && typeof payload === 'object' && typeof payload.desc === 'string' ? payload.desc : undefined)
-    const error = new Error('bad-payload')
-    if (desc !== undefined) error.detail = desc
-    throw error
-  }
-  const windows = normalizeStepFunStepPlanUsage(payload)
-  if (windows.length === 0) throw new Error('no-subscription')
-  return windows
+  return fetchStepFunStepPlanAdapterUsage({ credential, signal, requestJson: requestQuotaJson })
 }
 
 
@@ -1769,304 +1318,53 @@ async function fetchStepFunStepPlanUsage({ credential, signal }) {
 // 上游官方额度端点注册表（经 CPA api-call 代调，header 的 $TOKEN$ 由 CPA 替换为对应账号凭据）。
 // 形状来源：muyouzhi6/astrbot_plugin_cliproxy_stats + CPA main 分支源码（2026-08 核实）；
 // 全部折算成统一「已用 %」口径（remainingFraction 类字段做纯 clamp，不做 ≤1 启发式——教训见 KNOWLEDGE.md）。
-const CLIPROXY_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
-const CLIPROXY_GEMINI_QUOTA_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-const CLIPROXY_ANTIGRAVITY_QUOTA_URLS = [
-  'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-  'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
-  'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-]
-const CLIPROXY_SUPPORTED_ACCOUNT_KINDS = new Set(['codex', 'gemini', 'gemini-cli', 'antigravity'])
-
-const CODEX_WINDOW_ORDER = new Map([
-  ['codex-5h', 0],
-  ['codex-day', 1],
-  ['codex-week', 2],
-  ['codex-month', 3],
-  ['codex-primary', 4],
-  ['codex-secondary', 5],
-])
-
-function stableTextCompare(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0
-}
-
-/** 非 Codex 窗口按稳定的 kindKey/id 排序；额度百分比只影响颜色/进度，不影响位置。 */
-function sortCliproxyWindows(windows) {
-  return windows
-    .map((window, index) => ({ window, index, key: String(window.kindKey ?? window.id ?? '').toLowerCase() }))
-    .sort((left, right) => stableTextCompare(left.key, right.key) || left.index - right.index)
-    .map(({ window }) => window)
-}
-
-/** Codex 窗口固定按时间跨度展示；同一桶位碰撞时保持上游字段顺序。 */
-function sortCodexWindows(windows) {
-  return windows
-    .map((window, index) => ({ window, index, key: String(window.kindKey ?? window.id ?? '').toLowerCase() }))
-    .sort((left, right) => {
-      const leftRank = CODEX_WINDOW_ORDER.get(String(left.window.kindKey ?? '')) ?? Number.MAX_SAFE_INTEGER
-      const rightRank = CODEX_WINDOW_ORDER.get(String(right.window.kindKey ?? '')) ?? Number.MAX_SAFE_INTEGER
-      return leftRank - rightRank || stableTextCompare(left.key, right.key) || left.index - right.index
-    })
-    .map(({ window }) => window)
-}
-
-/** Codex 窗口长度 → 展示桶位代码：按上游下发的实际秒数判，绝不按 primary/secondary 位置猜
- * （真实部署里主槽位完全可能就是周额度——2026-08-25 用户实测踩中）。 */
-function codexWindowCode(key, window) {
-  const seconds = Number(window.limit_window_seconds)
-  if (Number.isFinite(seconds) && seconds > 0) {
-    if (seconds <= 6 * 3600) return 'codex-5h'
-    if (seconds <= 24 * 3600) return 'codex-day'
-    if (seconds <= 8 * 24 * 3600) return 'codex-week'
-    return 'codex-month'
-  }
-  // 上游没带窗口长度时的位置兜底：primary 常见为短周期、secondary 为长周期。
-  return key === 'primary_window' ? 'codex-primary' : 'codex-secondary'
-}
-
 /** Codex wham/usage 的 rate_limit → 窗口（used_percent 已用口径；reset_at 为 unix 秒）。
  * secondary_window 可为 null（真实上游行为）；窗口名由 limit_window_seconds 推导。 */
 function normalizeCodexRateLimit(rateLimit) {
-  const windows = []
-  if (rateLimit === null || typeof rateLimit !== 'object') return windows
-  for (const key of ['primary_window', 'secondary_window']) {
-    const window = rateLimit[key]
-    if (window === null || typeof window !== 'object') continue
-    const percent = normalizePercentValue(window.used_percent)
-    if (percent === null) continue
-    const code = codexWindowCode(key, window)
-    const resetsAt = normalizeResetTimestamp(window.reset_at)
-    windows.push({ id: code, kindKey: code, percent, ...(resetsAt !== undefined ? { resetsAt } : {}) })
-  }
-  // 展示顺序固定为短周期到长周期，不随使用率变化；未知桶按代码稳定排序。
-  return sortCodexWindows(windows)
+  return normalizeCodexRateLimitAdapter(rateLimit)
 }
 
 /** GeminiCLI retrieveUserQuota 的 buckets → 窗口（remainingFraction∈[0,1] 折算为已用 %）。 */
 function normalizeGeminiBuckets(buckets) {
-  const windows = []
-  if (!Array.isArray(buckets)) return windows
-  for (const bucket of buckets) {
-    if (bucket === null || typeof bucket !== 'object') continue
-    const modelId = typeof bucket.modelId === 'string' && bucket.modelId.trim() !== '' ? bucket.modelId.trim() : ''
-    const remaining = Number(bucket.remainingFraction)
-    if (modelId === '' || !Number.isFinite(remaining)) continue
-    const fraction = Math.max(0, Math.min(1, remaining))
-    const resetsAt = normalizeResetTimestamp(bucket.resetTime)
-    windows.push({
-      id: modelId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'model',
-      kindKey: modelId,
-      percent: Math.round((1 - fraction) * 100),
-      ...(resetsAt !== undefined ? { resetsAt } : {}),
-    })
-  }
-  // 剩得最少的排前面（最值得关注）：已用 % 降序。
-  return windows.sort((a, b) => b.percent - a.percent)
+  return normalizeGeminiBucketsAdapter(buckets)
 }
 
 /** Antigravity fetchAvailableModels 的 models{} → 窗口（quotaInfo.remainingFraction 折算已用 %）。 */
 function normalizeAntigravityModels(models) {
-  const windows = []
-  if (models === null || typeof models !== 'object') return windows
-  for (const [modelId, entry] of Object.entries(models)) {
-    if (entry === null || typeof entry !== 'object') continue
-    const info = entry.quotaInfo !== null && typeof entry.quotaInfo === 'object' ? entry.quotaInfo
-      : entry.quota_info !== null && typeof entry.quota_info === 'object' ? entry.quota_info : null
-    if (info === null) continue
-    const remaining = Number(info.remainingFraction ?? info.remaining_fraction)
-    if (!Number.isFinite(remaining)) continue
-    const fraction = Math.max(0, Math.min(1, remaining))
-    const resetsAt = normalizeResetTimestamp(info.resetTime ?? info.reset_time)
-    windows.push({
-      id: String(modelId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'model',
-      kindKey: modelId,
-      percent: Math.round((1 - fraction) * 100),
-      ...(resetsAt !== undefined ? { resetsAt } : {}),
-    })
-  }
-  // 剩得最少的排前面（最值得关注）：已用 % 降序。
-  return windows.sort((a, b) => b.percent - a.percent)
+  return normalizeAntigravityModelsAdapter(models)
 }
 
 /** api-call 信封解包：{status_code:int, body:string|object} → {statusCode, payload}。 */
 function unwrapCliproxyApiCallEnvelope(envelope) {
-  if (envelope === null || typeof envelope !== 'object') return { statusCode: 0, payload: null }
-  const rawStatus = Number(envelope.status_code)
-  let payload = envelope.body
-  if (typeof payload === 'string') {
-    try { payload = JSON.parse(payload) } catch (_) { payload = null }
-  }
-  if (payload === null || typeof payload !== 'object') payload = null
-  return { statusCode: Number.isFinite(rawStatus) ? rawStatus : 0, payload }
+  return unwrapCliproxyApiCallEnvelopeAdapter(envelope)
 }
 
 /** GeminiCLI project 提取：优先 auth-files 条目的 project_id 字段，回落文件名 gemini-{email}-{project}.json。 */
 function cliproxyProjectFor(entry) {
-  const direct = typeof entry?.project_id === 'string' ? entry.project_id.trim() : ''
-  if (direct !== '') return direct
-  const name = typeof entry?.name === 'string' ? entry.name.trim().replace(/\.json$/i, '') : ''
-  if (/^gemini-[^@]+@/.test(name)) {
-    const afterAt = name.slice(name.lastIndexOf('@') + 1)
-    const dash = afterAt.indexOf('-')
-    if (dash > 0 && dash + 1 < afterAt.length) return afterAt.slice(dash + 1)
-  }
-  return ''
+  return cliproxyProjectForAdapter(entry)
 }
 
 /** auth-files 条目 → api-call 计划；不支持的类型或缺关键参数（如 project 推不出）返回 null 跳过。 */
 function buildCliproxyAccountPlan(entry) {
-  const provider = String(entry?.provider ?? entry?.type ?? '').toLowerCase()
-  if (!CLIPROXY_SUPPORTED_ACCOUNT_KINDS.has(provider)) return null
-  const baseHeaders = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json' }
-  if (provider === 'codex') {
-    return { provider, calls: [{ method: 'GET', url: CLIPROXY_CODEX_USAGE_URL, header: baseHeaders, data: '' }] }
-  }
-  if (provider === 'antigravity') {
-    // 候选 URL 顺试到首个成功；每次尝试都计入 api-call 预算。
-    return {
-      provider,
-      calls: CLIPROXY_ANTIGRAVITY_QUOTA_URLS.map((url) => ({
-        method: 'POST',
-        url,
-        header: { ...baseHeaders, 'User-Agent': 'antigravity/1.11.5 windows/amd64' },
-        data: '{}',
-      })),
-    }
-  }
-  const project = cliproxyProjectFor(entry)
-  if (project === '') return null
-  return {
-    provider,
-    calls: [{ method: 'POST', url: CLIPROXY_GEMINI_QUOTA_URL, header: baseHeaders, data: JSON.stringify({ project }) }],
-  }
-}
-
-/** 按账号类型分发上游 payload 解析。 */
-function parseCliproxyUpstream(provider, payload) {
-  if (provider === 'codex') return normalizeCodexRateLimit(payload?.rate_limit)
-  if (provider === 'antigravity') {
-    const models = payload?.models
-    return models !== null && typeof models === 'object' ? normalizeAntigravityModels(models) : []
-  }
-  return normalizeGeminiBuckets(payload?.buckets)
+  return buildCliproxyAccountPlanAdapter(entry)
 }
 
 /**
  * CLIProxyAPI 编排：auth-files 列账号 → 小并发池逐账号 api-call 代调上游官方额度 → 合并窗口。
  * 预算：账号 ≤8、api-call 总次数 ≤12、并发 3、窗口总数 ≤32；部分账号失败不拖垮整行
- * （有成功窗口即返回），全部失败抛首个稳定错误码。守卫与凭据由 kickQuotaRefresh 先行完成。
+ * （有成功窗口即返回），全部失败抛首个稳定错误码。守卫、凭据策略与编排都由 Adapter 自己完成。
  */
 async function fetchCliproxyUsage({ profile, config, credential, signal }) {
-  const authorization = credential
-  const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
-  const origin = safeCliproxyOrigin(profile.baseURL, pinned)
-  if (origin === undefined) throw new Error('host-not-pinned')
-  let filesPayload
-  try {
-    filesPayload = await requestQuotaJson(`${origin}/v0/management/auth-files`, { authorization, signal })
-  } catch (error) {
-    // 管理路由未注册（secret-key 为空）时 CPA 整体 404——单独成码，别让用户猜。
-    // 注意用完整 message 比较：quotaErrorCode 会把 http-status:404 截成 http-status。
-    if (error?.message === 'http-status:404') throw new Error('mgmt-disabled')
-    throw error
-  }
-  const files = Array.isArray(filesPayload?.files) ? filesPayload.files : []
-  const accounts = []
-  for (const entry of files) {
-    if (entry === null || typeof entry !== 'object') continue
-    if (entry.disabled === true || entry.unavailable === true) continue
-    if (typeof entry.auth_index !== 'string' || entry.auth_index.trim() === '') continue
-    const plan = buildCliproxyAccountPlan(entry)
-    if (plan === null) continue
-    const label = typeof entry.email === 'string' && entry.email.trim() !== '' ? entry.email.trim()
-      : typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name.trim() : ''
-    const slugSource = `${label !== '' ? label : plan.provider}-${accounts.length}`
-    const slug = slugSource.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `acct-${accounts.length}`
-    accounts.push({ authIndex: entry.auth_index, provider: plan.provider, label, slug, calls: plan.calls })
-    if (accounts.length >= MAX_QUOTA_CPA_ACCOUNTS) break
-  }
-  if (accounts.length === 0) return []
-
-  // 每个账号独立收集，最后按 auth-files 的稳定顺序统一展平，避免并发请求完成顺序污染账号排序。
-  const accountResults = new Map()
-  const failures = []
-  let callBudget = MAX_QUOTA_CPA_CALLS
-  const runAccount = async (account, accountIndex) => {
-    for (const call of account.calls) {
-      if (callBudget <= 0 || signal?.aborted === true) return
-      callBudget -= 1
-      let envelope
-      try {
-        envelope = await requestQuotaJson(`${origin}/v0/management/api-call`, {
-          method: 'POST',
-          authorization,
-          signal,
-          body: JSON.stringify({ auth_index: account.authIndex, method: call.method, url: call.url, header: call.header, data: call.data }),
-        })
-      } catch (error) {
-        failures.push({ index: accountIndex, code: quotaErrorCode(error) })
-        return
-      }
-      const { statusCode, payload } = unwrapCliproxyApiCallEnvelope(envelope)
-      const parsed = statusCode === 200 && payload !== null ? parseCliproxyUpstream(account.provider, payload) : []
-      if (parsed.length > 0) {
-        accountResults.set(accountIndex, parsed)
-        return
-      }
-      failures.push({ index: accountIndex, code: statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}` })
-      // antigravity 候选链：当前候选失败换下一个；其余单调用类型直接结束该账号。
-      if (account.provider !== 'antigravity') return
-    }
-    accountResults.set(accountIndex, [])
-  }
-  const queue = accounts.map((account, index) => ({ account, index }))
-  await Promise.all(Array.from({ length: Math.min(QUOTA_CPA_CONCURRENCY, queue.length) }, async () => {
-    while (queue.length > 0 && signal?.aborted !== true) {
-      const item = queue.shift()
-      await runAccount(item.account, item.index)
-    }
-  }))
-  if (signal?.aborted === true) throw new Error('cancelled')
-
-  const windows = []
-  const seenWindowIds = new Set()
-  for (const [accountIndex, account] of accounts.entries()) {
-    for (const window of accountResults.get(accountIndex) ?? []) {
-      if (windows.length >= MAX_QUOTA_CPA_WINDOWS) break
-      // 窗口 id 必须全局唯一：同账号两窗撞码（如 codex primary/secondary 恰好同秒长度折算同桶）
-      // 或不同模型名 slug 化撞名，都会复制出重复的 React key/testid——后缀 ~ 保持唯一；
-      // kindKey 不动，展示名仍按窗口码本地化。
-      let windowId = `${account.slug}-${window.id}`
-      while (seenWindowIds.has(windowId)) windowId += '~'
-      seenWindowIds.add(windowId)
-      windows.push({
-        id: windowId,
-        kindKey: window.kindKey ?? window.id,
-        ...(account.label !== '' ? { label: account.label } : {}),
-        percent: window.percent,
-        ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
-      })
-    }
-  }
-  if (windows.length === 0 && failures.length > 0) {
-    failures.sort((left, right) => left.index - right.index)
-    throw new Error(failures[0].code)
-  }
-  return windows
+  return fetchCliproxyAdapterUsage({ profile, config, credential, signal, requestJson: requestQuotaJson })
 }
 
 /** 稳定错误码提取：fetchProviderUsage 抛错时 message 即错误码（可带 :detail）。 */
 function quotaErrorCode(error) {
-  const raw = typeof error?.message === 'string' && error.message.length > 0 ? error.message : String(error ?? '')
-  const colon = raw.indexOf(':')
-  return colon === -1 ? raw : raw.slice(0, colon)
+  return quotaAdapterErrorCode(error)
 }
 
 function sanitizeQuotaErrorDetail(value) {
-  if (typeof value !== 'string') return undefined
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return cleaned === '' ? undefined : cleaned.slice(0, MAX_QUOTA_ERROR_DETAIL)
+  return sanitizeQuotaErrorDetailAdapter(value)
 }
 
 // 瞬时网络错误码白名单（Cloudflare/CDN 间歇断连等）：值得自动重试。
@@ -4748,79 +4046,40 @@ function apply(ctx) {
     runNextQuotaWork()
     return true
   }
-  // 远端额度：后台补拉一次。是否真的发上游由节流器判定；跨 provider 经小型并发池调度。
-  // config 供 fetcher 类 kind（cliproxy）做钉住域守卫；经典 kind 忽略该参数。
-  const kickQuotaRefresh = (profile, kind, config) => {
+  // 远端额度：后台补拉一次。index.js 只提供节流/生命周期/受控传输 context；所有方言、
+  // 端点、凭据策略与编排都通过同一 Adapter interface 执行，不再区分 parser/fetcher 形状。
+  const kickQuotaRefresh = (profile, adapter, config) => {
     const decision = quotaThrottle.attempt(profile.name)
     if (!decision.ok) return
-    const registered = KIND_REGISTRY[kind]
     const queued = enqueueQuotaWork(async () => {
+      const controller = new AbortController()
+      quotaAbortControllers.add(controller)
+      const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
+      let credentialPromise
       try {
-        if (registered === undefined || (registered.parser === undefined && registered.fetcher === undefined)) throw new Error('bad-payload:kind')
-        if (registered.fetcher !== undefined) {
-          // 编排类 kind（cliproxy）：端点守卫 → 凭据 → fetcher 合并多账号窗口，无候选链。
-          const guard = registered.fetcherGuard?.(profile, config) ?? null
-          if (guard !== null) throw new Error(guard)
-          const credential = await discoverQuotaCredential(ctx, kind, profile)
-          if (credential === undefined) throw new Error('credential-missing')
-          const controller = new AbortController()
-          quotaAbortControllers.add(controller)
-          const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
-          let produced
-          try {
-            produced = await registered.fetcher({ profile, config, credential, signal: controller.signal })
-          } finally {
-            clearTimeout(deadline)
-            quotaAbortControllers.delete(controller)
-          }
-          if (!Array.isArray(produced)) throw new Error('bad-payload:shape')
-          if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows: produced })
-          return
-        }
-        const parser = registered.parser
-        // 端点候选链先于凭据解析：baseURL 缺失是更明确的配置错误（也省一次凭据查找）。
-        const candidates = quotaEndpointFor(kind, profile.baseURL)
-        if (candidates.length === 0) throw new Error('no-base-url')
-        const authorization = await discoverQuotaCredential(ctx, kind, profile)
-        if (authorization === undefined) throw new Error('credential-missing')
-        const controller = new AbortController()
-        quotaAbortControllers.add(controller)
-        const deadline = setTimeout(() => controller.abort(), QUOTA_PROVIDER_DEADLINE_MS)
-        let windows
-        try {
-          let lastError = null
-          let parseFailure = null
-          for (const endpoint of candidates) {
-            let payload
-            try {
-              payload = await fetchProviderUsage(endpoint, authorization, { signal: controller.signal })
-            } catch (error) {
-              lastError = error
-              if ((error.message === 'http-status:401' || error.message === 'http-status:403') && candidates.length > 1) continue
-              throw error
-            }
-            const parsed = parser(payload)
-            if (!Array.isArray(parsed?.windows)) {
-              parseFailure ??= new Error('bad-payload:shape')
-              lastError = parseFailure
-              continue
-            }
-            if (parsed.windows.length === 0) {
-              const envelope = payload !== null && typeof payload === 'object'
-                && Number(payload.code) !== 0 && typeof payload.msg === 'string' ? sanitizeQuotaErrorDetail(payload.msg) : undefined
-              parseFailure ??= Object.assign(new Error('bad-payload'), { detail: envelope })
-              lastError = parseFailure
-              continue
-            }
-            windows = parsed.windows
-            break
-          }
-          if (windows === undefined) throw parseFailure ?? lastError ?? new Error('bad-payload')
-        } finally {
-          clearTimeout(deadline)
-          quotaAbortControllers.delete(controller)
-        }
-        if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows })
+        if (adapter === undefined) throw new Error('bad-payload:kind')
+        const context = Object.freeze({
+          profile: Object.freeze({ ...profile }),
+          config: Object.freeze({
+            ...config,
+            kinds: Object.freeze({ ...(config?.kinds ?? {}) }),
+            allowedHosts: Object.freeze(Object.fromEntries(
+              Object.entries(config?.allowedHosts ?? {}).map(([provider, hosts]) => [provider, Object.freeze([...(hosts ?? [])])]),
+            )),
+          }),
+          signal: controller.signal,
+          fetchJson: fetchProviderUsage,
+          requestJson: requestQuotaJson,
+          sanitizeErrorDetail: sanitizeQuotaErrorDetail,
+          credential() {
+            credentialPromise ??= discoverQuotaCredential(ctx, adapter.kind, profile)
+            return credentialPromise
+          },
+        })
+        const payload = await adapter.fetchUsage(context)
+        const normalized = adapter.normalize(payload)
+        if (!Array.isArray(normalized?.windows)) throw new Error('bad-payload:shape')
+        if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows: normalized.windows })
       } catch (error) {
         if (!quotaDisposed) {
           const detail = sanitizeQuotaErrorDetail(error?.detail)
@@ -4830,6 +4089,9 @@ function apply(ctx) {
             ...(detail !== undefined ? { detail } : {}),
           })
         }
+      } finally {
+        clearTimeout(deadline)
+        quotaAbortControllers.delete(controller)
       }
     })
     if (!queued && !quotaDisposed) quotaThrottle.settle(profile.name, { ok: false, code: 'cancelled' })
@@ -5380,18 +4642,18 @@ function apply(ctx) {
         const rows = []
         for (const profile of providers) {
           // kind 解析优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断。
-          const { kind, kindSource } = resolveQuotaKind(config, profile)
-          if (kind === undefined || KIND_REGISTRY[kind] === undefined) {
+          const { adapter, kind, kindSource } = resolveQuotaKind(config, profile)
+          if (adapter === undefined || kind === undefined) {
             // 未适配（无 kind/已停用/白名单外且不可推断）：灰色行，宿主绝不主动外呼。
             rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
             continue
           }
-          // v0.31 用户点名：自动识别出的 DeepSeek 行在 API KEY 未配置时整行不下发——
-          // 额度页不出现卡片、不进节流轮询；每次快照（含进入标签页的那次拉取）重新
-          // 走一遍凭据发现链，配置好后自动现身；探测失败一律静默视为未配置。
-          // 显式在 UI 适配过的不受此限（用户主动选择，照常显示填写入口）。
-          if (kindSource === 'auto' && kind === 'deepseek' && !(await quotaCredentialConfigured(ctx, kind, profile))) continue
-          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, kind, config)
+          // 某些自动识别 Adapter 在凭据未配置时应整行静默隐藏；可见性属于 Adapter 凭据策略，
+          // index.js 只消费统一 policy，不再按 kind 写特例。显式适配仍照常显示填写入口。
+          const credentialPolicy = adapter.credentialPolicy(profile)
+          if (kindSource === 'auto' && credentialPolicy.autoVisibility === 'credential-gated'
+            && !(await quotaCredentialConfigured(ctx, kind, profile))) continue
+          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, adapter, config)
           const view = quotaThrottle.view(profile.name)
           const windows = Array.isArray(view.windows) ? view.windows : []
           // 「凭据类」错误 = 填/换一份凭据就能恢复的状态，客户端按 unconfigured 渲染填写表单。
@@ -5436,10 +4698,10 @@ function apply(ctx) {
             nextAllowedAt: view.nextAllowedAt,
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
             ...(credentialHints !== undefined ? { credentialHints } : {}),
-            // 凭据入口语义由 kind registry 下发稳定键，客户端只负责本地化，不再对 kind 重复分支。
-            credentialEntryKey: quotaCredentialPolicy(kind).entryKey,
-            // 官网用户页余额网址（宿主常量白名单随 kind 下发；无则缺省）。
-            ...(typeof KIND_REGISTRY[kind].usageUrl === 'string' && KIND_REGISTRY[kind].usageUrl !== '' ? { usageUrl: KIND_REGISTRY[kind].usageUrl } : {}),
+            // 凭据入口语义由 Adapter policy 下发稳定键，客户端只负责本地化，不再对 kind 重复分支。
+            credentialEntryKey: adapter.credentialPolicy(profile).entryKey,
+            // 官网用户页余额网址由具体 Adapter 持有（宿主常量白名单；无则缺省）。
+            ...(typeof quotaAdapterUsageUrl(adapter) === 'string' && quotaAdapterUsageUrl(adapter) !== '' ? { usageUrl: quotaAdapterUsageUrl(adapter) } : {}),
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
@@ -5456,14 +4718,14 @@ function apply(ctx) {
         const profile = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
         if (profile === undefined) return { ok: false, error: 'unknown-provider' }
         const config = await refreshQuotaConfigCache()
-        const { kind } = resolveQuotaKind(config, profile)
-        if (kind === undefined) return { ok: false, error: 'not-adapted' }
+        const { adapter } = resolveQuotaKind(config, profile)
+        if (adapter === undefined) return { ok: false, error: 'not-adapted' }
         const forced = quotaThrottle.force(providerName)
         if (!forced.ok) {
           if (forced.reason === 'inflight') return { ok: true }
           return { ok: false, error: forced.reason === 'cooldown' ? 'refresh-cooldown' : 'refresh-backoff', nextAllowedAt: forced.nextAllowedAt }
         }
-        kickQuotaRefresh(profile, kind, config)
+        kickQuotaRefresh(profile, adapter, config)
         return { ok: true }
       } catch (error) {
         return rpcTechnicalFailure(error)
@@ -5483,25 +4745,20 @@ function apply(ctx) {
             delete config.allowedHosts[providerName]
           } else {
             const kind = payload?.kind
-            if (kind !== null && !QUOTA_KINDS.includes(kind)) return { save: false, value: { ok: false, error: 'unknown-kind' } }
-            const endpointPolicy = kind === null ? 'dynamic' : (KIND_REGISTRY[kind]?.configEndpointPolicy ?? 'dynamic')
-            if (endpointPolicy === 'pinned') {
-              // 钉住查询面 kind：把 settings baseURL 的 host 钉进本条目（服务端派生，浏览器零输入）。
-              // 外呼时复验同一张表——之后改 baseURL 必须重新保存适配才恢复外呼。
-              const host = cliproxyPinHostFromBaseURL(profileForProvider.baseURL)
-              if (host === undefined) {
-                return { save: false, value: { ok: false, error: profileForProvider.baseURL === '' ? 'no-base-url' : 'unsafe-provider-endpoint' } }
-              }
-              config.allowedHosts[providerName] = [host]
-            } else {
-              // fixed 查询面由宿主常量决定、与 baseURL 无关；dynamic 则必须能从注册表/baseURL 解出安全端点。
-              if (kind !== null && endpointPolicy !== 'fixed'
-                && Array.isArray(KIND_REGISTRY[kind]?.endpoints) === false
-                && quotaEndpointFor(kind, profileForProvider.baseURL).length === 0) {
-                return { save: false, value: { ok: false, error: 'unsafe-provider-endpoint' } }
-              }
-              // 非 pinned kind（含显式停用/清除）不保留钉住记录，避免陈旧域残留。
+            const adapter = kind === null ? undefined : QUOTA_ADAPTER_BY_KIND.get(kind)
+            if (kind !== null && adapter === undefined) return { save: false, value: { ok: false, error: 'unknown-kind' } }
+            if (adapter === undefined) {
+              // 显式停用不保留任何 Adapter 私有安全状态。
               delete config.allowedHosts[providerName]
+            } else {
+              // 配置校验/钉住派生由具体 Adapter 决定；index.js 只应用统一结果。
+              const prepared = prepareQuotaAdapterConfig(adapter, profileForProvider)
+              if (prepared.ok !== true) return { save: false, value: { ok: false, error: prepared.error } }
+              if (Array.isArray(prepared.allowedHosts) && prepared.allowedHosts.length > 0) {
+                config.allowedHosts[providerName] = [...prepared.allowedHosts]
+              } else {
+                delete config.allowedHosts[providerName]
+              }
             }
             config.kinds[providerName] = kind
           }
