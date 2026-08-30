@@ -4,13 +4,14 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants, existsSync, readFileSync } from 'node:fs'
-import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, chmod, cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import https from 'node:https'
-import { brotliCompress, constants as zlibConstants, gzip } from 'node:zlib'
+import { brotliCompress, constants as zlibConstants, gzip, zstdCompress } from 'node:zlib'
+import { promisify } from 'node:util'
 import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { createBackupIntegrity } from './backup-integrity.js'
@@ -49,7 +50,8 @@ const FeatureSettingsSchema = z.object({
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
-const MAX_BACKUP_TRANSFER_BYTES = 128 * 1024 * 1024
+const MAX_BACKUP_TRANSFER_BYTES = 256 * 1024 * 1024
+const MAX_BACKUP_COMPRESSED_BYTES = 512 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
@@ -409,12 +411,12 @@ function fetchPublishedVersions(packageName) {
 
 function resolveDshHome() {
   const configured = process.env.DSH_HOME?.trim()
-  return configured ? configured : join(homedir(), '.dsh')
+  return configured ? resolve(configured) : join(homedir(), '.dsh')
 }
 
 function formatBackupTimestamp(date) {
   const digits = (value) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}${digits(date.getMonth() + 1)}${digits(date.getDate())}-${digits(date.getHours())}${digits(date.getMinutes())}${digits(date.getSeconds())}`
+  return `${date.getUTCFullYear()}${digits(date.getUTCMonth() + 1)}${digits(date.getUTCDate())}-${digits(date.getUTCHours())}${digits(date.getUTCMinutes())}${digits(date.getUTCSeconds())}`
 }
 
 function backupId(name) {
@@ -462,9 +464,15 @@ async function runTar(ctx, cwd, argv) {
   const subprocess = ctx.get('subprocess')
   if (subprocess === undefined) throw new Error('subprocess-unavailable')
   const executable = await subprocess.resolveExecutable('tar')
+  let spawnArgv = [executable, ...argv]
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
+    const shell = await subprocess.resolveExecutable('cmd.exe')
+    spawnArgv = [shell, '/d', '/s', '/c', executable, ...argv]
+  }
   const handle = subprocess.spawn({
-    argv: [executable, ...argv],
+    argv: spawnArgv,
     cwd,
+    env: { ...process.env, TAR_OPTIONS: undefined, GZIP: undefined },
     stdio: {
       stdin: 'ignore',
       stdout: { maxBytes: 16 * 1024 },
@@ -475,55 +483,301 @@ async function runTar(ctx, cwd, argv) {
   const outcome = await handle.done
   const stderr = handle.collected.stderr?.readFrom(0).text || ''
   if (outcome.exitCode !== 0 || outcome.signal !== null) {
-    throw new Error(`tar-failed: ${stderr.trim() || outcome.signal || outcome.exitCode}`)
+    const detail = stderr.trim() || outcome.signal || outcome.exitCode
+    const error = new Error(/file changed|file removed|cannot stat|No such file or directory/i.test(stderr) ? 'backup-source-changed' : `tar-failed: ${detail}`)
+    error.code = /file changed|file removed|cannot stat|No such file or directory/i.test(stderr) ? 'backup-source-changed' : 'tar-failed'
+    throw error
   }
 }
 
-async function createBackup(ctx, dshHome) {
-  const backupDir = join(dshHome, 'backups')
-  await mkdir(backupDir, { recursive: true, mode: 0o700 })
+function isRetryableBackupError(error) {
+  if (error?.code === 'backup-source-changed') return true
+  return ['EINTR', 'ENOENT', 'EBUSY'].includes(error?.code)
+}
+
+function markBackupError(error, fallback = 'backup-failed') {
+  if (error instanceof Error && typeof error.code === 'string') return error
+  const wrapped = new Error(error?.message || String(error) || fallback)
+  wrapped.code = fallback
+  return wrapped
+}
+
+function rpcFailure(error) {
+  const normalized = markBackupError(error)
+  const message = normalized.message || normalized.code
+  return { ok: false, error: { code: 'internal', message, details: {} } }
+}
+
+async function assertSafeBackupTree(path) {
+  const info = await lstat(path)
+  if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+  if (info.isFile()) return
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    await assertSafeBackupTree(join(path, entry.name))
+  }
+}
+
+async function copyStableFile(source, target, onCopied) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const before = await lstat(source)
+    if (!before.isFile() || before.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+    await cp(source, target)
+    const after = await lstat(source)
+    if (before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs) {
+      if (typeof onCopied === 'function') onCopied(before.size)
+      return
+    }
+    await rm(target, { force: true })
+  }
+  throw Object.assign(new Error('backup-source-changed'), { code: 'backup-source-changed' })
+}
+
+async function copyBackupTree(source, target, onFile) {
+  const info = await lstat(source)
+  if (info.isSymbolicLink() || !info.isDirectory()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+  await mkdir(target, { recursive: true, mode: 0o700 })
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const sourceChild = join(source, entry.name)
+    const targetChild = join(target, entry.name)
+    const childInfo = await lstat(sourceChild)
+    if (childInfo.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+    if (childInfo.isDirectory()) await copyBackupTree(sourceChild, targetChild, onFile)
+    else if (childInfo.isFile()) await copyStableFile(sourceChild, targetChild, onFile)
+    else throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+  }
+}
+
+// 备份进度的总量预估：与复制同口径的只读 stat 走树（链接/特殊文件计 0，复制阶段会拒绝）。
+async function sumBackupTree(path) {
+  let info
+  try { info = await lstat(path) } catch (error) {
+    if (error?.code === 'ENOENT') return 0
+    throw error
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) return info.isFile() ? info.size : 0
+  let total = 0
+  for (const entry of await readdir(path, { withFileTypes: true })) total += await sumBackupTree(join(path, entry.name))
+  return total
+}
+
+// —— 会话目录持久化 seam（v0.45.1）——
+// 活跃 agent 会话的 .jsonl.zstd 持续追加，文件复制 + stat 前后校验必然失败（backup-source-changed）。
+// 会话读取改走 sessionPersistence 的承诺前缀 seam：readRaw 内部 stat-读-stat 自循环等待稳定窗口，
+// 永不因写入失败；内容写回时按后端物理格式重编码（node:zlib 原生 zstd、校验和帧、
+// 首帧=恰一行 header，与 dsh-session-persistence-jsonl 的写入布局一致）。
+const zstdCompressAsync = promisify(zstdCompress)
+const zstdFrameOptions = { params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 } }
+
+async function compressZstdFrame(input) {
+  return zstdCompressAsync(input, zstdFrameOptions)
+}
+
+// 列出持久化会话的合法归档相对路径（同步到 locate 输出的物理路径，越界即跳过）。
+async function locatePersistedSessions(persistence, sessionsRoot) {
+  const entries = []
+  for (const snapshot of await persistence.listSnapshots()) {
+    let location
+    try { location = persistence.locate(snapshot.header) } catch (_) { continue }
+    if (typeof location?.path !== 'string') continue
+    const rel = relative(sessionsRoot, location.path)
+    if (rel === '' || rel.startsWith('..') || rel.startsWith(sep) || rel.includes('\\') || /^[A-Za-z]:/.test(rel) || rel.includes('\0')) continue
+    entries.push({ id: String(snapshot.header.id), path: location.path, rel })
+  }
+  return entries
+}
+
+// 把持久化会话写入暂存树：readRaw 稳定读取 → zstd 重编码（header 独立首帧）→ 逐会话上报进度；
+// 损坏日志回退物理字节复制（旧语义：逐字节保真，由恢复后后端自行裁决）。
+async function stagePersistedSessions(persistence, sessionsRoot, targetRoot, entries, onCopied) {
+  for (const entry of entries) {
+    const target = join(targetRoot, entry.rel)
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+    let content
+    try {
+      const raw = await persistence.readRaw(entry.id)
+      content = typeof raw?.content === 'string' ? raw.content : undefined
+    } catch (_) { content = undefined }
+    if (content === undefined) {
+      await copyStableFile(entry.path, target)
+      try { const info = await stat(target); onCopied(info.size) } catch (_) {}
+      continue
+    }
+    const newline = content.indexOf('\n')
+    let encoded
+    if (newline < 0) {
+      encoded = await compressZstdFrame(content)
+    } else {
+      const header = content.slice(0, newline + 1)
+      const body = content.slice(newline + 1)
+      const frames = [await compressZstdFrame(header)]
+      if (body.length > 0) frames.push(await compressZstdFrame(body))
+      encoded = Buffer.concat(frames)
+    }
+    await writeFile(target, encoded, { mode: 0o600 })
+    onCopied(encoded.length)
+  }
+}
+
+async function publishBackupExclusively(source, target) {
+  try {
+    await link(source, target)
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error('backup-name-collision')
+    throw error
+  }
+  await unlink(source)
+}
+
+async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}) {
+  // 会话目录优先走持久化 seam（稳定读取，v0.45.1）；不可用（旧宿主/后端缺失/读取失败）时回退
+  // fs.cp 整树复制 + stat 前后校验，第二次整次重试兜底，失败不发布不完整归档。
   const workspace = join(backupDir, `.staging-${randomUUID()}`)
   await mkdir(workspace, { recursive: true, mode: 0o700 })
+  const temporary = join(backupDir, `.${name}.${randomUUID()}.tmp`)
   try {
-    const sessions = join(dshHome, 'sessions')
-    if (await pathExists(sessions)) await cp(sessions, join(workspace, 'sessions'), { recursive: true })
-    else await mkdir(join(workspace, 'sessions'), { recursive: true })
+    // 进度：复制阶段按真实字节上报；打包/校验阶段上报归档体积（大小 ≈ 源字节，zstd 数据近不可压缩）。
+    const sessionsSource = join(dshHome, 'sessions')
+    const configNames = ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']
+    let configBytes = 0
+    for (const file of configNames) configBytes += await sumBackupTree(join(dshHome, file))
+    let profilesBytes = 0
+    const profilesRoot = join(dshHome, 'profiles')
+    if (await pathExists(profilesRoot)) {
+      for (const entry of await readdir(profilesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        try {
+          const manifestInfo = await lstat(join(profilesRoot, entry.name, 'package.json'))
+          if (manifestInfo.isFile()) profilesBytes += manifestInfo.size
+        } catch (_) {}
+      }
+    }
+    // seam 探测 + 会话条目定位（失败即整体回退文件复制）。
+    const persistence = ctx.get('sessionPersistence')
+    let persistedEntries
+    const persistenceSeam = persistence !== undefined && persistence.supportsRawArtifacts === true
+      && typeof persistence.listSnapshots === 'function' && typeof persistence.readRaw === 'function'
+      && typeof persistence.locate === 'function'
+    if (persistenceSeam) {
+      try { persistedEntries = await locatePersistedSessions(persistence, sessionsSource) } catch (_) { persistedEntries = undefined }
+    }
+    let sessionsBytes = 0
+    if (persistedEntries !== undefined) {
+      for (const entry of persistedEntries) {
+        try { const info = await lstat(entry.path); if (info.isFile()) sessionsBytes += info.size } catch (_) {}
+      }
+    } else if (await pathExists(sessionsSource)) sessionsBytes = await sumBackupTree(sessionsSource)
+    const totalBytes = sessionsBytes + configBytes + profilesBytes
+    let copiedBytes = 0
+    // 快照形状恒定：任何阶段都带全部字段，客户端轮询无需按阶段判形。
+    const report = (phase, archiveBytes) => onProgress({ phase, copiedBytes, totalBytes, archiveBytes })
+    const onCopied = (bytes) => {
+      copiedBytes += bytes
+      report('copy', 0)
+    }
+    report('copy', 0)
+
+    const sessionsTarget = join(workspace, 'sessions')
+    if (persistedEntries !== undefined) {
+      await mkdir(sessionsTarget, { recursive: true, mode: 0o700 })
+      await stagePersistedSessions(persistence, sessionsSource, sessionsTarget, persistedEntries, onCopied)
+    } else {
+      if (await pathExists(sessionsSource)) {
+        const info = await lstat(sessionsSource)
+        if (!info.isDirectory() || info.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+        await copyBackupTree(sessionsSource, sessionsTarget, onCopied)
+      } else await mkdir(sessionsTarget, { recursive: true })
+    }
 
     const configDir = join(workspace, 'config')
     await mkdir(configDir, { recursive: true })
-    for (const file of ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']) {
+    for (const file of configNames) {
       const source = join(dshHome, file)
-      if (await pathExists(source)) await cp(source, join(configDir, file))
+      if (await pathExists(source)) {
+        const info = await lstat(source)
+        if (!info.isFile() || info.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+        await copyStableFile(source, join(configDir, file), onCopied)
+      }
     }
 
     const profilesSource = join(dshHome, 'profiles')
     const profilesTarget = join(workspace, 'profiles')
     await mkdir(profilesTarget, { recursive: true })
     if (await pathExists(profilesSource)) {
+      const info = await lstat(profilesSource)
+      if (!info.isDirectory() || info.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
       for (const entry of await readdir(profilesSource, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name === '.' || entry.name === '..' || entry.name.includes('/') || entry.name.includes('\\')) continue
         const manifest = join(profilesSource, entry.name, 'package.json')
         if (!(await pathExists(manifest))) continue
+        const manifestInfo = await lstat(manifest)
+        if (!manifestInfo.isFile() || manifestInfo.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
         const target = join(profilesTarget, entry.name)
         await mkdir(target, { recursive: true })
-        await cp(manifest, join(target, 'package.json'))
+        await copyStableFile(manifest, join(target, 'package.json'), onCopied)
       }
     }
 
-    const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
-    if (await pathExists(join(backupDir, name))) throw new Error('backup-name-collision')
-    const temporary = join(backupDir, `.${name}.${randomUUID()}.tmp`)
+    await assertSafeBackupTree(workspace)
+    onProgress({ phase: 'archive', copiedBytes, totalBytes, archiveBytes: 0 })
+    // 打包阶段采样临时归档体积（500ms best-effort）：tar 结束即停；停标后完成的采样不再上报，避免阶段回跳。
+    let sampling = false
+    let sampleArchive = null
     try {
+      sampling = true
+      sampleArchive = (async () => {
+        while (sampling) {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          if (!sampling) break
+          try {
+            const info = await stat(temporary)
+            if (!sampling) break
+            onProgress({ phase: 'archive', copiedBytes, totalBytes, archiveBytes: info.size })
+          } catch (_) {}
+        }
+      })()
       await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles'])
-      await rename(temporary, join(backupDir, name))
     } finally {
-      await rm(temporary, { force: true })
+      sampling = false
+      if (sampleArchive !== null) await sampleArchive.catch(() => {})
     }
-    const snapshot = await listBackups(dshHome)
-    return { item: snapshot.items.find((item) => item.name === name), ...snapshot }
+    const archiveInfo = await stat(temporary)
+    if (typeof validateArchive === 'function') {
+      onProgress({ phase: 'validate', copiedBytes, totalBytes, archiveBytes: archiveInfo.size })
+      if (archiveInfo.size <= 0 || archiveInfo.size > MAX_BACKUP_COMPRESSED_BYTES) throw Object.assign(new Error('backup-size-limit'), { code: 'backup-size-limit' })
+      const report = await validateArchive({ id: backupId(name), name, path: temporary, sizeBytes: archiveInfo.size, mtimeMs: archiveInfo.mtimeMs })
+      if (report?.validForRestore !== true) {
+        const issue = report?.issues?.[0]?.code
+        const error = Object.assign(new Error(issue || 'backup-archive-invalid'), { code: issue || 'backup-archive-invalid' })
+        throw error
+      }
+    }
+    const finalPath = join(backupDir, name)
+    if (await pathExists(finalPath)) throw new Error('backup-name-collision')
+    onProgress({ phase: 'publish', copiedBytes, totalBytes, archiveBytes: archiveInfo.size })
+    await publishBackupExclusively(temporary, finalPath)
+    try { await chmod(finalPath, 0o600) } catch (_) {}
   } finally {
+    await rm(temporary, { force: true })
     await rm(workspace, { recursive: true, force: true })
   }
+}
+
+async function createBackup(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}) {
+  const snapshot = await listBackups(dshHome)
+  if (snapshot.items.some((item) => item.name === name)) throw new Error('backup-name-collision')
+  let lastError
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress)
+      const result = await listBackups(dshHome)
+      return { item: result.items.find((item) => item.name === name), ...result }
+    } catch (error) {
+      lastError = error
+      if (attempt === 0 && isRetryableBackupError(error)) continue
+      throw error
+    }
+  }
+  throw lastError
 }
 
 async function deleteBackup(dshHome, id) {
@@ -553,14 +807,16 @@ async function importBackup(dshHome, name, encoded, validatePath) {
   const backupDir = join(dshHome, 'backups')
   await mkdir(backupDir, { recursive: true, mode: 0o700 })
   const target = join(backupDir, basename(name))
-  if (basename(name) !== name || await pathExists(target)) return undefined
+  if (basename(name) !== name) return undefined
   const temporary = join(backupDir, `.${name}.${randomUUID()}.import`)
+  if (await pathExists(target)) return undefined
   try {
     await writeFile(temporary, data, { mode: 0o600 })
     if (typeof validatePath === 'function') {
       const report = await validatePath({ id: backupId(name), name, path: temporary, sizeBytes: data.length, mtimeMs: Date.now() })
       if (report?.validForRestore !== true) throw Object.assign(new Error('backup-archive-invalid'), { code: 'backup-archive-invalid' })
     }
+    if (await pathExists(target)) return undefined
     await rename(temporary, target)
   } finally {
     await rm(temporary, { force: true })
@@ -4129,6 +4385,22 @@ function apply(ctx) {
   const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
   const downloadTokens = new Map()
+  let backupOperation = Promise.resolve()
+  const withBackupLock = (operation) => {
+    const current = backupOperation.then(operation, operation)
+    backupOperation = current.catch(() => {})
+    return current
+  }
+  // 备份创建进度快照（v0.45）：单飞（withBackupLock 串行）所以单对象足够；一律整体替换字段。
+  const backupProgress = { active: false }
+  const setBackupProgress = (value) => {
+    for (const key of Object.keys(backupProgress)) delete backupProgress[key]
+    Object.assign(backupProgress, { active: true, ...value })
+  }
+  const clearBackupProgress = () => {
+    for (const key of Object.keys(backupProgress)) delete backupProgress[key]
+    backupProgress.active = false
+  }
   const backupIntegrity = createBackupIntegrity({
     dshHome,
     resolveBackup: (id) => backupItemForId(dshHome, id),
@@ -4703,90 +4975,101 @@ function apply(ctx) {
     }
 
     if (endpoint === 'backup-list') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         return { ok: true, value: await listBackups(dshHome) }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
+    if (endpoint === 'backup-progress') {
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+      return { ok: true, value: { ...backupProgress } }
+    }
+
     if (endpoint === 'backup-create') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
-        return { ok: true, value: await createBackup(ctx, dshHome) }
+        return { ok: true, value: await withBackupLock(() => {
+          const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
+          return createBackup(ctx, dshHome, join(dshHome, 'backups'), name, async (source) => {
+            const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
+            try { return await validator.inspectBackup(source.id) } finally { await validator.dispose() }
+          }, setBackupProgress).finally(clearBackupProgress)
+        }) }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-export') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         const value = await exportBackup(dshHome, downloadTokens, payload?.id)
-        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-delete') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         const value = await deleteBackup(dshHome, payload?.id)
-        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-inspect') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         const value = await backupIntegrity.inspectBackup(payload?.id)
-        if (value === undefined) return { ok: false, error: 'unknown-backup' }
+        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.code || error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-restore-prepare') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id) }
       } catch (error) {
-        return { ok: false, error: error?.code || error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-restore-commit') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         return { ok: true, value: await backupIntegrity.commitRestore(payload?.planId) }
       } catch (error) {
-        return { ok: false, error: error?.code || error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 
     if (endpoint === 'backup-restore') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
-      return { ok: false, error: 'restore-preflight-required' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
+      return rpcFailure(new Error('restore-preflight-required'))
     }
 
     if (endpoint === 'backup-import') {
-      if (!featureEnabled('backupMaintenance')) return { ok: false, error: 'feature-disabled' }
+      if (!featureEnabled('backupMaintenance')) return rpcFailure(new Error('feature-disabled'))
       try {
         const value = await importBackup(dshHome, payload?.name, payload?.data, async (source) => {
           const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
           try { return await validator.inspectBackup(source.id) } finally { await validator.dispose() }
         })
-        if (value === undefined) return { ok: false, error: 'invalid-backup' }
+        if (value === undefined) return rpcFailure(new Error('invalid-backup'))
         return { ok: true, value }
       } catch (error) {
-        return { ok: false, error: error?.code || error?.message || String(error) }
+        return rpcFailure(error)
       }
     }
 

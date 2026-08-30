@@ -353,6 +353,10 @@ window.__ModuleLoader__.load({
       'backup.description': '备份会话、配置与插件 profile 清单，不含 node_modules 与凭据；不自动清理。',
       'backup.create': '创建备份',
       'backup.creating': '创建中…',
+      'backup.progress.copy': '正在复制会话数据（{current}/{total}）…',
+      'backup.progress.archive': '正在打包归档（{current}/{total}）…',
+      'backup.progress.validate': '正在校验归档（{current}/{total}）…',
+      'backup.progress.publish': '正在发布备份（{current}/{total}）…',
       'backup.total': '总体积：{size}',
       'backup.empty': '还没有备份。',
       'backup.delete': '删除',
@@ -383,11 +387,15 @@ window.__ModuleLoader__.load({
       'backup.error.backup-entry-absolute': '归档含绝对路径。',
       'backup.error.backup-entry-link': '归档含符号链接或硬链接。',
       'backup.error.backup-entry-type': '归档含不支持的特殊条目。',
+       'backup.error.backup-entry-platform': '归档包含其他系统不兼容的文件名。',
       'backup.error.backup-entry-unexpected': '归档含备份范围外的文件。',
       'backup.error.backup-profile-invalid': 'profile package.json 无效。',
       'backup.error.backup-section-missing': '归档缺少必要分区。',
       'backup.error.backup-size-limit': '归档超过安全大小或条目限制。',
       'backup.error.backup-archive-invalid': '归档未通过完整性检查。',
+       'backup.error.backup-source-changed': '会话正在写入，备份未完成，请稍后重试。',
+       'backup.error.backup-source-unsafe': '备份源含符号链接或特殊文件，已拒绝创建。',
+       'backup.error.tar-failed': '归档工具执行失败，请检查 tar/gzip 是否可用。',
       'backup.error.active-work': '检测到运行中的工作，暂不能恢复。',
       'backup.error.restore-plan-expired': '恢复计划已过期，请重新检查。',
       'backup.error.restore-source-changed': '备份归档在确认前发生变化，请重新检查。',
@@ -991,6 +999,10 @@ window.__ModuleLoader__.load({
       'backup.description': 'Backs up sessions, config, and plugin profiles — no node_modules or credentials; never auto-pruned.',
       'backup.create': 'Create backup',
       'backup.creating': 'Creating…',
+      'backup.progress.copy': 'Copying session data ({current}/{total})…',
+      'backup.progress.archive': 'Packing archive ({current}/{total})…',
+      'backup.progress.validate': 'Verifying archive ({current}/{total})…',
+      'backup.progress.publish': 'Publishing backup ({current}/{total})…',
       'backup.total': 'Total size: {size}',
       'backup.empty': 'No backups yet.',
       'backup.delete': 'Delete',
@@ -1021,11 +1033,15 @@ window.__ModuleLoader__.load({
       'backup.error.backup-entry-absolute': 'The archive contains an absolute path.',
       'backup.error.backup-entry-link': 'The archive contains a symbolic or hard link.',
       'backup.error.backup-entry-type': 'The archive contains an unsupported special entry.',
+       'backup.error.backup-entry-platform': 'The archive contains a filename incompatible with another platform.',
       'backup.error.backup-entry-unexpected': 'The archive contains files outside the backup scope.',
       'backup.error.backup-profile-invalid': 'A profile package.json is invalid.',
       'backup.error.backup-section-missing': 'The archive is missing a required section.',
       'backup.error.backup-size-limit': 'The archive exceeds a safe size or entry limit.',
       'backup.error.backup-archive-invalid': 'The archive failed its integrity check.',
+       'backup.error.backup-source-changed': 'A session is being written; the backup was not completed. Try again shortly.',
+       'backup.error.backup-source-unsafe': 'The backup source contains a link or special file, so creation was refused.',
+       'backup.error.tar-failed': 'The archive tool failed. Check that tar and gzip are available.',
       'backup.error.active-work': 'Running work was detected; restore is blocked for now.',
       'backup.error.restore-plan-expired': 'The restore plan expired. Inspect the backup again.',
       'backup.error.restore-source-changed': 'The backup changed before confirmation. Inspect it again.',
@@ -1400,6 +1416,12 @@ window.__ModuleLoader__.load({
     }
 
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
+
+    function normalizeRpcResult(result) {
+      if (!result || result.ok !== false || typeof result.error !== 'object' || result.error === null) return result
+      const message = typeof result.error.message === 'string' ? result.error.message : result.error.code
+      return { ...result, error: message || 'unknown' }
+    }
 
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
@@ -2017,7 +2039,7 @@ window.__ModuleLoader__.load({
       let versionSnapshotPromise = null
       const fetchVersionSnapshot = () => {
         if (versionSnapshotPromise === null) {
-          versionSnapshotPromise = ctx.connection.rpc.call('/dsh-service', 'version', {})
+          versionSnapshotPromise = ctx.connection.rpc.call('/dsh-service', 'version', {}).then(normalizeRpcResult)
             .then((res) => {
               if (res && res.ok) applyVersionRuntimeEnv(res.value)
               return res
@@ -4908,6 +4930,9 @@ window.__ModuleLoader__.load({
         const [permissionDeepBusy, setPermissionDeepBusy] = useState(false)
         const [backups, setBackups] = useState({ items: [], totalBytes: 0 })
         const [backupBusy, setBackupBusy] = useState(false)
+        const [backupProgress, setBackupProgress] = useState(null)
+        // v0.45.1 单调守卫：总进度只进不退（重试/异常快照不回退条幅）。
+        const backupProgressPercentRef = useRef(0)
         const [backupError, setBackupError] = useState(null)
         const [backupDeleteId, setBackupDeleteId] = useState(null)
         const [backupRestoreId, setBackupRestoreId] = useState(null)
@@ -4956,7 +4981,7 @@ window.__ModuleLoader__.load({
         }, [])
         useEffect(() => {
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'check-update', {}).then((res) => {
+          ctx.connection.rpc.call('/dsh-service', 'check-update', {}).then(normalizeRpcResult).then((res) => {
             if (!active || !res || res.ok === false) { if (active) setUpdateError(translate('update.unavailable')); return }
             setUpdateInfo(res.value)
             setUpdateError(null)
@@ -4968,7 +4993,7 @@ window.__ModuleLoader__.load({
           // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
           if (!featureEnabled('healthDiagnostics')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then((res) => {
+          ctx.connection.rpc.call('/dsh-service', 'permissions-plan', {}).then(normalizeRpcResult).then((res) => {
             if (!active) return
             if (!res || res.ok === false) setPermissionError(translate('permissions.error'))
             else setPermissions(res.value)
@@ -4980,7 +5005,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!featureEnabled('modelUsage')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'usage', usageRequestPayload).then(async (res) => {
+          ctx.connection.rpc.call('/dsh-service', 'usage', usageRequestPayload).then(normalizeRpcResult).then(async (res) => {
             if (!active) return
             if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
             setUsage(res.value)
@@ -4997,7 +5022,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!featureEnabled('backupMaintenance')) return () => {}
           let active = true
-          ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then((res) => {
+          ctx.connection.rpc.call('/dsh-service', 'backup-list', {}).then(normalizeRpcResult).then((res) => {
             if (!active) return
             if (!res || res.ok === false) setBackupError(translate('backup.error'))
             else setBackups(res.value)
@@ -5093,13 +5118,30 @@ window.__ModuleLoader__.load({
         const createBackup = async () => {
           setBackupBusy(true)
           setBackupError(null)
+          setBackupProgress(null)
+          backupProgressPercentRef.current = 0
+          // v0.45 进度轮询：创建期间每 400ms 拉一次 backup-progress；完成/失败即停链并清快照。
+          let stopped = false
+          let cancelNext = () => {}
+          const poll = async () => {
+            if (stopped) return
+            try {
+              const res = await ctx.connection.rpc.call('/dsh-service', 'backup-progress', {}).then(normalizeRpcResult)
+              if (!stopped && res && res.ok) setBackupProgress(res.value?.active === true ? res.value : null)
+            } catch (_) {}
+            if (!stopped) cancelNext = ctx.timer.timeout(poll, 400)
+          }
+          poll()
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-create', {})
-            if (!res || res.ok === false) throw new Error('backup failed')
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-create', {}).then(normalizeRpcResult)
+            if (!res || res.ok === false) throw Object.assign(new Error('backup failed'), { code: res?.error })
             setBackups({ items: res.value.items, totalBytes: res.value.totalBytes })
-          } catch (_) {
-            setBackupError(translate('backup.error'))
+          } catch (error) {
+            setBackupError(mapBackupRestoreError(error?.code))
           } finally {
+            stopped = true
+            cancelNext()
+            setBackupProgress(null)
             setBackupBusy(false)
           }
         }
@@ -5108,7 +5150,7 @@ window.__ModuleLoader__.load({
           setBackupBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-delete', { id })
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-delete', { id }).then(normalizeRpcResult)
             if (!res || res.ok === false) throw new Error('backup failed')
             setBackups(res.value)
             setBackupDeleteId(null)
@@ -5123,7 +5165,7 @@ window.__ModuleLoader__.load({
           setBackupExportBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id })
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-export', { id }).then(normalizeRpcResult)
             if (!res || res.ok === false) throw new Error('export failed')
             const a = document.createElement('a')
             a.href = res.value.url
@@ -5152,11 +5194,11 @@ window.__ModuleLoader__.load({
           setBackupRestorePlan(null)
           setBackupRestoreId(id)
           try {
-            const inspected = await ctx.connection.rpc.call('/dsh-service', 'backup-inspect', { id })
+            const inspected = await ctx.connection.rpc.call('/dsh-service', 'backup-inspect', { id }).then(normalizeRpcResult)
             if (!inspected || inspected.ok === false) throw Object.assign(new Error('backup inspect failed'), { code: inspected?.error })
             setBackupRestoreReport(inspected.value)
             if (inspected.value.validForRestore !== true) return
-            const prepared = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-prepare', { id })
+            const prepared = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-prepare', { id }).then(normalizeRpcResult)
             if (!prepared || prepared.ok === false) throw Object.assign(new Error('backup prepare failed'), { code: prepared?.error })
             setBackupRestorePlan(prepared.value)
           } catch (error) {
@@ -5171,7 +5213,7 @@ window.__ModuleLoader__.load({
           setBackupBusy(true)
           setBackupError(null)
           try {
-            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-commit', { planId: backupRestorePlan.planId })
+            const res = await ctx.connection.rpc.call('/dsh-service', 'backup-restore-commit', { planId: backupRestorePlan.planId }).then(normalizeRpcResult)
             if (!res || res.ok === false) throw Object.assign(new Error('backup restore failed'), { code: res?.error })
             setBackupRestoreId(null)
             setBackupRestoreReport(null)
@@ -5209,7 +5251,7 @@ window.__ModuleLoader__.load({
                const bytes = new Uint8Array(reader.result)
                let binary = ''
                for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
-               const res = await ctx.connection.rpc.call('/dsh-service', 'backup-import', { name: file.name, data: btoa(binary) })
+               const res = await ctx.connection.rpc.call('/dsh-service', 'backup-import', { name: file.name, data: btoa(binary) }).then(normalizeRpcResult)
                if (!res || res.ok === false) throw Object.assign(new Error('backup import failed'), { code: res?.error })
                setBackups(res.value)
              } catch (error) {
@@ -5672,6 +5714,33 @@ window.__ModuleLoader__.load({
           healthSummaryBlock,
           permissionBlock)
 
+        // v0.45 进度显示：一根连续不清零的总进度条，按阶段加权映射——
+        // 复制 0–30%（真实字节）、打包 30–70%（已写入归档字节 ÷ 源字节估算）、校验 70–95%（无细分信号，保持段起点）、发布 95–100%。
+        // 校验/发布段的 95/100 差值在发布完成瞬间补满，避免打包估算误差导致条回退。
+        const BACKUP_PHASE_STEP = { copy: 1, archive: 2, validate: 3, publish: 4 }
+        const backupProgressActive = backupBusy && backupProgress?.active === true
+        const backupProgressPhase = backupProgressActive ? (backupProgress.phase || 'copy') : 'copy'
+        const backupProgressStep = BACKUP_PHASE_STEP[backupProgressPhase] || 1
+        const backupProgressPercent = (() => {
+          if (!backupProgressActive) return 0
+          const total = Number(backupProgress.totalBytes) || 0
+          let raw
+          if (backupProgressPhase === 'copy') raw = total > 0 ? Math.min(30, Math.floor(backupProgress.copiedBytes / total * 30)) : 0
+          else if (backupProgressPhase === 'archive') {
+            const ratio = total > 0 ? Math.min(1, Number(backupProgress.archiveBytes) / total) : 0
+            raw = Math.min(70, 30 + Math.floor(ratio * 40))
+          } else if (backupProgressPhase === 'validate') raw = 70
+          else raw = 100
+          // 单调守卫：只进不退（重试从 0 重跑或异常快照不回退条幅）。
+          const shown = Math.max(backupProgressPercentRef.current, raw)
+          backupProgressPercentRef.current = shown
+          return shown
+        })()
+        const backupProgressDetail = !backupProgressActive ? ''
+          : backupProgressPhase === 'copy'
+            ? `${formatSize(backupProgress.copiedBytes)} / ${formatSize(backupProgress.totalBytes)}`
+            : (backupProgress.archiveBytes > 0 ? formatSize(backupProgress.archiveBytes) : '')
+
         const backupBlock = React.createElement('div', { key: 'backup-section' },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
@@ -5681,6 +5750,14 @@ window.__ModuleLoader__.load({
             React.createElement('label', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
               translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
               React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
+          backupBusy && backupProgress?.active === true
+            ? React.createElement('div', { 'data-testid': 'backup-progress', style: { marginTop: '10px' } },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+                  React.createElement('span', null, translate('backup.progress.' + backupProgressPhase, { current: backupProgressStep, total: 4 })),
+                  React.createElement('span', null, backupProgressDetail)),
+                React.createElement('div', { style: { marginTop: '5px', height: '6px', borderRadius: '999px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)', overflow: 'hidden' } },
+                  React.createElement('div', { style: { height: '100%', width: backupProgressPercent + '%', background: 'var(--dsw-alias-brand-primary)', transition: 'width 240ms ease' } })))
+            : null,
           React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
           backupManualRestart ? React.createElement('div', { 'data-testid': 'backup-manual-restart', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
             React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('backup.manualRestartTitle')),

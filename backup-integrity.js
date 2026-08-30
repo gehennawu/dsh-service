@@ -7,8 +7,8 @@ import { gunzip } from 'node:zlib'
 
 const CONFIG_FILES = Object.freeze(['settings.yaml', 'cordis.patch.yml', 'AGENTS.md'])
 const PLAN_TTL_MS = 5 * 60 * 1000
-const MAX_COMPRESSED_BYTES = 128 * 1024 * 1024
-const MAX_EXPANDED_BYTES = 512 * 1024 * 1024
+const MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
+const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
 const MAX_ARCHIVE_ENTRIES = 200000
 const MAX_ISSUES = 20
 const JOURNAL_FILE = 'dsh-service-restore-journal.json'
@@ -72,7 +72,9 @@ function parsePax(data) {
 
 function normalizeArchivePath(raw, type) {
   if (typeof raw !== 'string' || raw === '' || /[\0-\x1f\x7f]/.test(raw)) throw domainError('backup-entry-traversal')
+  if (/[\uE000-\uF8FF]/.test(raw)) throw domainError('backup-entry-traversal')
   if (raw.includes('\\') || raw.startsWith('/') || /^[A-Za-z]:/.test(raw)) throw domainError(raw.startsWith('/') || /^[A-Za-z]:/.test(raw) ? 'backup-entry-absolute' : 'backup-entry-traversal')
+  if (raw.split('/').some((part) => /[ .]$/.test(part) || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(part))) throw domainError('backup-entry-platform')
   const trimmed = type === 'directory' ? raw.replace(/\/+$/, '') : raw
   if (trimmed === '') throw domainError('backup-entry-traversal')
   const parts = trimmed.split('/')
@@ -143,7 +145,11 @@ function parseTar(expanded, options = {}) {
     offset += 512
     if (block.every((byte) => byte === 0)) {
       zeroBlocks += 1
-      if (zeroBlocks >= 2) break
+      if (zeroBlocks >= 2) {
+        if (expanded.subarray(offset).some((byte) => byte !== 0)) throw domainError('backup-tar-invalid')
+        offset = expanded.length
+        break
+      }
       continue
     }
     if (zeroBlocks > 0) throw domainError('backup-tar-invalid')
@@ -202,6 +208,7 @@ function parseTar(expanded, options = {}) {
   }
 
   if (zeroBlocks < 2 || pendingLongName !== undefined || pendingPax !== undefined) throw domainError('backup-tar-invalid')
+  if (offset % 512 !== 0 || expanded.length % 512 !== 0) throw domainError('backup-tar-invalid')
   for (const root of ['sessions', 'config', 'profiles']) if (!state.present.has(root)) throw domainError('backup-section-missing', root)
   state.sections.config.files.sort((a, b) => a.name.localeCompare(b.name))
   state.sections.profiles.items.sort((a, b) => a.name.localeCompare(b.name))
@@ -230,8 +237,10 @@ async function inspectArchive(source, options = {}) {
     if (info.size <= 0 || info.size > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
     base.source.sizeBytes = info.size
     base.source.mtimeMs = info.mtimeMs
-    base.archive.compressedBytes = info.size
     const compressed = await readFile(source.path)
+    if (compressed.length === 0 || compressed.length > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
+    base.archive.compressedBytes = compressed.length
+    base.source.sizeBytes = compressed.length
     base.source.sha256 = createHash('sha256').update(compressed).digest('hex')
     let expanded
     try { expanded = await gunzipArchive(compressed, { maxOutputLength: MAX_EXPANDED_BYTES }) } catch (error) {
@@ -390,6 +399,12 @@ export function createBackupIntegrity(options) {
   } = options
   const plans = new Map()
   let recoveryError
+  let operation = Promise.resolve()
+  const withLock = (task) => {
+    const current = operation.then(task, task)
+    operation = current.catch(() => {})
+    return current
+  }
   const recovery = recoverJournal(dshHome).catch((error) => { recoveryError = error })
   const ensureRecovered = async () => {
     await recovery
@@ -422,7 +437,8 @@ export function createBackupIntegrity(options) {
   }
 
   async function prepareRestore(id) {
-    await ensureRecovered()
+    return withLock(async () => {
+      await ensureRecovered()
     await prunePlans()
     const activity = await getActiveWork()
     if (activity?.hasActive === true) throw domainError('active-work')
@@ -468,10 +484,12 @@ export function createBackupIntegrity(options) {
     }
     plans.set(planId, plan)
     return publicPlan(plan)
+    })
   }
 
   async function commitRestore(planId) {
-    await ensureRecovered()
+    return withLock(async () => {
+      await ensureRecovered()
     const plan = typeof planId === 'string' ? plans.get(planId) : undefined
     if (plan === undefined) throw domainError('unknown-restore-plan')
     if (plan.state === 'expired') throw domainError('restore-plan-expired')
@@ -545,6 +563,7 @@ export function createBackupIntegrity(options) {
       previousInstanceId,
       restart: { scheduled: !manual, requiresManualRestart: manual, previousInstanceId },
     }
+    })
   }
 
   async function dispose() {

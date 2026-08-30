@@ -133,7 +133,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 
 - Backup records use light two-line rows (name on the first line, size · time on the second, separator layout; same style as the session list)
 
-- Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests
+- Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests; sessions are snapshotted through the persistence layer's stable-read seam (active-agent writes no longer fail creation), and creation shows one continuous phase progress bar (copy / pack / verify / publish, step counter 1/4–4/4, real percentage during copy)
 - Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned; imported archives must pass the same integrity inspection used by restore
 - **Integrity inspection** validates gzip/tar structure, paths, and entry types. Only `sessions`, the three allowlisted config files, and `profiles/<name>/package.json` are accepted; traversal, links, special files, unknown content, corrupt archives, and invalid profile manifests are rejected
 - **Restore preflight** produces a single-use five-minute plan showing the full sessions replacement, config replacements/removals, and profile-manifest updates. Final commit rechecks the archive SHA-256 and current-target fingerprint; any drift rejects the restore

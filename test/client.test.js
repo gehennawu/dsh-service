@@ -1451,6 +1451,7 @@ test('backup panel creates, lists, and requires a second click before deleting a
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     if (endpoint === 'health') return { ok: false, error: 'not relevant' }
     if (endpoint === 'backup-list') return { ok: true, value: { items: [first], totalBytes: first.sizeBytes } }
+    if (endpoint === 'backup-progress') return { ok: true, value: { active: false } }
     if (endpoint === 'backup-create') return { ok: true, value: { item: second, items: [second, first], totalBytes: 3584 } }
     if (endpoint === 'backup-delete') {
       assert.deepEqual(payload, { id: first.id })
@@ -1484,6 +1485,98 @@ test('backup panel creates, lists, and requires a second click before deleting a
   assert.equal(calls.filter((call) => call.endpoint === 'backup-delete').length, 1)
   assert.doesNotMatch(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
   assert.match(renderer.text('settings.section'), /总体积：2 KB/)
+})
+
+test('backup panel shows live progress during creation and clears it when the host finishes', async () => {
+  const first = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const second = { id: 'signed-backup-2', name: 'dsh-backup-20250819-130000.tar.gz', sizeBytes: 2048, createdAt: '2025-08-19T13:00:00.000Z' }
+  let releaseCreate
+  const createGate = new Promise((resolve) => { releaseCreate = resolve })
+  let progressActive = true
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [first], totalBytes: first.sizeBytes } }
+    if (endpoint === 'backup-progress') {
+      return { ok: true, value: progressActive ? { active: true, phase: 'copy', copiedBytes: 512, totalBytes: 2048, archiveBytes: 0 } : { active: false } }
+    }
+    if (endpoint === 'backup-create') {
+      await createGate
+      return { ok: true, value: { item: second, items: [second, first], totalBytes: 3584 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+
+  const click = renderer.findButton('创建备份').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /正在复制会话数据/)
+  assert.match(renderer.text('settings.section'), /（1\/4）/)
+  assert.match(renderer.text('settings.section'), /512 B \/ 2 KB/)
+  assert.ok(renderer.pendingTimerDelays().includes(400), 'progress polling chains a 400ms timer')
+
+  progressActive = false
+  releaseCreate()
+  await click
+  await renderer.flush()
+  assert.doesNotMatch(renderer.text('settings.section'), /正在复制会话数据/)
+  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-130000\.tar\.gz/)
+  assert.equal(renderer.pendingTimerDelays().includes(400), false, 'progress polling stops after completion')
+})
+
+test('backup progress bar never regresses when a later snapshot reports a lower percent (monotonic guard)', async () => {
+  const first = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const second = { id: 'signed-backup-2', name: 'dsh-backup-20250819-130000.tar.gz', sizeBytes: 2048, createdAt: '2025-08-19T13:00:00.000Z' }
+  let releaseCreate
+  const createGate = new Promise((resolve) => { releaseCreate = resolve })
+  // 队列：复制完成 30% →（模拟重试）复制从 0 重跑 → 结束。
+  const snapshots = [
+    { active: true, phase: 'copy', copiedBytes: 2048, totalBytes: 2048, archiveBytes: 0 },
+    { active: true, phase: 'copy', copiedBytes: 0, totalBytes: 2048, archiveBytes: 0 },
+    { active: false },
+  ]
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [first], totalBytes: first.sizeBytes } }
+    if (endpoint === 'backup-progress') return { ok: true, value: snapshots.length > 0 ? snapshots.shift() : { active: false } }
+    if (endpoint === 'backup-create') {
+      await createGate
+      return { ok: true, value: { item: second, items: [second, first], totalBytes: 3584 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+
+  const click = renderer.findButton('创建备份').props.onClick()
+  await renderer.flush()
+  const fillWidth = () => {
+    const node = renderer.findByTestId('backup-progress')
+    return node.children[1].children[0].props.style.width
+  }
+  assert.equal(fillWidth(), '30%', 'copy completed within its weight band')
+  // 第二次快照（疑似重试）原始百分比为 0——单调守卫让条幅保持 30% 不回退。
+  await renderer.advanceTimer(400)
+  assert.equal(fillWidth(), '30%', 'percent never regresses')
+  assert.match(renderer.text('settings.section'), /正在复制会话数据/)
+
+  releaseCreate()
+  await click
+  await renderer.flush()
+  assert.doesNotMatch(renderer.text('settings.section'), /正在复制会话数据/)
+  assert.equal(renderer.pendingTimerDelays().includes(400), false)
 })
 
 test('backup restore inspects, prepares, renders consequences, and commits only the host plan id', async () => {

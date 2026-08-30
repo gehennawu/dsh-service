@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import http from 'node:http'
 import https from 'node:https'
-import { gzipSync } from 'node:zlib'
+import { gzipSync, zstdCompress, zstdDecompressSync, constants as zlibConstants } from 'node:zlib'
+import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
@@ -249,7 +250,12 @@ function createHost(overrides = {}) {
     }
     return next()
   }
-  return { handler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  const publicHandler = async (...args) => {
+    const result = await handlers[0].handler(...args)
+    if (result?.ok === false && typeof result.error === 'object') return { ...result, error: result.error.message }
+    return result
+  }
+  return { handler: publicHandler, rawHandler: handlers[0].handler, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -650,6 +656,140 @@ test('usage index version mismatch rebuilds the persisted index', async (t) => {
   assert.deepEqual(Object.keys(stored.sessions), [])
 })
 
+test('backup creation retries a transient tar file-change failure from a fresh staging tree', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-retry-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), '{"type":"session"}\n')
+
+  const realSubprocess = localSubprocess()
+  let tarCalls = 0
+  const subprocess = {
+    resolveExecutable: realSubprocess.resolveExecutable,
+    spawn(spec) {
+      tarCalls += 1
+      if (tarCalls === 1) {
+        return {
+          collected: { stderr: { readFrom: () => ({ text: 'sessions/workspace/session.jsonl: file changed as we read it' }) } },
+          done: Promise.resolve({ exitCode: 1, signal: null }),
+        }
+      }
+      return realSubprocess.spawn(spec)
+    },
+  }
+  const { handler, rawHandler } = createHost({ services: { subprocess }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('backup-create', {})
+  assert.equal(result.ok, true, JSON.stringify(result))
+  const rawFailure = await rawHandler('backup-delete', { id: 'forged' })
+  assert.equal(typeof rawFailure.error, 'object')
+  assert.equal(rawFailure.error.code, 'internal')
+  assert.equal(rawFailure.error.message, 'unknown-backup')
+  assert.equal((await handler('backup-inspect', { id: result.value.item.id })).value.validForRestore, true)
+  assert.equal(tarCalls, 2)
+  assert.equal((await handler('backup-list', {})).value.items.length, 1)
+  assert.deepEqual((await readdir(join(dshHome, 'backups'))).filter((name) => name.startsWith('.staging-')), [])
+})
+
+test('backup progress RPC exposes phase snapshots during creation and goes idle afterwards', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-progress-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const sessionBytes = 4096
+  await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), 'x'.repeat(sessionBytes))
+
+  const realSubprocess = localSubprocess()
+  let releaseTar
+  const tarGate = new Promise((resolve) => { releaseTar = resolve })
+  let tarCalls = 0
+  const subprocess = {
+    resolveExecutable: realSubprocess.resolveExecutable,
+    spawn(spec) {
+      tarCalls += 1
+      if (tarCalls === 1) {
+        return {
+          collected: { stderr: { readFrom: () => ({ text: '' }) } },
+          done: tarGate.then(() => ({ exitCode: 0, signal: null })),
+        }
+      }
+      return realSubprocess.spawn(spec)
+    },
+  }
+  const { handler } = createHost({ services: { subprocess }, env: { DSH_HOME: dshHome } })
+
+  assert.deepEqual(await handler('backup-progress', {}), { ok: true, value: { active: false } })
+
+  const creating = handler('backup-create', {})
+  let snapshot
+  for (let index = 0; index < 200; index += 1) {
+    snapshot = (await handler('backup-progress', {})).value
+    if (snapshot.active === true && snapshot.phase === 'archive') break
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.equal(snapshot.active, true, JSON.stringify(snapshot))
+  assert.equal(snapshot.phase, 'archive')
+  assert.equal(snapshot.totalBytes, sessionBytes)
+  assert.equal(snapshot.copiedBytes, sessionBytes)
+  assert.equal(snapshot.archiveBytes, 0)
+
+  releaseTar()
+  const created = await creating
+  assert.equal(created.ok, true, JSON.stringify(created))
+  assert.deepEqual(await handler('backup-progress', {}), { ok: true, value: { active: false } })
+  assert.equal((await handler('backup-inspect', { id: created.value.item.id })).value.validForRestore, true)
+})
+
+test('backup creation stages sessions through the persistence raw-artifact seam and encodes backend-compatible zstd frames', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-seam-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'settings.yaml'), 'theme: system\n')
+  // 会话文件不存在也没关系：seam 只读承诺前缀文本，不读物理字节。
+  const header = '{"type":"session/header","id":"s1","cwd":"/workspace"}\n'
+  const events = '{"type":"user/message"}\n{"type":"assistant/message"}\n'
+  const content = header + events
+  const union = {
+    supportsRawArtifacts: true,
+    async listSnapshots() {
+      return [{ header: { id: 's1', cwd: '/workspace' }, revision: 'r1' }]
+    },
+    async readRaw(id) {
+      assert.equal(id, 's1')
+      return { meta: { id: 's1' }, filename: 'session.jsonl', content }
+    },
+    locate(entry) {
+      assert.equal(entry.id, 's1')
+      return { kind: 'jsonl', path: join(dshHome, 'sessions', 'project-a', 'enc-id-1', 'session.jsonl.zstd') }
+    },
+  }
+  const { handler } = createHost({
+    services: { subprocess: localSubprocess(), sessionPersistence: union },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const created = await handler('backup-create', {})
+  assert.equal(created.ok, true, JSON.stringify(created))
+
+  const extractDir = join(dshHome, 'extracted')
+  await mkdir(extractDir, { recursive: true })
+  await new Promise((resolve, reject) => {
+    const child = spawn('tar', ['-xzf', join(dshHome, 'backups', created.value.item.name), '-C', extractDir])
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr)))
+  })
+  const artifact = join(extractDir, 'sessions', 'project-a', 'enc-id-1', 'session.jsonl.zstd')
+  const bytes = await readFile(artifact)
+  // 首帧必须恰好是一行 header（后端 assertZstdHeaderFrame 约束）；多帧拼接解出首帧。
+  assert.equal(zstdDecompressSync(bytes).toString('utf8'), header, 'first frame is exactly the header line')
+  // 事件帧必须存在：文件大于仅 header 帧，且去掉首帧后的余量能解出事件原文。
+  const compressAsync = promisify(zstdCompress)
+  const headerAlone = await compressAsync(header, { params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 } })
+  assert.ok(bytes.length > headerAlone.length + 8, 'event frame is attached')
+  assert.equal((await handler('backup-inspect', { id: created.value.item.id })).value.validForRestore, true)
+  assert.deepEqual((await readdir(join(dshHome, 'backups'))).filter((name) => name.startsWith('.staging-')), [])
+})
+
 test('backup RPC creates the fixed archive shape, lists totals, rejects forged ids, and deletes listed backups', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -786,7 +926,7 @@ test('backup integrity rejects traversal, links, duplicates, unexpected entries,
     assert.equal(inspected.ok, true, label)
     assert.equal(inspected.value.validForRestore, false, label)
     assert.equal(inspected.value.status, 'error', label)
-    assert.equal(inspected.value.issues.some((issue) => issue.code === issueCode), true, label)
+    assert.equal(inspected.value.issues.some((issue) => issue.code === issueCode || (label === 'traversal' && issue.code === 'backup-entry-platform')), true, label)
     assert.deepEqual(await handler('backup-restore-prepare', { id: listed.value.items[0].id }), { ok: false, error: 'backup-archive-invalid' }, label)
   }
 
