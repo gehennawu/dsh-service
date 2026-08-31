@@ -5042,12 +5042,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*max-height: none !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
-    assert.match(styleTag.textContent, /\[class\*="FJxK0a_root"\] \{[^}]*overflow-x: auto !important/s)
-    // 真机反馈：消息尾部元信息行改用官方稳定 data-time-hover-root 结构定位，
-    // 不依赖会随 DSH 构建漂移的 MessageIconActions CSS-module 哈希类名。
-    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child \{[^}]*min-width: 0 !important/s)
-    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child > span:last-child \{[^}]*flex: 1 1 auto !important/s)
-    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-time-hover-root\] > :last-child > span:last-child > span\[aria-hidden="true"\] \{[^}]*margin: 0 4px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
+    // 真机反馈：消息尾部元信息行用「回合尾节点稳定属性 data-turn-tail + 末位子项」
+    // 结构定位（0.1.2-alpha.2 起官方把聊天视图迁进 dsh-client-ui-chat，
+    // data-time-hover-root 已删除），不依赖会随 DSH 构建漂移的 CSS-module 哈希类名。
+    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-turn-tail\] > :last-child \{[^}]*min-width: 0 !important/s)
+    assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-turn-tail\] > :last-child > span:last-child \{[^}]*flex: 1 1 auto !important/s)
     assert.doesNotMatch(styleTag.textContent, /p-xYUq_/)
     assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{ flex-direction: row/)
     // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
@@ -5576,9 +5576,146 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
   }
 })
 
+test('mobile adaptation immersive engine tolerates the 0.1.2-alpha.2 skeleton (body wrapper between the phase root and the scroll body)', async () => {
+  // 0.1.2-alpha.2 ConversationRoot 树（dsh-client-ui-conversation bundle 源码核实）：
+  //   root[data-phase] > [header 槽包裹层 > header, body 包裹层(.wSkVaW_body)]
+  //   body 包裹层 > [scroller[data-conversation-scroll] > [slot, seat[data-composer-seat]],
+  //                 WidthHandle[data-width-handle=left], WidthHandle[data-width-handle=right]]
+  // 滚动容器不再是带 data-phase 的 root 的直接子元素 → 引擎必须上溯一层找相位，
+  // 否则 chatAvailable=false、沉浸/把手/头部标记整体哑火（alpha.2 真机报告）。
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.attributes = new Map()
+      this.style = {}; this.dataset = {}; this.parentNode = null; this.className = ''; this.listeners = new Map()
+    }
+    get isConnected() { let n = this; while (n.parentNode !== null) n = n.parentNode; return n === rootNode }
+    appendChild(c) { c.parentNode = this; this.children.push(c); return c }
+    remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null } }
+    setAttribute(k, v) { this.attributes.set(k, String(v)) }
+    getAttribute(k) { return this.attributes.has(k) ? this.attributes.get(k) : null }
+    hasAttribute(k) { return this.attributes.has(k) }
+    removeAttribute(k) { this.attributes.delete(k) }
+    addEventListener(t, h) { (this.listeners.get(t) || this.listeners.set(t, new Set()).get(t)).add(h) }
+    removeEventListener(t, h) { this.listeners.get(t)?.delete(h) }
+    dispatch(t, event) { for (const h of this.listeners.get(t) || []) h(event || {}) }
+  }
+  const rootNode = new FakeElement('#root')
+  const head = new FakeElement('head'); rootNode.appendChild(head)
+  const bodyEl = new FakeElement('body'); rootNode.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); rootNode.appendChild(htmlEl)
+  const frame = new FakeElement('div'); frame.className = 'pI_x6G_frame'; frame.setAttribute('data-sidebar-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'sidebarCol'; frame.appendChild(sidebarCol)
+  const centerCol = new FakeElement('div'); centerCol.className = 'centerCol'; frame.appendChild(centerCol)
+  const detailsCol = new FakeElement('div'); detailsCol.className = 'detailsCol'; frame.appendChild(detailsCol)
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', ''); frame.appendChild(overlayLayer)
+  bodyEl.appendChild(frame)
+
+  const convRoot = new FakeElement('div'); convRoot.setAttribute('data-phase', 'active')
+  const headerWrap = new FakeElement('div'); headerWrap.setAttribute('data-slot', 'conversation.session.header')
+  const headerEl = new FakeElement('header')
+  const bodyWrap = new FakeElement('div'); bodyWrap.className = 'wSkVaW_body'
+  const scroller = new FakeElement('div'); scroller.setAttribute('data-conversation-scroll', '')
+  const seat = new FakeElement('div'); seat.setAttribute('data-composer-seat', '')
+  const leftHandle = new FakeElement('div'); leftHandle.setAttribute('data-width-handle', 'left')
+  const rightHandle = new FakeElement('div'); rightHandle.setAttribute('data-width-handle', 'right')
+  headerWrap.appendChild(headerEl)
+  convRoot.appendChild(headerWrap)
+  convRoot.appendChild(bodyWrap)
+  bodyWrap.appendChild(scroller)
+  bodyWrap.appendChild(leftHandle)
+  bodyWrap.appendChild(rightHandle)
+  scroller.appendChild(seat)
+  centerCol.appendChild(convRoot)
+  scroller.scrollTop = 0
+  scroller.scrollHeight = 2000
+  scroller.clientHeight = 600
+
+  class FakeMutationObserver { constructor() {} observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl, head, body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      const scan = (node) => { if (found === null && node.attributes?.has?.(selector.replace(/[[\]]/g, ''))) found = node; for (const c of node.children || []) scan(c) }
+      scan(rootNode)
+      return found
+    },
+    querySelectorAll(selector) {
+      const parts = selector.split(',').map((p) => p.trim()).filter(Boolean)
+      const found = []
+      const scan = (node) => {
+        if (node !== rootNode && parts.some((p) => /^\[[a-z-]+\]$/i.test(p) && node.attributes.has(p.slice(1, -1)))) found.push(node)
+        for (const c of node.children || []) scan(c)
+      }
+      scan(rootNode)
+      return found
+    },
+  }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+
+  const immersiveOn = () => htmlEl.attributes.has('data-dshsvc-immersive')
+  const freshGesture = () => htmlEl.dispatch('touchstart', {})
+  const dragTo = (targetY, step) => {
+    const dir = Math.sign(targetY - scroller.scrollTop)
+    let y = scroller.scrollTop
+    while ((dir > 0 && y < targetY) || (dir < 0 && y > targetY)) {
+      const next = Math.abs(targetY - y) < step ? targetY : y + dir * step
+      scroller.scrollTop = next
+      htmlEl.dispatch('scroll', { target: scroller })
+      y = next
+    }
+  }
+
+  try {
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: { toggleSidebar() {}, closeDetails() {} } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    globalThis.window.location = { search: '', reload() {} }
+    await renderer.load()
+
+    // 相位必须透过 body 包裹层上溯到 root：会话可滚 → 把手可见、头部标记打上
+    const handle = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-handle'))
+    assert.notEqual(handle, undefined, 'resident handle must mount under body')
+    assert.equal(handle.style.display, 'flex', 'wrapper skeleton must still yield chatAvailable')
+    assert.equal(headerEl.attributes.has('data-dshsvc-chat-header'), true, 'header tag must land on the real header through the wrapper')
+    assert.equal(headerWrap.attributes.has('data-dshsvc-chat-header'), false, 'display:contents wrapper must stay untagged')
+
+    // 下滑累加 → 隐藏；上滑 → 回显；把手两连击开关
+    freshGesture()
+    dragTo(264, 6)
+    assert.equal(immersiveOn(), true)
+    freshGesture()
+    dragTo(240, 6)
+    assert.equal(immersiveOn(), false)
+    handle.dispatch('click', {})
+    assert.equal(immersiveOn(), true)
+    handle.dispatch('click', {})
+    assert.equal(immersiveOn(), false)
+
+    // 开关热关闭：属性/标记/把手全部对称拆除
+    await renderer.setFeature('mobileAdaptation', false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-immersive'), false)
+    assert.equal(headerEl.attributes.has('data-dshsvc-chat-header'), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+    delete globalThis.window.location.search
+  }
+})
+
 
 test('user reply jump: mounts the up-arrow above the to-bottom button, steps up through user replies on every click, and tears down on dispose', async () => {
-  // 全平台引擎（与 mobileAdaptation 无关）：挂在官方 Md3f7G_toBottomSlot 内，
+  // 全平台引擎（与 mobileAdaptation 无关）：挂在官方 to-bottom 槽位（哈希前缀随包拆分
+  // 漂移：rc.2 Md3f7G_ → 0.1.2-alpha.2 EvIC1a_，聊天视图迁进 dsh-client-ui-chat）内，
   // 点击按 [data-chat-flow-kind="user"] 行定位「上一条」平滑跳转，逐击步进。
   class FakeElement {
     constructor(tag) {
@@ -5654,8 +5791,8 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     },
   })
   scroller.scrollTop = 0
-  const slot = new FakeElement('div'); slot.className = 'Md3f7G_toBottomSlot'
-  const officialBottom = new FakeElement('button'); officialBottom.className = 'Md3f7G_toBottom'
+  const slot = new FakeElement('div'); slot.className = 'EvIC1a_toBottomSlot'
+  const officialBottom = new FakeElement('button'); officialBottom.className = 'EvIC1a_toBottom'
   slot.appendChild(officialBottom)
   scroller.appendChild(slot)
   const mkUser = (docTop) => { const r = new FakeElement('div'); r.setAttribute('data-chat-flow-kind', 'user'); r.docTop = docTop; r.rect.top = docTop; scroller.appendChild(r); return r }
@@ -5744,7 +5881,7 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     assert.equal(btn.style.display, 'none', 'reaching the top hides the up-arrow')
 
     // 目标在未加载历史里：顶部有官方「加载更早」按钮 → 自动点击并在加载后跳到新目标
-    const olderBox = new FakeElement('div'); olderBox.className = 'Md3f7G_older'; scroller.appendChild(olderBox)
+    const olderBox = new FakeElement('div'); olderBox.className = 'EvIC1a_older'; scroller.appendChild(olderBox)
     const olderBtn = new FakeElement('button'); olderBox.appendChild(olderBtn)
     let olderClicks = 0
     olderBtn.addEventListener('click', () => {
@@ -5770,7 +5907,7 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
 
     // disabled 的「加载更早」（官方 loading 态）：只等待、绝不点击，且每个 220ms
     // 窗口照常消耗重试配额——20 个窗口后必须停表，不得退化成无限等待。
-    const disabledBox = new FakeElement('div'); disabledBox.className = 'Md3f7G_older'; scroller.appendChild(disabledBox)
+    const disabledBox = new FakeElement('div'); disabledBox.className = 'EvIC1a_older'; scroller.appendChild(disabledBox)
     const disabledBtn = new FakeElement('button'); disabledBtn.disabled = true; disabledBox.appendChild(disabledBtn)
     let disabledClicks = 0
     disabledBtn.addEventListener('click', () => { disabledClicks += 1 })
@@ -5783,12 +5920,27 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
 
     // 槽位重建（React 卸载重挂）→ observer 重新挂载新按钮
     slot.remove()
-    const slot2 = new FakeElement('div'); slot2.className = 'Md3f7G_toBottomSlot'
+    const slot2 = new FakeElement('div'); slot2.className = 'EvIC1a_toBottomSlot'
     scroller.appendChild(slot2)
     for (const observer of observers) observer.callback([], () => {})
     const btn2 = slot2.children.find((el) => el.attributes.has('data-dshsvc-user-jump'))
     assert.notEqual(btn2, undefined, 'observer must re-mount after slot recreation')
     assert.notEqual(btn2, btn)
+
+    // 官方回合导航条（0.1.2-alpha.2 TurnNavigator，@container ≤900px 隐藏）可见时让位：
+    // 官方 rail 可点击跳转 → 自有上箭头不再重复提供跳转（利用官方导航条）。
+    // 引擎只认「计算样式非 none」：桩里 getComputedStyle 缺席时视为不可见、按钮保留。
+    scroller.scrollTop = 5000
+    updateFlows() // 三条用户行 flowTop -2000/-1000/-100 → 有可跳目标
+    const rail = new FakeElement('div'); rail.className = 'eGxaPq_rail'; scroller.appendChild(rail)
+    globalThis.getComputedStyle = () => ({ display: 'flex' })
+    for (const observer of observers) observer.callback([], () => {})
+    assert.equal(btn2.style.display, 'none', 'official turn navigator visible → own up-arrow yields')
+    globalThis.getComputedStyle = () => ({ display: 'none' })
+    for (const observer of observers) observer.callback([], () => {})
+    assert.equal(btn2.style.display, 'flex', 'official rail hidden (narrow container) → own up-arrow returns')
+    delete globalThis.getComputedStyle
+    rail.remove()
 
     // dispose：按钮与样式全部移除、观察者断开
     renderer.disposeFactory()
@@ -5797,6 +5949,7 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
+    delete globalThis.getComputedStyle
   }
 })
 

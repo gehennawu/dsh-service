@@ -6770,26 +6770,29 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
   z-index: 45 !important;
 }
 /* 会话底部统计条：外壳原生 white-space:nowrap + ellipsis 截断（StatsLine），
-   改横向滑动查看全文。类哈希 FJxK0a_ 取自 dsh-client-ui-conversation/
-   StatsLine.module.css（0.1.1-rc.2），外壳升级后需复核。 */
-html[data-dshsvc-mobile] [class*="FJxK0a_root"] {
+   改横向滑动查看全文。哈希前缀随包拆分漂移：0.1.1-rc.2 在 dsh-client-ui-conversation
+   （FJxK0a_），0.1.2-alpha.2 迁入 dsh-client-ui-chat（-NDN2W_root，前缀带横线）；按
+   稳定的词干后缀 *_root 无法区分行（同名冲突风险），退化为按当前哈希复核。 */
+html[data-dshsvc-mobile] [class*="NDN2W_root"] {
   overflow-x: auto !important;
   overflow-y: hidden !important;
   text-overflow: clip !important;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none !important;
 }
-html[data-dshsvc-mobile] [class*="FJxK0a_root"]::-webkit-scrollbar { display: none !important; }
-/* Assistant 回合尾部的运行元信息行（MessageIconActions）使用官方稳定的
-   data-chat-flow-kind="turn-tail" + data-time-hover-root 结构定位，不依赖会随 DSH
-   构建漂移的 CSS-module 哈希。actions 行与 end-clock span 均为各自父级的最后子项；
-   行容器 min-width:0、时间文本可收缩并省略，点号间距收紧，以免移动端时间信息
-   把复制/分支按钮挤出可视区域。 */
-html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child {
+html[data-dshsvc-mobile] [class*="NDN2W_root"]::-webkit-scrollbar { display: none !important; }
+/* Assistant 回合尾部的运行元信息行（MessageIconActions）使用官方目录属性
+   data-chat-flow-kind="turn-tail" 定位，内层兜底走回合尾节点自带的稳定
+   data-turn-tail（0.1.2-alpha.2 起 data-time-hover-root 已删除）：
+   「带 data-turn-tail 的节点」的最后一个子项 = actions 行，其最后一个 span =
+   end-clock 时间文本（bundle 源码核实：clock:"end" 渲染在 children 末位）。
+   行容器 min-width:0、时间文本可收缩并省略，以免移动端时间信息把复制/分支
+   按钮挤出可视区域。 */
+html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-turn-tail] > :last-child {
   min-width: 0 !important;
   max-width: 100% !important;
 }
-html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child > span:last-child {
+html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-turn-tail] > :last-child > span:last-child {
   flex: 1 1 auto !important;
   min-width: 0 !important;
   white-space: nowrap !important;
@@ -6797,15 +6800,13 @@ html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root
   text-overflow: ellipsis !important;
   padding-inline: 2px !important;
 }
-html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-time-hover-root] > :last-child > span:last-child > span[aria-hidden="true"] {
-  margin: 0 4px !important;
-}
-/* 回到底部按钮簇（官方 Md3f7G_toBottom + 自有上箭头 data-dshsvc-user-jump）：
+/* 回到底部按钮簇（官方 *_toBottom 词干后缀，rc.2 Md3f7G_ → 0.1.2-alpha.2 EvIC1a_，
+   自有上箭头 data-dshsvc-user-jump）：
    移动端右侧还有约一行留白（scroll 的 --dsh-composer-side-clearance 侧清理），
    纯位移右移贴边（transform 只动绘制不动布局，sticky 定位不受影响）。
    :not([class*="Slot"]) 排除命名含 Slot 的 sticky 槽层，只移按钮本体。
    方向：正 translateX 向右；位移量 = 侧清理 +16（scroll 右 padding）再留 4px 缓冲。 */
-html[data-dshsvc-mobile] [class*="Md3f7G_toBottom"]:not([class*="Slot"]),
+html[data-dshsvc-mobile] [class*="_toBottom"]:not([class*="Slot"]),
 html[data-dshsvc-mobile] [data-dshsvc-user-jump] {
   transform: translateX(calc(var(--dsh-composer-side-clearance, 16px) + 16px - 4px)) !important;
 }
@@ -7000,15 +7001,25 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (cssVarSupported(styleEl)) styleEl.setProperty('--dshsvc-header-h', `${Math.max(0, Math.round(px))}px`)
         }
 
-        /** 会话骨架三要素定位：全部官方属性钩子 + parentNode 走树，无类哈希。 */
+        /** 会话骨架三要素定位：全部官方属性钩子 + parentNode 走树，无类哈希。
+         *  0.1.2-alpha.2：官方把 scrollBody 包进新的 body 包裹层（.wSkVaW_body），
+         *  data-phase 落在根上（scroller 的祖父）；旧版则直接在父节点上。上溯
+         *  最多两层找 data-phase，命中即采纳该节点作 rootEl —— 两代形状通吃。 */
         const chatContext = () => {
           let scroller = null
           try { scroller = document.querySelector('[data-conversation-scroll]') } catch (_) { return null }
           if (scroller === null || scroller.isConnected === false) return null
-          const rootEl = scroller.parentNode
+          let rootEl = scroller.parentNode
           if (rootEl === null || rootEl === document.documentElement) return null
           let phase = null
           try { phase = rootEl.getAttribute('data-phase') } catch (_) {}
+          let cursor = rootEl
+          for (let depth = 0; phase === null && depth < 2; depth += 1) {
+            cursor = cursor === null || cursor === undefined ? null : cursor.parentNode
+            if (cursor === null || cursor === document.documentElement) break
+            try { phase = cursor.getAttribute('data-phase') } catch (_) { break }
+            if (phase !== null) rootEl = cursor
+          }
           return { scroller, rootEl, phase }
         }
 
@@ -7624,13 +7635,15 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           } catch (_) { return false }
         }
         return {
-          /** 官方「回到底部」sticky 槽位。 */
+          /** 官方「回到底部」sticky 槽位。
+           *  哈希前缀随包拆分漂移（rc.2 Md3f7G_ → 0.1.2-alpha.2 EvIC1a_，聊天视图
+           *  迁进 dsh-client-ui-chat）：按稳定的可读词干后缀匹配，跨版本兼容。 */
           toBottomSlot: () => {
-            try { return document.querySelector('[class*="Md3f7G_toBottomSlot"]') } catch (_) { return null }
+            try { return document.querySelector('[class*="_toBottomSlot"]') } catch (_) { return null }
           },
           /** 官方回到底部按钮本体（:not 排除命名含 Slot 的槽层）。 */
           toBottomButton: (slot) => {
-            try { return slot.querySelector('[class*="Md3f7G_toBottom"]:not([class*="Slot"])') } catch (_) { return null }
+            try { return slot.querySelector('[class*="_toBottom"]:not([class*="Slot"])') } catch (_) { return null }
           },
           /** 从槽位向上找会话滚动容器（官方 [data-conversation-scroll]）；走不通时回退槽位父节点。 */
           scrollportOf: (slot) => {
@@ -7641,6 +7654,19 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               }
               return node !== null && node !== document.documentElement ? node : slot.parentNode
             } catch (_) { return null }
+          },
+          /** 官方回合导航条（0.1.2-alpha.2 TurnNavigator，聊天右缘 rail，点击跳转回合）。
+           *  官方用 @container (width<=900px) 把它整条藏掉（移动端/窄窗永不出现）——
+           *  只有「计算样式非 none」（rail 真正可见）才算官方导航在位，届时自有
+           *  上箭头让位，避免同一跳转职责重复（用户点名的利用方向）。 */
+          officialTurnNavigatorVisible: (scroll) => {
+            try {
+              if (typeof getComputedStyle !== 'function') return false
+              if (scroll === null || typeof scroll.querySelector !== 'function') return false
+              const rail = scroll.querySelector('[class*="_rail"]')
+              if (rail === null) return false
+              return getComputedStyle(rail).display !== 'none'
+            } catch (_) { return false }
           },
           /** 已渲染的用户回复行快照（官方 data-chat-flow-kind="user"）。 */
           userRows: (scroll) => {
@@ -7658,7 +7684,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           /** 官方「加载更早」分页按钮（历史加载完即从 DOM 消失）。 */
           loadOlderButton: (scroll) => {
             try {
-              return typeof scroll.querySelector === 'function' ? scroll.querySelector('[class*="Md3f7G_older"] button') : null
+              return typeof scroll.querySelector === 'function' ? scroll.querySelector('[class*="_older"] button') : null
             } catch (_) { return null }
           },
         }
@@ -7666,18 +7692,20 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
       /**
        * 全平台「跳上一条用户回复」引擎：
-       * 在官方「回到底部」按钮（Md3f7G_toBottomSlot，sticky 定位上下文）内注入
+       * 在官方「回到底部」按钮（to-bottom 槽位，哈希后缀 _toBottomSlot 匹配，
+       * rc.2 Md3f7G_ / 0.1.2-alpha.2 EvIC1a_）内注入
        * 同款圆形上箭头按钮（absolute bottom:42px → 稳居官方按钮上方 8px），
        * 随该按钮成组显隐（离开底部才渲染）、跟随 composer 高度偏移。
        * 点击按官方 data-chat-flow-kind="user" 行定位上一条用户回复（流程坐标
        * flowTop = rect.top - scrollport.rect.top，与官方 pagingAnchor 同系），
        * 逐击向上步进；程序化滚动天然受沉浸引擎 800ms 手势窗口免疫。
+       * 0.1.2-alpha.2 起官方回合导航条（TurnNavigator rail）可见时本按钮让位。
        * 与 mobileAdaptation 无关：不依赖 matchMedia、不引用 any 移动属性。
        * v0.36.4 三处真机反馈修正：
        *  ① 图标严格克隆官方按钮内 svg（旋转 180°），不再手绘近似；
        *  ② 桌面 right 对齐实测「slot 右缘 − 官方按钮右缘」（slot 的 padding-right
        *     会把 absolute right:0 推到内容区之外，桌面差一整个侧清理）；
-       *  ③ 目标不存在时自动点击「加载更早」（Md3f7G_older button）并短窗重试，
+       *  ③ 目标不存在时自动点击「加载更早」（older 分页按钮）并短窗重试，
        *     直到新历史里找到目标或按钮消失/重试耗尽。
        * v0.36.6 iPhone 白屏修复：跳转一律瞬时 scrollTop 直接赋值，绝不
        *   scrollTo({behavior:'smooth'})——真机排查（2026-08-27）：iOS WebKit 上
@@ -7701,6 +7729,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
          * 按钮显隐（v0.36.5 用户点名：达到最顶部后隐藏）：
          * 还有「可跳的上一条」（flowTop<4 的 user 行）或还有官方「加载更早」
          * （点了能加载出更早目标）→ 显示；两者皆无（真正到顶且历史已加载完）→ 隐藏。
+         * 0.1.2-alpha.2 起官方自带回合导航条（聊天右缘 rail）：它可见时跳转职责
+         * 官方已接管，自有上箭头让位隐藏（窄于 900px 容器官方整条隐藏，本按钮复职）。
          */
         const updateVisibility = () => {
           if (state.btn === null || !state.btn.isConnected) return
@@ -7714,7 +7744,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               if (nav.flowTopOf(scroll, row) < 4) { hasTarget = true; break }
             }
             const hasOlder = nav.loadOlderButton(scroll) !== null
-            state.btn.style.display = hasTarget || hasOlder ? 'flex' : 'none'
+            const officialRail = nav.officialTurnNavigatorVisible(scroll)
+            state.btn.style.display = officialRail || (!hasTarget && !hasOlder) ? 'none' : 'flex'
           } catch (_) {}
         }
 
