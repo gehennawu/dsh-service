@@ -56,7 +56,6 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"
