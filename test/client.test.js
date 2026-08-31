@@ -5941,14 +5941,50 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     delete globalThis.getComputedStyle
     rail.remove()
 
+    // 官方拖动调宽跟随（v1.1.1 用户反馈）：官方 WidthHandle 改内容宽 → 槽位
+    // padding-right 变化 → 官方按钮右移；absolute right 是挂载时量的一次性偏移，
+    // 不会跟随。引擎用 ResizeObserver 盯槽位 content-box（padding 变化即触发），
+    // 实时重测「slot 右缘 − 官方按钮右缘」；拖动期间右缘持续贴住官方按钮。
+    const ros = []
+    class FakeResizeObserver {
+      constructor(callback) { this.callback = callback; ros.push(this) }
+      observe() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = FakeResizeObserver
+    // 槽位重建 → mount() 为按钮挂新槽位并附上新 RO
+    slot2.remove()
+    const slot3 = new FakeElement('div'); slot3.className = 'EvIC1a_toBottomSlot'
+    scroller.appendChild(slot3)
+    slot3.rect.width = 400
+    const official3 = new FakeElement('button'); official3.className = 'EvIC1a_toBottom'
+    official3.rect.width = 100
+    slot3.appendChild(official3)
+    for (const observer of observers) observer.callback([], () => {})
+    const btn3 = slot3.children.find((el) => el.attributes.has('data-dshsvc-user-jump'))
+    assert.notEqual(btn3, undefined, 'observer must re-mount the up-arrow into the new slot')
+    assert.equal(btn3.style.right, '300px', 'initial gap = slot right (400) - official right (100)')
+    assert.ok(ros.length > 0, 'slot ResizeObserver must be attached on mount')
+    // 模拟 WidthHandle 拖动：内容宽变化 → 槽位右缘与官方按钮右缘相对位移
+    slot3.rect.width = 600
+    official3.rect.width = 450
+    ros.at(-1).callback([], () => {})
+    assert.equal(btn3.style.right, '150px', 'width drag must re-align the up-arrow to the official button')
+    // 反向拖到内容占满：官方按钮右缘回到槽位右缘 → 零偏移
+    slot3.rect.width = 500
+    official3.rect.width = 500
+    ros.at(-1).callback([], () => {})
+    assert.equal(btn3.style.right, '0px', 'full-width content re-aligns to zero gap')
+
     // dispose：按钮与样式全部移除、观察者断开
     renderer.disposeFactory()
-    assert.equal(slot2.children.some((el) => el.attributes.has('data-dshsvc-user-jump')), false)
+    assert.equal(slot3.children.some((el) => el.attributes.has('data-dshsvc-user-jump')), false)
     assert.ok(!head.children.some((el) => (el.textContent || '').includes('[data-dshsvc-user-jump]:hover')))
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
     delete globalThis.getComputedStyle
+    delete globalThis.ResizeObserver
   }
 })
 

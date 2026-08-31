@@ -7718,7 +7718,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
        *   问题，官方全应用滚动也从来只用瞬时赋值。别把动画加回来。
        */
       const createUserJump = (labelOf) => {
-        const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null }
+        const state = { observer: null, btn: null, styleTag: null, retryTimer: null, retryLeft: 0, scrollHandler: null, rafId: null, slotRO: null }
         const nav = createConversationNav()
         const cancelRetryTimer = () => {
           if (state.retryTimer === null) return
@@ -7750,6 +7750,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             }
             const hasOlder = nav.loadOlderButton(scroll) !== null
             state.btn.style.display = hasTarget || hasOlder ? 'flex' : 'none'
+            syncPosition()
           } catch (_) {}
         }
 
@@ -7765,6 +7766,45 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           return UP_SVG_FALLBACK
         }
 
+        /** 实时重测右缘对齐（v1.1.1）：官方 WidthHandle 拖动会改 --dsh-chat-content-width
+         *  → 槽位 padding-right 变化 → 官方按钮右移；absolute right 是挂载时量的一次性
+         *  偏移，不会跟随。ResizeObserver 观察槽位 content-box（padding 变化即触发）
+         *  重测「slot 右缘 − 官方按钮右缘」；滚动驱动的 updateVisibility 顺带再校一次。 */
+        const syncPosition = () => {
+          if (state.btn === null || !state.btn.isConnected) return
+          try {
+            const slot = nav.toBottomSlot()
+            if (slot === null || typeof slot.querySelector !== 'function') return
+            const official = nav.toBottomButton(slot)
+            let rightGap = 0
+            if (official !== null) {
+              const slotRight = slot.getBoundingClientRect().right
+              const officialRight = official.getBoundingClientRect().right
+              rightGap = Math.max(0, Math.round(slotRight - officialRight))
+            }
+            const next = `${rightGap}px`
+            if (state.btn.style.right !== next) state.btn.style.right = next
+          } catch (_) {}
+        }
+
+        /** 槽位 content-box 尺寸变化的观察：只挂当前槽位，重建即重挂。 */
+        const attachSlotRO = () => {
+          if (typeof ResizeObserver !== 'function') return
+          if (state.slotRO !== null) {
+            try { state.slotRO.disconnect() } catch (_) {}
+            state.slotRO = null
+          }
+          try {
+            const slot = nav.toBottomSlot()
+            if (slot === null) return
+            const ro = new ResizeObserver(() => { syncPosition() })
+            ro.observe(slot)
+            state.slotRO = ro
+          } catch (_) {
+            state.slotRO = null
+          }
+        }
+
         const mount = () => {
           if (state.btn !== null && state.btn.isConnected) return
           try {
@@ -7777,6 +7817,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             btn.setAttribute('aria-label', labelOf())
             // 桌面 slot 有 padding-right（内容区居中垫白）→ absolute right:0 会比
             // 官方按钮偏右一整个 padding；实测「slot 右缘 − 官方按钮右缘」对齐。
+            // 拖动调宽后由 attachSlotRO → syncPosition 持续跟随官方按钮右缘。
             let rightGap = 0
             try {
               if (official !== null) {
@@ -7839,6 +7880,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             })
             slot.appendChild(btn)
             state.btn = btn
+            attachSlotRO()
             updateVisibility()
           } catch (_) { /* 外壳结构变化期间探不到槽位时静默等待下轮 */ }
         }
@@ -7882,6 +7924,10 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
         const stop = () => {
           cancelRetryTimer()
+          if (state.slotRO !== null) {
+            try { state.slotRO.disconnect() } catch (_) {}
+            state.slotRO = null
+          }
           if (state.scrollHandler !== null) {
             try { document.documentElement.removeEventListener('scroll', state.scrollHandler, true) } catch (_) {}
             state.scrollHandler = null
