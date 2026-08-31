@@ -3350,6 +3350,9 @@ window.__ModuleLoader__.load({
           },
         }, glyph)
 
+        // 字段行标签（定宽对齐）：供应商 / 模型 / 思考等级。
+        const fieldLabelStyle = { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 }
+
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
           React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
@@ -3357,15 +3360,20 @@ window.__ModuleLoader__.load({
           React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
             SUBAGENT_MODES.map(modeButton)),
           React.createElement('p', { 'data-testid': 'subagent-mode-desc', style: { ...hintStyle, marginTop: '8px' } }, translate('subagent.mode.' + mode + '.desc')),
-          mode === 'custom' ? React.createElement('div', { 'data-testid': 'subagent-custom', style: { marginTop: '10px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
-            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.provider')),
-            React.createElement('select', { 'data-testid': 'subagent-provider', value: effectiveProvider, disabled: providers.length === 0 || saving, onChange: (event) => setProvider(event.target.value), style: selectStyle },
-              providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
-            React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.model')),
-            React.createElement('select', { 'data-testid': 'subagent-model', value: model, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
-              providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id))),
-            mode === 'custom' && model !== '' ? React.createElement('div', { 'data-testid': 'subagent-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', flexBasis: '100%', width: '100%', flexWrap: 'wrap' } },
-              React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.reasoningEffort')),
+          mode === 'custom' ? React.createElement('div', { 'data-testid': 'subagent-custom', style: { marginTop: '8px' } },
+            // 供应商行
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
+              React.createElement('span', { style: fieldLabelStyle }, translate('subagent.provider')),
+              React.createElement('select', { 'data-testid': 'subagent-provider', value: effectiveProvider, disabled: providers.length === 0 || saving, onChange: (event) => setProvider(event.target.value), style: selectStyle },
+                providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id)))),
+            // 模型行
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
+              React.createElement('span', { style: fieldLabelStyle }, translate('subagent.model')),
+              React.createElement('select', { 'data-testid': 'subagent-model', value: model, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
+                providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))),
+            // 思考等级行：选模型后出现；无等级信息时给提示。
+            model !== '' ? React.createElement('div', { 'data-testid': 'subagent-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' } },
+              React.createElement('span', { style: fieldLabelStyle }, translate('subagent.reasoningEffort')),
               React.createElement('select', { 'data-testid': 'subagent-reasoning-effort', value: reasoningEffort, disabled: saving || effortOptions.length === 0, onChange: (event) => setReasoningEffort(event.target.value), style: selectStyle },
                 React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
                 ...effortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))),
@@ -3391,19 +3399,19 @@ window.__ModuleLoader__.load({
                   reorderMode ? fallbackArrowButton('subagent-fallback-down-' + index, index === fallbacks.length - 1, () => moveFallback(index, 1), '▼') : null),
                 // 供应商行
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
-                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.provider')),
+                  React.createElement('span', { style: fieldLabelStyle }, translate('subagent.provider')),
                   React.createElement('select', { 'data-testid': 'subagent-fallback-provider-' + index, value: rowKnownProvider ? fallback.provider : '', disabled: saving, onChange: (event) => { const nextProvider = event.target.value; updateFallback(index, { provider: nextProvider, model: modelsFor(nextProvider)[0]?.id ?? '' }) }, style: selectStyle },
                     React.createElement('option', { value: '' }, ''),
                     providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id)))),
                 // 模型行
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
-                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.model')),
+                  React.createElement('span', { style: fieldLabelStyle }, translate('subagent.model')),
                   React.createElement('select', { 'data-testid': 'subagent-fallback-model-' + index, value: rowProviderModels.some((item) => item.id === fallback.model) ? fallback.model : '', disabled: rowProviderModels.length === 0 || saving, onChange: (event) => { const nextModel = event.target.value; const nextEntry = rowProviderModels.find((item) => item.id === nextModel) ?? null; const nextIds = effortsFor(nextEntry).map((option) => option.id); updateFallback(index, { model: nextModel, ...(typeof fallback.reasoningEffort === 'string' && fallback.reasoningEffort !== '' && !nextIds.includes(fallback.reasoningEffort) ? { reasoningEffort: undefined } : {}) }) }, style: selectStyle },
                     rowProviderModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))),
                 // 思考等级行：模型无等级信息时给提示。
                 rowEffortOptions.length > 0
                   ? React.createElement('div', { 'data-testid': 'subagent-fallback-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
-                    React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.reasoningEffort')),
+                    React.createElement('span', { style: fieldLabelStyle }, translate('subagent.reasoningEffort')),
                     React.createElement('select', { 'data-testid': 'subagent-fallback-effort-' + index, value: rowEffortIds.includes(fallback.reasoningEffort) ? fallback.reasoningEffort : '', disabled: saving, onChange: (event) => updateFallback(index, { reasoningEffort: event.target.value === '' ? undefined : event.target.value }), style: selectStyle },
                       React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
                       ...rowEffortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))))
