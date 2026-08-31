@@ -1477,70 +1477,54 @@ window.__ModuleLoader__.load({
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
         svcStyle.textContent = [
-          // ── 统一视觉语言令牌（v0.39）：--dsh-svc-* 单一事实源 ──────────────
-          // 令牌链铁律一：--dsh-svc-* 恒为 var(--dsw-alias-*, <兜底>)——DSH 语义变量跟随主题，
-          // 本插件只在别名缺失时提供兜底；暗色主题块仅替换兜底值，不覆盖别名解析结果。
-          // 令牌链铁律二：主题相关令牌一律声明在 **body**（含别名链），绝不在 :root——
-          // 自定义属性里的 var() 在「声明它的元素」上求值：:root 上声明的
-          // `--a: var(--b)` 会在根元素就按根的 --b 定格并向下继承，body[data-ds-dark-theme]
-          // 对 --b 的暗色覆盖永远赶不上（真机实证：深色模式下卡片仍白底）。body 是
-          // data-ds-dark-theme 的宿主元素，别名与主题覆盖在同一作用域交汇，链才活的。
+          // ── 统一视觉语言令牌（v0.39）：--dsh-svc-* 单一事实源──
+          // 铁律一：恒为 var(--dsw-alias-*, <兜底>)，暗色块只换兜底叶值，不覆盖别名解析。
+          // 铁律二：主题相关令牌（含别名链）一律声明在 body 而非 :root——var() 在声明元素上求值，
+          // :root 上声明会先于 body[data-ds-dark-theme] 定格，暗色覆盖永远赶不上（真机实证）。
           'body{--dsh-svc-page-bg:#f4f5f7;--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#ffffff);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#ffffff);--dsh-svc-text:var(--dsw-alias-label-primary,#202124);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#6b7280);--dsh-svc-border:var(--dsw-alias-border-l1,#e5e7eb);--dsh-svc-brand:var(--dsw-alias-brand-primary,#2563eb);--dsh-svc-brand-text:var(--dsw-alias-label-primary-foreground,#ffffff);--dsh-svc-info:#2563eb;--dsh-svc-success:var(--dsw-alias-state-success-primary,#16a34a);--dsh-svc-warning:var(--dsw-alias-state-warn-primary,#d97706);--dsh-svc-danger:var(--dsw-alias-state-error-primary,#dc2626)}',
-          // 卡片底（v0.39 用户复核：浅色卡片要有可见底色）：插件**写死**浅色浅灰面，
-          // 不走外壳别名——外壳 bg-layer-2 可能就是白色，别名优先会让卡片再度隐形；
-          // 深色按用户点名统一到模型统计同款（bg-layer-2 链）；卡片内层小块（指标格/
-          // 图表底/摘要块）用 --dsh-svc-raised-bg（浅色=白、深色=比卡片亮一级）保证进深。
+          // 卡片底写死浅灰（外壳 bg-layer-2 可能就是白，别名优先会隐形）；深色走 bg-layer-2 链。
           'body{--dsh-svc-card-bg:#eceef1}',
-          // 加强边框（v0.39 用户复核：中性操作钮描边要可辨）：浅色深灰、深色亮灰，只用于按钮描边。
+          // 加强边框只用于按钮描边：浅色深灰、深色亮灰。
           'body{--dsh-svc-border-strong:#b9c0ca}',
           'body[data-ds-dark-theme]{--dsh-svc-border-strong:#52565f}',
           'body[data-ds-dark-theme]{--dsh-svc-card-bg:var(--dsw-alias-bg-layer-2,#202126)}',
           'body[data-ds-dark-theme]{--dsh-svc-page-bg:var(--dsw-alias-bg-layer-1,#17181c);--dsh-svc-content-bg:var(--dsw-alias-bg-layer-2,#202126);--dsh-svc-raised-bg:var(--dsw-alias-bg-layer-3,#292a31);--dsh-svc-text:var(--dsw-alias-label-primary,#f3f4f6);--dsh-svc-text-muted:var(--dsw-alias-label-secondary,#a1a1aa);--dsh-svc-border:var(--dsw-alias-border-l1,#3f414a)}',
-          // 品牌实底按钮文字（v0.42.2 用户反馈）：深色下 --dsw-alias-brand-primary 是近白，
-          // 写死 #fff 必白字贴白底——文字走官方主按钮前景令牌（浅=白、深=近黑），
-          // 外壳缺席该令牌时回落 #fff，暗色叶值 #111318 兜底（与 tab-active-text 同法）。
+          // 品牌实底按钮（v0.42.2）：深色下 brand-primary 是近白，文字走 label-primary-foreground
+          // （浅=白、深=近黑），外壳缺席回落 #fff、暗色叶值 #111318 兜底。
           'body[data-ds-dark-theme]{--dsh-svc-brand-text:#111318}',
           // 几何与密度令牌（与主题无关，:root 即可）：间距 4/8/12/16/20/24/32；圆角 控件8/卡片12/面板16/胶囊999；控件高 紧凑32/默认36/主操作40。
           ':root{--dsh-svc-space-1:4px;--dsh-svc-space-2:8px;--dsh-svc-space-3:12px;--dsh-svc-space-4:16px;--dsh-svc-space-5:20px;--dsh-svc-space-6:24px;--dsh-svc-space-8:32px;--dsh-svc-radius-control:8px;--dsh-svc-radius-card:12px;--dsh-svc-radius-panel:16px;--dsh-svc-radius-pill:999px;--dsh-svc-control-h:36px;--dsh-svc-control-h-compact:32px;--dsh-svc-control-h-primary:40px;--dsh-svc-content-max:800px;--dsh-svc-dur-fast:120ms;--dsh-svc-dur-view:170ms;--dsh-svc-font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
-          // 兼容别名（旧组件零改动续命）：展示面底 = 卡片底（浅色可见浅灰面）；分段条
-          // 激活块 = 文字反色块（浅色=深块+白字、暗色=近白块+黑字，与 v0.34 写死值同方向）。
-          // 铁律二同样适用：别名链声明在 body，暗色块只改叶值（tab-active-text）。
+          // 兼容别名：展示面底=卡片底；分段条激活块=文字反色块（铁律二同样适用，暗色只改叶值）。
           'body{--dsh-svc-surface-bg:var(--dsh-svc-card-bg);--dsh-svc-tab-active-bg:var(--dsh-svc-text);--dsh-svc-tab-active-danger:var(--dsh-svc-text);--dsh-svc-tab-active-text:#ffffff}',
           'body[data-ds-dark-theme]{--dsh-svc-tab-active-text:#111318}',
-          // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段，
-          // 由 markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画各自图标，
-          // currentColor 跟随主题文字色（hover/active 高亮自动继承）。
+          // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段；
+          // markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画图标、currentColor 跟主题。
           '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
           '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
           '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
-          // ── 窄面板下的主导航（v0.39 六页单行条）──────────────────────────
-          // 作用域纯媒体查询 ≤640px，**不**挂 data-dshsvc-mobile——这是本插件自己的
-          // 面板 UI，窄屏上无论移动适配功能开没开都要能横向滑动、触达 ≥36px。
-          // 旧 tab-list/top-tab-* 选择器已随 v0.39 导航替换一并移除，勿再引用。
+          // 窄面板主导航（v0.39）：≤640px 六页单行横滑——本插件自己的面板 UI，不挂 data-dshsvc-mobile。
           '@media (max-width:640px){',
           '[data-dshsvc-root] .dshsvc-tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:3px}',
           '[data-dshsvc-root] .dshsvc-tabs::-webkit-scrollbar{display:none}',
           '[data-dshsvc-root] .dshsvc-tab{padding:9px 13px;min-height:36px;box-sizing:border-box;font-size:13px;white-space:nowrap;flex:none}',
           '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
-          // v0.37 搜索命中定位闪烁（jumpScrollToHit）：命中窗口视图里滚到目标行时叠加 2s 闪烁。
+          // 搜索命中定位闪烁（jumpScrollToHit）。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
-          // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类 ──────────────
-          // 作用域锚在 data-dshsvc-root 属性上（ServicePanel 根节点携带），不外溢影响外壳。
-          // 线宽主、阴影次；动效 hover/焦点 120ms、展开收起 170ms；reduced-motion 全部归零。
-          // v0.39 用户点名尝试：内容区铺灰色画布（--dsh-svc-page-bg），卡片在其上分层。
+          // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类，锚在 data-dshsvc-root 不外溢 ──
+          // 线宽主、阴影次；动效 120/170ms；reduced-motion 归零；内容区灰画布 + 卡片分层。
           '[data-dshsvc-root]{color:var(--dsh-svc-text);font-size:14px;line-height:1.55;background:var(--dsh-svc-page-bg);border-radius:var(--dsh-svc-radius-card);padding:2px}',
           '[data-dshsvc-root] .dshsvc-page{width:100%;max-width:var(--dsh-svc-content-max);margin:0 auto}',
           '[data-dshsvc-root] button:focus-visible,[data-dshsvc-root] [role="switch"]:focus-visible,[data-dshsvc-root] select:focus-visible,[data-dshsvc-root] input:focus-visible{outline:2px solid var(--dsh-svc-brand);outline-offset:2px;border-radius:var(--dsh-svc-radius-control)}',
           '@media (prefers-reduced-motion:reduce){[data-dshsvc-root] *,[data-dshsvc-root] *::before,[data-dshsvc-root] *::after{transition-duration:0.01ms !important;animation-duration:0.01ms !important}}',
-          // 主导航条：单行连续分段条（v0.39 六页）；激活段 = 文字反色块（见 tab-active 别名）。
+          // 主导航条：单行连续分段条；激活段=文字反色块（tab-active 别名）。
           '[data-dshsvc-root] .dshsvc-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;width:100%;box-sizing:border-box;border:0.5px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);overflow:hidden}',
           '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
           '[data-dshsvc-root] .dshsvc-tab[aria-selected="true"]{background:var(--dsh-svc-tab-active-bg);color:var(--dsh-svc-tab-active-text);font-weight:650;border-radius:8px}',
-          // 二级子标签（维护/配置页内）：下划线标签语言，与模型列表内联标签同源。
+          // 二级子标签：下划线标签语言，与模型列表内联标签同源。
           '[data-dshsvc-root] .dshsvc-subtabs{display:flex;flex-wrap:wrap;gap:2px;margin:10px 0 0;border-bottom:1px solid var(--dsh-svc-border)}',
           '[data-dshsvc-root] .dshsvc-subtab{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 10px;font:inherit;font-size:13px;font-weight:550;color:var(--dsh-svc-text-muted);cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
           '[data-dshsvc-root] .dshsvc-subtab[aria-selected="true"]{color:var(--dsh-svc-brand);border-bottom-color:var(--dsh-svc-brand);font-weight:700}',
@@ -3875,15 +3859,11 @@ window.__ModuleLoader__.load({
       // 测试替代环境的 ?test= 查询串让每个 renderer 独立评估本模块，互不污染。
       const sessionPanelListCache = { all: undefined, archived: undefined, deleted: undefined }
       const sessionPanelBytesCache = new Map()
-      // v0.36 用户点名：详情正文 markdown 渲染——复用官方渲染器（platform seed
-      // `@deepseek-ai/dsh-client-ui-primitives`，seed.ts 静态导入与 react-dom 同机制、shell
-      // 全局单例）。官方 `MarkdownText` 即「untrusted assistant-authored markdown」渲染器：
-      // GFM + KaTeX、默认禁用原始 HTML/相对链接/危险协议，安全面官方已处理。老版本 DSH 的
-      // seed 可能缺席 → try/catch 回落现有纯文本，功能不退化。
-      // React 合法组件类型：function，或 exotic 对象（React.memo/forwardRef/lazy 的 $$typeof）。
-      // 官方 MarkdownText = memo(function...) → 导出是 {$$typeof: react.memo, type, compare} 对象
-      //（v0.36 真机实证 keys=[$$typeof,type,compare]），createElement 直通即可——把它当「不可用」
-      // 是当初误判的根源；{default: fn} 命名空间包裹（互操作形态）作为第二候选解包。
+      // v0.36 详情正文 markdown：复用官方渲染器 @deepseek-ai/dsh-client-ui-primitives 的
+      // MarkdownText（untrusted 安全设计，老 DSH 缺席时 try/catch 回落纯文本）。
+      // 官方导出是 React.memo 返回对象（keys=[$$typeof,type,compare]），createElement 直通——
+      // 判「可渲染组件」认 function 或 exotic $$typeof（memo/forwardRef/lazy），
+      // {default: fn} 互操作形态作第二候选解包（把 memo 对象当不可用是当初误判的根源）。
       const EXOTIC_COMPONENT_TYPES = [Symbol.for('react.memo'), Symbol.for('react.forward_ref'), Symbol.for('react.lazy')]
       const isRenderableComponent = (value) => {
         if (typeof value === 'function') return true
@@ -6851,15 +6831,11 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           refreshImmersiveAvailability()
         }
 
-        // ============ 滑动沉浸（v0.36）：方向手势藏「头部+composer」，三路回显 ============
-        // 设计定稿（用户三问选型）：范围=整套；回显=上滑方向 + 常驻底部小把手；
-        // 开关=并入 mobileAdaptation，不设新功能胶囊。
-        //
-        // 手势可信度是本引擎的命门：流式输出期间外壳自己会 scrollTo 保持贴底，
-        // dsh-session-kb 的跳转也会 scrollIntoView——这些程序化滚动必须被完全无视，
-        // 否则「正在接收长回复」这个此功能最有用的场景会被自动滚动来回打脸。
-        // 判据=800ms 手势窗口：touchstart/move/wheel 每次刷新时间戳，窗口外的
-        // scroll 事件只更新基线、绝不翻转状态（贴底强制回显同样只认手势窗口内）。
+        // ===== 滑动沉浸（v0.36）：方向手势藏「头部+composer」，三路回显 =====
+        // 范围=整套、回显=上滑方向+常驻底部小把手、开关并入 mobileAdaptation（用户三问选型）。
+        // 手势可信度是命门：流式贴底 scrollTo / 跳转 scrollIntoView 等程序化滚动必须无视——
+        // 判据=800ms 手势窗口（touchstart/move/wheel 刷新时间戳），窗口外的 scroll 只更新基线、
+        // 绝不翻转状态（贴底强制回显同样只认手势窗口内）。
 
         const cssVarSupported = (styleEl) => typeof styleEl.setProperty === 'function'
 

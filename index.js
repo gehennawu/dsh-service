@@ -111,24 +111,22 @@ const SKILL_LEGACY_KEYS = {
   userInvocable: { canonical: 'user-invocable', invert: true },
 }
 
-// 会话管理（v0.35）：已删除会话的插件侧记录（官方无删除 API，删除 = 删会话目录 + 记此清单，
-// 供「已删除」筛选展示与归档视图过滤死条目；不存内容、不可恢复）。
+// 已删除会话的插件侧记录（官方无删除 API）：删除 = 删会话目录 + 记此清单，
+// 供「已删除」筛选展示与归档视图过滤死条目；不存内容、不可恢复。
 const SESSIONS_DELETED_VERSION = 1
 const SESSIONS_DELETED_FILE = 'dsh-service-sessions-deleted.json'
 const SESSIONS_VIEW_PAGE_SIZE = 100
-// v0.37 搜索命中窗口：sessions-view 带 center 时围绕命中 seq 前后各取 N 条（参考
-// dsh-session-kb 的 readEvent 上下文窗口语义，但我们直接切片已缓存的 readSession 快照）。
+// v0.37 搜索命中窗口：center 模式围绕命中 seq 前后各取 N 条（直接切片已缓存快照，不另 readEvent）。
 const SESSIONS_VIEW_CONTEXT = 15
 const SESSIONS_SEARCH_PER_SESSION_LIMIT = 5
 const SESSIONS_SEARCH_TOTAL_LIMIT = 50
 const SESSIONS_DELETE_PLAN_TTL_MS = 5 * 60 * 1000
-// 会话体积懒加载（v0.36 用户反馈：去掉「—」占位、行体积按需拉取）：sessions-bytes 的
-// 宿主内存缓存——apply() 状态，宿主不重启就一直在，浏览器刷新/面板重开直接命中不重扫。
+// sessions-bytes 宿主缓存（v0.36 懒加载：去掉「—」占位、行体积按需拉取）：apply() 状态，
+// 宿主不重启就在，浏览器刷新/面板重开直接命中不重扫。
 const SESSIONS_BYTES_TTL_MS = 5 * 60 * 1000
 const SESSIONS_BYTES_MAX_IDS = 200
 const SESSIONS_BYTES_MAX_ENTRIES = 1000
-// 详情快照缓存（v0.36 用户点名「查看渲染优化」）：live 会话日志持续增长，30s 后重读保持新鲜；
-// 冷会话（文件不变）命中后长期复用，直到槽位被替换/删除/Fiber 销毁。
+// 详情快照缓存（v0.36 查看渲染优化）：live 会话 30s 后重读保新鲜，冷会话长期复用至槽位失效/删除。
 const SESSIONS_VIEW_LIVE_TTL_MS = 30 * 1000
 // 详情/检索里视为「机制性噪声」的事件类型：折叠展示计数，用户可展开。
 const SESSION_NOISE_TYPES = new Set([
@@ -136,9 +134,9 @@ const SESSION_NOISE_TYPES = new Set([
   'token/meter', 'compaction', 'session/created', 'goal/status',
 ])
 
-// 远端额度（v0.18）：Adapter seam 与节律参数。每个具体 Adapter 都只通过统一 interface 被调用：
-// { kind, recognize(profile), credentialPolicy(profile), fetchUsage(context), normalize(payload) }。
-// 新增额度渠道只扩充 quota-adapters.js；index.js 负责节流、生命周期、RPC 装配，不再识别方言形状。
+// 远端额度（v0.18）：Adapter seam——每个具体渠道只通过统一 interface 被调用：
+// {kind, recognize, credentialPolicy, fetchUsage, normalize}；新增渠道只扩充 quota-adapters.js，
+// index.js 负责节流、生命周期、RPC 装配，不识别方言形状。
 const QUOTA_CONFIG_VERSION = 1
 const QUOTA_CONFIG_FILE = 'dsh-service-quota.json'
 const QUOTA_ADAPTERS = createQuotaAdapterCatalog()
@@ -159,17 +157,15 @@ const MAX_QUOTA_PROVIDERS = 256
 const MAX_QUOTA_PROVIDER_NAME = 128
 const MAX_QUOTA_RESET_CARDS = 500
 const MAX_QUOTA_RESET_CARDS_PER_PROVIDER = 10
-// 子代理路由（v0.27）：三态配置的常量。inherit=不干预（原生继承），
-// follow=派生时读父会话最近一次请求路由注入，custom=固定 provider/model。
-// 数值只在此处与 TODO.md 里程碑两处出现。
+// 子代理路由（v0.27）三态常量：inherit=不干预 / follow=读父会话最近请求路由注入 / custom=固定路由。
 const SUBAGENT_ROUTE_VERSION = 1
 const SUBAGENT_ROUTE_FILE = 'dsh-service-subagent-route.json'
 const SUBAGENT_ROUTE_MODES = ['inherit', 'follow', 'custom']
 const MAX_SUBAGENT_ROUTE_BYTES = 64 * 1024
 const MAX_SUBAGENT_ROUTE_FIELD = 256
 
-// 升级目标白名单：命令与包名全部来自宿主常量，浏览器不传任何输入。
-// TARGET_RE 与 dsh-market 同源：只放行「包名@版本」这一种形状的字符集。
+// 升级目标白名单：命令与包名全来自宿主常量，浏览器不传任何输入；
+// TARGET_RE 与 dsh-market 同源，只放行「包名@版本」字符集。
 const TARGET_RE = /^[A-Za-z0-9@:./_#+~^=-]+$/
 const RELEASE_AGE_OVERRIDE = '--config.minimumReleaseAge=0'
 const FETCH_TIMEOUT_OVERRIDE = '--config.fetchTimeout=600000'
@@ -925,8 +921,7 @@ function normalizeQuotaHostname(value) {
   return host
 }
 
-/** 解析磁盘上的 allowedHosts（cliproxy 等「每部署一个域名」kind 的钉住表）：
- * provider 键沿用 kinds 白名单形状，每家最多 4 条去重主机名；非法条目整键丢弃。 */
+// allowedHosts 解析：provider 键沿用 kinds 白名单形状，每家至多 4 条去重主机名；非法条目整键丢弃。
 function normalizeQuotaAllowedHosts(raw) {
   if (typeof raw !== 'object' || raw === null) return {}
   const out = {}
@@ -949,11 +944,8 @@ function normalizeQuotaAllowedHosts(raw) {
   return out
 }
 
-/**
- * 校验手录的重置卡条目（v0.19 过渡方案：官方无 API Key 可查的端点，用户手填）。
- * v0.20 起免次数、每 provider 可多条：provider 必填，label/expiresAt 可选；id 缺失时按
- * 原始位置合成稳定 id（老数据兼容），写入口生成的 id 原样保留。
- */
+// 重置卡条目（v0.19 手填过渡方案：官方无 API Key 可查的端点）：provider 必填，label/expiresAt 可选；
+// id 缺失时按原始位置合成稳定 id（老数据兼容），写入口生成的 id 原样保留。
 function normalizeResetCards(raw) {
   if (!Array.isArray(raw)) return []
   const cards = []
@@ -1054,9 +1046,8 @@ function readLlmProviders(settings) {
     }))
 }
 
-/** 运行时 llm 服务已注册渠道 → 交给 Adapter.recognize(profile) 判定是否形成额度行。
- * 注意 listProviders() 的真实契约（dsh-llm 源码核实）：下发 [{id,name,…}] 对象数组、注册顺序，
- * 不是字符串——字符串条目仅作向后兼容。运行时渠道别名属于具体 Adapter，不再由 index.js 维护表。 */
+// 运行时 llm 渠道 → Adapter.recognize 判定是否形成额度行。listProviders() 真实契约是
+// [{id,name,…}] 对象数组（dsh-llm 源码核实），字符串条目仅向后兼容；渠道别名表由 Adapter 持有。
 function readRuntimeQuotaChannels(llm) {
   if (llm === undefined || llm === null || typeof llm.listProviders !== 'function') return []
   let providers
@@ -1091,10 +1082,8 @@ function readQuotaProfiles(settings, llm) {
   return profiles
 }
 
-/**
- * opencode-go 方言 → 统一窗口形状。真实端点只有 percent 与 resetsAt（ISO），
- * 没有金额字段：percent 是一等公民，缺字段/非数字跳过该窗口，percent 截到 [0,100]。
- */
+// opencode-go 方言 → 窗口：真实端点只有 percent 与 resetsAt（ISO），无金额字段；
+// percent 一等公民，缺字段/非数字跳过该窗口，percent 截到 [0,100]。
 const normalizeOpencodeUsage = normalizeOpencodeUsageAdapter
 
 /** kind → 上游端点候选数组（兼容既有纯函数测试；事实与校验都由 Adapter 持有）。 */
@@ -1112,11 +1101,8 @@ const cliproxyPinHostFromBaseURL = cliproxyPinHostFromBaseURLAdapter
 const safeCliproxyOrigin = safeCliproxyOriginAdapter
 const cliproxyFetchGuard = cliproxyFetchGuardAdapter
 
-/**
- * 单个 provider 的 kind 解析（quota 与 quota-refresh 共用）。
- * 优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断 >
- * 运行时渠道别名（readRuntimeQuotaChannels 合成的行带 runtimeKind）；未命中返回空对象。
- */
+// 单 provider 的 kind 解析（quota 与 quota-refresh 共用）：
+// 配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断 > 运行时渠道别名；未命中返回空对象。
 function resolveQuotaKind(config, profile) {
   if (Object.prototype.hasOwnProperty.call(config.kinds, profile.name)) {
     const configured = config.kinds[profile.name]
@@ -1128,11 +1114,9 @@ function resolveQuotaKind(config, profile) {
   return adapter === undefined ? {} : { adapter, kind: adapter.kind, kindSource: 'auto' }
 }
 
-/**
- * 凭据线索名清单（与发现链同一顺序）：settings 声明的 apiKeyEnv 在前、kind keyHints 殿后，去重。
- * 凭据填写窗口（quota-credential-set/unset）只接受这份清单里的名字——零输入拼接：浏览器传来的
- * 名字必须命中宿主派生的白名单，顺带保证 CredentialRef 文法（POSIX shell 标识符）合法。
- */
+// 凭据线索与写入口策略（与发现链同序）：settings apiKeyEnv 在前、kind hints 殿后，去重。
+// quota-credential-* 只收这份白名单——零输入拼接：浏览器传来的名字必须命中宿主派生清单，
+// 顺带保证 CredentialRef 文法（POSIX shell 标识符）合法。
 function quotaCredentialPolicy(kind, profile = {}) {
   const adapter = QUOTA_ADAPTER_BY_KIND.get(kind)
   return adapter === undefined
@@ -1144,12 +1128,9 @@ function quotaCredentialHintNames(kind, profile) {
   return [...quotaCredentialPolicy(kind, profile).hints]
 }
 
-/**
- * Key 发现链：settings 声明的 apiKeyEnv → DSH 凭据库按 kind 线索名 → 环境变量（含旧名兼容）。
- * 全部落空返回 undefined（调用方转为 credential-missing）；settings 显式声明了 apiKeyEnv
- * 但凭据服务缺席且环境变量也兜不住时抛 credentials-unavailable——有明确意图却无处取 key，
- * 与「从未配置」的 credential-missing 区分。
- */
+// Key 发现链：settings apiKeyEnv → 凭据库按 kind 线索名 → 环境变量（含旧名兼容）。
+// 全落空 → undefined（credential-missing）；显式声明了 apiKeyEnv 却取不到 → credentials-unavailable
+// （有明确意图却无处取 key，与「从未配置」区分）。
 async function discoverQuotaCredential(ctx, kind, profile) {
   const policy = quotaCredentialPolicy(kind, profile)
   const attempted = [...policy.hints]
@@ -1175,12 +1156,9 @@ async function discoverQuotaCredential(ctx, kind, profile) {
   return undefined
 }
 
-/**
- * 凭据可用性探测（v0.31 用户点名：自动识别的 DeepSeek 行在 API KEY 未配置时整行不下发）。
- * 走与真实查询完全相同的发现链（settings apiKeyEnv → 凭据库 → 环境变量），发现即视为配置完成；
- * 任何异常（凭据服务缺席、resolve 抛错等）一律按未配置处理——调用方静默隐藏该行，
- * 绝不外呼、绝不下发错误提示，满足「进入余额查询标签页自动识别一次、失败不提示」。
- */
+// 凭据可用性探测（v0.31：自动识别的 DeepSeek 行在 API KEY 未配置时整行不下发）。
+// 走与真实查询相同的发现链，发现即视为配置完成；任何异常按未配置处理——调用方静默隐藏该行，
+// 绝不外呼、绝不下发错误提示（进入余额查询标签页自动识别一次、失败不提示）。
 async function quotaCredentialConfigured(ctx, kind, profile) {
   try {
     return typeof (await discoverQuotaCredential(ctx, kind, profile)) === 'string'
@@ -1189,16 +1167,11 @@ async function quotaCredentialConfigured(ctx, kind, profile) {
   }
 }
 
-/**
- * zai-coding-cn（智谱 GLM Coding Plan）方言 → 统一窗口形状。
- * 端点返回 data.limits[]，每项一个额度窗口：
- * - TOKENS_LIMIT unit:3 number:5 = 5 小时滚动 Token 窗口——无调用时官方不返回 nextResetTime；
- * - TOKENS_LIMIT unit:6 number:1 = 每周 Token 额度；TIME_LIMIT = MCP 月度配额。
- * id 用 type+unit+number 组合保证稳定；unit/number 缺失时回退 type-index。
- * percentage 是一等公民；currentValue/usage 等绝对值字段可选且多数窗口不下发，不造数。
- */
-// zai 窗口展示序：Token 窗（5 小时/本周）在前、点数窗次之、MCP 月度垫底。
-// 上游固定把 TIME_LIMIT 放首个，而用户最关心编码 Token 窗（GUI 反馈点名 MCP 放第三排）。
+// zai-coding-cn（智谱 GLM Coding Plan）方言：data.limits[] 每项一个窗口。
+// TOKENS_LIMIT unit:3/6 = 5h 滚动/每周 Token 窗口（unit:3 无调用时官方不返回 nextResetTime）；
+// TIME_LIMIT = MCP 月度配额；id=type+unit+number 保证稳定，缺失回退 type-index。
+// percentage 一等公民；绝对值字段可选且多数不下发，不造数。
+// 展示序：Token 窗在前、点数次之、MCP 垫底（上游固定 TIME_LIMIT 首位，用户最关心编码 Token 窗）。
 function normalizeZaiCodingUsage(payload) {
   return normalizeZaiCodingUsageAdapter(payload)
 }
@@ -1218,60 +1191,44 @@ function normalizeSiliconFlowInfo(payload) {
   return normalizeSiliconFlowInfoAdapter(payload)
 }
 
-/**
- * DeepSeek 官方余额（v0.25）：{is_available, balance_infos:[{currency,total_balance,granted_balance,topped_up_balance}]}
- * → 文本窗口。每币种一行总额；赠金 > 0 时追加一行（官方口径：granted 是未过期赠金，total 含赠金+充值）。
- * currency 作为 label（纯数据，多币种区分），窗口名走客户端词典（双语教义：宿主不拼用户可见句子，
- * 货币符号 ¥/$ 属于数字格式化惯例，与 kimi 解析器同口径）。is_available 不改写金额——余额为 0 时
- * 数字本身已说明问题，不伪造状态文案。
- */
+// DeepSeek 官方余额：balance_infos 每币种一行总额，赠金>0 追加一行（granted 未过期，total 含赠金+充值）。
+// currency 作 label（纯数据，多币种区分），窗口名走客户端词典（宿主不拼用户可见句子）；
+// is_available 不改写金额——0 余额数字本身已说明问题，不伪造状态文案。
 function normalizeDeepseekBalance(payload) {
   return normalizeDeepseekBalanceAdapter(payload)
 }
 
-/** DeepSeek 金额字段归一：字符串/数字均可（官方下发字符串），负数或非有限值拒绝；
- * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00。保留两位小数。 */
-/**
- * StepFun 余额（v0.38）：{object, type, balance, total_cash_balance, total_voucher_balance} →
- * 文本窗口。官方响应无币种字段（控制台按人民币计费），金额按人民币惯例显示（与 kimi 同口径）；
- * total_voucher_balance 为赠金，>0 时追加一行（kindKey 复用 granted-balance，客户端词典已有）。
- * balance 缺失/非法丢弃整条（不伪造 ¥0.00——Number('') 是 0 的坑见 normalizeDeepseekMoney 注释）。
- */
+// Adapter 侧金额归一：字符串/数字均可，负数/非有限/空白串拒绝——Number('') 是 0，
+// 会把上游缺数据伪装成 ¥0.00；保留两位小数。
+// StepFun 余额：{type, balance, total_cash_balance, total_voucher_balance} → 文本窗口。
+// 控制台按人民币计费（无币种字段）；total_voucher_balance 赠金>0 追加一行（kindKey 复用 granted-balance）；
+// balance 缺失/非法丢弃整条（不伪造 ¥0.00——Number('') 是 0 的坑见 normalizeDeepseekMoney 注释）。
 function normalizeStepfunBalance(payload) {
   return normalizeStepfunBalanceAdapter(payload)
 }
 
-/** StepFun 金额字段归一：数字/数字字符串均可（官方文档 float，兼容字符串下发）；负数或非有限值拒绝；
- * 空白串也拒绝——Number('') 是 0，会把上游缺数据伪装成 ¥0.00（与 normalizeDeepseekMoney 同款坑）。 */
+// StepFun 金额归一同款坑（官方文档 float，兼容字符串下发）：负数/非有限/空白串拒绝（Number('') 是 0）。
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）控制台查询 ─────────────────
 // 数据源是控制台同源 API（platform.xiaomimimo.com SPA bundle 核实）：前端统一走
 // `/api/v1` 前缀 + same-origin Cookie，无任何 API-key 查询端点。两个 GET 都是宿主常量，
 // Cookie 凭据只发往这两个固定地址。「套餐使用情况」页 = detail（套餐名/有效期）+ usage（额度桶）。
-/** 控制台信封解包：{code,message,data}，code∈{0,200} 视为成功（与控制台前端同一口径）。
- * code=401（登录态失效）→ 稳定错误码 credential-rejected；其余非零码 → bad-payload 并透出 message。 */
+// 控制台信封 {code,message,data} 解包：code∈{0,200} 成功（与控制台前端同一口径）；
+// code=401（登录态失效）→ credential-rejected；其余非零 → bad-payload 透出 message。
 function unwrapXiaomiConsoleEnvelope(payload) {
   return unwrapXiaomiConsoleEnvelopeAdapter(payload)
 }
 
-/**
- * usage.items[] → 统一窗口：每项 {name, percent(0..1 小数), used, limit}，与控制台
- * 「套餐使用情况」进度条同源。percent×100 截断（控制台同款 min(100,max(0,100p))），
- * 缺 percent 的桶跳过（控制台对非法 percent 显示「—」，我们宁可少一行也不显示假进度）；
- * compensation_total_token 在 limit===0 时控制台不渲染（账号无补偿积分），同样丢弃。
- * used/limit 原始数值随窗口下发、由客户端做 K/M/B 缩写——数字不是文案，宿主不拼句子。
- * detail.planName 有值时输出一个文本窗口置顶；currentPeriodEnd 解析成功且未过期时作为
- * resetsAt 附到百分比窗口（订阅有效期即额度清零点；已失效套餐不再挂未来时刻误导倒计时）。
- */
+// usage.items[] → 窗口：percent(0..1 小数) ×100 截断（控制台同款 min(100,max(0,100p))），
+// 缺 percent 的桶跳过（不显示假进度）；compensation_total_token 在 limit===0 时丢弃（控制台不渲染）。
+// used/limit 原值随窗口下发、客户端做 K/M/B 缩写——数字不是文案，宿主不拼句子。
+// detail.planName 有值 → 文本窗口置顶；currentPeriodEnd 未过期时作 resetsAt（订阅清零点，失效不挂未来时刻）。
 function normalizeXiaomiTokenPlanUsage(detailData, usageData) {
   return normalizeXiaomiTokenPlanUsageAdapter(detailData, usageData)
 }
 
-/**
- * 小米 Token Plan 编排：detail + usage 两次固定 GET，Cookie 认证（无候选链、无钉住域——
- * 查询平面与 settings baseURL 完全无关）。credential 是 discoverQuotaCredential 按 kind policy
- * 下发的裸 Cookie；容错处理粘贴带入的 `Cookie:` 前缀；HTTP 401/403 与信封 code:401 都归一为
- * credential-rejected（Cookie 失效是唯一常见故障，别让用户猜状态码）。
- */
+// 小米 Token Plan 编排：detail + usage 两次固定 GET，Cookie 认证——查询平面与 settings baseURL
+// 完全无关（无候选链、无钉住域）。credential 是裸 Cookie（容错 `Cookie:` 前缀）；
+// HTTP 401/403 与信封 code:401 统一归一 credential-rejected（Cookie 失效是唯一常见故障）。
 async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
   return fetchXiaomiTokenPlanAdapterUsage({ credential, signal, requestJson: requestQuotaJson })
 }
@@ -1282,33 +1239,25 @@ async function fetchXiaomiTokenPlanUsage({ credential, signal }) {
 // POST /api/step.openapi.devcenter.Dashboard/QueryStepPlanRateLimit，body {}，认证走
 // Oasis-Token + Oasis-Webid 头（web_id 必须等于 token JWT 的 device_id）。无候选链、
 // 无钉住域——查询平面与 settings baseURL 完全无关。
-/** 从 Oasis-Token 解出 Oasis-Webid：device_id 在 JWT payload；token 可能是
- * `access...refresh` 对（浏览器 Oasis-Token cookie 形态），refresh 半优先（CodexBar 同款）。 */
+// Oasis-Webid 从 Oasis-Token 解出：device_id 在 JWT payload；`access...refresh` 对取 refresh 半（CodexBar 同款）。
 function stepfunWebIdFromToken(token) {
   return stepfunWebIdFromTokenAdapter(token)
 }
 
-/**
- * QueryStepPlanRateLimit 响应 → 统一窗口（v0.38）。status!==1 返回空（fetcher 转 bad-payload）；
- * 两代计费并存，先按形状判别再渲染：
- * - 旧版 Token Plan（5h/周滚动窗口）：reset_time 有活值（>0）即旧版；窗口字段为 0/缺省
- *   表示「无窗口未配置」而非「用光」，绝不把 0 当耗尽。
- * - 新版 Credit 月池（plan_family=2）：窗口字段为 0/"0"（无窗口），额度在 plan_credit_rate_limit：
- *   subscription/topup 剩余比例（0..1 小数）+ credit_buckets（绝对 Credit 数，total/residual）。
- *   buckets 全有效时按 total 加权合成一窗（CodexBar totalCreditLeftRate 同款），否则回退
- *   subscription/topup 两个剩余比例窗；resetsAt 取 subscription_credit_reset_time（月池清零时刻）。
- */
+// QueryStepPlanRateLimit 响应 → 窗口（v0.38）。status!==1 返回空（fetcher 转 bad-payload）。
+// 两代计费并存，先按形状判别：旧版 Token Plan = reset_time 有活值（>0），窗口字段 0/缺省表示
+// 「无窗口未配置」而非「用光」，绝不把 0 当耗尽；新版 Credit 月池（plan_family=2）的额度在
+// plan_credit_rate_limit：subscription/topup 剩余比例（0..1）+ credit_buckets（绝对 Credit 数），
+// buckets 全有效按 total 加权合成一窗（CodexBar totalCreditLeftRate 同款），否则回退两比例窗；
+// resetsAt 取 subscription_credit_reset_time（月池清零时刻）。
 function normalizeStepFunStepPlanUsage(payload) {
   return normalizeStepFunStepPlanUsageAdapter(payload)
 }
 
-/**
- * StepFun Step Plan 额度编排：单次固定 POST（Connect-JSON，body {}）。credential 是裸
- * Oasis-Token（discoverQuotaCredential 按 kind policy 下发）；web_id 由 token 派生，无独立
- * 凭据位。HTTP 401/403 统一归一 credential-rejected（登录态失效/令牌与 web_id 不匹配是
- * 唯一常见故障，别让用户猜状态码）；status!==1 归 bad-payload 并透出 desc；
- * status==1 但无任何窗口 → no-subscription（未订阅 Step Plan）。
- */
+// StepFun Step Plan 编排：单次固定 POST（Connect-JSON，body {}）。credential 是裸 Oasis-Token，
+// web_id 由 token 派生（无独立凭据位）。HTTP 401/403 统一归一 credential-rejected（登录态失效/
+// 令牌与 web_id 不匹配是唯一常见故障）；status!==1 归 bad-payload 透出 desc；
+// status==1 但无任何窗口 → no-subscription（未订阅 Step Plan）。
 async function fetchStepFunStepPlanUsage({ credential, signal }) {
   return fetchStepFunStepPlanAdapterUsage({ credential, signal, requestJson: requestQuotaJson })
 }
@@ -1318,8 +1267,8 @@ async function fetchStepFunStepPlanUsage({ credential, signal }) {
 // 上游官方额度端点注册表（经 CPA api-call 代调，header 的 $TOKEN$ 由 CPA 替换为对应账号凭据）。
 // 形状来源：muyouzhi6/astrbot_plugin_cliproxy_stats + CPA main 分支源码（2026-08 核实）；
 // 全部折算成统一「已用 %」口径（remainingFraction 类字段做纯 clamp，不做 ≤1 启发式——教训见 KNOWLEDGE.md）。
-/** Codex wham/usage 的 rate_limit → 窗口（used_percent 已用口径；reset_at 为 unix 秒）。
- * secondary_window 可为 null（真实上游行为）；窗口名由 limit_window_seconds 推导。 */
+// Codex rate_limit → 窗口（used_percent 已用口径；reset_at unix 秒）；secondary_window 可为 null；
+// 窗口名由 limit_window_seconds 推导。
 function normalizeCodexRateLimit(rateLimit) {
   return normalizeCodexRateLimitAdapter(rateLimit)
 }
@@ -1349,11 +1298,9 @@ function buildCliproxyAccountPlan(entry) {
   return buildCliproxyAccountPlanAdapter(entry)
 }
 
-/**
- * CLIProxyAPI 编排：auth-files 列账号 → 小并发池逐账号 api-call 代调上游官方额度 → 合并窗口。
- * 预算：账号 ≤8、api-call 总次数 ≤12、并发 3、窗口总数 ≤32；部分账号失败不拖垮整行
- * （有成功窗口即返回），全部失败抛首个稳定错误码。守卫、凭据策略与编排都由 Adapter 自己完成。
- */
+// CLIProxyAPI 编排：auth-files 列账号 → 并发池逐账号 api-call 代调上游官方额度 → 合并窗口。
+// 预算：账号≤8、调用≤12、并发 3、窗口≤32；部分失败不拖垮整行（有成功窗口即返回），
+// 全失败抛首个稳定错误码；守卫、凭据策略与编排都由 Adapter 自己完成。
 async function fetchCliproxyUsage({ profile, config, credential, signal }) {
   return fetchCliproxyAdapterUsage({ profile, config, credential, signal, requestJson: requestQuotaJson })
 }
@@ -1473,13 +1420,9 @@ async function fetchProviderUsage(endpoint, authorization, options = {}) {
   return retryQuotaTransient(() => fetchProviderUsageOnce(endpoint, authorization, options), options.signal)
 }
 
-/**
- * 单次 JSON 请求（GET/POST，POST 带 JSON body）：CLIProxyAPI 管理面专用（GET auth-files +
- * POST api-call）。与 GET 版同样的 15s 超时、64KB 上限、瞬时错误白名单；body 只接受已序列化字符串。
- * options.cookie（v0.29 小米控制台）：按 Cookie 头直发登录态，与 Authorization 互斥使用。
- * options.headers（v0.38 StepFun Step Plan）：附加自定义头（Oasis-Token 等，宿主常量构造，
- * 浏览器零输入），放在默认头之后、可覆盖同名默认头。
- */
+// 单次 JSON 请求（GET/POST）：CLIProxyAPI 管理面专用，与 GET 版同超时/上限/瞬时错误白名单。
+// options.cookie（小米控制台）：Cookie 头直发登录态，与 Authorization 互斥；
+// options.headers（StepFun）：附加自定义头（宿主常量构造，浏览器零输入），放默认头之后可覆盖。
 function requestQuotaJsonOnce(endpoint, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
@@ -1553,12 +1496,9 @@ async function requestQuotaJson(endpoint, options = {}) {
   return retryQuotaTransient(() => requestQuotaJsonOnce(endpoint, options), options.signal)
 }
 
-/**
- * 每 provider 节流状态机（内存态，重启清零）。一切来源共用同一判定，优先序：
- * 单飞去重 > 失败指数退避（30s ×2 封顶 15min）> 成功 TTL 60s > 最小上游间隔 15s——
- * 与 attempt() 的实际判定序一致（inflight > backoff > fresh > interval）。
- * now 由调用方注入，测试可推进假时钟。
- */
+// 每 provider 节流状态机（内存态，重启清零）。一切来源共用同一判定，优先序：
+// 单飞去重 > 失败指数退避（30s×2 封顶 15min）> 成功 TTL 60s > 最小上游间隔 15s（与 attempt()
+// 判定序一致）；now 由调用方注入，测试可推进假时钟。
 function createQuotaThrottle(options = {}) {
   const successTtlMs = options.successTtlMs ?? QUOTA_SUCCESS_TTL_MS
   const minIntervalMs = options.minIntervalMs ?? QUOTA_MIN_INTERVAL_MS
@@ -1637,12 +1577,9 @@ function createQuotaThrottle(options = {}) {
       entry.lastUpstreamAt = 0
       return { ok: true }
     },
-    /**
-     * 凭据/适配变更后的闸门重置（保存 API key、Cookie、改适配类型时调用）：既有失败是旧配置
-     * 造成的，退避与最小间隔对「换了一份新凭据」毫无意义——用户填完就该立刻重试，而不是
-     * 傻等最长 15 分钟的指数退避走完（GUI 反馈点名）。单飞在途时不抢占，等本轮自然落定。
-     * 与 force() 的区别：本方法只由宿主写入口触发，可以连硬冷却一并清掉。
-     */
+    // 凭据/适配变更后的闸门重置（保存 key/Cookie、改适配类型时调用）：旧失败是旧配置造成的，
+    // 填完就该立刻重试，不傻等最长 15min 的指数退避（GUI 反馈点名）；单飞在途不抢占。
+    // 与 force() 的区别：本方法只由宿主写入口触发，可以连硬冷却一并清掉。
     resetGates(provider) {
       const entry = entryOf(provider)
       if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
@@ -2482,11 +2419,9 @@ function parseLooseBoolean(value) {
   }
 }
 
-/**
- * 保守解析 frontmatter 顶层字段。只承诺管理动作需要的简单标量；块标量/嵌套结构
- * 归入 complex（展示用拼接文本），绝不假装理解完整 YAML——官方解析器若因复杂
- * 结构得出不同结论，条目会以 invalid 或只读形态出现，不会误写。
- */
+// 保守解析 frontmatter 顶层字段：只承诺管理动作需要的简单标量；块标量/嵌套结构归 complex
+// （展示用拼接文本），绝不假装理解完整 YAML——官方解析器若因复杂结构得出不同结论，
+// 条目会以 invalid 或只读形态出现，不会误写。
 function parseSkillFrontmatterData(raw) {
   const located = locateSkillFrontmatter(raw)
   if (located === undefined) return undefined
@@ -2568,11 +2503,8 @@ function splitHeaderLines(located, raw) {
   return lines
 }
 
-/**
- * 启停开关：kind 'model' 规范键 disable-model-invocation（禁用行值为 true），
- * kind 'user' 规范键 user-invocable（禁用行值为 false）。enable=true 删除键行
- * （缺席即允许），enable=false 原位写入或改值。
- */
+// 启停开关：model → 规范键 disable-model-invocation（禁用行值 true）；user → user-invocable（禁用行值 false）。
+// enable=true 删键行（缺席即允许），enable=false 原位写入或改值。
 function setSkillInvocationKey(raw, kind, enable) {
   const located = locateSkillFrontmatter(raw)
   if (located === undefined) throw new Error('missing-frontmatter')
@@ -2950,16 +2882,8 @@ async function listSkillModels(llm, agentDefaultModel) {
   return { models, ...(current !== undefined ? { current } : {}) }
 }
 
-/**
- * 把适配器私有 reasoning metadata 裁剪成可下发给 Web 的普通 JSON：
- * - efforts 只保留 id / name（缺省回退 id）/ 非空 description；
- * - 忽略无效条目、空 ID、重复 ID（保持首个出现的顺序）；
- * - defaultEffort 是字符串且非空才保留；
- * - 无效 efforts 且无 defaultEffort 时返回 undefined（不暴露空壳对象）。
- * 绝不把适配器内部对象、函数或其他私有字段发送到 Web。
- * @param {unknown} reasoning - llm.resolveModelInfo() 返回的 reasoning 字段原始值。
- * @returns {{efforts?: Array<{id:string,name:string,description?:string}>, defaultEffort?: string}|undefined}
- */
+// 适配器私有 reasoning metadata → 可下发 JSON：efforts 只留 id/name/非空 description，去重保序；
+// defaultEffort 非空才保留；无效则 undefined——绝不把适配器内部对象或函数发到 Web。
 function publicSubagentReasoning(reasoning) {
   if (reasoning === null || typeof reasoning !== 'object') return undefined
   const source = Array.isArray(reasoning.efforts) ? reasoning.efforts : []
@@ -2979,14 +2903,9 @@ function publicSubagentReasoning(reasoning) {
   return { ...(efforts.length > 0 ? { efforts } : {}), ...(defaultEffort !== undefined ? { defaultEffort } : {}) }
 }
 
-/**
- * 子代理模型清单：沿用 skills-models 的 provider/model 白名单口径，并为每个精确模型
- * 附加经过 publicSubagentReasoning 裁剪的 reasoning metadata。resolveModelInfo 缺席或
- * 单个模型解析失败时保留原有目录项（不让整个快照失败）。
- * @param {object} llm - 宿主 llm 服务。
- * @param {object|undefined} agentDefaultModel - 宿主 agentDefaultModel 服务（用于 current）。
- * @returns {Promise<{models: Array<object>, current?: {provider:string, model:string}>}>}
- */
+// 子代理模型清单：沿用 skills-models 的 provider/model 白名单口径，为每个模型附加
+// publicSubagentReasoning 裁剪的 reasoning metadata；resolveModelInfo 缺席或单模型解析失败
+// 时保留原有目录项（不让整个快照失败）。
 async function listSubagentModels(llm, agentDefaultModel) {
   const catalog = await listSkillModels(llm, agentDefaultModel)
   const resolve = llm !== undefined && typeof llm.resolveModelInfo === 'function'
@@ -3054,18 +2973,11 @@ async function saveSubagentRoute(dshHome, config) {
   }
 }
 
-/**
- * 计算一次子代理派生应注入的 agentOptions（seam 核心，纯函数便于测试）：
- * - 派生请求已显式携带 provider 或 model → 不干预（显式永远赢，含预设钉死与其他插件注入）；
- * - follow → 读父会话最近一次 request header 的路由（= 主对话当前实际在用的渠道；空白
- *   会话无 header 时回落继承，不注入）；
- * - custom → 配置的 provider/model，且 llm 注册表当前可路由才注入（渠道被卸载后回落继承
- *   而不是让派生失败）；
- * - inherit / 其余一切 → undefined（原生继承父代理创建 options）。
- * @param {object|null} request SubagentStartRequest（读 parent / agentOptions）。
- * @param {object|null} config 当前生效的路由配置。
- * @param {object} options isRoutable(provider) 与 readParentHeader(parent) 注入点（测试替身用）。
- */
+// 子代理派生注入（seam 核心，纯函数便于测试）：
+// - 请求已显式携带 provider/model → 不干预（显式永远赢，含预设钉死与其他插件注入）；
+// - follow → 读父会话最近 request header 的路由（= 主对话当前实际渠道；空白会话回落继承）；
+// - custom → 配置路由且 llm 注册表当前可路由才注入（渠道卸载后回落继承，不让派生失败）；
+// - inherit / 其余 → undefined（原生继承父代理创建 options）。
 function resolveSubagentInjection(request, config, options = {}) {
   const agentOptions = request?.agentOptions
   const explicitProvider = typeof agentOptions?.provider === 'string' && agentOptions.provider !== ''
@@ -3107,24 +3019,16 @@ const MOBILE_COMPRESS_MAX_BYTES = 64 * 1024 * 1024
 const MOBILE_BROTLI_QUALITY = 5
 const MOBILE_GZIP_LEVEL = 6
 
-/**
- * content-type 是否值得走延迟压缩路径：JSON 且非增量流。
- * @param {unknown} contentType - 响应头 content-type 原始值（可空）。
- * @returns {boolean} true 表示可以缓冲到 end 再决定。
- */
-export function isCompressibleJsonType(contentType) {
+// content-type 是否值得走延迟压缩：JSON 且非增量流。
+function isCompressibleJsonType(contentType) {
   const value = String(contentType ?? '').toLowerCase()
   if (!value.includes('json')) return false
   // ndjson / event-stream 是持续增量流，整体缓冲会破坏消费语义。
   return !value.includes('ndjson') && !value.includes('event-stream')
 }
 
-/**
- * 从 Accept-Encoding 请求头选编解码器；br 优先于 gzip。
- * @param {unknown} acceptEncoding - 请求头原值（可空）。
- * @returns {'br'|'gzip'|null} 客户端不接受的编码时返回 null（透传）。
- */
-export function pickCompressionEncoding(acceptEncoding) {
+// Accept-Encoding 选编解码器：br 优先于 gzip；都不接受返回 null（透传）。
+function pickCompressionEncoding(acceptEncoding) {
   const accepted = String(acceptEncoding ?? '').toLowerCase()
   if (/\bbr\b/.test(accepted)) return 'br'
   if (/\bgzip\b/.test(accepted)) return 'gzip'
@@ -3229,13 +3133,8 @@ async function sessionDirectoryBytes(ctx, header) {
   }
 }
 
-/**
- * 会话管理列表：live + 冷会话（persistence）合并，标注归档/已删除，补标题。
- * @param {string} [scope] - 'all'（默认）全量 | 'archived' 仅归档条目 | 'deleted' 仅已删除记录。
- *   列表不携带文件体积——体积一律走 sessions-bytes 懒加载（v0.36 用户反馈：去掉「—」
- *   占位；列表全量下发体积意味着打开/切换就要逐个会话 readdir+stat，正是当初全量刷新慢的根源）。
- * @returns {Promise<object>} {items, archivedIds, deleted, available}
- */
+// 会话管理列表：live + 冷会话合并，标注归档/已删除，补标题。列表不携带体积——
+// 体积走 sessions-bytes 懒加载（v0.36：全量下发意味着打开/切换就要逐个 readdir+stat）。
 async function listSessionsForManage(ctx, dshHome, scope = 'all') {
   const sessionQuery = ctx.get('sessionQuery')
   const workspaceRegistry = ctx.get('workspaceRegistry')
@@ -3286,16 +3185,9 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all') {
   return { available: true, items, archivedIds, deleted }
 }
 
-/**
- * 批量取会话体积（sessions-bytes 用）：命中缓存秒回、不碰磁盘；未命中的再做一次
- * listSessions 定位 + 目标目录 stat。缓存键=会话 id（live 会话体积会随增长变化，TTL
- * 兜底、删除时主动失效）；未知会话返回 null（不缓存，列表里本就不该出现）。返回
- * { [id]: number|null }，只含请求过的 id。
- * @param {object} ctx - 宿主上下文。
- * @param {string[]} ids - 去重后的会话 id 列表。
- * @param {Map<string, {bytes: number|null, at: number}>} cache - apply() 状态的体积缓存。
- * @returns {Promise<Record<string, number|null>>}
- */
+// 批量取会话体积（sessions-bytes 用）：命中缓存秒回、不碰磁盘；未命中再做一次
+// listSessions 定位 + 目标目录 stat。缓存键=会话 id（live 体积随增长变化，TTL 兜底、
+// 删除主动失效）；未知会话返回 null（不缓存，列表里本就不该出现）。
 async function resolveSessionBytesForIds(ctx, ids, cache) {
   const bytes = {}
   const misses = []
@@ -3335,21 +3227,10 @@ async function resolveSessionBytesForIds(ctx, ids, cache) {
   return bytes
 }
 
-/**
- * 分页读取一个会话的事件：readSession 取全量后按 seq 游标切片。
- * v0.36（用户点名「查看渲染优化」）：readSession 结果按会话做**单槽位宿主缓存**——
- * 冷会话日志文件不变可长期复用、live 会话 30s TTL 兜底新鲜度，翻页不再重复整份读取。
- * v0.37：新增 center 模式——搜索命中的详情跳转视图。center 存在时忽略 cursor，
- * 返回围绕该 seq 前后各 SESSIONS_VIEW_CONTEXT 条的窗口（命中行不一定居中，被行首/行尾
- * 裁剪），并回传实际居中的 centerSeq；nextCursor 照常指向窗口末条，可继续向前翻页。
- * @param {object} ctx - 宿主上下文。
- * @param {string} id - 会话 id。
- * @param {number|undefined} cursor - 上一页末条 seq；缺省从头。与 center 互斥（center 优先）。
- * @param {number|undefined} center - 命中 seq；提供时返回其上下文窗口。
- * @param {{id: string|null, snapshot: object|null, at: number, live: boolean}} cacheRef - apply() 状态的单槽位缓存（就地改写，跨 RPC 复用）。
- * @param {number} limit - 页大小（默认 SESSIONS_VIEW_PAGE_SIZE）。
- * @returns {Promise<object>} {ok, value:{session, items, nextCursor, total, centerSeq?}} 或 {ok:false, error}
- */
+// 分页读取会话事件：readSession 全量后按 seq 游标切片，单槽位宿主缓存（v0.36：冷会话
+// 文件不变长期复用、live 会话 30s TTL 兜底新鲜度）；v0.37 center 模式忽略 cursor，围绕命中
+// seq ±SESSIONS_VIEW_CONTEXT 条窗口（命中行不一定居中，被行首/行尾裁剪），回传实际 centerSeq，
+// nextCursor 指向窗口末条可继续翻页。
 async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_PAGE_SIZE, center) {
   const sessionQuery = ctx.get('sessionQuery')
   if (sessionQuery === undefined || typeof sessionQuery.readSession !== 'function') return { ok: false, error: 'session-query-unavailable' }
@@ -3420,10 +3301,7 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
   }
 }
 
-/**
- * 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
- * @returns {Promise<object>} {available, query, scope, hits:[{sessionId,title,items:[{seq,type,snippet}]}]}
- */
+// 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
 async function searchSessionsContent(ctx, dshHome, query, scope = 'all') {
   const sessionQuery = ctx.get('sessionQuery')
   const result = { available: sessionQuery !== undefined && typeof sessionQuery.filterEvents === 'function', query, scope, hits: [] }
@@ -3485,11 +3363,8 @@ function sessionIsLive(ctx, id) {
 
 /** 定位一个持久化会话的目录（供删除）。 */
 
-/**
- * 轻量定位单个会话（sessions-delete-plan 用）：只查一次 listSessions 找到目标 header，
- * 只 stat 目标会话目录一次，不扫描其他会话。返回面向删除确认清单的记录。
- * @returns {Promise<object|undefined>} {title, cwd, bytes, archived, live, dir} 或 undefined（未找到）。
- */
+// 轻量定位单个会话（sessions-delete-plan 用）：一次 listSessions 找 header + 一次 stat 目标
+// 目录，不扫其他会话；返回删除确认清单记录（title/cwd/bytes/archived/live/dir）。
 async function resolveSessionForDelete(ctx, id) {
   const sessionQuery = ctx.get('sessionQuery')
   if (sessionQuery === undefined || typeof sessionQuery.listSessions !== 'function') return undefined
@@ -3522,24 +3397,14 @@ async function resolveSessionForDelete(ctx, id) {
   }
 }
 
-/**
- * 向既有 Vary 值追加一个 token；已有（大小写不敏感）则原样返回。
- * @param {unknown} existing - 现有 Vary 头值。
- * @param {string} token - 要追加的 token。
- * @returns {string} 合并后的 Vary 值。
- */
-export function appendVaryToken(existing, token) {
+// 向既有 Vary 值追加 token；已有（大小写不敏感）则原样返回。
+function appendVaryToken(existing, token) {
   const current = existing === null || existing === undefined ? '' : String(existing)
   if (current.toLowerCase().includes(token.toLowerCase())) return current
   return current === '' ? token : `${current}, ${token}`
 }
 
-/**
- * 用 zlib 异步压缩一个完整 body（不阻塞事件循环）。
- * @param {Buffer} body - 待压缩字节。
- * @param {'br'|'gzip'} encoding - 目标编码。
- * @returns {Promise<Buffer>} 压缩结果。
- */
+// zlib 异步压缩完整 body（不阻塞事件循环）。
 function compressBodyAsync(body, encoding) {
   return new Promise((resolvePromise, rejectPromise) => {
     const settle = (error, result) => (error ? rejectPromise(error) : resolvePromise(result))
@@ -3551,13 +3416,7 @@ function compressBodyAsync(body, encoding) {
   })
 }
 
-/**
- * 把 write/end 缓冲期收到的 chunk 归一化为 Buffer 追加进 pending。
- * @param {{chunks: Buffer[]}} pending - 延迟响应状态。
- * @param {unknown} chunk - write/end 的 chunk 参数。
- * @param {string|undefined} encoding - Node 流编码参数（字符串 chunk 时生效）。
- * @returns {void}
- */
+// 把 write/end 缓冲期收到的 chunk 归一化为 Buffer 追加进 pending。
 function bufferPendingChunk(pending, chunk, encoding) {
   if (chunk === null || chunk === undefined) return
   if (Buffer.isBuffer(chunk)) pending.chunks.push(chunk)
@@ -3566,11 +3425,7 @@ function bufferPendingChunk(pending, chunk, encoding) {
   else pending.chunks.push(Buffer.from(String(chunk)))
 }
 
-/**
- * 解析 Node write/end 的可选参数序列（encoding 字符串 / callback）。
- * @param {unknown[]} rest - 除 chunk 外的剩余参数。
- * @returns {{encoding?: string, callbacks: Function[]}} 解析结果。
- */
+// 解析 Node write/end 的可选参数序列（encoding 字符串 / callback）。
 function parseStreamRestArgs(rest) {
   const parsed = { callbacks: [] }
   for (const item of rest) {
@@ -3580,26 +3435,13 @@ function parseStreamRestArgs(rest) {
   return parsed
 }
 
-/**
- * 以暂存的原始实参回放 writeHead（透传路径：头集合与调用方所写完全一致）。
- * @param {import('node:http').ServerResponse} res - 目标响应。
- * @param {Function} originalWriteHead - 未打补丁的 writeHead。
- * @param {unknown[]} storedArgs - 首次 writeHead 的实参副本。
- * @returns {import('node:http').ServerResponse} writeHead 返回值。
- */
+// 以暂存的原始实参回放 writeHead（透传路径：头集合与调用方所写完全一致）。
 function replayStoredWriteHead(res, originalWriteHead, storedArgs) {
   if (storedArgs.length === 0) return originalWriteHead.call(res, 200)
   return originalWriteHead.apply(res, storedArgs)
 }
 
-/**
- * 回放 writeHead，但把头集合替换为压缩路径的最终头对象。
- * @param {import('node:http').ServerResponse} res - 目标响应。
- * @param {Function} originalWriteHead - 未打补丁的 writeHead。
- * @param {unknown[]} storedArgs - 首次 writeHead 的实参副本。
- * @param {Record<string, unknown>} headers - 最终头集合（含压缩相关头）。
- * @returns {import('node:http').ServerResponse} writeHead 返回值。
- */
+// 回放 writeHead，但把头集合替换为压缩路径的最终头对象。
 function replayStoredWriteHeadWithHeaders(res, originalWriteHead, storedArgs, headers) {
   const args = storedArgs.slice()
   if (typeof args[1] === 'string') args[2] = headers
@@ -3607,11 +3449,8 @@ function replayStoredWriteHeadWithHeaders(res, originalWriteHead, storedArgs, he
   return originalWriteHead.apply(res, args)
 }
 
-/**
- * 安装大 JSON 响应透明压缩补丁。进程内单例：重复安装返回既有 disposer。
- * @returns {() => void} 还原原型方法的 disposer（身份校验，只摘自己的补丁）。
- */
-export function installMobileResponseCompression() {
+// 安装大 JSON 响应透明压缩补丁。进程内单例：重复安装返回既有 disposer。
+function installMobileResponseCompression() {
   const proto = NodeServerResponse.prototype
   // 已装补丁的守卫放在 ensure 层；此处仍做二次防御，避免测试直调时叠加。
   if (proto.writeHead?.name === 'mobileCompressWriteHead') return () => {}
@@ -3719,13 +3558,9 @@ export function installMobileResponseCompression() {
 
 let activeMobileCompressionDispose = null
 
-/**
- * 进程内单例入口：确保压缩补丁处于安装状态，返回用于还原的 disposer。
- * 每次调用都返回独立的托管包装：任一包装释放都会真正还原补丁并清掉单例标记，
- * 后续再 ensure 会重新安装（绝不出现「标记还在、补丁已摘」的假活状态）。
- * @returns {() => void} disposer。
- */
-export function ensureMobileResponseCompression() {
+// 单例入口：确保补丁处于安装状态，返回独立托管 disposer——任一包装释放都会真正还原补丁
+// 并清掉单例标记，后续再 ensure 会重新安装（绝不出现「标记还在、补丁已摘」的假活状态）。
+function ensureMobileResponseCompression() {
   if (activeMobileCompressionDispose === null) activeMobileCompressionDispose = installMobileResponseCompression()
   const inner = activeMobileCompressionDispose
   let released = false
@@ -3737,6 +3572,49 @@ export function ensureMobileResponseCompression() {
   }
 }
 
+
+// quota-credential-set / quota-credential-unset 共用处理器：两个端点只差「写/清」一步，
+// provider 白名单、kind 解析与 hint 校验全同——单一实现防止双份拷贝漂移。
+async function quotaCredentialEndpoint(ctx, refreshQuotaConfig, throttle, payload, rpcEndpoint) {
+  try {
+    const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+    const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
+    if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
+    const config = await refreshQuotaConfig()
+    const { kind } = resolveQuotaKind(config, profileForProvider)
+    if (kind === undefined) return { ok: false, error: 'not-adapted' }
+    const name = typeof payload?.name === 'string' ? payload.name : ''
+    if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
+    const credentials = ctx.get('credentials')
+    if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
+    if (rpcEndpoint === 'quota-credential-set') {
+      if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
+      // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
+      const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
+      if (value === '' || value.length > 4096) return { ok: false, error: 'invalid-value' }
+      try {
+        await credentials.set(name, value)
+      } catch (error) {
+        // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
+        return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+      }
+      // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
+      // 客户端紧随其后的 quota-refresh 应立刻发上游，而不是干等退避走完。
+      throttle.resetGates(providerName)
+      return { ok: true }
+    }
+    if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
+    try {
+      await credentials.unset(name)
+    } catch (error) {
+      return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
+    }
+    throttle.resetGates(providerName)
+    return { ok: true }
+  } catch (error) {
+    return rpcTechnicalFailure(error)
+  }
+}
 
 function apply(ctx) {
   const dshHome = resolveDshHome()
@@ -4771,88 +4649,8 @@ function apply(ctx) {
       }
 
     } },
-    'quota-credential-set': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
-        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
-        const config = await refreshQuotaConfigCache()
-        const { kind } = resolveQuotaKind(config, profileForProvider)
-        if (kind === undefined) return { ok: false, error: 'not-adapted' }
-        const name = typeof payload?.name === 'string' ? payload.name : ''
-        if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
-        const credentials = ctx.get('credentials')
-        if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
-        if (rpcEndpoint === 'quota-credential-set') {
-          if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
-          // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
-          const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
-          if (value === '' || value.length > 4096) return { ok: false, error: 'invalid-value' }
-          try {
-            await credentials.set(name, value)
-          } catch (error) {
-            // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
-            return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
-          }
-          // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
-          // 客户端紧随其后的 quota-refresh 应立刻发上游，而不是干等退避走完。
-          quotaThrottle.resetGates(providerName)
-          return { ok: true }
-        }
-        if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
-        try {
-          await credentials.unset(name)
-        } catch (error) {
-          return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
-        }
-        quotaThrottle.resetGates(providerName)
-        return { ok: true }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'quota-credential-unset': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
-        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
-        const config = await refreshQuotaConfigCache()
-        const { kind } = resolveQuotaKind(config, profileForProvider)
-        if (kind === undefined) return { ok: false, error: 'not-adapted' }
-        const name = typeof payload?.name === 'string' ? payload.name : ''
-        if (!quotaCredentialHintNames(kind, profileForProvider).includes(name)) return { ok: false, error: 'unknown-hint' }
-        const credentials = ctx.get('credentials')
-        if (credentials === undefined) return { ok: false, error: 'credentials-unavailable' }
-        if (rpcEndpoint === 'quota-credential-set') {
-          if (typeof credentials.set !== 'function') return { ok: false, error: 'credentials-unavailable' }
-          // 去掉粘贴带入的首尾空白；空值与超长值在宿主侧拦下（凭据库本身也拒绝空串）。
-          const value = typeof payload?.value === 'string' ? payload.value.trim() : ''
-          if (value === '' || value.length > 4096) return { ok: false, error: 'invalid-value' }
-          try {
-            await credentials.set(name, value)
-          } catch (error) {
-            // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
-            return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
-          }
-          // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
-          // 客户端紧随其后的 quota-refresh 应立刻发上游，而不是干等退避走完。
-          quotaThrottle.resetGates(providerName)
-          return { ok: true }
-        }
-        if (typeof credentials.unset !== 'function') return { ok: false, error: 'credentials-unavailable' }
-        try {
-          await credentials.unset(name)
-        } catch (error) {
-          return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
-        }
-        quotaThrottle.resetGates(providerName)
-        return { ok: true }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
+    'quota-credential-set': { feature: 'quotaLookup', audit: true, handle: (payload, rpcEndpoint) => quotaCredentialEndpoint(ctx, refreshQuotaConfigCache, quotaThrottle, payload, rpcEndpoint) },
+    'quota-credential-unset': { feature: 'quotaLookup', audit: true, handle: (payload, rpcEndpoint) => quotaCredentialEndpoint(ctx, refreshQuotaConfigCache, quotaThrottle, payload, rpcEndpoint) },
     'quota-reset-card': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
@@ -5145,6 +4943,7 @@ function apply(ctx) {
 
 export {
   SKILL_SOURCE_RANK,
+  appendVaryToken,
   apply,
   buildCliproxyAccountPlan,
   cliproxyFetchGuard,
@@ -5152,6 +4951,7 @@ export {
   cliproxyProjectFor,
   createQuotaThrottle,
   detectRuntimeEnv,
+  ensureMobileResponseCompression,
   evaluateSkillFile,
   extractSkillDraftJson,
   fetchCliproxyUsage,
@@ -5161,6 +4961,8 @@ export {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  installMobileResponseCompression,
+  isCompressibleJsonType,
   listSessionsForManage,
   listSubagentModels,
   locateSkillFrontmatter,
@@ -5180,6 +4982,7 @@ export {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  pickCompressionEncoding,
   publicSubagentReasoning,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
@@ -5204,6 +5007,7 @@ export {
 }
 export default {
   SKILL_SOURCE_RANK,
+  appendVaryToken,
   apply,
   buildCliproxyAccountPlan,
   cliproxyFetchGuard,
@@ -5211,6 +5015,7 @@ export default {
   cliproxyProjectFor,
   createQuotaThrottle,
   detectRuntimeEnv,
+  ensureMobileResponseCompression,
   evaluateSkillFile,
   extractSkillDraftJson,
   fetchCliproxyUsage,
@@ -5220,6 +5025,8 @@ export default {
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
+  installMobileResponseCompression,
+  isCompressibleJsonType,
   listSessionsForManage,
   listSubagentModels,
   locateSkillFrontmatter,
@@ -5239,6 +5046,7 @@ export default {
   parseQuotaConfigText,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
+  pickCompressionEncoding,
   publicSubagentReasoning,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
