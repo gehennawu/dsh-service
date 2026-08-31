@@ -153,6 +153,8 @@ window.__ModuleLoader__.load({
       'subagent.fallback.title': '回退模型（按顺序）',
       'subagent.fallback.hint': '第一路由不可用时（渠道已卸载、额度查询判定不可服务）依次尝试回退；全部不可用则回落原生继承，不让派生失败。',
       'subagent.fallback.add': '添加回退',
+      'subagent.fallback.sort': '调整排序',
+      'subagent.fallback.sort.done': '完成排序',
       'subagent.fallback.remove': '移除',
       'subagent.fallback.up': '上移',
       'subagent.fallback.down': '下移',
@@ -827,6 +829,8 @@ window.__ModuleLoader__.load({
       'subagent.fallback.title': 'Fallback models (in order)',
       'subagent.fallback.hint': 'When the primary route is unavailable (channel unloaded, or quota state marks it unserviceable), try fallbacks in order; if none works, fall back to native inheritance instead of failing the delegation.',
       'subagent.fallback.add': 'Add fallback',
+      'subagent.fallback.sort': 'Reorder',
+      'subagent.fallback.sort.done': 'Done',
       'subagent.fallback.remove': 'Remove',
       'subagent.fallback.up': 'Move up',
       'subagent.fallback.down': 'Move down',
@@ -3167,6 +3171,7 @@ window.__ModuleLoader__.load({
         const [error, setError] = useState('')
         const [reasoningEffort, setReasoningEffort] = useState('')
         const [fallbacks, setFallbacks] = useState([])
+        const [reorderMode, setReorderMode] = useState(false)
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -3263,6 +3268,10 @@ window.__ModuleLoader__.load({
             return [...rows, { provider: firstProvider, model: modelsFor(firstProvider)[0]?.id ?? '' }]
           })
         }
+        // 排序模式只对 ≥2 条有意义：删到只剩一条时自动退出。
+        useEffect(() => {
+          if (reorderMode && fallbacks.length < 2) setReorderMode(false)
+        }, [fallbacks.length])
 
         const save = async (nextMode) => {
           setSaving(true)
@@ -3318,6 +3327,26 @@ window.__ModuleLoader__.load({
             opacity: disabled || saving ? 0.55 : 1,
           },
         }, label)
+        // 排序箭头：仅图标（▲/▼），无文字。
+        const fallbackArrowButton = (testId, disabled, onClick, glyph) => React.createElement('button', {
+          type: 'button',
+          'data-testid': testId,
+          disabled: disabled || saving,
+          onClick,
+          style: {
+            fontSize: '12px',
+            lineHeight: '14px',
+            width: '24px',
+            height: '24px',
+            padding: 0,
+            borderRadius: '6px',
+            border: '1px solid var(--dsh-svc-border-strong)',
+            background: 'transparent',
+            color: 'var(--dsh-svc-text)',
+            cursor: disabled || saving ? 'default' : 'pointer',
+            opacity: disabled || saving ? 0.55 : 1,
+          },
+        }, glyph)
 
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
@@ -3358,9 +3387,10 @@ window.__ModuleLoader__.load({
                     providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
                   React.createElement('select', { 'data-testid': 'subagent-fallback-model-' + index, value: rowProviderModels.some((item) => item.id === fallback.model) ? fallback.model : '', disabled: rowProviderModels.length === 0 || saving, onChange: (event) => { const nextModel = event.target.value; const nextEntry = rowProviderModels.find((item) => item.id === nextModel) ?? null; const nextIds = effortsFor(nextEntry).map((option) => option.id); updateFallback(index, { model: nextModel, ...(typeof fallback.reasoningEffort === 'string' && fallback.reasoningEffort !== '' && !nextIds.includes(fallback.reasoningEffort) ? { reasoningEffort: undefined } : {}) }) }, style: selectStyle },
                     rowProviderModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id))),
-                  fallbackIconButton('subagent-fallback-up-' + index, index === 0, () => moveFallback(index, -1), translate('subagent.fallback.up')),
-                  fallbackIconButton('subagent-fallback-down-' + index, index === fallbacks.length - 1, () => moveFallback(index, 1), translate('subagent.fallback.down')),
-                  fallbackIconButton('subagent-fallback-remove-' + index, false, () => removeFallback(index), translate('subagent.fallback.remove'), true)),
+                  fallbackIconButton('subagent-fallback-remove-' + index, false, () => removeFallback(index), translate('subagent.fallback.remove'), true),
+                  // 排序模式（调整排序开启时）才显示箭头：▲/▼ 图标按钮，非文字。
+                  reorderMode ? fallbackArrowButton('subagent-fallback-up-' + index, index === 0, () => moveFallback(index, -1), '▲') : null,
+                  reorderMode ? fallbackArrowButton('subagent-fallback-down-' + index, index === fallbacks.length - 1, () => moveFallback(index, 1), '▼') : null),
                 // 第二行：思考等级——与主模型行的推理行同排版（供应商/模型一行，等级换行）。
                 rowEffortOptions.length > 0
                   ? React.createElement('div', { 'data-testid': 'subagent-fallback-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
@@ -3372,7 +3402,10 @@ window.__ModuleLoader__.load({
             }),
             fallbacks.length >= FALLBACK_MAX
               ? React.createElement('p', { 'data-testid': 'subagent-fallback-limit', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.fallback.limit', { max: String(FALLBACK_MAX) }))
-              : React.createElement('button', { type: 'button', 'data-testid': 'subagent-fallback-add', disabled: saving || providers.length === 0, onClick: () => addFallback(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px dashed var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsh-svc-text)', cursor: saving || providers.length === 0 ? 'default' : 'pointer', opacity: saving || providers.length === 0 ? 0.55 : 1, marginTop: '8px' } }, translate('subagent.fallback.add'))) : null,
+              : React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '8px', flexWrap: 'wrap' } },
+                  React.createElement('button', { type: 'button', 'data-testid': 'subagent-fallback-add', disabled: saving || providers.length === 0, onClick: () => addFallback(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px dashed var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsh-svc-text)', cursor: saving || providers.length === 0 ? 'default' : 'pointer', opacity: saving || providers.length === 0 ? 0.55 : 1 } }, translate('subagent.fallback.add')),
+                  fallbacks.length > 1 ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-fallback-sort', disabled: saving, onClick: () => setReorderMode((value) => !value), style: { fontSize: '12px', padding: '5px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsh-svc-border-strong)', background: reorderMode ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: reorderMode ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsh-svc-text)', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.55 : 1 } }, translate(reorderMode ? 'subagent.fallback.sort.done' : 'subagent.fallback.sort')) : null))
+              : null,
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },

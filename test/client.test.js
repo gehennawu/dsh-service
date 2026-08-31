@@ -4738,19 +4738,27 @@ test('subagent fallback list: load/add/move/remove rows and save ordered fallbac
   assert.equal(renderer.hasTest('subagent-fallback-block'), true)
   assert.equal(renderer.hasTest('subagent-fallback-empty'), true)
 
-  // 添加两条：默认取目录首项；第二条换供应商后模型联动。
+  // 添加两条：默认取目录首项；第二条换供应商后模型联动。非排序模式下无箭头。
   renderer.findByTestId('subagent-fallback-add').props.onClick()
   await renderer.flush()
   renderer.findByTestId('subagent-fallback-add').props.onClick()
   await renderer.flush()
   assert.equal(renderer.findByTestId('subagent-fallback-provider-0').props.value, 'deepseek-official')
+  assert.equal(renderer.hasTest('subagent-fallback-up-1'), false)
   renderer.findByTestId('subagent-fallback-provider-1').props.onChange({ target: { value: 'cpa' } })
   await renderer.flush()
   assert.equal(renderer.findByTestId('subagent-fallback-model-1').props.value, 'gpt-5.6-sol')
-  // 上移第二条 → 顺序交换。
+
+  // 调整排序：开启后出现箭头（非文字按钮），▲ 上移第二条 → 顺序交换；再点完成退出。
+  renderer.findByTestId('subagent-fallback-sort').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('subagent-fallback-up-1'), true)
   renderer.findByTestId('subagent-fallback-up-1').props.onClick()
   await renderer.flush()
   assert.equal(renderer.findByTestId('subagent-fallback-provider-0').props.value, 'cpa')
+  renderer.findByTestId('subagent-fallback-sort').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('subagent-fallback-up-1'), false)
   // 移除第二条（deepseek）→ 只剩 cpa 一条。
   renderer.findByTestId('subagent-fallback-remove-1').props.onClick()
   await renderer.flush()
