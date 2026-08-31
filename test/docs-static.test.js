@@ -29,6 +29,18 @@ test('README image references exist and screenshots ship in the npm package', ()
   assert.ok(packageJson.files.includes('screenshots'), 'package files must include screenshots used by the READMEs')
 })
 
+test('published browser entry stays at the DSH-standard package-root client.js', () => {
+  const packageJson = JSON.parse(read('package.json'))
+  assert.equal(packageJson.exports['./client'], './client.js')
+  assert.equal(packageJson.files.includes('client.js'), true)
+  assert.equal(packageJson.files.includes('src/client.js'), false)
+  assert.equal(packageJson.files.some((path) => path.startsWith('dist/')), false)
+  const source = read('src/client.js')
+  const artifact = read('client.js')
+  assert.match(artifact, /^window\.__ModuleLoader__\.load\(/)
+  assert.ok(artifact.length < source.length * 0.75, `generated client artifact should be at least 25% smaller (${artifact.length}/${source.length})`)
+})
+
 test('backup integrity and restore preflight are documented in both languages and shipped', () => {
   const zh = section(read('README.md'), '### 备份管理')
   const en = section(read('README.en.md'), '### Backup management')

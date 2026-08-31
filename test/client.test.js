@@ -18,7 +18,7 @@ function createRenderer(rpcCall, options = {}) {
   const sentNotifications = []
   const notificationInstances = []
   let focuses = 0
-  const storage = new Map()
+  const storage = new Map(Object.entries(options.initialStorage || {}))
   const featureListeners = new Set()
   let featureSettings = {
     modelUsage: true,
@@ -2562,10 +2562,10 @@ test('quota ring follows the session provider, renders the tightest window, and 
       }
     },
   }
-  const renderer = quotaRingRenderer(async (channel, endpoint) => {
+  const renderer = quotaRingRenderer(async (channel, endpoint, payload) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
     if (endpoint === 'quota') {
-      quotaCalls.push(Date.now())
+      quotaCalls.push(payload)
       return {
         ok: true,
         value: {
@@ -2610,7 +2610,7 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(circles.length, 2)
   const circumference = 2 * Math.PI * 5.5
   assert.ok(String(circles[1].props.strokeDasharray).startsWith(String((circumference * 85) / 100)))
-  assert.ok(quotaCalls.length >= 1)
+  assert.deepEqual(quotaCalls, [{ providers: ['opencode-go'] }], 'first ring request waits for and targets the resolved provider')
 
   // 点击：开面板 + 再发一次 quota RPC（宿主决定缓存还是上游）。
   const callsBeforeClick = quotaCalls.length
@@ -3839,6 +3839,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
     navButton('子代理'),
     navButton('通用设置'),
   ]
+  const nav = { querySelectorAll(selector) { return selector === 'button' ? navButtons : [] } }
 
   function assertMarked(button, attr) {
     assert.equal(button.attrs.has(attr), true)
@@ -3847,7 +3848,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
   const injectedStyles = []
   class FakeMutationObserver {
     constructor(callback) { this.callback = callback; observers.push(this) }
-    observe() {}
+    observe(target, options) { this.target = target; this.options = options }
     disconnect() {}
   }
   globalThis.MutationObserver = FakeMutationObserver
@@ -3855,6 +3856,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
     body: {},
     head: { appendChild(el) { injectedStyles.push(el.textContent) } },
     createElement() { return {} },
+    querySelector(selector) { return selector === '[role="dialog"] nav' ? nav : null },
     querySelectorAll(selector) {
       if (selector === '[role="dialog"] nav button') return navButtons
       const name = selector.slice(1, -1)
@@ -3873,7 +3875,12 @@ test('settings nav rows get icon markers by localized label and follow text chan
 
     // 首次同步：各行按本地化文案命中并打标；无关行不打。
     // v0.39：技能/子代理左列入口撤销后，只剩四个标记行；「子代理」是无关行不打标。
-    assert.ok(observers.length >= 1, 'expected a MutationObserver for settings nav marking')
+    const bodyObserver = observers.find((observer) => observer.target === globalThis.document.body && observer.options?.characterData !== true)
+    const navObserver = observers.find((observer) => observer.target === nav)
+    assert.ok(bodyObserver, 'expected body observer for settings nav discovery')
+    assert.ok(navObserver, 'expected scoped settings nav observer')
+    assert.deepEqual(bodyObserver.options, { childList: true, subtree: true }, 'settings nav discovery should ignore chat text mutations')
+    assert.deepEqual(navObserver.options, { childList: true, subtree: true, characterData: true }, 'localized text changes stay scoped to settings nav')
     assertMarked(navButtons[0], 'data-dsh-service-nav')
     assertMarked(navButtons[1], 'data-dsh-service-quota-nav')
     assertMarked(navButtons[2], 'data-dsh-service-restart-nav')
@@ -3881,7 +3888,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
     assert.equal(navButtons[4].attrs.size, 0)
 
     // 外壳重渲染（观察器重跑 sync）：文案未变则标记幂等保留。
-    for (const observer of observers) observer.callback([], undefined)
+    navObserver.callback([], undefined)
     assertMarked(navButtons[0], 'data-dsh-service-nav')
     assertMarked(navButtons[1], 'data-dsh-service-quota-nav')
 
@@ -4376,7 +4383,21 @@ test('describe dialog shows the panel-only disclaimer before saving a note', asy
   assert.match(renderer.findByTestId('skill-apply-done').children.join(''), /注释已保存/)
 })
 
-test('factory-level adopt restores a host-side running batch badge without visiting the skills tab', async () => {
+test('ordinary client startup skips skills batch recovery without a pending marker', async () => {
+  const fixture = createSkillsRpcFixture()
+  const originalHandler = fixture.handler
+  let statusCalls = 0
+  fixture.handler = async (channel, endpoint, payload) => {
+    if (endpoint === 'skills-batch-status') statusCalls += 1
+    return originalHandler(channel, endpoint, payload)
+  }
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  await renderer.flush()
+  assert.equal(statusCalls, 0)
+})
+
+test('a pending skills batch marker restores the host-side running badge without visiting the skills tab', async () => {
   const fixture = createSkillsRpcFixture()
   const originalHandler = fixture.handler
   let statusCalls = 0
@@ -4390,15 +4411,14 @@ test('factory-level adopt restores a host-side running batch badge without visit
     }
     return originalHandler(channel, endpoint, payload)
   }
-  const renderer = baseSkillRenderer(fixture)
+  const renderer = baseSkillRenderer(fixture, { initialStorage: { 'dsh-service-skills-batch-pending': 'true' } })
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
   await renderer.flush()
-  // 工厂启动即采纳：不进技能页，「技能」胶囊右上角也挂批量计数小徽标（done/total）。
   assert.equal(renderer.hasTest('skills-tab-badge'), true)
   assert.equal(renderer.findByTestId('skills-tab-badge').children[0], '1/3')
-  assert.ok(statusCalls >= 1)
+  assert.equal(statusCalls, 1)
   renderer.disposeFactory()
 })
 
@@ -5801,6 +5821,7 @@ test('session manager batch mode supports multi-select, actions, select all, cle
 
     assert.equal(renderer.hasTest('sessions-batch-toggle'), true, 'normal session list exposes batch selection')
     assert.equal(renderer.hasTest('sessions-select-session-archived'), false, 'row checkboxes stay hidden before entering batch mode')
+    assert.equal(renderer.findByTestId('sessions-row-session-archived').props.onClick, undefined, 'ordinary rows do not replace their explicit action buttons')
     await renderer.findByTestId('sessions-batch-toggle').props.onClick()
     await renderer.flush()
     assert.equal(renderer.findByTestId('sessions-batch-toggle').children[0], '退出批量')
@@ -5808,6 +5829,15 @@ test('session manager batch mode supports multi-select, actions, select all, cle
     assert.equal(renderer.hasTest('sessions-select-session-archived'), true)
     assert.equal(renderer.hasTest('sessions-row-view-session-archived'), false, 'batch mode hides per-row actions')
 
+    await renderer.findByTestId('sessions-row-session-archived').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, true, 'clicking anywhere on a batch row selects it')
+    await renderer.findByTestId('sessions-row-session-archived').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, false, 'clicking a selected batch row clears it')
+    let checkboxClickStopped = false
+    renderer.findByTestId('sessions-select-session-archived').props.onClick({ stopPropagation() { checkboxClickStopped = true } })
+    assert.equal(checkboxClickStopped, true, 'checkbox clicks do not bubble into the row and toggle twice')
     await renderer.findByTestId('sessions-select-session-archived').props.onChange({ target: { checked: true } })
     await renderer.flush()
     assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, true)

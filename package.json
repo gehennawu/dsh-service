@@ -4,7 +4,10 @@
   "description": "DSH Web 运维面板：安全重启、健康监控、备份和 Linux 权限维护。",
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "build:client": "node scripts/build-client.mjs",
+    "pretest": "npm run build:client",
+    "test": "node --test",
+    "prepack": "npm run build:client"
   },
   "main": "./index.js",
   "exports": {
@@ -58,5 +61,8 @@
       ],
       "platform": "web"
     }
+  },
+  "devDependencies": {
+    "terser": "^5.51.2"
   }
 }
