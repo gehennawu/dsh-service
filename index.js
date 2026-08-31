@@ -308,10 +308,11 @@ function fetchPublishedVersions(packageName) {
           const tags = {
             latest: normalizeTag(distTags.latest),
             next: normalizeTag(distTags.next),
+            alpha: normalizeTag(distTags.alpha),
           }
-          const versions = [tags.latest, tags.next].filter((version) => parseSemver(version) !== null)
+          const versions = [tags.latest, tags.next, tags.alpha].filter((version) => parseSemver(version) !== null)
           if (versions.length === 0) {
-            fail(new Error('npm 响应中没有有效的 latest 或 next 版本'))
+            fail(new Error('npm 响应中没有有效的 latest、next 或 alpha 版本'))
             return
           }
           const latest = versions.reduce((selected, version) => compareSemver(version, selected) > 0 ? version : selected)
@@ -4182,11 +4183,11 @@ function apply(ctx) {
         const [dshResult, pluginResult] = await updatePromise
         const dsh = dshResult.status === 'fulfilled'
           ? { current: dshVersion, latest: dshResult.value.latest, tags: dshResult.value.tags, upToDate: atLeastSemver(dshVersion, dshResult.value.latest), status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
-          : { current: dshVersion, latest: null, tags: { latest: null, next: null }, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
+          : { current: dshVersion, latest: null, tags: { latest: null, next: null, alpha: null }, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
         const pluginError = pluginResult.status === 'rejected' ? String(pluginResult.reason?.message || pluginResult.reason) : ''
         const plugin = pluginResult.status === 'fulfilled'
           ? { current: pluginVersion, latest: pluginResult.value.latest, tags: pluginResult.value.tags, upToDate: atLeastSemver(pluginVersion, pluginResult.value.latest), status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
-          : { current: pluginVersion, latest: null, tags: { latest: null, next: null }, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          : { current: pluginVersion, latest: null, tags: { latest: null, next: null, alpha: null }, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
         if (dsh.status === 'unavailable' && plugin.status === 'unavailable') throw dshResult.reason
         const value = { checkedAt: now, cached: false, dsh, plugin }
         updateCache = { ok: true, value, checkedAt: now, ttl: 10 * 60 * 1000 }

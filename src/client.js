@@ -450,6 +450,7 @@ window.__ModuleLoader__.load({
       'update.details.latest': '最新版本：{version}',
       'update.channelStable': '正式版',
       'update.channelPreview': '预览版',
+      'update.channelAlpha': 'Alpha 版',
       'update.details.close': '关闭',
       'update.upgrade': '升级插件',
       'update.upgrading': '升级中…',
@@ -1122,6 +1123,7 @@ window.__ModuleLoader__.load({
       'update.details.latest': 'Latest version: {version}',
       'update.channelStable': 'Stable',
       'update.channelPreview': 'Preview',
+      'update.channelAlpha': 'Alpha',
       'update.details.close': 'Close',
       'update.upgrade': 'Upgrade plugin',
       'update.upgrading': 'Upgrading…',
@@ -2254,13 +2256,14 @@ window.__ModuleLoader__.load({
         return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline', marginLeft: '10px' } }, label)
       }
       const channelLine = (translate, kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap', lineHeight: 1.7 } },
-        kind === 'latest' ? translate('update.channelStable') : translate('update.channelPreview'),
+        kind === 'latest' ? translate('update.channelStable') : kind === 'next' ? translate('update.channelPreview') : translate('update.channelAlpha'),
         ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}`, style: { marginLeft: '4px' } }, version || '—'),
         siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
         siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
       const channelLines = (translate, tags) => React.createElement('div', { style: { margin: '4px 0', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
         channelLine(translate, 'latest', tags && tags.latest),
-        channelLine(translate, 'next', tags && tags.next))
+        channelLine(translate, 'next', tags && tags.next),
+         ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
 
       function ServiceOverlay() {
         const recovery = useRecoveryState()
@@ -6228,7 +6231,7 @@ window.__ModuleLoader__.load({
                     : null)))
             : null))
 
-        // 正式/预览通道两行信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住）。
+        // 正式/预览/Alpha 通道信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住）。
         // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换展开/收起。
         const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
           React.createElement('path', { d: 'M9 6l6 6-6 6' }))

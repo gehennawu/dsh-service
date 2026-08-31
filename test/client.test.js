@@ -1207,7 +1207,7 @@ test('settings mount automatically shows separate DSH and plugin update states w
     if (endpoint === 'check-update') {
       updateCalls += 1
       return { ok: true, value: {
-        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: '0.2.0' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: '0.2.0', alpha: '0.3.0-alpha.1' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
         plugin: { current: '0.9.0', latest: '0.9.0', tags: { latest: '0.9.0', next: '0.9.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
       } }
     }
@@ -1231,13 +1231,16 @@ test('settings mount automatically shows separate DSH and plugin update states w
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /当前版本：0\.1\.0-rc\.7.*最新版本：0\.2\.0.*正式版 0\.1\.0-rc\.7.*预览版 0\.2\.0/)
+  assert.match(renderer.text('settings.section'), /当前版本：0\.1\.0-rc\.7.*最新版本：0\.2\.0.*正式版 0\.1\.0-rc\.7.*预览版 0\.2\.0.*Alpha 版 0\.3\.0-alpha\.1/)
   assert.doesNotMatch(renderer.text('shell.overlay'), /正式版|预览版/, 'no overlay popup involved')
   assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
   assert.equal(renderer.findByTestId('version-dsh-channel-next-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
   assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.1.0-rc.7')
   assert.equal(renderer.findByTestId('version-dsh-channel-next-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.2.0')
-  assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 6, 'two channel lines with number + npmjs + npmmirror each')
+  assert.equal(renderer.findByTestId('version-dsh-channel-alpha').children[0], '0.3.0-alpha.1')
+   assert.equal(renderer.findByTestId('version-dsh-channel-alpha-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.3.0-alpha.1')
+   assert.equal(renderer.findByTestId('version-dsh-channel-alpha-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.3.0-alpha.1')
+   assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 9, 'three channel lines with number + npmjs + npmmirror each')
 
   // 再点状态文本收起，行内信息消失
   await renderer.findButton('有新版本：0.2.0').props.onClick()
