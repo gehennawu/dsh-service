@@ -5927,18 +5927,17 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
     assert.notEqual(btn2, undefined, 'observer must re-mount after slot recreation')
     assert.notEqual(btn2, btn)
 
-    // 官方回合导航条（0.1.2-alpha.2 TurnNavigator，@container ≤900px 隐藏）可见时让位：
-    // 官方 rail 可点击跳转 → 自有上箭头不再重复提供跳转（利用官方导航条）。
-    // 引擎只认「计算样式非 none」：桩里 getComputedStyle 缺席时视为不可见、按钮保留。
+    // 官方回合导航条（0.1.2-alpha.2 TurnNavigator，@container ≤900px 隐藏）共存：
+    // 曾实验「rail 可见即让位」被用户实测否决（官方 rail 回合级跳转、本按钮逐条
+    // 步进，语义位置都不同）→ 上箭头显隐只由可达目标驱动，rail 在场不隐藏按钮；
+    // 探针在无 getComputedStyle 的桩环境自然返回 false，行为与真机一致。
     scroller.scrollTop = 5000
     updateFlows() // 三条用户行 flowTop -2000/-1000/-100 → 有可跳目标
     const rail = new FakeElement('div'); rail.className = 'eGxaPq_rail'; scroller.appendChild(rail)
     globalThis.getComputedStyle = () => ({ display: 'flex' })
     for (const observer of observers) observer.callback([], () => {})
-    assert.equal(btn2.style.display, 'none', 'official turn navigator visible → own up-arrow yields')
-    globalThis.getComputedStyle = () => ({ display: 'none' })
-    for (const observer of observers) observer.callback([], () => {})
-    assert.equal(btn2.style.display, 'flex', 'official rail hidden (narrow container) → own up-arrow returns')
+    assert.equal(btn2.style.display, 'flex', 'official turn navigator visible must NOT hide the up-arrow (coexists)')
+    assert.equal(btn2.isConnected, true)
     delete globalThis.getComputedStyle
     rail.remove()
 

@@ -7655,10 +7655,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               return node !== null && node !== document.documentElement ? node : slot.parentNode
             } catch (_) { return null }
           },
-          /** 官方回合导航条（0.1.2-alpha.2 TurnNavigator，聊天右缘 rail，点击跳转回合）。
-           *  官方用 @container (width<=900px) 把它整条藏掉（移动端/窄窗永不出现）——
-           *  只有「计算样式非 none」（rail 真正可见）才算官方导航在位，届时自有
-           *  上箭头让位，避免同一跳转职责重复（用户点名的利用方向）。 */
+          /** 官方回合导航条（0.1.2-alpha.2 新增 TurnNavigator，聊天右缘 rail）。
+           *  官方双门控：已加载回合 <2 不渲染 + @container (width<=900px) 整条隐藏
+           *  ——移动端/窄窗永远没有官方导航。v1.1.1 曾做过「rail 可见时上箭头让位」，
+           *  用户实测反馈否决：官方 rail 是回合级跳转（仅桌面宽窗），上箭头是
+           *  「上一条用户回复」逐条步进（全平台），语义不同、位置垂直错开，共存不冲突。
+           *  保留探测能力仅供调试/未来参考，不再参与显隐。 */
           officialTurnNavigatorVisible: (scroll) => {
             try {
               if (typeof getComputedStyle !== 'function') return false
@@ -7699,7 +7701,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
        * 点击按官方 data-chat-flow-kind="user" 行定位上一条用户回复（流程坐标
        * flowTop = rect.top - scrollport.rect.top，与官方 pagingAnchor 同系），
        * 逐击向上步进；程序化滚动天然受沉浸引擎 800ms 手势窗口免疫。
-       * 0.1.2-alpha.2 起官方回合导航条（TurnNavigator rail）可见时本按钮让位。
+       * 0.1.2-alpha.2 官方自带回合导航条（TurnNavigator rail，桌面宽窗可见）：
+       * 它是回合级跳转，本按钮是「上一条用户回复」逐条步进——语义位置都不同，
+       * 历来共存；曾试过「rail 可见即让位」，用户实测否决后回退共存。
        * 与 mobileAdaptation 无关：不依赖 matchMedia、不引用 any 移动属性。
        * v0.36.4 三处真机反馈修正：
        *  ① 图标严格克隆官方按钮内 svg（旋转 180°），不再手绘近似；
@@ -7729,8 +7733,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
          * 按钮显隐（v0.36.5 用户点名：达到最顶部后隐藏）：
          * 还有「可跳的上一条」（flowTop<4 的 user 行）或还有官方「加载更早」
          * （点了能加载出更早目标）→ 显示；两者皆无（真正到顶且历史已加载完）→ 隐藏。
-         * 0.1.2-alpha.2 起官方自带回合导航条（聊天右缘 rail）：它可见时跳转职责
-         * 官方已接管，自有上箭头让位隐藏（窄于 900px 容器官方整条隐藏，本按钮复职）。
+         * v1.1.1 曾加「官方回合导航条可见即让位」：实测被用户否决——官方 rail 是
+         * 回合级跳转（≤900px 容器整条隐藏，移动端永远没有），上箭头是「上一条
+         * 用户回复」逐条步进，语义与位置都不同，两代共存，显隐只由可达目标驱动。
          */
         const updateVisibility = () => {
           if (state.btn === null || !state.btn.isConnected) return
@@ -7744,8 +7749,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               if (nav.flowTopOf(scroll, row) < 4) { hasTarget = true; break }
             }
             const hasOlder = nav.loadOlderButton(scroll) !== null
-            const officialRail = nav.officialTurnNavigatorVisible(scroll)
-            state.btn.style.display = officialRail || (!hasTarget && !hasOlder) ? 'none' : 'flex'
+            state.btn.style.display = hasTarget || hasOlder ? 'flex' : 'none'
           } catch (_) {}
         }
 
