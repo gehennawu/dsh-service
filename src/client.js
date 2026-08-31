@@ -162,6 +162,9 @@ window.__ModuleLoader__.load({
       'subagent.fallback.empty': '未添加回退：第一路由不可用时子代理回落到原生继承。',
       'subagent.fallback.limit': '已达上限（{max} 个）',
       'subagent.error.invalid-fallback-route': '回退条目不在宿主清单内，请重新选择',
+      'subagent.turnTail.label': '子代理模型：',
+      'subagent.turnTail.count': '子代理 ×{count}',
+      'subagent.turnTail.unknown': '（模型未记录）',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
       'skills.error.network': '网络错误，请稍后重试',
@@ -840,6 +843,9 @@ window.__ModuleLoader__.load({
       'subagent.fallback.empty': 'No fallbacks: delegations fall back to native inheritance when the primary route is unavailable.',
       'subagent.fallback.limit': 'Limit reached ({max})',
       'subagent.error.invalid-fallback-route': 'Fallback entry is not in the host catalog, please choose again',
+      'subagent.turnTail.label': 'Subagent models: ',
+      'subagent.turnTail.count': '{count} subagent',
+      'subagent.turnTail.unknown': ' (models not recorded)',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
       'skills.error.network': 'Network error, try again later',
@@ -1489,6 +1495,57 @@ window.__ModuleLoader__.load({
 
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
 
+    // ── v1.2 子代理模型可见性：回合尾行的纯逻辑（模块级便于单测）──────────────
+    // selector 只读官方 turn-process 数据（编码签名串 `turn|…|subagentCount`，第 9 段是
+    // subagentCount、第 1 段是 turn），subagentCount>0 才认领回合——避免在无子代理的回合
+    // 抢占链槽（better-sidebar 的 produced-files 行 priority -1 先到先得，本条目让位）。
+    function selectSubagentModelsTurnTail(owner) {
+      const signature = owner?.turn?.data?.get?.('turn-process')
+      if (typeof signature !== 'string') return null
+      const parts = signature.split('|')
+      // 空首段（畸形签名）视为不可信：Number('')===0 会误认领 turn 0。
+      if (parts[0] === '') return null
+      const turn = Number(parts[0])
+      const subagentCount = Number(parts[8])
+      if (!Number.isFinite(turn) || !Number.isFinite(subagentCount) || subagentCount <= 0) return null
+      return { turn, subagentCount }
+    }
+
+    /** 按 provider/model/effort 聚合记录为展示条目（保持首个出现的顺序，同名路由计数）。 */
+    function aggregateSubagentRoutes(records) {
+      if (!Array.isArray(records)) return []
+      const entries = []
+      const index = new Map()
+      for (const record of records) {
+        if (record === null || typeof record !== 'object') continue
+        const provider = typeof record.provider === 'string' && record.provider !== '' ? record.provider : undefined
+        const model = typeof record.model === 'string' && record.model !== '' ? record.model : undefined
+        if (provider === undefined || model === undefined) continue
+        const effort = typeof record.reasoningEffort === 'string' && record.reasoningEffort !== '' ? record.reasoningEffort : undefined
+        const key = provider + '\u0000' + model + '\u0000' + (effort ?? '')
+        let entry = index.get(key)
+        if (entry === undefined) {
+          entry = { provider, model, ...(effort !== undefined ? { reasoningEffort: effort } : {}), count: 0 }
+          index.set(key, entry)
+          entries.push(entry)
+        }
+        entry.count += 1
+      }
+      return entries
+    }
+
+    /** 条目 → 一行文本：`provider/model (effort)`，计数>1 才带 ` ×n`，条目间 ` · `。 */
+    function subagentRouteListText(entries) {
+      return (Array.isArray(entries) ? entries : []).map((entry) => {
+        if (entry === null || typeof entry !== 'object') return ''
+        const provider = typeof entry.provider === 'string' ? entry.provider : ''
+        const model = typeof entry.model === 'string' ? entry.model : ''
+        const effort = typeof entry.reasoningEffort === 'string' && entry.reasoningEffort !== '' ? entry.reasoningEffort : undefined
+        const count = Number.isFinite(entry.count) && entry.count > 1 ? ` ×${entry.count}` : ''
+        return `${provider}/${model}${effort !== undefined ? ` (${effort})` : ''}${count}`
+      }).filter((part) => part !== '').join(' · ')
+    }
+
     function normalizeRpcResult(result) {
       if (!result || result.ok !== false || typeof result.error !== 'object' || result.error === null) return result
       const detail = typeof result.error.details?.detail === 'string' ? result.error.details.detail : result.detail
@@ -1499,6 +1556,96 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
       const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload))
+
+      // ── v1.2 子代理派发记录缓存：按父会话聚合、turn 索引；TTL 10s 按会话单飞去重 ──
+      // 宿主记录在宿主内存（进程重启即清、页面刷新不丢）；拉取失败进冷却并保留旧缓存（fail-open，
+      // 渲染已有行不闪断）。同一会话连续回合尾行共享一次请求。
+      const DISPATCH_TTL_MS = 10 * 1000
+      const dispatchByParent = new Map()
+      const dispatchFetchedAt = new Map()
+      const dispatchInflight = new Map()
+      const dispatchRecordsFor = (sessionId) => {
+        const byTurn = dispatchByParent.get(sessionId)
+        return byTurn === undefined ? new Map() : byTurn
+      }
+      const refreshSubagentDispatches = (sessionId) => {
+        if (typeof sessionId !== 'string' || sessionId === '') return Promise.resolve(new Map())
+        const now = Date.now()
+        if (now - (dispatchFetchedAt.get(sessionId) ?? 0) < DISPATCH_TTL_MS) return Promise.resolve(dispatchRecordsFor(sessionId))
+        let inflight = dispatchInflight.get(sessionId)
+        if (inflight === undefined) {
+          inflight = rpcCall('subagent-dispatches', { parentId: sessionId, limit: 200 }).then((result) => {
+            const records = result && result.ok === true && Array.isArray(result.value?.records) ? result.value.records : []
+            const byTurn = new Map()
+            for (const record of records) {
+              const turn = record !== null && typeof record === 'object' && typeof record.turn === 'number' && Number.isFinite(record.turn) ? record.turn : undefined
+              if (turn === undefined) continue
+              let list = byTurn.get(turn)
+              if (list === undefined) {
+                list = []
+                byTurn.set(turn, list)
+              }
+              list.push(record)
+            }
+            dispatchByParent.set(sessionId, byTurn)
+            dispatchFetchedAt.set(sessionId, Date.now())
+            return byTurn
+          }).catch(() => {
+            // 失败进冷却：避免一回合内同一会话渲染风暴；旧缓存原样保留。
+            dispatchFetchedAt.set(sessionId, Date.now())
+            return dispatchRecordsFor(sessionId)
+          })
+          dispatchInflight.set(sessionId, inflight)
+          inflight.finally(() => dispatchInflight.delete(sessionId)).catch(() => {})
+        }
+        return inflight
+      }
+      // 对话页回合尾行组件：matched 由链槽裁决注入（{turn, subagentCount}），
+      // 标准 props 含 sessionId；数据按 (sessionId, turn) 拉取后渲染一行小字。
+      function SubagentModelsTurnTail(props) {
+        const translate = useTranslation()
+        const [text, setText] = useState('')
+        useEffect(() => {
+          let cancelled = false
+          const turn = props.matched && typeof props.matched.turn === 'number' ? props.matched.turn : undefined
+          const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
+          if (turn === undefined || sessionId === undefined) {
+            setText('')
+            return undefined
+          }
+          refreshSubagentDispatches(sessionId).then((byTurn) => {
+            if (cancelled) return
+            const entries = aggregateSubagentRoutes(byTurn.get(turn))
+            if (entries.length === 0) {
+              const count = Number.isFinite(props.matched.subagentCount) && props.matched.subagentCount > 0 ? String(props.matched.subagentCount) : String(byTurn.get(turn)?.length ?? 1)
+              setText(`${translate('subagent.turnTail.count', { count })}${translate('subagent.turnTail.unknown')}`)
+              return
+            }
+            setText(`${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
+          }).catch(() => {
+            if (!cancelled) setText('')
+          })
+          return () => {
+            cancelled = true
+          }
+        }, [props.matched && props.matched.turn, props.sessionId])
+        if (text === '') return null
+        return React.createElement('div', {
+          'data-testid': 'subagent-models-turn-tail',
+          'data-dsh-service-subagent-models': true,
+          style: {
+            fontSize: '12px',
+            lineHeight: '18px',
+            color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
+            padding: '2px 0',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: '100%',
+          },
+        }, text)
+      }
+
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
@@ -6622,6 +6769,25 @@ window.__ModuleLoader__.load({
         return () => { unsubscribe(); if (dispose !== null) dispose() }
       })
 
+      // ─── v1.2 子代理模型可见性：对话页回合尾模型行 ─────────────────────────
+      // chain 槽（conversation.chat.turnTail）priority 0：selector 只在官方 turn-process
+      // 数据声明 subagentCount>0 时认领，无子代理回合零开销；better-sidebar 的 produced-files
+      // 行（priority -1）同回合先到先得，模型行让位不冲突。条目随 subagentRoute 开关热注销。
+      ctx.slots.inject('conversation.chat.turnTail', () => {
+        let dispose = null
+        const sync = () => {
+          if (dispose !== null) { dispose(); dispose = null }
+          if (!featureEnabled('subagentRoute')) return
+          dispose = ctx.slots.register(
+            { name: 'conversation.chat.turnTail', id: 'dsh-service-subagent-models', select: selectSubagentModelsTurnTail },
+            (props) => React.createElement(SubagentModelsTurnTail, props),
+          )
+        }
+        sync()
+        const unsubscribe = featureScope.subscribe(sync)
+        return () => { unsubscribe(); if (dispose !== null) dispose() }
+      })
+
       // ─── 移动端适配引擎（v0.30）─────────────────────────────────────────
       // 断点与官方外壳一致取 <1024px（AppFrame 的 SIDEBAR_AUTO_COLLAPSE）。
       // 全部规则作用域于 html[data-dshsvc-mobile] 属性下；抽屉开合走官方
@@ -7972,6 +8138,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
     exports.inject = inject
     exports.apply = apply
+    // v1.2 回合尾模型行的纯逻辑出口：仅供自动化测试直达，运行时无消费者。
+    exports.subagentTurnTail = { aggregateSubagentRoutes, selectSubagentModelsTurnTail, subagentRouteListText }
     return module.exports
   },
 })

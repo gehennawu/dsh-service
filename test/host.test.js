@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -1100,7 +1100,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -4630,6 +4630,153 @@ test('createQuotaThrottle.peek：无状态返回 undefined 且不建条目；有
   const fresh = createQuotaThrottle()
   assert.equal(fresh.peek('anything'), undefined)
   assert.equal(fresh.peek('anything'), undefined)
+})
+
+test('buildSubagentDispatchRecord：routed/inherited/default/跳过四态与 turn 扫描', () => {
+  const parent = {
+    session: {
+      id: 'parent-1',
+      events: [
+        { type: 'turn/start', data: { turn: 0 } },
+        { type: 'step/start', data: { turn: 0, step: 0 } },
+        { type: 'tool/call', data: { turn: 0, step: 0 } },
+        { type: 'turn/end', data: { turn: 0, reason: { kind: 'completed' } } },
+        { type: 'tool/call', data: { turn: 3, step: 1 } },
+      ],
+    },
+  }
+  // routed：注入值优先，effort 保留，turn 取最近带数字 turn 的事件（3）。
+  const routed = buildSubagentDispatchRecord({ id: 'child-1' }, parent, { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', parent })
+  assert.equal(routed.source, 'routed')
+  assert.equal(routed.provider, 'cpa')
+  assert.equal(routed.model, 'gpt-5.6-luna')
+  assert.equal(routed.reasoningEffort, 'xhigh')
+  assert.equal(routed.turn, 3)
+  assert.equal(routed.childId, 'child-1')
+  assert.equal(routed.parentId, 'parent-1')
+  assert.ok(Number.isFinite(routed.at))
+  // error 事件尾巴上的对象没有数字 turn → 回退扫描仍能找到 3。
+  const routedWithErrorTail = buildSubagentDispatchRecord({ id: 'child-1' }, {
+    session: { id: 'parent-1', events: [...parent.session.events, { type: 'compaction/start', data: { compactionId: 'x' } }] },
+  }, { provider: 'cpa', model: 'gpt-5.6-luna' })
+  assert.equal(routedWithErrorTail.turn, 3)
+  // explicit：请求自带 route（source 来自 dispatch.source）。
+  const explicit = buildSubagentDispatchRecord({ id: 'child-2' }, parent, { source: 'explicit', provider: 'openrouter', model: 'ox-alpha' })
+  assert.equal(explicit.source, 'explicit')
+  assert.equal(explicit.provider, 'openrouter')
+  assert.equal(explicit.reasoningEffort, undefined)
+  // inherited：无注入时读父会话 header；header 读取抛错不炸。
+  const inherited = buildSubagentDispatchRecord({ id: 'child-3' }, {
+    session: { id: 'parent-1', events: [], requestHeader: () => ({ config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }) },
+  }, { parent: {} }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config })
+  assert.equal(inherited.source, 'inherited')
+  assert.equal(inherited.provider, 'deepseek-official')
+  assert.equal(inherited.model, 'deepseek-v4-flash')
+  const headerThrow = buildSubagentDispatchRecord({ id: 'child-4' }, { session: { id: 'parent-1' } }, {}, { readParentHeader: () => { throw new Error('boom') } })
+  assert.equal(headerThrow, undefined)
+  // default：header 空时读 agent-default-model 选择。
+  const byDefault = buildSubagentDispatchRecord({ id: 'child-5' }, { session: { id: 'parent-1' } }, {}, {
+    readDefaultSelection: () => ({ provider: 'opencode-go', model: 'deepseek-v4-flash' }),
+  })
+  assert.equal(byDefault.source, 'default')
+  assert.equal(byDefault.provider, 'opencode-go')
+  // 全空跳过：无注入、无 header、无默认选择。
+  assert.equal(buildSubagentDispatchRecord({ id: 'child-6' }, { session: { id: 'parent-1' } }, {}, {}), undefined)
+  // 缺 id / 非字符串：跳过。
+  assert.equal(buildSubagentDispatchRecord(null, parent, { provider: 'cpa', model: 'm' }), undefined)
+  assert.equal(buildSubagentDispatchRecord({ id: '' }, parent, { provider: 'cpa', model: 'm' }), undefined)
+  assert.equal(buildSubagentDispatchRecord({ id: 'c' }, { session: {} }, { provider: 'cpa', model: 'm' }), undefined)
+  // 非法 events / 超长扫描：异常安全（scanLimit 0 视为非法回落默认 50）。
+  assert.equal(lastSubagentTurn({ session: { events: 'not-an-array' } }), undefined)
+  assert.equal(lastSubagentTurn({ session: { events: [{ data: { turn: 1 } }] } }, 0), 1)
+  assert.equal(lastSubagentTurn({ session: { events: [{ data: { turn: 1 } }, { data: { turn: 5 } }] } }, 1), 5)
+  assert.equal(lastSubagentTurn({ session: { events: [{ data: { turn: 5 } }] } }, 5), 5)
+})
+
+test('pushSubagentDispatchRecord/listSubagentDispatches：childId 去重、环形上限、过滤与分页', () => {
+  const ring = { order: [], byChild: new Map() }
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(pushSubagentDispatchRecord(ring, { childId: `c${index}`, parentId: 'p1', provider: 'a', model: 'm1', turn: 1, at: index }), true)
+  }
+  // 去重：同 childId 不再插入，ring 保持计数。
+  assert.equal(pushSubagentDispatchRecord(ring, { childId: 'c2', parentId: 'p1', provider: 'b', model: 'm2', turn: 2, at: 9 }), false)
+  assert.equal(ring.order.length, 5)
+  assert.equal(ring.byChild.get('c2').provider, 'a')
+  // 超限丢最旧（丢 c0）。
+  assert.equal(pushSubagentDispatchRecord(ring, { childId: 'c5', parentId: 'p2', provider: 'c', model: 'm3', turn: 3, at: 10 }, 5), true)
+  assert.equal(ring.order.length, 5)
+  assert.equal(ring.byChild.has('c0'), false)
+  // 过滤：parentId + turn；newest-first 顺序。
+  const all = listSubagentDispatches(ring)
+  assert.deepEqual(all.map((record) => record.childId), ['c5', 'c4', 'c3', 'c2', 'c1'])
+  assert.deepEqual(listSubagentDispatches(ring, { parentId: 'p2' }).map((record) => record.childId), ['c5'])
+  assert.deepEqual(listSubagentDispatches(ring, { turn: 1 }).map((record) => record.childId), ['c4', 'c3', 'c2', 'c1'])
+  assert.deepEqual(listSubagentDispatches(ring, { parentId: 'p1', turn: 1 }).map((record) => record.childId), ['c4', 'c3', 'c2', 'c1'])
+  // 分页：limit 生效且封顶；非法 limit 回默认。
+  assert.equal(listSubagentDispatches(ring, { limit: 2 }).length, 2)
+  const huge = listSubagentDispatches(ring, { limit: 9999 })
+  assert.equal(huge.length, 5)
+  assert.equal(listSubagentDispatches(ring, { limit: -1 }).length, 5)
+  assert.equal(listSubagentDispatches(ring, { limit: 'nope' }).length, 5)
+})
+
+test('subagent-dispatches 端点：seam 记录 routed/explicit 两态、按父会话回合过滤、功能门与 disposer 后停止记录', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-dispatches-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['cpa', 'CPA', ['gpt-5.6-luna']], ['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  llm.setModelInfo('cpa', 'gpt-5.6-luna', { id: 'gpt-5.6-luna', name: 'Luna', reasoning: { efforts: [{ id: 'xhigh', name: 'XHigh' }], defaultEffort: 'xhigh' } })
+  const agentDefaultModel = { currentSelection: () => ({ provider: 'opencode-go', model: 'deepseek-v4-flash' }) }
+  let emitCreated
+  const { registry } = fakeSubagents((agent) => emitCreated?.(agent))
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm, agentDefaultModel }, env: { DSH_HOME: dshHome } })
+  emitCreated = (agent) => { void host.fire('agent/created', { agent }) }
+  const parentWithTurn = { session: { id: 'parent-1', events: [{ type: 'tool/call', data: { turn: 2, step: 0 } }] } }
+
+  // 功能关闭：记录与端点都门住。
+  await host.updateFeatureSettings({ subagentRoute: false })
+  await registry.start('spawn', { label: 'disabled', parent: parentWithTurn })
+  assert.deepEqual(await host.handler('subagent-dispatches', {}), { ok: false, error: 'feature-disabled' })
+  await host.updateFeatureSettings({ subagentRoute: true })
+
+  // custom 路由注入：记录 source=routed + effort + turn。
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh' })
+  await registry.start('spawn', { label: 'a', parent: parentWithTurn })
+  let snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.value.records.length, 1)
+  const routed = snapshot.value.records[0]
+  assert.equal(routed.provider, 'cpa')
+  assert.equal(routed.model, 'gpt-5.6-luna')
+  assert.equal(routed.reasoningEffort, 'xhigh')
+  assert.equal(routed.source, 'routed')
+  assert.equal(routed.turn, 2)
+  assert.equal(routed.parentId, 'parent-1')
+  assert.equal(routed.childId, 'agent-3')
+
+  // 显式路由（未注入）：source=explicit。
+  await registry.start('spawn', { label: 'b', parent: parentWithTurn, agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } })
+  snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
+  assert.equal(snapshot.value.records.length, 2)
+  assert.equal(snapshot.value.records[0].source, 'explicit')
+  assert.equal(snapshot.value.records[0].provider, 'deepseek-official')
+
+  // 功能关闭期间的派生没有记录（门住时 dispatch 无注入且不建上下文）。
+  snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
+  assert.equal(snapshot.value.records.length, 2)
+
+  // 过滤：无关父会话 / turn 命中 / turn 未命中。
+  snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-other' })
+  assert.equal(snapshot.value.records.length, 0)
+  snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1', turn: 2 })
+  assert.equal(snapshot.value.records.length, 2)
+  snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1', turn: 99 })
+  assert.equal(snapshot.value.records.length, 0)
+
+  // disposer 后 seam 还原、监听摘除：不再新增记录，已有记录仍可读。
+  host.dispose()
+  await registry.start('spawn', { label: 'c', parent: parentWithTurn })
+  const afterDispose = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
+  assert.equal(afterDispose.value.records.length, 2)
 })
 
 test('subagent-route-save：回退列表白名单校验、持久化与 follow 快照回读', async (t) => {

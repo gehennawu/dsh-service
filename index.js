@@ -166,6 +166,11 @@ const MAX_SUBAGENT_ROUTE_FIELD = 256
 // 子代理回退（v1.1）：候选上限；「额度态不可服务」的 lastError 码集——配置/凭据/上游 4xx 类
 // 「已知现在不能用」；network/timeout/5xx 等瞬态不在此列（回退要的是确定性故障而非一次抖动）。
 const SUBAGENT_ROUTE_FALLBACK_MAX = 10
+// 子代理派发记录（v1.2）：内存环形上限与端点单页上限。记录不落盘——宿主进程重启即清，
+// 页面刷新不丢（记录在宿主内存）；客户端按 (parentSessionId, turn) 匹配回合尾行。
+const SUBAGENT_DISPATCH_MAX = 400
+const SUBAGENT_DISPATCH_PAGE_DEFAULT = 50
+const SUBAGENT_DISPATCH_PAGE_MAX = 200
 const QUOTA_UNUSABLE_ERROR_RE = /^(credential-missing|credential-rejected|credentials-unavailable|no-base-url|no-subscription|host-not-pinned|mgmt-disabled|transport-unavailable|bad-payload)/i
 const QUOTA_UNUSABLE_STATUS_RE = /^(?:http-status|upstream-status):4\d\d$/i
 
@@ -3077,6 +3082,109 @@ function resolveSubagentInjection(request, config, options = {}) {
   return undefined
 }
 
+// ── 子代理派发记录（v1.2）：创建时「实际生效路由」快照 ────────────────────────
+// 数据面三态：routed=插件注入 / inherited=父会话最近请求路由 / default=agent-default-model。
+// 纯函数便于测试；错误一律 fail-closed——记录失败绝不影响子代理派生本体。
+
+/** 子代理派发记录：childId 去重键 + 生效路由 + 父会话创建时所在回合。 */
+function buildSubagentDispatchRecord(agent, parent, dispatch, options = {}) {
+  const childId = agent?.id
+  const parentId = parent?.session?.id
+  if (typeof childId !== 'string' || childId === '' || typeof parentId !== 'string' || parentId === '') return undefined
+  const providedProvider = typeof dispatch?.provider === 'string' && dispatch.provider !== '' ? dispatch.provider : undefined
+  const providedModel = typeof dispatch?.model === 'string' && dispatch.model !== '' ? dispatch.model : undefined
+  const providedSource = providedProvider !== undefined && providedModel !== undefined ? (dispatch?.source === 'explicit' ? 'explicit' : 'routed') : undefined
+  const reasoningEffort = typeof dispatch?.reasoningEffort === 'string' && dispatch.reasoningEffort !== '' ? dispatch.reasoningEffort : undefined
+  let provider = providedProvider
+  let model = providedModel
+  let source = providedSource
+  if (source === undefined) {
+    let header
+    try {
+      header = options.readParentHeader?.(parent)
+    } catch (_) {
+      header = undefined
+    }
+    if (typeof header?.provider === 'string' && header.provider !== '' && typeof header?.model === 'string' && header.model !== '') {
+      provider = header.provider
+      model = header.model
+      source = 'inherited'
+    }
+  }
+  if (source === undefined) {
+    let selection
+    try {
+      selection = options.readDefaultSelection?.()
+    } catch (_) {
+      selection = undefined
+    }
+    if (typeof selection?.provider === 'string' && selection.provider !== '' && typeof selection?.model === 'string' && selection.model !== '') {
+      provider = selection.provider
+      model = selection.model
+      source = 'default'
+    }
+  }
+  if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') return undefined
+  const record = { childId, parentId, provider, model, source, at: Date.now() }
+  let turn
+  try {
+    turn = lastSubagentTurn(parent, options.scanLimit)
+  } catch (_) {
+    turn = undefined
+  }
+  if (typeof turn === 'number' && Number.isFinite(turn)) record.turn = turn
+  if (reasoningEffort !== undefined) record.reasoningEffort = reasoningEffort
+  return record
+}
+
+/** 父会话事件尾向上扫最近一条带数字 `data.turn` 的事件（≤scanLimit 条）；无则 undefined。 */
+function lastSubagentTurn(parent, scanLimit = 50) {
+  const events = parent?.session?.events
+  if (!Array.isArray(events)) return undefined
+  const limit = Number.isFinite(scanLimit) && scanLimit > 0 ? scanLimit : 50
+  const from = Math.max(0, events.length - limit)
+  for (let index = events.length - 1; index >= from; index -= 1) {
+    const data = events[index]?.data
+    if (data !== null && typeof data === 'object' && typeof data.turn === 'number' && Number.isFinite(data.turn)) return data.turn
+  }
+  return undefined
+}
+
+/** 派发记录环形容器：childId 去重、超限丢最旧。返回是否新插入。 */
+function pushSubagentDispatchRecord(ring, record, max = SUBAGENT_DISPATCH_MAX) {
+  const order = ring.order
+  const byChild = ring.byChild
+  if (order.length >= max && !byChild.has(record.childId)) {
+    const oldest = order.shift()
+    if (oldest !== undefined) byChild.delete(oldest)
+  }
+  if (byChild.has(record.childId)) return false
+  byChild.set(record.childId, record)
+  order.push(record.childId)
+  return true
+}
+
+/** 只读过滤：按父会话/回合截取 newest-first 页面。 */
+function listSubagentDispatches(ring, payload = {}) {
+  const parentId = typeof payload?.parentId === 'string' && payload.parentId !== '' ? payload.parentId : undefined
+  const turn = typeof payload?.turn === 'number' && Number.isFinite(payload.turn) ? payload.turn : undefined
+  const limit = Math.min(
+    SUBAGENT_DISPATCH_PAGE_MAX,
+    typeof payload?.limit === 'number' && Number.isFinite(payload.limit) && payload.limit > 0 ? Math.floor(payload.limit) : SUBAGENT_DISPATCH_PAGE_DEFAULT,
+  )
+  const records = []
+  const order = ring.order
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const record = ring.byChild.get(order[index])
+    if (record === undefined) continue
+    if (parentId !== undefined && record.parentId !== parentId) continue
+    if (turn !== undefined && record.turn !== turn) continue
+    records.push(record)
+    if (records.length >= limit) break
+  }
+  return records
+}
+
 
 // ── 移动端适配·宿主半（v0.30）：大 JSON 响应透明压缩 ─────────────────────────
 // 长会话的 history JSON 可达数十 MB，手机网络下首屏极慢。给 http.ServerResponse.prototype
@@ -3821,6 +3929,8 @@ function apply(ctx) {
   }
   // seam 是否已挂上（宿主 subagents 服务存在时由下面的 inject 置真）：快照端点据此告知客户端。
   let subagentSeamInstalled = false
+  // 子代理派发记录环（v1.2）：apply 级持有，RPC 端点与 seam 共同读写（seam 写入、端点只读）。
+  const dispatchRing = { order: [], byChild: new Map() }
   // 只包装宿主 subagents 注册表的两个入口（start / startContinuable，spawn/fork/acp 全走这
   // 两个口）：未显式指定模型的派生按配置注入 agentOptions，其余原样透传。Fiber 销毁还原
   // 原方法——包装挂在服务实例上，disposer 期间新派生恢复原生行为。
@@ -3838,11 +3948,14 @@ function apply(ctx) {
     }
     const readParentHeader = (parent) => parent?.session?.requestHeader?.()?.config
     // reasoningEffort 不属于 AgentOptions，不能塞进 subagents.start() 的 options。
-    // 用 AsyncLocalStorage 把「本次创建的 exact child 应注入的等级」带进 agent/created 监听器，
-    // 再经 WeakMap<agent, target> 绑定到该 child；agent/request waterfall 在最终 proposal 阶段补入。
-    // 绑定是一次性的：首个请求结算后即消费（无论补标成功与否），之后交给请求自身/会话内状态，
-    // 避免官方模型选择装配层刻意剥离继承值后我们在后续请求上反复复活旧等级。
-    const pendingEffortStorage = new AsyncLocalStorage()
+    // 用 AsyncLocalStorage 把「本次创建上下文」带进同步派发的 agent/created 监听器（v1.2：
+    // 载荷 = 注入路由（有则）+ 父 agent 引用；记录构建与既有 effort 绑定都从这里取）：
+    // - effort 绑定：WeakMap<agent, target> 绑定到该 child；agent/request waterfall 在最终
+    //   proposal 阶段补入。绑定是一次性的：首个请求结算后即消费（无论补标成功与否），之后交给
+    //   请求自身/会话内状态，避免官方模型选择装配层刻意剥离继承值后我们在后续请求上反复复活旧等级。
+    // - 派发记录：childId → {provider, model, reasoningEffort?, source, turn, at} 环形快照，
+    //   供客户端对话页「回合尾子代理模型行」读取（subagent-dispatches 端点）。
+    const pendingDispatchStorage = new AsyncLocalStorage()
     const managedEfforts = new WeakMap()
     const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && managedEfforts.has(agent)
     // 运行时等级复审缓存：`${provider}\u0000${model}` → Promise<Set<supportedIds> | null>。
@@ -3874,43 +3987,71 @@ function apply(ctx) {
       return quotaProviderUnusable(view) === false
     }
     const applyInjection = (request) => {
-      if (!featureEnabled('subagentRoute')) return { request, effort: undefined }
+      // 功能关闭：零记录（完全静默，与原生行为一致）——记录是 subagentRoute 功能的一部分。
+      if (!featureEnabled('subagentRoute')) return { request, dispatch: undefined }
       const injected = resolveSubagentInjection(request, subagentRouteConfig, {
         isRoutable,
         readParentHeader,
         isQuotaHealthy,
         note: (message) => ctx.logger?.info?.(`dsh-service: subagent route ${message}`),
       })
-      if (injected === undefined) return { request, effort: undefined }
+      // 显式路由（本插件不干预的派生）也带进派发记录：source='explicit'，显示时不误标「继承」。
+      const explicitProvider = typeof request?.agentOptions?.provider === 'string' && request.agentOptions.provider !== '' ? request.agentOptions.provider : undefined
+      const explicitModel = typeof request?.agentOptions?.model === 'string' && request.agentOptions.model !== '' ? request.agentOptions.model : undefined
+      if (injected === undefined) {
+        if (explicitProvider !== undefined && explicitModel !== undefined) {
+          return { request, dispatch: { parent: request?.parent, source: 'explicit', provider: explicitProvider, model: explicitModel } }
+        }
+        return { request, dispatch: { parent: request?.parent } }
+      }
       const { reasoningEffort, ...agentPatch } = injected
       if (injected.provider !== undefined && injected.model !== undefined) {
         ctx.logger?.info?.(`dsh-service: subagent route seam applied ${injected.provider}/${injected.model} to a subagent without an explicit route`)
       }
-      const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
       const decorated = { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...agentPatch } }
-      return { request: decorated, effort }
+      const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
+      return { request: decorated, dispatch: { parent: request?.parent, provider: injected.provider, model: injected.model, ...(effort !== undefined ? { reasoningEffort: effort } : {}) } }
     }
-    const runWithEffort = (effort, work) => {
-      if (effort === undefined) return work()
-      return pendingEffortStorage.run({ reasoningEffort: effort }, work)
+    const runWithDispatch = (dispatch, work) => {
+      if (dispatch === undefined) return work()
+      return pendingDispatchStorage.run(dispatch, work)
     }
     const originalStart = subagents.start
     const originalStartContinuable = subagents.startContinuable
     subagents.start = (name, request) => {
-      const { request: decorated, effort } = applyInjection(request)
-      return runWithEffort(effort, () => originalStart.call(subagents, name, decorated))
+      const { request: decorated, dispatch } = applyInjection(request)
+      return runWithDispatch(dispatch, () => originalStart.call(subagents, name, decorated))
     }
     subagents.startContinuable = (spec) => {
-      const { request: decorated, effort } = applyInjection(spec.request)
-      return runWithEffort(effort, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
+      const { request: decorated, dispatch } = applyInjection(spec.request)
+      return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
     }
-    // agent/created：子代理注册时把本次创建携带的等级绑定到 exact child（仅当确有非空等级）。
+    // agent/created（同步派发在创建栈内）：记录派发路由 + 绑定等级（仅当确有非空等级）。
     // agent/request：最终 proposal 阶段补入 reasoningEffort；已建立的值（提案自带/其他插件）永不覆盖。
     // 补标前按 proposal 实际 provider/model 复审等级仍受支持（适配器元数据漂移即丢弃并告警），
     // 与 isRoutable 的「实时判定、不让派生失败」契约同 philosophy。绑定无论结果如何都消费一次。
     // 注册在插件根 ctx：任何作用域标记的 agent 事件都会被未打标的根监听器全局收到（dsh-scope filter）。
     const disposeCreated = typeof ctx.on === 'function' ? ctx.on('agent/created', ({ agent }) => {
-      const effort = pendingEffortStorage.getStore()?.reasoningEffort
+      const dispatch = pendingDispatchStorage.getStore()
+      if (dispatch !== undefined) {
+        try {
+          const record = buildSubagentDispatchRecord(agent, dispatch.parent, dispatch, {
+            readParentHeader,
+            readDefaultSelection: () => {
+              const service = ctx.get('agentDefaultModel')
+              if (service === undefined || typeof service.currentSelection !== 'function') return undefined
+              return service.currentSelection()
+            },
+          })
+          if (record !== undefined) {
+            pushSubagentDispatchRecord(dispatchRing, record)
+            ctx.logger?.info?.(`dsh-service: subagent dispatch recorded ${record.childId} ${record.provider}/${record.model} (${record.source})`)
+          }
+        } catch (error) {
+          ctx.logger?.warn?.(`dsh-service: subagent dispatch record failed: ${error?.message ?? String(error)}`)
+        }
+      }
+      const effort = dispatch?.reasoningEffort
       if (typeof effort === 'string' && effort !== '' && agent !== null && typeof agent === 'object') managedEfforts.set(agent, effort)
     }) : null
     const disposeRequest = typeof ctx.on === 'function' ? ctx.on('agent/request', async (payload, next) => {
@@ -4819,6 +4960,17 @@ function apply(ctx) {
       }
 
     } },
+    // v1.2：子代理派发记录（对话页回合尾模型行的事实源）。只读快照，按父会话/回合过滤，
+    // newest-first 分页。记录随宿主进程存续，重启即清——客户端页面刷新不丢（记录在宿主内存）。
+    'subagent-dispatches': { feature: 'subagentRoute', handle: async (payload, rpcEndpoint) => {
+      try {
+        const records = listSubagentDispatches(dispatchRing, payload)
+        return { ok: true, value: { records } }
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+
+    } },
     'subagent-route-save': { feature: 'subagentRoute', audit: true, handle: async (payload, rpcEndpoint) => {
       const mode = payload?.mode
       if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
@@ -5071,6 +5223,7 @@ export {
   appendVaryToken,
   apply,
   buildCliproxyAccountPlan,
+  buildSubagentDispatchRecord,
   cliproxyFetchGuard,
   cliproxyPinHostFromBaseURL,
   cliproxyProjectFor,
@@ -5088,8 +5241,10 @@ export {
   inject,
   installMobileResponseCompression,
   isCompressibleJsonType,
+  lastSubagentTurn,
   listSessionsForManage,
   listSubagentModels,
+  listSubagentDispatches,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -5109,6 +5264,7 @@ export {
   parseSubagentRouteText,
   pickCompressionEncoding,
   publicSubagentReasoning,
+  pushSubagentDispatchRecord,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,
@@ -5153,8 +5309,10 @@ export default {
   inject,
   installMobileResponseCompression,
   isCompressibleJsonType,
+  lastSubagentTurn,
   listSessionsForManage,
   listSubagentModels,
+  listSubagentDispatches,
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
@@ -5174,6 +5332,7 @@ export default {
   parseSubagentRouteText,
   pickCompressionEncoding,
   publicSubagentReasoning,
+  pushSubagentDispatchRecord,
   quotaCredentialConfigured,
   quotaCredentialHintNames,
   quotaEndpointFor,

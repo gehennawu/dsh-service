@@ -3,6 +3,7 @@ import test from 'node:test'
 
 function createRenderer(rpcCall, options = {}) {
   let moduleDefinition
+  let moduleExports
   const slotComponents = new Map()
   const mountedSlots = new Set()
   const renderedComponents = new Map()
@@ -363,6 +364,7 @@ function createRenderer(rpcCall, options = {}) {
         },
       }
       plugin.apply(ctx)
+      moduleExports = plugin
       renderAll()
       await this.flush()
     },
@@ -481,6 +483,9 @@ function createRenderer(rpcCall, options = {}) {
     },
     reloadCount() {
       return reloads
+    },
+    moduleExports() {
+      return moduleExports
     },
     findByTestId(testId) {
       let match
@@ -4895,6 +4900,76 @@ test('subagent reasoning effort: invalid-reasoning-effort 显示正确中文/英
   renderer.setLocale('en')
   await renderer.flush()
   assert.match(renderer.findByTestId('subagent-error').children.join(''), /not supported by the selected model/)
+})
+
+test('subagent turn-tail row: registered under the subagentRoute feature, selector claims only subagent turns', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  const entries = renderer.registrations()['conversation.chat.turnTail']
+  assert.ok(entries.some((entry) => entry.id === 'dsh-service-subagent-models'))
+  const entry = entries.find((entry) => entry.id === 'dsh-service-subagent-models')
+  assert.equal(typeof entry.select, 'function')
+  // 链槽条目以 select 认领：官方 turn-process 签名第 1 段 = turn、第 9 段 = subagentCount。
+  const claim = { turn: { turn: 3, data: { get: (key) => (key === 'turn-process' ? '3|1|2|4|5|0|2|2|2' : undefined) } } }
+  assert.deepEqual(entry.select(claim), { turn: 3, subagentCount: 2 })
+  // 放弃：无签名 / subagentCount=0 / 坏签名 / 无 owner。
+  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => undefined } } }), null)
+  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => '3|1|2|4|5|0|2|2|0' } } }), null)
+  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => 'oops' } } }), null)
+  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => '|1|2|4|5|0|2|2|2' } } }), null)
+  assert.equal(entry.select({ turn: {} }), null)
+  assert.equal(entry.select(null), null)
+  // 功能关闭：条目注销；开启：重新注册（hasSlot 在替身里不回落，按注册表断言）。
+  await renderer.setFeature('subagentRoute', false)
+  assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models').length, 0)
+  await renderer.setFeature('subagentRoute', true)
+  assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).some((item) => item.id === 'dsh-service-subagent-models'), true)
+  // 槽位挂载（无 matched 时组件渲染 null）不应触发任何 subagent-dispatches 拉取。
+  renderer.mount('conversation.chat.turnTail')
+  await renderer.flush()
+  assert.equal(renderer.text('conversation.chat.turnTail'), '')
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 0)
+})
+
+test('subagent turn-tail row: route aggregation and line text assembly', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  const utils = renderer.moduleExports().subagentTurnTail
+  assert.equal(typeof utils.aggregateSubagentRoutes, 'function')
+  assert.equal(typeof utils.subagentRouteListText, 'function')
+  // 聚合：按 provider/model/effort 去键、保持首个出现顺序、同名计数。
+  const entries = utils.aggregateSubagentRoutes([
+    { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+    { provider: 'opencode-go', model: 'deepseek-v4-flash', reasoningEffort: 'max', source: 'routed' },
+    { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+    { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'low', source: 'routed' },
+    null,
+    { provider: '', model: 'x' },
+  ])
+  assert.deepEqual(entries, [
+    { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', count: 2 },
+    { provider: 'opencode-go', model: 'deepseek-v4-flash', reasoningEffort: 'max', count: 1 },
+    { provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'low', count: 1 },
+  ])
+  assert.equal(utils.aggregateSubagentRoutes(undefined).length, 0)
+  assert.equal(utils.aggregateSubagentRoutes('nope').length, 0)
+  // 行文本：effort 括号、×n 仅计数>1、条目间「 · 」。
+  assert.equal(utils.subagentRouteListText(entries), 'cpa/gpt-5.6-luna (xhigh) ×2 · opencode-go/deepseek-v4-flash (max) · cpa/gpt-5.6-luna (low)')
+  assert.equal(utils.subagentRouteListText([]), '')
+  // 词典：zh/en 都有回合尾行词条。
+  const zh = renderer.dictionaries('dsh-service').zh
+  const en = renderer.dictionaries('dsh-service').en
+  assert.match(zh['subagent.turnTail.label'], /子代理模型/)
+  assert.match(en['subagent.turnTail.label'], /Subagent models/)
+  assert.equal(zh['subagent.turnTail.unknown'].includes('模型未记录'), true)
+  assert.ok(Object.keys(zh).every((key) => key in en), 'zh/en key sets must match')
 })
 
 // ── v0.30 移动端适配·客户端引擎 ─────────────────────────────────────────────
