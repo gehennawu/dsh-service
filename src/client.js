@@ -151,6 +151,7 @@ window.__ModuleLoader__.load({
       'subagent.error.invalid-reasoning-effort': '思考等级不受该模型支持，请重新选择',
       'subagent.error.network': '网络错误：无法连接宿主',
       'subagent.fallback.title': '回退模型（按顺序）',
+      'subagent.fallback.item': '回退 {index}',
       'subagent.fallback.hint': '第一路由不可用时（渠道已卸载、额度查询判定不可服务）依次尝试回退；全部不可用则回落原生继承，不让派生失败。',
       'subagent.fallback.add': '添加回退',
       'subagent.fallback.sort': '调整排序',
@@ -827,6 +828,7 @@ window.__ModuleLoader__.load({
       'subagent.error.invalid-reasoning-effort': 'This reasoning effort is not supported by the selected model; choose another',
       'subagent.error.network': 'Network error: cannot reach the host',
       'subagent.fallback.title': 'Fallback models (in order)',
+      'subagent.fallback.item': 'Fallback {index}',
       'subagent.fallback.hint': 'When the primary route is unavailable (channel unloaded, or quota state marks it unserviceable), try fallbacks in order; if none works, fall back to native inheritance instead of failing the delegation.',
       'subagent.fallback.add': 'Add fallback',
       'subagent.fallback.sort': 'Reorder',
@@ -3379,22 +3381,29 @@ window.__ModuleLoader__.load({
               const rowModelEntry = rowProviderModels.find((item) => item.id === fallback.model) ?? null
               const rowEffortOptions = effortsFor(rowModelEntry)
               const rowEffortIds = rowEffortOptions.map((option) => option.id)
-              return React.createElement('div', { key: index, 'data-testid': 'subagent-fallback-row', style: { marginTop: '8px' } },
-                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
-                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, String(index + 1) + '.'),
-                  React.createElement('select', { 'data-testid': 'subagent-fallback-provider-' + index, value: rowKnownProvider ? fallback.provider : '', disabled: saving, onChange: (event) => { const nextProvider = event.target.value; updateFallback(index, { provider: nextProvider, model: modelsFor(nextProvider)[0]?.id ?? '' }) }, style: selectStyle },
-                    React.createElement('option', { value: '' }, ''),
-                    providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
-                  React.createElement('select', { 'data-testid': 'subagent-fallback-model-' + index, value: rowProviderModels.some((item) => item.id === fallback.model) ? fallback.model : '', disabled: rowProviderModels.length === 0 || saving, onChange: (event) => { const nextModel = event.target.value; const nextEntry = rowProviderModels.find((item) => item.id === nextModel) ?? null; const nextIds = effortsFor(nextEntry).map((option) => option.id); updateFallback(index, { model: nextModel, ...(typeof fallback.reasoningEffort === 'string' && fallback.reasoningEffort !== '' && !nextIds.includes(fallback.reasoningEffort) ? { reasoningEffort: undefined } : {}) }) }, style: selectStyle },
-                    rowProviderModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id))),
+              return React.createElement('div', { key: index, 'data-testid': 'subagent-fallback-row', style: { marginTop: '8px', border: '1px solid var(--dsh-svc-border)', borderRadius: '8px', padding: '7px 10px 8px' } },
+                // 标题行：序号 + 右侧操作（移除 / 排序箭头）。
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' } },
+                  React.createElement('span', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.fallback.item', { index: String(index + 1) })),
+                  React.createElement('span', { style: { marginLeft: 'auto' } }),
                   fallbackIconButton('subagent-fallback-remove-' + index, false, () => removeFallback(index), translate('subagent.fallback.remove'), true),
-                  // 排序模式（调整排序开启时）才显示箭头：▲/▼ 图标按钮，非文字。
                   reorderMode ? fallbackArrowButton('subagent-fallback-up-' + index, index === 0, () => moveFallback(index, -1), '▲') : null,
                   reorderMode ? fallbackArrowButton('subagent-fallback-down-' + index, index === fallbacks.length - 1, () => moveFallback(index, 1), '▼') : null),
-                // 第二行：思考等级——与主模型行的推理行同排版（供应商/模型一行，等级换行）。
+                // 供应商行
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
+                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.provider')),
+                  React.createElement('select', { 'data-testid': 'subagent-fallback-provider-' + index, value: rowKnownProvider ? fallback.provider : '', disabled: saving, onChange: (event) => { const nextProvider = event.target.value; updateFallback(index, { provider: nextProvider, model: modelsFor(nextProvider)[0]?.id ?? '' }) }, style: selectStyle },
+                    React.createElement('option', { value: '' }, ''),
+                    providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id)))),
+                // 模型行
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
+                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.model')),
+                  React.createElement('select', { 'data-testid': 'subagent-fallback-model-' + index, value: rowProviderModels.some((item) => item.id === fallback.model) ? fallback.model : '', disabled: rowProviderModels.length === 0 || saving, onChange: (event) => { const nextModel = event.target.value; const nextEntry = rowProviderModels.find((item) => item.id === nextModel) ?? null; const nextIds = effortsFor(nextEntry).map((option) => option.id); updateFallback(index, { model: nextModel, ...(typeof fallback.reasoningEffort === 'string' && fallback.reasoningEffort !== '' && !nextIds.includes(fallback.reasoningEffort) ? { reasoningEffort: undefined } : {}) }) }, style: selectStyle },
+                    rowProviderModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))),
+                // 思考等级行：模型无等级信息时给提示。
                 rowEffortOptions.length > 0
                   ? React.createElement('div', { 'data-testid': 'subagent-fallback-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
-                    React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.reasoningEffort')),
+                    React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 } }, translate('subagent.reasoningEffort')),
                     React.createElement('select', { 'data-testid': 'subagent-fallback-effort-' + index, value: rowEffortIds.includes(fallback.reasoningEffort) ? fallback.reasoningEffort : '', disabled: saving, onChange: (event) => updateFallback(index, { reasoningEffort: event.target.value === '' ? undefined : event.target.value }), style: selectStyle },
                       React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
                       ...rowEffortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))))
