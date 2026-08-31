@@ -3995,12 +3995,15 @@ function apply(ctx) {
         isQuotaHealthy,
         note: (message) => ctx.logger?.info?.(`dsh-service: subagent route ${message}`),
       })
-      // 显式路由（本插件不干预的派生）也带进派发记录：source='explicit'，显示时不误标「继承」。
+      // 显式路由（本插件不干预的派生，如官方 subagent-model-selection 开启时 LLM 主动选的模型）
+      // 也带进派发记录：source='explicit'，显示时不误标「继承」；显式携带的思考等级一并记录，
+      // 否则回合尾行会漏掉 (effort)。
       const explicitProvider = typeof request?.agentOptions?.provider === 'string' && request.agentOptions.provider !== '' ? request.agentOptions.provider : undefined
       const explicitModel = typeof request?.agentOptions?.model === 'string' && request.agentOptions.model !== '' ? request.agentOptions.model : undefined
+      const explicitEffort = typeof request?.agentOptions?.reasoningEffort === 'string' && request.agentOptions.reasoningEffort !== '' ? request.agentOptions.reasoningEffort : undefined
       if (injected === undefined) {
         if (explicitProvider !== undefined && explicitModel !== undefined) {
-          return { request, dispatch: { parent: request?.parent, source: 'explicit', provider: explicitProvider, model: explicitModel } }
+          return { request, dispatch: { parent: request?.parent, source: 'explicit', provider: explicitProvider, model: explicitModel, ...(explicitEffort !== undefined ? { reasoningEffort: explicitEffort } : {}) } }
         }
         return { request, dispatch: { parent: request?.parent } }
       }

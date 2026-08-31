@@ -4660,11 +4660,14 @@ test('buildSubagentDispatchRecord：routed/inherited/default/跳过四态与 tur
     session: { id: 'parent-1', events: [...parent.session.events, { type: 'compaction/start', data: { compactionId: 'x' } }] },
   }, { provider: 'cpa', model: 'gpt-5.6-luna' })
   assert.equal(routedWithErrorTail.turn, 3)
-  // explicit：请求自带 route（source 来自 dispatch.source）。
+  // explicit：请求自带 route（source 来自 dispatch.source），显式思考等级一并记录。
   const explicit = buildSubagentDispatchRecord({ id: 'child-2' }, parent, { source: 'explicit', provider: 'openrouter', model: 'ox-alpha' })
   assert.equal(explicit.source, 'explicit')
   assert.equal(explicit.provider, 'openrouter')
   assert.equal(explicit.reasoningEffort, undefined)
+  const explicitWithEffort = buildSubagentDispatchRecord({ id: 'child-2b' }, parent, { source: 'explicit', provider: 'openrouter', model: 'ox-alpha', reasoningEffort: 'high' })
+  assert.equal(explicitWithEffort.source, 'explicit')
+  assert.equal(explicitWithEffort.reasoningEffort, 'high')
   // inherited：无注入时读父会话 header；header 读取抛错不炸。
   const inherited = buildSubagentDispatchRecord({ id: 'child-3' }, {
     session: { id: 'parent-1', events: [], requestHeader: () => ({ config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }) },
@@ -4754,11 +4757,12 @@ test('subagent-dispatches 端点：seam 记录 routed/explicit 两态、按父�
   assert.equal(routed.childId, 'agent-3')
 
   // 显式路由（未注入）：source=explicit。
-  await registry.start('spawn', { label: 'b', parent: parentWithTurn, agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } })
+  await registry.start('spawn', { label: 'b', parent: parentWithTurn, agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' } })
   snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
   assert.equal(snapshot.value.records.length, 2)
   assert.equal(snapshot.value.records[0].source, 'explicit')
   assert.equal(snapshot.value.records[0].provider, 'deepseek-official')
+  assert.equal(snapshot.value.records[0].reasoningEffort, 'high')
 
   // 功能关闭期间的派生没有记录（门住时 dispatch 无注入且不建上下文）。
   snapshot = await host.handler('subagent-dispatches', { parentId: 'parent-1' })
