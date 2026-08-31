@@ -34,6 +34,20 @@ window.__ModuleLoader__.load({
       'sessions.filter.archived': '仅归档',
       'sessions.filter.deleted': '已删除',
       'sessions.refresh': '刷新',
+      'sessions.batch.enter': '批量选择',
+      'sessions.batch.exit': '退出批量',
+      'sessions.batch.selectAll': '全选',
+      'sessions.batch.clearAll': '取消全选',
+      'sessions.batch.selected': '已选择 {count} 项',
+      'sessions.batch.selectRow': '选择会话：{title}',
+      'sessions.batch.export': '导出 ({count})',
+      'sessions.batch.archive': '归档 ({count})',
+      'sessions.batch.delete': '删除 ({count})',
+      'sessions.batch.completed': '已完成{action}：{count} 项',
+      'sessions.batch.failed': '{action}完成 {done}/{total} 项；{error}',
+      'sessions.batch.deleteTitle': '删除 {count} 个会话',
+      'sessions.batch.deleteBody': '将永久删除以下已归档会话的日志文件，删除后不可恢复。',
+      'sessions.batch.deleteItem': '{title}（{bytes}）',
       'sessions.status.loading': '加载中…',
       'sessions.status.working': '处理中…',
       'sessions.status.unavailableTime': '时间未知',
@@ -95,7 +109,7 @@ window.__ModuleLoader__.load({
       'sessions.export.includes': '含子代理与附件',
       'sessions.navToggle': '设置页左列显示「会话管理」入口',
       'sessions.navToggleHint': '默认关闭；开启后在设置页左侧标签列显示会话管理入口',
-      'sessions.oneWay': '归档为单项操作',
+      'sessions.oneWay': '归档不可恢复',
       'sessions.oneWayHint': '归档后会话从官方侧栏隐藏；官方不支持恢复归档，只能通过本面板删除。',
       'mobile.fab.label': '打开侧栏菜单',
       'mobile.debug.title': '移动端诊断',
@@ -685,6 +699,20 @@ window.__ModuleLoader__.load({
       'sessions.filter.archived': 'Archived',
       'sessions.filter.deleted': 'Deleted',
       'sessions.refresh': 'Refresh',
+      'sessions.batch.enter': 'Select multiple',
+      'sessions.batch.exit': 'Exit selection',
+      'sessions.batch.selectAll': 'Select all',
+      'sessions.batch.clearAll': 'Clear all',
+      'sessions.batch.selected': '{count} selected',
+      'sessions.batch.selectRow': 'Select session: {title}',
+      'sessions.batch.export': 'Export ({count})',
+      'sessions.batch.archive': 'Archive ({count})',
+      'sessions.batch.delete': 'Delete ({count})',
+      'sessions.batch.completed': '{action} completed for {count}',
+      'sessions.batch.failed': '{action} completed for {done}/{total}; {error}',
+      'sessions.batch.deleteTitle': 'Delete {count} sessions',
+      'sessions.batch.deleteBody': 'This permanently deletes the logs of the archived sessions below. This cannot be undone.',
+      'sessions.batch.deleteItem': '{title} ({bytes})',
       'sessions.status.loading': 'Loading…',
       'sessions.status.working': 'Working…',
       'sessions.status.unavailableTime': 'Time unavailable',
@@ -746,7 +774,7 @@ window.__ModuleLoader__.load({
       'sessions.export.includes': 'Includes subagents and attachments',
       'sessions.navToggle': 'Show “Sessions” entry in the settings sidebar',
       'sessions.navToggleHint': 'Disabled by default; shows the session manager entry at the bottom of the settings sidebar when enabled',
-      'sessions.oneWay': 'Archiving is one-way',
+      'sessions.oneWay': 'Archiving cannot be undone',
       'sessions.oneWayHint': 'Archived sessions are hidden from the official sidebar; the official UI cannot unarchive, deletion here is the only way out.',
       'mobile.fab.label': 'Open sidebar menu',
       'mobile.debug.title': 'Mobile diagnostics',
@@ -3866,6 +3894,10 @@ window.__ModuleLoader__.load({
         // v0.35 用户反馈：默认停在「仅归档」——不再每次打开都全量拉全部会话（过得快）。
         const [filter, setFilter] = useState('archived')      // all | archived | deleted
         const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title
+        // 批量选择只作用于当前普通列表视图：进入后可逐行勾选或全选当前筛选结果；
+        // 搜索结果/已删除记录不进入批量模式，切换筛选或进入详情时自动退出，避免把隐藏行带进选择集。
+        const [batchMode, setBatchMode] = useState(false)
+        const [selectedIds, setSelectedIds] = useState([])
         const [search, setSearch] = useState('')
         const [searchScopeArchived, setSearchScopeArchived] = useState(false)
         const [searchRunning, setSearchRunning] = useState(false)
@@ -3885,6 +3917,11 @@ window.__ModuleLoader__.load({
         // 导出状态
         const [exportingId, setExportingId] = useState('')
         const [exportError, setExportError] = useState('')
+        // 批量操作状态：按钮只处理当前选择中符合各动作边界的行（归档排除 live/已归档，
+        // 删除只含非 live 的已归档行）；删除仍逐项向宿主申请 plan，并合并到一次确认中。
+        const [batchWorking, setBatchWorking] = useState('')
+        const [batchResult, setBatchResult] = useState('')
+        const [batchError, setBatchError] = useState('')
         // 删除确认状态
         const [deletePlan, setDeletePlan] = useState(null)
         const [deleting, setDeleting] = useState(false)
@@ -3947,6 +3984,10 @@ window.__ModuleLoader__.load({
         const changeFilter = (key) => {
           if (key === filter) return
           setFilter(key)
+          setBatchMode(false)
+          setSelectedIds([])
+          setBatchResult('')
+          setBatchError('')
           setSearch('')
           setSearchResult(null)
           setDetail(null)
@@ -4028,6 +4069,10 @@ window.__ModuleLoader__.load({
         }, [search, searchScopeArchived, filter])
 
         const openDetail = (sessionId, view, hitItems, event, targetSeq) => {
+          setBatchMode(false)
+          setSelectedIds([])
+          setBatchResult('')
+          setBatchError('')
           // v0.37：进详情前沿点击行的 DOM 祖先链找官方面板内容滚动容器（.VOzbGW_options），
           // 记下列表位置；找不到容器（宽度撑不满/异常布局/无点击事件）→ 不保存，返回时保持现状。
           const scrollContainer = findSessionScrollContainer(event)
@@ -4107,67 +4152,71 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const doExport = async (sessionId) => {
-          setExportingId(sessionId)
-          setExportError('')
+        const downloadSessionExport = async (sessionId) => {
           try {
             const res = await rpcCall('sessions-export', { id: sessionId })
-            if (!res.ok) {
-              setExportError(mapSessionError(translate, res.error || 'unknown'))
-              return
-            }
+            if (!res.ok) return { ok: false, error: mapSessionError(translate, res.error || 'unknown') }
             // 复用官方 ZIP 下载：HEAD 探测 → 触发浏览器下载（同源 loopback）。
             const url = res.value.url
             const head = await fetch(url, { method: 'HEAD' })
-            if (!head.ok) {
-              setExportError(translate('sessions.error.export-failed', { error: 'HTTP ' + head.status }))
-              return
-            }
+            if (!head.ok) return { ok: false, error: translate('sessions.error.export-failed', { error: 'HTTP ' + head.status }) }
             const anchor = document.createElement('a')
             anchor.href = url
             anchor.download = 'dsh-session-' + sessionId.replace(/[^A-Za-z0-9_-]/g, '_') + '.zip'
             anchor.click()
+            return { ok: true }
           } catch (_) {
-            setExportError(translate('sessions.error.network'))
-          } finally {
-            setExportingId('')
+            return { ok: false, error: translate('sessions.error.network') }
           }
         }
+        const doExport = async (sessionId) => {
+          setExportingId(sessionId)
+          setExportError('')
+          const result = await downloadSessionExport(sessionId)
+          if (!result.ok) setExportError(result.error)
+          setExportingId('')
+          return result
+        }
 
+        const applyArchivedSession = (sessionId) => {
+          // 本地同步模块级缓存（不重拉）：all/archived 缓存里该行标 archived，
+          // archived 缓存缺此行则补入（切「仅归档」/重开面板直接命中新行）。
+          const currentAll = sessionPanelListCache.all
+          if (currentAll !== undefined && Array.isArray(currentAll.items)) {
+            sessionPanelListCache.all = { ...currentAll, items: currentAll.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+          }
+          const archived = sessionPanelListCache.archived
+          if (archived !== undefined && Array.isArray(archived.items)) {
+            const exists = archived.items.some((item) => item.id === sessionId)
+            const sourceRow = currentAll?.items?.find((item) => item.id === sessionId)
+            sessionPanelListCache.archived = exists
+              ? { ...archived, items: archived.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+              : sourceRow !== undefined
+                ? { ...archived, items: [{ ...sourceRow, archived: true }, ...archived.items] }
+                : archived
+          }
+          setList((current) => {
+            if (current === null || !Array.isArray(current.items)) return current
+            return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
+          })
+        }
+        const archiveSession = async (sessionId) => {
+          try {
+            const res = await rpcCall('sessions-archive', { id: sessionId })
+            if (!res.ok) return { ok: false, error: mapSessionError(translate, res.error || 'unknown') }
+            applyArchivedSession(sessionId)
+            return { ok: true }
+          } catch (_) {
+            return { ok: false, error: translate('sessions.error.network') }
+          }
+        }
         const doArchive = async (sessionId) => {
           setArchivingId(sessionId)
           setArchiveError('')
-          try {
-            const res = await rpcCall('sessions-archive', { id: sessionId })
-            if (res.ok) {
-              // 本地同步模块级缓存（不重拉）：all/archived 缓存里该行标 archived，
-              // archived 缓存缺此行则补入（切「仅归档」/重开面板直接命中新行）。
-              const currentAll = sessionPanelListCache.all
-              if (currentAll !== undefined && Array.isArray(currentAll.items)) {
-                sessionPanelListCache.all = { ...currentAll, items: currentAll.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
-              }
-              const archived = sessionPanelListCache.archived
-              if (archived !== undefined && Array.isArray(archived.items)) {
-                const exists = archived.items.some((item) => item.id === sessionId)
-                const sourceRow = currentAll?.items?.find((item) => item.id === sessionId)
-                sessionPanelListCache.archived = exists
-                  ? { ...archived, items: archived.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
-                  : sourceRow !== undefined
-                    ? { ...archived, items: [{ ...sourceRow, archived: true }, ...archived.items] }
-                    : archived
-              }
-              setList((current) => {
-                if (current === null || !Array.isArray(current.items)) return current
-                return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
-              })
-            } else {
-              setArchiveError(mapSessionError(translate, res.error || 'unknown'))
-            }
-          } catch (_) {
-            setArchiveError(translate('sessions.error.network'))
-          } finally {
-            setArchivingId('')
-          }
+          const result = await archiveSession(sessionId)
+          if (!result.ok) setArchiveError(result.error)
+          setArchivingId('')
+          return result
         }
 
         const requestDelete = async (sessionId) => {
@@ -4185,65 +4234,92 @@ window.__ModuleLoader__.load({
             setDeleteError(translate('sessions.error.network'))
           }
         }
+        const applyDeletedSession = (session) => {
+          const removedId = session?.id ?? ''
+          if (removedId === '') return
+          // v0.36：删除同步模块级缓存（all/archived 移除行、deleted 缓存补记录）——
+          // 切回已加载过的视图/关掉面板再打开都不再重拉；deleted 缓存从未加载时首次切换仍按 scope 拉一次。
+          const removedRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === removedId) : undefined
+          const deletedRecord = {
+            id: removedId,
+            title: typeof session?.title === 'string' ? session.title : (removedRow?.title ?? ''),
+            cwd: session?.cwd ?? removedRow?.cwd ?? null,
+            deletedAt: Date.now(),
+          }
+          for (const scope of ['all', 'archived']) {
+            const value = sessionPanelListCache[scope]
+            if (value !== undefined && Array.isArray(value.items)) {
+              sessionPanelListCache[scope] = { ...value, items: value.items.filter((item) => item.id !== removedId) }
+            }
+          }
+          const deletedValue = sessionPanelListCache.deleted
+          if (deletedValue !== undefined) {
+            sessionPanelListCache.deleted = {
+              ...deletedValue,
+              deleted: [
+                deletedRecord,
+                ...(Array.isArray(deletedValue.deleted) ? deletedValue.deleted : []).filter((item) => item.id !== removedId),
+              ],
+            }
+          }
+          sessionPanelBytesCache.delete(removedId)
+          setList((current) => {
+            if (current === null) return current
+            const items = Array.isArray(current.items) ? current.items : []
+            return {
+              ...current,
+              items: items.filter((item) => item.id !== removedId),
+              deleted: [
+                deletedRecord,
+                ...(Array.isArray(current.deleted) ? current.deleted : []).filter((item) => item.id !== removedId),
+              ],
+            }
+          })
+          setBytesById((current) => {
+            const next = { ...current }
+            delete next[removedId]
+            return next
+          })
+          bytesInFlight.current.delete(removedId)
+        }
         const confirmDelete = async () => {
           if (deletePlan === null || deleting) return
           setDeleting(true)
           setDeleteError('')
-          try {
-            const res = await rpcCall('sessions-delete', { planId: deletePlan.planId })
-            if (res.ok) {
-              const removedId = deletePlan.session?.id ?? ''
-              setDeletePlan(null)
-              setDoneTick((tick) => tick + 1)
-              // v0.36：删除同步模块级缓存（all/archived 移除行、deleted 缓存补记录）——
-              // 切回已加载过的视图/关掉面板再打开都不再重拉；deleted 缓存从未加载时首次切换仍按 scope 拉一次。
-              const removedRow = list !== null && Array.isArray(list.items) ? list.items.find((item) => item.id === removedId) : undefined
-              const deletedRecord = { id: removedId, title: removedRow?.title ?? '', cwd: removedRow?.cwd ?? null, deletedAt: Date.now() }
-              for (const scope of ['all', 'archived']) {
-                const value = sessionPanelListCache[scope]
-                if (value !== undefined && Array.isArray(value.items)) {
-                  sessionPanelListCache[scope] = { ...value, items: value.items.filter((item) => item.id !== removedId) }
-                }
+          const plans = deletePlan.batch === true && Array.isArray(deletePlan.plans) ? deletePlan.plans : [deletePlan]
+          let completed = 0
+          let failure = ''
+          for (const plan of plans) {
+            try {
+              const res = await rpcCall('sessions-delete', { planId: plan.planId })
+              if (res.ok) {
+                completed += 1
+                applyDeletedSession(plan.session)
+              } else if (failure === '') {
+                failure = mapSessionError(translate, res.error || 'unknown')
               }
-              const deletedValue = sessionPanelListCache.deleted
-              if (deletedValue !== undefined) {
-                sessionPanelListCache.deleted = {
-                  ...deletedValue,
-                  deleted: [
-                    deletedRecord,
-                    ...(Array.isArray(deletedValue.deleted) ? deletedValue.deleted : []).filter((item) => item.id !== removedId),
-                  ],
-                }
-              }
-              sessionPanelBytesCache.delete(removedId)
-              // 本地更新：移除该会话行 + 追加已删除记录，不再全量重拉列表
-              //（v0.35 用户反馈：删除单个会话后全量 loadList 属多余往返）。
-              setList((current) => {
-                if (current === null) return current
-                const items = Array.isArray(current.items) ? current.items : []
-                return {
-                  ...current,
-                  items: items.filter((item) => item.id !== removedId),
-                  deleted: [
-                    deletedRecord,
-                    ...(Array.isArray(current.deleted) ? current.deleted : []).filter((item) => item.id !== removedId),
-                  ],
-                }
-              })
-              setBytesById((current) => {
-                const next = { ...current }
-                delete next[removedId]
-                return next
-              })
-              if (removedId !== '') bytesInFlight.current.delete(removedId)
-            } else {
-              setDeleteError(mapSessionError(translate, res.error || 'unknown'))
+            } catch (_) {
+              if (failure === '') failure = translate('sessions.error.network')
             }
-          } catch (_) {
-            setDeleteError(translate('sessions.error.network'))
-          } finally {
-            setDeleting(false)
           }
+          if (deletePlan.batch === true) {
+            setDeletePlan(null)
+            setDoneTick((tick) => tick + 1)
+            if (failure === '') {
+              setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.delete'), count: completed }))
+              setBatchError('')
+            } else {
+              setBatchResult('')
+              setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.delete'), done: completed, total: plans.length, error: failure }))
+            }
+          } else if (failure === '') {
+            setDeletePlan(null)
+            setDoneTick((tick) => tick + 1)
+          } else {
+            // 保持单项确认框与旧行为一致：失败原因仍在模态内可见，用户可取消后重新发起计划。
+            setDeleteError(failure)
+          }
+          setDeleting(false)
         }
         // 删除完成自动刷新一次列表（loadList 已做，doneTick 仅用于复位列表外的状态）
         useEffect(() => { if (doneTick > 0) setDetail(null) }, [doneTick])
@@ -4287,6 +4363,111 @@ window.__ModuleLoader__.load({
           else items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
           return items
         }
+        const visibleItems = computeVisibleItems()
+        const visibleSelectableIds = filter === 'deleted' || search.trim() !== ''
+          ? []
+          : visibleItems.filter((item) => item._deleted !== true).map((item) => item.id)
+        const selectedSet = new Set(selectedIds)
+        const selectedItems = visibleItems.filter((item) => selectedSet.has(item.id))
+        const batchExportItems = selectedItems.filter((item) => item._deleted !== true)
+        const batchArchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived !== true)
+        const batchDeleteItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
+        const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedSet.has(id))
+        useEffect(() => {
+          if (!batchMode) return
+          const allowed = new Set(visibleSelectableIds)
+          setSelectedIds((current) => {
+            const next = current.filter((id) => allowed.has(id))
+            return next.length === current.length ? current : next
+          })
+        }, [list, filter, batchMode])
+        const enterBatchMode = () => {
+          setBatchMode(true)
+          setSelectedIds([])
+          setBatchResult('')
+          setBatchError('')
+        }
+        const exitBatchMode = () => {
+          setBatchMode(false)
+          setSelectedIds([])
+          setBatchResult('')
+          setBatchError('')
+        }
+        const toggleSelected = (id) => {
+          setSelectedIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
+        }
+        const toggleSelectAll = () => {
+          if (allVisibleSelected) {
+            setSelectedIds([])
+          } else {
+            setSelectedIds(visibleSelectableIds.slice())
+          }
+        }
+        const runBatchExport = async () => {
+          if (batchWorking !== '' || batchExportItems.length === 0) return
+          setBatchWorking('export')
+          setBatchResult('')
+          setBatchError('')
+          let completed = 0
+          let failure = ''
+          for (const item of batchExportItems) {
+            const result = await downloadSessionExport(item.id)
+            if (result.ok) completed += 1
+            else if (failure === '') failure = result.error
+          }
+          if (failure === '') setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.export'), count: completed }))
+          else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.export'), done: completed, total: batchExportItems.length, error: failure }))
+          setBatchWorking('')
+        }
+        const runBatchArchive = async () => {
+          if (batchWorking !== '' || batchArchiveItems.length === 0) return
+          setBatchWorking('archive')
+          setBatchResult('')
+          setBatchError('')
+          let completed = 0
+          let failure = ''
+          const ids = batchArchiveItems.map((item) => item.id)
+          const completedIds = []
+          for (const id of ids) {
+            const result = await archiveSession(id)
+            if (result.ok) {
+              completed += 1
+              completedIds.push(id)
+            } else if (failure === '') failure = result.error
+          }
+          if (completedIds.length > 0) setSelectedIds((current) => current.filter((id) => !completedIds.includes(id)))
+          if (failure === '') setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.archive'), count: completed }))
+          else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.archive'), done: completed, total: ids.length, error: failure }))
+          setBatchWorking('')
+        }
+        const requestBatchDelete = async () => {
+          if (batchWorking !== '' || deletePlan !== null || batchDeleteItems.length === 0) return
+          setBatchWorking('delete-plan')
+          setBatchResult('')
+          setBatchError('')
+          const plans = []
+          let failure = ''
+          for (const item of batchDeleteItems) {
+            try {
+              const res = await rpcCall('sessions-delete-plan', { id: item.id })
+              if (res.ok) plans.push(res.value)
+              else if (failure === '') failure = mapSessionError(translate, res.error || 'unknown')
+            } catch (_) {
+              if (failure === '') failure = translate('sessions.error.network')
+            }
+          }
+          setBatchWorking('')
+          if (failure !== '' || plans.length !== batchDeleteItems.length) {
+            setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.delete'), done: plans.length, total: batchDeleteItems.length, error: failure || translate('sessions.error.network') }))
+            return
+          }
+          setDeletePlan({
+            batch: true,
+            plans,
+            sessions: plans.map((plan) => plan.session),
+            consequences: ['deletes-session-log'],
+          })
+        }
 
         const listRow = (item) => {
           const isDeleted = item._deleted === true
@@ -4294,6 +4475,7 @@ window.__ModuleLoader__.load({
           const title = isDeleted ? (item.title || translate('sessions.row.noTitle')) : (item.title !== '' ? item.title : translate('sessions.row.noTitle'))
           const live = item.live === true
           const archived = isDeleted || item.archived === true
+          const selected = selectedSet.has(id)
           // v0.36：体积懒加载——未返回前不占位（无「—」），返回后行内显示。
           const sizeBit = (() => {
             const value = bytesById[id]
@@ -4316,15 +4498,24 @@ window.__ModuleLoader__.load({
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           }
-          return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)' } },
-            React.createElement('div', { style: { minWidth: 0 } },
-              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
-                React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
-                live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: svcBadgeStyle('success') }, translate('sessions.row.live')) : null,
-                archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: svcBadgeStyle('warning') }, translate('sessions.row.archived')) : null,
-                isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null),
-              React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · '))),
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions))
+          return React.createElement('div', { key: id, 'data-testid': 'sessions-row-' + id, 'data-selected': batchMode && selected ? 'true' : undefined, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '4px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none' } },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: '1 1 auto' } },
+              batchMode && !isDeleted ? React.createElement('input', {
+                type: 'checkbox',
+                'data-testid': 'sessions-select-' + id,
+                'aria-label': translate('sessions.batch.selectRow', { title }),
+                checked: selected,
+                onChange: () => toggleSelected(id),
+                style: { width: '16px', height: '16px', flexShrink: 0, accentColor: 'var(--dsw-alias-brand-primary)', cursor: 'pointer' },
+              }) : null,
+              React.createElement('div', { style: { minWidth: 0 } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
+                  React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+                  live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: svcBadgeStyle('success') }, translate('sessions.row.live')) : null,
+                  archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: svcBadgeStyle('warning') }, translate('sessions.row.archived')) : null,
+                  isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null),
+                React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · ')))),
+            !batchMode ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions) : null)
         }
 
         const eventCard = (event, index) => {
@@ -4360,11 +4551,11 @@ window.__ModuleLoader__.load({
                 hit.items.map((item) => React.createElement('button', { key: item.seq, type: 'button', 'data-testid': 'sessions-hit-seq-' + hit.sessionId + '-' + item.seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', color: 'var(--dsw-alias-label-tertiary)' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event, Number(item.seq)) }, '#' + item.seq))) : null,
               hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, 'data-testid': 'sessions-hit-snippet-' + hit.sessionId, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, highlightSessionSnippet(item.snippet, searchResult.query || search, 'sessions-hit-highlight-' + hit.sessionId)))))
           }
-          if (computeVisibleItems().length === 0) {
+          if (visibleItems.length === 0) {
             const emptyKey = filter === 'archived' ? 'sessions.empty.archived' : filter === 'deleted' ? 'sessions.empty.deleted' : 'sessions.empty.all'
             return React.createElement('p', { style: hint }, translate(emptyKey))
           }
-          return computeVisibleItems().map(listRow)
+          return visibleItems.map(listRow)
         }
 
         const renderDetail = () => {
@@ -4428,15 +4619,19 @@ window.__ModuleLoader__.load({
 
         const renderDeleteModal = () => {
           if (deletePlan === null) return null
-          const session = deletePlan.session || {}
+          const batchSessions = deletePlan.batch === true && Array.isArray(deletePlan.sessions) ? deletePlan.sessions : null
+          const session = batchSessions === null ? (deletePlan.session || {}) : {}
           return React.createElement('div', { 'data-testid': 'sessions-delete-modal', style: { position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)' } },
             React.createElement('div', { style: { width: 'min(480px, calc(100vw - 32px))', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '14px', padding: '18px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)' } },
-              React.createElement('div', { style: { fontSize: '15px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, translate('sessions.delete.title')),
-              React.createElement('p', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.5, margin: '0 0 10px' } }, translate('sessions.delete.body')),
-              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '6px' } }, session.title || translate('sessions.row.noTitle')),
-              React.createElement('ul', { style: { margin: '0 0 12px', paddingLeft: '18px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.7 } },
+              React.createElement('div', { style: { fontSize: '15px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, batchSessions === null ? translate('sessions.delete.title') : translate('sessions.batch.deleteTitle', { count: batchSessions.length })),
+              React.createElement('p', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.5, margin: '0 0 10px' } }, batchSessions === null ? translate('sessions.delete.body') : translate('sessions.batch.deleteBody')),
+              batchSessions === null
+                ? React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '6px' } }, session.title || translate('sessions.row.noTitle'))
+                : React.createElement('ul', { 'data-testid': 'sessions-batch-delete-list', style: { margin: '0 0 12px', paddingLeft: '18px', maxHeight: '220px', overflowY: 'auto', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.7 } },
+                    batchSessions.map((item) => React.createElement('li', { key: item.id }, translate('sessions.batch.deleteItem', { title: item.title || translate('sessions.row.noTitle'), bytes: formatBytes(item.bytes) })))),
+              batchSessions === null ? React.createElement('ul', { style: { margin: '0 0 12px', paddingLeft: '18px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.7 } },
                 React.createElement('li', null, translate('sessions.delete.consequence.log', { bytes: formatBytes(session.bytes) })),
-                deletePlan.consequences && deletePlan.consequences.includes('hides-from-official-sidebar') ? React.createElement('li', null, translate('sessions.delete.consequence.sidebar')) : null),
+                deletePlan.consequences && deletePlan.consequences.includes('hides-from-official-sidebar') ? React.createElement('li', null, translate('sessions.delete.consequence.sidebar')) : null) : null,
               deleteError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, deleteError) : null,
               React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-cancel', style: chipButton, disabled: deleting, onClick: () => { setDeletePlan(null); setDeleteError('') } }, translate('sessions.delete.cancel')),
@@ -4468,14 +4663,29 @@ window.__ModuleLoader__.load({
               React.createElement('option', { value: 'createdAsc' }, translate('sessions.sort.createdAsc')),
               React.createElement('option', { value: 'title' }, translate('sessions.sort.title'))),
             // v0.36：切换筛选复用已取过的 scope 缓存；「刷新」才强制重拉当前 scope。
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => refreshList() }, translate('sessions.refresh'))),
-          filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
-            React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => setSearch(event.target.value), style: inputStyle }),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => refreshList() }, translate('sessions.refresh')),
+            detail === null && filter !== 'deleted' && search.trim() === '' ? React.createElement('button', {
+              type: 'button',
+              'data-testid': 'sessions-batch-toggle',
+              'data-variant': batchMode ? 'primary' : 'neutral',
+              style: Object.assign({}, svcButtonStyle(batchMode ? 'primary' : 'neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }),
+              onClick: batchMode ? exitBatchMode : enterBatchMode,
+            }, translate(batchMode ? 'sessions.batch.exit' : 'sessions.batch.enter')) : null),
+          detail === null && batchMode ? React.createElement('div', { 'data-testid': 'sessions-batch-bar', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px', padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-3)' } },
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-select-all', style: chipButton, disabled: visibleSelectableIds.length === 0 || batchWorking !== '' || deleting, onClick: toggleSelectAll }, translate(allVisibleSelected ? 'sessions.batch.clearAll' : 'sessions.batch.selectAll')),
+            React.createElement('span', { 'data-testid': 'sessions-selected-count', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginRight: 'auto' } }, translate('sessions.batch.selected', { count: selectedIds.length })),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-export', style: chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-archive', style: chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length }))) : null,
+          detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
+            React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) }, style: inputStyle }),
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
               translate('sessions.search.archivedOnly'))) : null,
           archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + ' · ' + translate('sessions.oneWayHint')) : null,
           exportError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, exportError) : null,
+          batchResult !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-result', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, batchResult) : null,
+          batchError !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, batchError) : null,
           renderDetail() ?? renderListBody(),
           renderDeleteModal())
       }

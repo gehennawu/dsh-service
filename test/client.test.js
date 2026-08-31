@@ -5767,6 +5767,124 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   assert.equal(renderer.hasTest('sessions-row-delete-session-gone'), false, 'deleted record is read-only')
 })
 
+test('session manager batch mode supports multi-select, actions, select all, clear all, and resets across views', async () => {
+  const calls = []
+  const downloaded = []
+  const previousFetch = globalThis.fetch
+  const previousDocument = globalThis.document
+  globalThis.fetch = async (url, options) => {
+    downloaded.push({ url, method: options?.method })
+    return { ok: true, status: 200 }
+  }
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, 'a')
+      return { href: '', download: '', click() { downloaded.push({ href: this.href, download: this.download }) } }
+    },
+  }
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-export': (payload) => ({ ok: true, value: { url: '/api/session.export?sessionId=' + payload.id + '&includeDescendants=true', includesDescendants: true } }),
+    'sessions-archive': (payload) => ({ ok: true, value: { archived: true, id: payload.id, archivedSessionIds: ['session-archived', payload.id] } }),
+    'sessions-delete-plan': (payload) => ({ ok: true, value: { planId: 'plan-' + payload.id, session: { ...SESSION_LIST_VALUE.items.find((item) => item.id === payload.id), bytes: 1024, archived: true }, consequences: ['deletes-session-log'] } }),
+    'sessions-delete': (payload) => ({ ok: true, value: { deleted: true, id: payload.planId.replace('plan-', '') } }),
+  }))
+
+  try {
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('维护').props.onClick()
+    await renderer.flush()
+    await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+    await renderer.flush()
+
+    assert.equal(renderer.hasTest('sessions-batch-toggle'), true, 'normal session list exposes batch selection')
+    assert.equal(renderer.hasTest('sessions-select-session-archived'), false, 'row checkboxes stay hidden before entering batch mode')
+    await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-batch-toggle').children[0], '退出批量')
+    assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 0 项')
+    assert.equal(renderer.hasTest('sessions-select-session-archived'), true)
+    assert.equal(renderer.hasTest('sessions-row-view-session-archived'), false, 'batch mode hides per-row actions')
+
+    await renderer.findByTestId('sessions-select-session-archived').props.onChange({ target: { checked: true } })
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, true)
+    assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 1 项')
+    const selectedRow = renderer.findByTestId('sessions-row-session-archived')
+    assert.equal(selectedRow.props.style.background, 'transparent', 'selection must not replace the row background color')
+    assert.match(selectedRow.props.style.boxShadow, /brand-primary/, 'selection uses a narrow accent marker instead')
+    assert.equal(renderer.findByTestId('sessions-batch-export').props.disabled, false)
+    assert.equal(renderer.findByTestId('sessions-batch-archive').props.disabled, true, 'already archived rows are not archive candidates')
+    assert.equal(renderer.findByTestId('sessions-batch-delete').props.disabled, false)
+    assert.equal(renderer.findByTestId('sessions-select-all').children[0], '取消全选', 'single visible row means manual selection reaches all-selected state')
+
+    await renderer.findByTestId('sessions-batch-export').props.onClick()
+    await renderer.flush()
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-export').map((call) => call.payload.id), ['session-archived'])
+    assert.ok(downloaded.some((item) => item.download === 'dsh-session-session-archived.zip'), 'batch export triggers the official download path')
+
+    await renderer.findByTestId('sessions-select-all').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, false)
+    assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 0 项')
+    assert.equal(renderer.findByTestId('sessions-select-all').children[0], '全选')
+
+    await renderer.findByTestId('sessions-filter-all').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-batch-bar'), false, 'changing filters exits batch mode')
+    await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+    await renderer.flush()
+    await renderer.findByTestId('sessions-select-session-cold').props.onChange({ target: { checked: true } })
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-batch-archive').props.disabled, false)
+    assert.equal(renderer.findByTestId('sessions-batch-delete').props.disabled, true)
+    await renderer.findByTestId('sessions-batch-archive').props.onClick()
+    await renderer.flush()
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-archive').map((call) => call.payload.id), ['session-cold'])
+    assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true, 'batch archive updates the local row immediately')
+
+    await renderer.findByTestId('sessions-select-all').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 3 项')
+    assert.equal(renderer.findByTestId('sessions-select-session-live').props.checked, true)
+    assert.equal(renderer.findByTestId('sessions-select-session-cold').props.checked, true)
+    assert.equal(renderer.findByTestId('sessions-select-session-archived').props.checked, true)
+
+    await renderer.findByTestId('sessions-batch-delete').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-delete-modal'), true, 'batch delete still requires the confirmation modal')
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-delete-plan').map((call) => call.payload.id), ['session-cold', 'session-archived'], 'only archived non-live selections receive delete plans')
+    await renderer.findByTestId('sessions-delete-confirm').props.onClick()
+    await renderer.flush()
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-delete').map((call) => call.payload.planId), ['plan-session-cold', 'plan-session-archived'])
+    assert.equal(renderer.hasTest('sessions-row-session-live'), true, 'live selections are never deleted')
+    assert.equal(renderer.hasTest('sessions-row-session-cold'), false)
+    assert.equal(renderer.hasTest('sessions-row-session-archived'), false)
+    assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 1 项', 'selection prunes deleted rows and keeps the remaining live row')
+
+    await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-batch-bar'), false)
+    assert.equal(renderer.hasTest('sessions-row-view-session-live'), true, 'leaving batch mode restores row actions')
+
+    const searchInput = renderer.findByTestId('sessions-search-input')
+    searchInput.props.onChange({ target: { value: 'answer' } })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-batch-toggle'), false, 'search results do not expose batch selection')
+
+    await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-batch-toggle'), false, 'deleted records stay read-only without a batch selector')
+  } finally {
+    if (previousFetch === undefined) delete globalThis.fetch
+    else globalThis.fetch = previousFetch
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
+})
+
 test('session manager detail pages events, loads more with seq cursor, and triggers export', async () => {
   const calls = []
   const viewResponses = {
