@@ -157,6 +157,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Custom mode optionally selects a **reasoning effort**: the dropdown appears only for the exact provider/model when its adapter declares selectable levels; leaving it empty means "use the target model default", materialized by the adapter
 - Values come from adapter metadata (`reasoning.efforts[].id`); effort ids are opaque to the host. Models with no declared levels disable the dropdown and show a hint
 - **inherit / follow / feature gate off** inject no provider, model, or reasoning effort at all; subagents that carry an explicit provider/model are unaffected
+- **Fallback models (in order)** — both Follow and Custom modes accept an ordered fallback list: when the primary route is unavailable (channel unloaded, or quota state marks it unserviceable), the next model is tried in order; if none works, delegations fall back to native inheritance instead of failing. Fallback entries pass the same allow-list check as the primary route, with an optional reasoning effort per entry
 - Config stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, `0600`); one-click reset
 
 ### Task notifications

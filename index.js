@@ -163,6 +163,11 @@ const SUBAGENT_ROUTE_FILE = 'dsh-service-subagent-route.json'
 const SUBAGENT_ROUTE_MODES = ['inherit', 'follow', 'custom']
 const MAX_SUBAGENT_ROUTE_BYTES = 64 * 1024
 const MAX_SUBAGENT_ROUTE_FIELD = 256
+// 子代理回退（v1.1）：候选上限；「额度态不可服务」的 lastError 码集——配置/凭据/上游 4xx 类
+// 「已知现在不能用」；network/timeout/5xx 等瞬态不在此列（回退要的是确定性故障而非一次抖动）。
+const SUBAGENT_ROUTE_FALLBACK_MAX = 10
+const QUOTA_UNUSABLE_ERROR_RE = /^(credential-missing|credential-rejected|credentials-unavailable|no-base-url|no-subscription|host-not-pinned|mgmt-disabled|transport-unavailable|bad-payload)/i
+const QUOTA_UNUSABLE_STATUS_RE = /^(?:http-status|upstream-status):4\d\d$/i
 
 // 升级目标白名单：命令与包名全来自宿主常量，浏览器不传任何输入；
 // TARGET_RE 与 dsh-market 同源，只放行「包名@版本」字符集。
@@ -1515,6 +1520,18 @@ function createQuotaThrottle(options = {}) {
     return entry
   }
   return {
+    /** 只读侦察（不建条目）：无状态返回 undefined——子代理回退用它过滤「额度态不可服务」候选，不污染节流表。 */
+    peek(provider) {
+      const entry = entries.get(provider)
+      if (entry === undefined) return undefined
+      return {
+        refreshing: entry.inflight,
+        windows: entry.windows,
+        fetchedAt: entry.fetchedAt > 0 ? entry.fetchedAt : undefined,
+        lastError: entry.lastError,
+        lastErrorDetail: entry.lastErrorDetail,
+      }
+    },
     /** 只读快照：缓存窗口、是否刷新中、下次允许发起上游的时间（null=进行中未知）。 */
     view(provider, now = Date.now()) {
       const entry = entryOf(provider)
@@ -2941,13 +2958,32 @@ function parseSubagentRouteText(text) {
     return fallback
   }
   if (parsed?.version !== SUBAGENT_ROUTE_VERSION || !SUBAGENT_ROUTE_MODES.includes(parsed.mode)) return fallback
-  if (parsed.mode !== 'custom') return { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
+  // 回退列表（v1.1）custom/follow 共用：逐条 trim+截断、剔除空字段与重复路由（同 provider+model 只留首个）。
+  const fallbacks = []
+  if (Array.isArray(parsed.fallbacks)) {
+    for (const entry of parsed.fallbacks) {
+      if (fallbacks.length >= SUBAGENT_ROUTE_FALLBACK_MAX) break
+      if (entry === null || typeof entry !== 'object') continue
+      const provider = typeof entry.provider === 'string' ? entry.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+      const model = typeof entry.model === 'string' ? entry.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+      if (provider === '' || model === '') continue
+      const reasoningEffort = typeof entry.reasoningEffort === 'string' ? entry.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+      if (fallbacks.some((item) => item.provider === provider && item.model === model)) continue
+      fallbacks.push({ provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) })
+    }
+  }
+  if (parsed.mode === 'inherit') return { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
+  if (parsed.mode !== 'custom') {
+    return fallbacks.length > 0
+      ? { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode, fallbacks }
+      : { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
+  }
   const provider = typeof parsed.provider === 'string' ? parsed.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   const model = typeof parsed.model === 'string' ? parsed.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   if (provider === '' || model === '') return fallback
   // reasoningEffort 是可选的 adapter 自有等级 ID：只有字符串、trim 后非空才保留（空串视为默认）。
   const reasoningEffort = typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
-  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) }
+  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}), ...(fallbacks.length > 0 ? { fallbacks } : {}) }
 }
 
 async function loadSubagentRoute(dshHome) {
@@ -2973,16 +3009,34 @@ async function saveSubagentRoute(dshHome, config) {
   }
 }
 
+// 额度态「不可服务」判定（子代理回退候选过滤用）：lastError 命中配置/凭据/上游 4xx 码集，
+// 或任一显示窗口 percent≥100（已用尽）。无数据 / 刷新中 / 瞬态错误视为可用——fail-open，
+// 不因额度数据缺席或一次网络抖动误伤正常渠道。
+function quotaProviderUnusable(view) {
+  if (view === undefined || view === null) return false
+  if (view.refreshing === true) return false
+  if (typeof view.lastError === 'string' && view.lastError !== '') {
+    if (QUOTA_UNUSABLE_ERROR_RE.test(view.lastError) || QUOTA_UNUSABLE_STATUS_RE.test(view.lastError)) return true
+  }
+  if (Array.isArray(view.windows)) {
+    for (const window of view.windows) {
+      if (window !== null && typeof window === 'object' && typeof window.percent === 'number' && window.percent >= 100) return true
+    }
+  }
+  return false
+}
+
 // 子代理派生注入（seam 核心，纯函数便于测试）：
 // - 请求已显式携带 provider/model → 不干预（显式永远赢，含预设钉死与其他插件注入）；
-// - follow → 读父会话最近 request header 的路由（= 主对话当前实际渠道；空白会话回落继承）；
-// - custom → 配置路由且 llm 注册表当前可路由才注入（渠道卸载后回落继承，不让派生失败）；
-// - inherit / 其余 → undefined（原生继承父代理创建 options）。
+// - custom → 候选序 = [配置路由, ...回退]；follow → [父会话最新路由, ...回退]；inherit → 无候选；
+// - 取第一个「llm 注册表可路由 且 额度态可用」的候选注入；全不可用 → undefined（回落原生继承，
+//   不让派生失败）。options.note 用于宿主侧记录跳过原因（main 日志调试用）。
 function resolveSubagentInjection(request, config, options = {}) {
   const agentOptions = request?.agentOptions
   const explicitProvider = typeof agentOptions?.provider === 'string' && agentOptions.provider !== ''
   const explicitModel = typeof agentOptions?.model === 'string' && agentOptions.model !== ''
   if (explicitProvider || explicitModel) return undefined
+  const candidates = []
   if (config?.mode === 'follow') {
     let header
     try {
@@ -2991,14 +3045,33 @@ function resolveSubagentInjection(request, config, options = {}) {
       header = undefined
     }
     if (typeof header?.provider === 'string' && header.provider !== '' && typeof header?.model === 'string' && header.model !== '') {
-      return { provider: header.provider, model: header.model }
+      candidates.push({ provider: header.provider, model: header.model })
     }
-    return undefined
-  }
-  if (config?.mode === 'custom' && typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== '') {
-    if (options.isRoutable !== undefined && !options.isRoutable(config.provider)) return undefined
+  } else if (config?.mode === 'custom' && typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== '') {
     const reasoningEffort = typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? config.reasoningEffort : undefined
-    return { provider: config.provider, model: config.model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }
+    candidates.push({ provider: config.provider, model: config.model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) })
+  }
+  // 回退只属于 follow/custom：inherit 保持零干预（磁盘解析也会丢弃，这里是纯函数层的纵深防御）。
+  if ((config?.mode === 'follow' || config?.mode === 'custom') && Array.isArray(config?.fallbacks)) {
+    for (const entry of config.fallbacks) {
+      if (entry === null || typeof entry !== 'object') continue
+      const provider = typeof entry.provider === 'string' ? entry.provider : ''
+      const model = typeof entry.model === 'string' ? entry.model : ''
+      if (provider === '' || model === '') continue
+      const reasoningEffort = typeof entry.reasoningEffort === 'string' && entry.reasoningEffort !== '' ? entry.reasoningEffort : undefined
+      candidates.push({ provider, model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) })
+    }
+  }
+  for (const candidate of candidates) {
+    if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider)) {
+      options.note?.(`${candidate.provider}/${candidate.model} skipped (not routable)`)
+      continue
+    }
+    if (typeof options.isQuotaHealthy === 'function' && options.isQuotaHealthy(candidate.provider) === false) {
+      options.note?.(`${candidate.provider}/${candidate.model} skipped (quota-unusable)`)
+      continue
+    }
+    return candidate
   }
   return undefined
 }
@@ -3791,9 +3864,22 @@ function apply(ctx) {
       }
       return cached
     }
+    // 候选路由的额度态闸（v1.1）：额度查询标记该 provider「不可服务」时跳过（回退生效场景）。
+    // 无额度数据/功能关闭一律放行（fail-open）——额度态只是候选过滤器，绝不让派生失败。
+    const isQuotaHealthy = (provider) => {
+      if (!featureEnabled('quotaLookup')) return undefined
+      const view = quotaThrottle.peek(provider)
+      if (view === undefined) return undefined
+      return quotaProviderUnusable(view) === false
+    }
     const applyInjection = (request) => {
       if (!featureEnabled('subagentRoute')) return { request, effort: undefined }
-      const injected = resolveSubagentInjection(request, subagentRouteConfig, { isRoutable, readParentHeader })
+      const injected = resolveSubagentInjection(request, subagentRouteConfig, {
+        isRoutable,
+        readParentHeader,
+        isQuotaHealthy,
+        note: (message) => ctx.logger?.info?.(`dsh-service: subagent route ${message}`),
+      })
       if (injected === undefined) return { request, effort: undefined }
       const { reasoningEffort, ...agentPatch } = injected
       if (injected.provider !== undefined && injected.model !== undefined) {
@@ -4722,6 +4808,7 @@ function apply(ctx) {
               model: config.model,
               ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
             } : {}),
+            ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}),
             models,
             ...(current !== undefined ? { current } : {}),
           },
@@ -4735,17 +4822,25 @@ function apply(ctx) {
       const mode = payload?.mode
       if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
       try {
-        let reasoningEffort = ''
+        let whitelist
+        const loadWhitelist = async () => {
+          if (whitelist === undefined) {
+            const llm = ctx.get('llm')
+            if (llm === undefined || typeof llm.stream !== 'function') return null
+            whitelist = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
+          }
+          return whitelist
+        }
+        const primary = { mode }
         if (mode === 'custom') {
           const provider = typeof payload?.provider === 'string' ? payload.provider.trim() : ''
           const model = typeof payload?.model === 'string' ? payload.model.trim() : ''
           if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
-          const llm = ctx.get('llm')
-          if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
+          const catalog = await loadWhitelist()
+          if (catalog === null) return { ok: false, error: 'llm-unavailable' }
           // 与 skills-describe 同一道闸：provider/model 必须命中运行时清单白名单；同时取该
           // exact model 的 adapter reasoning metadata 用于校验 reasoningEffort 是否受支持。
-          const whitelist = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
-          const modelEntry = whitelist.models.find((item) => item.provider === provider && item.id === model)
+          const modelEntry = catalog.models.find((item) => item.provider === provider && item.id === model)
           if (modelEntry === undefined) return { ok: false, error: 'invalid-model-route' }
           const rawEffort = payload?.reasoningEffort
           if (rawEffort !== undefined && rawEffort !== '') {
@@ -4753,30 +4848,59 @@ function apply(ctx) {
             const effort = rawEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
             if (effort !== '') {
               if (!(modelEntry.reasoning?.efforts ?? []).some((entry) => entry.id === effort)) return { ok: false, error: 'invalid-reasoning-effort' }
-              reasoningEffort = effort
+              primary.reasoningEffort = effort
             }
+          }
+          primary.provider = provider.slice(0, MAX_SUBAGENT_ROUTE_FIELD)
+          primary.model = model.slice(0, MAX_SUBAGENT_ROUTE_FIELD)
+        }
+        // 回退列表（v1.1）：custom 与 follow 共用；每条与主路由同一道白名单闸，条目非法整体拒绝。
+        const fallbacks = []
+        const rawFallbacks = Array.isArray(payload?.fallbacks) ? payload.fallbacks : []
+        if (rawFallbacks.length > 0 && mode !== 'inherit') {
+          const catalog = await loadWhitelist()
+          if (catalog === null) return { ok: false, error: 'llm-unavailable' }
+          for (const entry of rawFallbacks) {
+            if (fallbacks.length >= SUBAGENT_ROUTE_FALLBACK_MAX) break
+            if (entry === null || typeof entry !== 'object') return { ok: false, error: 'invalid-fallback-route' }
+            const provider = typeof entry.provider === 'string' ? entry.provider.trim() : ''
+            const model = typeof entry.model === 'string' ? entry.model.trim() : ''
+            const modelEntry = catalog.models.find((item) => item.provider === provider && item.id === model)
+            if (modelEntry === undefined) return { ok: false, error: 'invalid-fallback-route' }
+            let effort = ''
+            const rawEffort = entry.reasoningEffort
+            if (rawEffort !== undefined && rawEffort !== '') {
+              if (typeof rawEffort !== 'string') return { ok: false, error: 'invalid-fallback-route' }
+              const trimmed = rawEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
+              if (trimmed !== '' && !(modelEntry.reasoning?.efforts ?? []).some((candidate) => candidate.id === trimmed)) return { ok: false, error: 'invalid-fallback-route' }
+              effort = trimmed
+            }
+            const normalized = { provider: provider.slice(0, MAX_SUBAGENT_ROUTE_FIELD), model: model.slice(0, MAX_SUBAGENT_ROUTE_FIELD), ...(effort !== '' ? { reasoningEffort: effort } : {}) }
+            if (fallbacks.some((candidate) => candidate.provider === normalized.provider && candidate.model === normalized.model)) continue
+            fallbacks.push(normalized)
           }
         }
         return await serializeSubagentRouteWrite(async (config) => {
+          config.mode = mode
           if (mode === 'custom') {
-            config.mode = 'custom'
-            config.provider = typeof payload?.provider === 'string' ? payload.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
-            config.model = typeof payload?.model === 'string' ? payload.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+            config.provider = primary.provider
+            config.model = primary.model
             // 先删旧值，只有新值非空时才写入：空/未提供代表「使用模型默认」。
             delete config.reasoningEffort
-            if (reasoningEffort !== '') config.reasoningEffort = reasoningEffort
+            if (primary.reasoningEffort !== undefined) config.reasoningEffort = primary.reasoningEffort
           } else {
-            // inherit / follow：不保留 custom 字段，重置回干净形状。
-            config.mode = mode
+            // follow / inherit：不保留 custom 字段，重置回干净形状。
             delete config.provider
             delete config.model
             delete config.reasoningEffort
           }
+          if (fallbacks.length > 0) config.fallbacks = fallbacks
+          else delete config.fallbacks
           return { value: { ok: true, mode: config.mode, ...(config.mode === 'custom' ? {
             provider: config.provider,
             model: config.model,
             ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
-          } : {}) } }
+          } : {}), ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}) } }
         })
       } catch (error) {
         return rpcTechnicalFailure(error)
@@ -4988,6 +5112,7 @@ export {
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
+  quotaProviderUnusable,
   readLlmProviders,
   resolveSessionForDelete,
   resolveSkillInvocationState,
@@ -5052,6 +5177,7 @@ export default {
   quotaCredentialHintNames,
   quotaEndpointFor,
   quotaErrorCode,
+  quotaProviderUnusable,
   readLlmProviders,
   resolveSessionForDelete,
   resolveSkillInvocationState,

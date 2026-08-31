@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -4548,6 +4548,171 @@ test('subagent-route-save：unknown-mode 与功能门；follow/inherit 清干净
   await rebooted.updateFeatureSettings({ subagentRoute: false })
   assert.equal((await rebooted.handler('subagent-route', {})).error, 'feature-disabled')
   assert.equal((await rebooted.handler('subagent-route-save', { mode: 'follow' })).error, 'feature-disabled')
+})
+
+test('parseSubagentRouteText：回退列表解析（trim/去重/上限/非法条目丢弃；follow 与 custom 持有，inherit 丢弃）', () => {
+  const custom = parseSubagentRouteText(JSON.stringify({
+    version: 1, mode: 'custom', provider: 'p', model: 'm',
+    fallbacks: [
+      { provider: '  a  ', model: ' a1 ', reasoningEffort: '  low  ' },
+      { provider: 'b', model: 'b1' },
+      { provider: 'a', model: 'a1' },
+      { provider: '', model: 'x' },
+      'junk',
+      { provider: 'c', model: 'c1', reasoningEffort: 42 },
+    ],
+  }))
+  assert.deepEqual(custom.fallbacks, [
+    { provider: 'a', model: 'a1', reasoningEffort: 'low' },
+    { provider: 'b', model: 'b1' },
+    { provider: 'c', model: 'c1' },
+  ])
+  const follow = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow', fallbacks: [{ provider: 'x', model: 'y' }] }))
+  assert.deepEqual(follow, { version: 1, mode: 'follow', fallbacks: [{ provider: 'x', model: 'y' }] })
+  const inherit = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'inherit', fallbacks: [{ provider: 'x', model: 'y' }] }))
+  assert.deepEqual(inherit, { version: 1, mode: 'inherit' })
+  const many = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow', fallbacks: Array.from({ length: 12 }, (_, i) => ({ provider: 'p' + i, model: 'm' })) }))
+  assert.equal(many.fallbacks.length, 10)
+})
+
+test('resolveSubagentInjection：回退候选链——顺序选择、quota-skip、全不可用回落继承', () => {
+  // a/b/c 都可路由；b 的额度态「不可服务」。
+  const isRoutable = (provider) => ['a', 'b', 'c'].includes(provider)
+  const isQuotaHealthy = (provider) => provider !== 'b'
+  // custom：主路由可用时用主路由。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'a', model: 'm1', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy }), { provider: 'a', model: 'm1' })
+  // custom：主路由不可路由 → 顺序落到回退（含 effort 透传）。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'zz', model: 'm1', fallbacks: [{ provider: 'b', model: 'm2' }, { provider: 'c', model: 'm3', reasoningEffort: 'high' }] }, { isRoutable, isQuotaHealthy }), { provider: 'c', model: 'm3', reasoningEffort: 'high' })
+  // custom：主路由 quota 不可用 → 落到回退。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'b', model: 'm1', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy }), { provider: 'c', model: 'm3' })
+  // 全部 quota 不可用 → undefined（回落原生继承，不让派生失败）。
+  assert.equal(resolveSubagentInjection({}, { mode: 'custom', provider: 'b', model: 'm1', fallbacks: [{ provider: 'b', model: 'm2' }] }, { isRoutable, isQuotaHealthy }), undefined)
+  // 未提供 isQuotaHealthy → fail-open 不跳过。
+  assert.deepEqual(resolveSubagentInjection({}, { mode: 'custom', provider: 'b', model: 'm1' }, { isRoutable }), { provider: 'b', model: 'm1' })
+  // follow：父路由优先；父路由 quota 不可用 → 回退；无 header → 回退兜底。
+  const parentA = { session: { requestHeader: () => ({ config: { provider: 'a', model: 'm1' } }) } }
+  const parentB = { session: { requestHeader: () => ({ config: { provider: 'b', model: 'm1' } }) } }
+  const parentEmpty = { session: { requestHeader: () => undefined } }
+  const readParentHeader = (parent) => parent?.session?.requestHeader?.()?.config
+  assert.deepEqual(resolveSubagentInjection({ parent: parentA }, { mode: 'follow', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy, readParentHeader }), { provider: 'a', model: 'm1' })
+  assert.deepEqual(resolveSubagentInjection({ parent: parentB }, { mode: 'follow', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy, readParentHeader }), { provider: 'c', model: 'm3' })
+  assert.deepEqual(resolveSubagentInjection({ parent: parentEmpty }, { mode: 'follow', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy, readParentHeader }), { provider: 'c', model: 'm3' })
+  // inherit：无候选。
+  assert.equal(resolveSubagentInjection({ parent: parentA }, { mode: 'inherit', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, readParentHeader }), undefined)
+  // note 回调收到跳过原因。
+  const notes = []
+  resolveSubagentInjection({}, { mode: 'custom', provider: 'b', model: 'm1', fallbacks: [{ provider: 'c', model: 'm3' }] }, { isRoutable, isQuotaHealthy, note: (message) => notes.push(message) })
+  assert.deepEqual(notes, ['b/m1 skipped (quota-unusable)'])
+})
+
+test('quotaProviderUnusable：失败码/上游 4xx/100% 窗口判不可用；瞬态/5xx/无数据/刷新中放行', () => {
+  assert.equal(quotaProviderUnusable(undefined), false)
+  assert.equal(quotaProviderUnusable({ refreshing: true, lastError: 'credential-rejected' }), false)
+  assert.equal(quotaProviderUnusable({ lastError: 'credential-rejected' }), true)
+  assert.equal(quotaProviderUnusable({ lastError: 'no-base-url' }), true)
+  assert.equal(quotaProviderUnusable({ lastError: 'credential-missing' }), true)
+  assert.equal(quotaProviderUnusable({ lastError: 'http-status:402' }), true)
+  assert.equal(quotaProviderUnusable({ lastError: 'upstream-status:429' }), true)
+  assert.equal(quotaProviderUnusable({ lastError: 'network' }), false)
+  assert.equal(quotaProviderUnusable({ lastError: 'timeout' }), false)
+  assert.equal(quotaProviderUnusable({ lastError: 'upstream-status:500' }), false)
+  assert.equal(quotaProviderUnusable({ windows: [{ percent: 100, label: 'x' }] }), true)
+  assert.equal(quotaProviderUnusable({ windows: [{ percent: 99.9 }] }), false)
+  assert.equal(quotaProviderUnusable({ windows: [{ text: '¥12' }] }), false)
+})
+
+test('createQuotaThrottle.peek：无状态返回 undefined 且不建条目；有状态只读返回', () => {
+  const throttle = createQuotaThrottle()
+  assert.equal(throttle.peek('never-seen'), undefined)
+  // view 会建条目，peek 不会。
+  throttle.view('seen')
+  assert.notEqual(throttle.peek('seen'), undefined)
+  const fresh = createQuotaThrottle()
+  assert.equal(fresh.peek('anything'), undefined)
+  assert.equal(fresh.peek('anything'), undefined)
+})
+
+test('subagent-route-save：回退列表白名单校验、持久化与 follow 快照回读', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-fallback-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash', 'deepseek-v4-pro']], ['cpa', 'CPA', ['gpt-5.6-sol']]])
+  llm.setModelInfo('deepseek-official', 'deepseek-v4-flash', { provider: 'deepseek-official', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', reasoning: { efforts: [{ id: 'low', name: 'Low' }] } })
+  const host = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+
+  // follow + 回退默认值：列表外条目整体拒绝（fail-closed）。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'nope', model: 'x' }] })).error, 'invalid-fallback-route')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'max' }] })).error, 'invalid-fallback-route')
+  // custom 需主路由有效；回退与主路由同闸，effort 复核。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'nope', model: 'x', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })).error, 'invalid-model-route')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'max' }] })).error, 'invalid-fallback-route')
+
+  // follow + 合法回退（含 effort）落盘并可回读；重复条目去重。
+  const saved = await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' }, { provider: 'cpa', model: 'gpt-5.6-sol' }, { provider: 'cpa', model: 'gpt-5.6-sol' }] })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(saved.fallbacks, [
+    { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' },
+    { provider: 'cpa', model: 'gpt-5.6-sol' },
+  ])
+  const raw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(raw, { version: 1, mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' }, { provider: 'cpa', model: 'gpt-5.6-sol' }] })
+  const snapshot = await host.handler('subagent-route', {})
+  assert.equal(snapshot.value.mode, 'follow')
+  assert.deepEqual(snapshot.value.fallbacks, [{ provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' }, { provider: 'cpa', model: 'gpt-5.6-sol' }])
+
+  // 重存 follow 不带回退 → 落盘清掉 fallbacks 字段。
+  await host.handler('subagent-route-save', { mode: 'follow' })
+  const after = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(after, { version: 1, mode: 'follow' })
+
+  // custom + 回退：主路由与回退并存；inherit 丢弃回退。
+  const customSaved = await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-pro', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
+  assert.equal(customSaved.ok, true)
+  assert.equal(customSaved.mode, 'custom')
+  assert.deepEqual(customSaved.fallbacks, [{ provider: 'cpa', model: 'gpt-5.6-sol' }])
+  await host.handler('subagent-route-save', { mode: 'inherit' })
+  const rawInherit = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(rawInherit, { version: 1, mode: 'inherit' })
+  // 重启后回读 follow+custom 的持久化回退。
+  await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash' }] })
+  const rebooted = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
+  const rebootedSnapshot = await rebooted.handler('subagent-route', {})
+  assert.deepEqual(rebootedSnapshot.value.fallbacks, [{ provider: 'deepseek-official', model: 'deepseek-v4-flash' }])
+})
+
+test('subagent-route seam：回退链路——follow 父路由不可路由落到回退；custom 落盘回退同理', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-seam-fallback-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 预写 custom 配置（绕过 API 白名单闸）：主路由不在 llm 清单、首回退也不可路由 → 落到带 effort 的第二回退。
+  await writeFile(join(dshHome, 'dsh-service-subagent-route.json'), JSON.stringify({
+    version: 1, mode: 'custom', provider: 'not-installed', model: 'm',
+    fallbacks: [
+      { provider: 'not-installed-2', model: 'x' },
+      { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high' },
+    ],
+  }), { mode: 0o600 })
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash', 'deepseek-v4-pro']]])
+  llm.setModelInfo('deepseek-official', 'deepseek-v4-pro', { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'Pro', reasoning: { efforts: [{ id: 'high', name: 'High' }] } })
+  const { registry, calls } = fakeSubagents()
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  // 配置异步加载：await 一次快照确保 subagentRouteConfig 已从磁盘就位再派生。
+  await host.handler('subagent-route', {})
+
+  // custom：主路由与首回退均不可路由 → 顺序落到第二回退（effort 由候选透传，绑定路径与主路由同）。
+  await registry.start('spawn', { label: 'a', parent: {} })
+  assert.deepEqual(calls[0].request.agentOptions, { provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+
+  // follow + 回退：父路由的渠道已卸载 → 注入回退[0]。
+  await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash' }] })
+  await registry.start('spawn', { label: 'b', parent: { session: { requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } } })
+  assert.deepEqual(calls[1].request.agentOptions, { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  host.dispose()
+})
+test('subagent-route-save：llm 缺席时带回退的 follow 保存被拒（llm-unavailable）', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-fallback-bare-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome } })
+  assert.equal((await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'x', model: 'y' }] })).error, 'llm-unavailable')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'follow' })).ok, true)
 })
 
 test('subagent-route：宿主无 subagents/llm 服务时 available=false、模型清单为空、custom 保存被拒', async (t) => {

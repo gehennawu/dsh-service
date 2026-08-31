@@ -150,6 +150,15 @@ window.__ModuleLoader__.load({
       'subagent.error.invalid-model-route': '供应商或模型不在宿主清单内',
       'subagent.error.invalid-reasoning-effort': '思考等级不受该模型支持，请重新选择',
       'subagent.error.network': '网络错误：无法连接宿主',
+      'subagent.fallback.title': '回退模型（按顺序）',
+      'subagent.fallback.hint': '第一路由不可用时（渠道已卸载、额度查询判定不可服务）依次尝试回退；全部不可用则回落原生继承，不让派生失败。',
+      'subagent.fallback.add': '添加回退',
+      'subagent.fallback.remove': '移除',
+      'subagent.fallback.up': '上移',
+      'subagent.fallback.down': '下移',
+      'subagent.fallback.empty': '未添加回退：第一路由不可用时子代理回落到原生继承。',
+      'subagent.fallback.limit': '已达上限（{max} 个）',
+      'subagent.error.invalid-fallback-route': '回退条目不在宿主清单内，请重新选择',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
       'skills.error.network': '网络错误，请稍后重试',
@@ -815,6 +824,15 @@ window.__ModuleLoader__.load({
       'subagent.error.invalid-model-route': 'Provider or model is not in the host catalog',
       'subagent.error.invalid-reasoning-effort': 'This reasoning effort is not supported by the selected model; choose another',
       'subagent.error.network': 'Network error: cannot reach the host',
+      'subagent.fallback.title': 'Fallback models (in order)',
+      'subagent.fallback.hint': 'When the primary route is unavailable (channel unloaded, or quota state marks it unserviceable), try fallbacks in order; if none works, fall back to native inheritance instead of failing the delegation.',
+      'subagent.fallback.add': 'Add fallback',
+      'subagent.fallback.remove': 'Remove',
+      'subagent.fallback.up': 'Move up',
+      'subagent.fallback.down': 'Move down',
+      'subagent.fallback.empty': 'No fallbacks: delegations fall back to native inheritance when the primary route is unavailable.',
+      'subagent.fallback.limit': 'Limit reached ({max})',
+      'subagent.error.invalid-fallback-route': 'Fallback entry is not in the host catalog, please choose again',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
       'skills.error.network': 'Network error, try again later',
@@ -3148,6 +3166,7 @@ window.__ModuleLoader__.load({
         const [savedTick, setSavedTick] = useState(0)
         const [error, setError] = useState('')
         const [reasoningEffort, setReasoningEffort] = useState('')
+        const [fallbacks, setFallbacks] = useState([])
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -3158,6 +3177,7 @@ window.__ModuleLoader__.load({
             if (res.ok) {
               setSnapshot(res.value)
               setMode(res.value.mode)
+              setFallbacks(Array.isArray(res.value.fallbacks) ? res.value.fallbacks : [])
               if (res.value.mode === 'custom') {
                 setProvider(typeof res.value.provider === 'string' ? res.value.provider : '')
                 setModel(typeof res.value.model === 'string' ? res.value.model : '')
@@ -3187,21 +3207,27 @@ window.__ModuleLoader__.load({
             providers.push(item.provider)
           }
         }
-        const providerModels = models.filter((item) => item.provider === provider)
+        const modelsFor = (providerId) => models.filter((item) => item.provider === providerId)
+        // 精确模型及其 adapter 声明的可选思考等级（host 已裁剪；此处再做防御性过滤/去重）。
+        const effortsFor = (modelEntry) => {
+          const options = []
+          const seenIds = new Set()
+          for (const entry of (modelEntry?.reasoning?.efforts ?? [])) {
+            if (entry === null || typeof entry !== 'object') continue
+            const id = typeof entry.id === 'string' ? entry.id : ''
+            if (id === '' || seenIds.has(id)) continue
+            seenIds.add(id)
+            options.push({ id, name: typeof entry.name === 'string' && entry.name !== '' ? entry.name : id, description: typeof entry.description === 'string' && entry.description !== '' ? entry.description : undefined })
+          }
+          return options
+        }
+        const providerModels = modelsFor(provider)
         // 当前精确模型及其 adapter 声明的可选思考等级（host 已裁剪；此处再做防御性过滤/去重）。
         const selectedModel = providerModels.find((item) => item.id === model) ?? null
-        const effortOptions = []
-        const seenEffortIds = new Set()
-        for (const entry of (selectedModel?.reasoning?.efforts ?? [])) {
-          if (entry === null || typeof entry !== 'object') continue
-          const id = typeof entry.id === 'string' ? entry.id : ''
-          if (id === '' || seenEffortIds.has(id)) continue
-          seenEffortIds.add(id)
-          effortOptions.push({ id, name: typeof entry.name === 'string' && entry.name !== '' ? entry.name : id, description: typeof entry.description === 'string' && entry.description !== '' ? entry.description : undefined })
-        }
+        const effortOptions = effortsFor(selectedModel)
         // 换供应商/模型后，若已选等级不再被新模型支持，立即重置为空，避免把旧等级发给新模型。
         useEffect(() => {
-          if (reasoningEffort !== '' && !seenEffortIds.has(reasoningEffort)) setReasoningEffort('')
+          if (reasoningEffort !== '' && !effortOptions.some((option) => option.id === reasoningEffort)) setReasoningEffort('')
         }, [provider, model])
         // 换供应商时若当前模型不属于它，回落到该供应商首个模型。
         useEffect(() => {
@@ -3212,13 +3238,40 @@ window.__ModuleLoader__.load({
         const effectiveProvider = providers.includes(provider) ? provider : providers[0] ?? ''
         useEffect(() => { if (provider !== effectiveProvider) setProvider(effectiveProvider) }, [effectiveProvider, provider])
 
+        // 回退模型（v1.1）：有序候选列表，custom/follow 共用；上限与宿主常量一致。
+        const FALLBACK_MAX = 10
+        const updateFallback = (index, patch) => {
+          setFallbacks((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+        }
+        const removeFallback = (index) => {
+          setFallbacks((rows) => rows.filter((_, i) => i !== index))
+        }
+        const moveFallback = (index, delta) => {
+          setFallbacks((rows) => {
+            const target = index + delta
+            if (target < 0 || target >= rows.length) return rows
+            const next = [...rows]
+            const moving = next.splice(index, 1)[0]
+            next.splice(target, 0, moving)
+            return next
+          })
+        }
+        const addFallback = () => {
+          setFallbacks((rows) => {
+            if (rows.length >= FALLBACK_MAX) return rows
+            const firstProvider = providers[0] ?? ''
+            return [...rows, { provider: firstProvider, model: modelsFor(firstProvider)[0]?.id ?? '' }]
+          })
+        }
+
         const save = async (nextMode) => {
           setSaving(true)
           setError('')
           try {
+            const withFallbacks = (nextMode === 'custom' || nextMode === 'follow') && fallbacks.length > 0 ? { fallbacks } : {}
             const payload = nextMode === 'custom'
-              ? { mode: 'custom', provider: effectiveProvider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) }
-              : { mode: nextMode }
+              ? { mode: 'custom', provider: effectiveProvider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}), ...withFallbacks }
+              : { mode: nextMode, ...withFallbacks }
             const res = await rpcCall('subagent-route-save', payload)
             if (res.ok) {
               setSavedTick((tick) => tick + 1)
@@ -3249,6 +3302,23 @@ window.__ModuleLoader__.load({
           })
         }, translate('subagent.mode.' + candidate))
 
+        const fallbackIconButton = (testId, disabled, onClick, label, danger = false) => React.createElement('button', {
+          type: 'button',
+          'data-testid': testId,
+          disabled: disabled || saving,
+          onClick,
+          style: {
+            fontSize: '12px',
+            padding: '3px 8px',
+            borderRadius: '6px',
+            border: '1px solid ' + (danger ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsh-svc-border-strong)'),
+            background: 'transparent',
+            color: danger ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsh-svc-text)',
+            cursor: disabled || saving ? 'default' : 'pointer',
+            opacity: disabled || saving ? 0.55 : 1,
+          },
+        }, label)
+
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
           React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
@@ -3270,6 +3340,33 @@ window.__ModuleLoader__.load({
                 ...effortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))),
               effortOptions.length === 0 ? React.createElement('span', { 'data-testid': 'subagent-reasoning-effort-unavailable', style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.reasoningEffort.unavailable')) : null) : null) : null,
           mode === 'custom' && models.length === 0 && !loading ? React.createElement('p', { 'data-testid': 'subagent-models-empty', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.modelsEmpty')) : null,
+          mode === 'custom' || mode === 'follow' ? React.createElement('div', { 'data-testid': 'subagent-fallback-block', style: { marginTop: '14px', borderTop: '1px solid var(--dsh-svc-border)', paddingTop: '12px' } },
+            React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('subagent.fallback.title')),
+            React.createElement('p', { style: hintStyle }, translate('subagent.fallback.hint')),
+            fallbacks.length === 0 ? React.createElement('p', { 'data-testid': 'subagent-fallback-empty', style: { ...hintStyle, color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.fallback.empty')) : null,
+            fallbacks.map((fallback, index) => {
+              const rowKnownProvider = providers.includes(fallback.provider)
+              const rowProviderModels = rowKnownProvider ? modelsFor(fallback.provider) : []
+              const rowModelEntry = rowProviderModels.find((item) => item.id === fallback.model) ?? null
+              const rowEffortOptions = effortsFor(rowModelEntry)
+              const rowEffortIds = rowEffortOptions.map((option) => option.id)
+              return React.createElement('div', { key: index, 'data-testid': 'subagent-fallback-row', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '6px' } },
+                React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, String(index + 1) + '.'),
+                React.createElement('select', { 'data-testid': 'subagent-fallback-provider-' + index, value: rowKnownProvider ? fallback.provider : '', disabled: saving, onChange: (event) => { const nextProvider = event.target.value; updateFallback(index, { provider: nextProvider, model: modelsFor(nextProvider)[0]?.id ?? '' }) }, style: selectStyle },
+                  React.createElement('option', { value: '' }, ''),
+                  providers.map((id) => React.createElement('option', { key: id, value: id }, providerName[id] ?? id))),
+                React.createElement('select', { 'data-testid': 'subagent-fallback-model-' + index, value: rowProviderModels.some((item) => item.id === fallback.model) ? fallback.model : '', disabled: rowProviderModels.length === 0 || saving, onChange: (event) => { const nextModel = event.target.value; const nextEntry = rowProviderModels.find((item) => item.id === nextModel) ?? null; const nextIds = effortsFor(nextEntry).map((option) => option.id); updateFallback(index, { model: nextModel, ...(typeof fallback.reasoningEffort === 'string' && fallback.reasoningEffort !== '' && !nextIds.includes(fallback.reasoningEffort) ? { reasoningEffort: undefined } : {}) }) }, style: selectStyle },
+                  rowProviderModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id))),
+                rowEffortOptions.length > 0 ? React.createElement('select', { 'data-testid': 'subagent-fallback-effort-' + index, value: rowEffortIds.includes(fallback.reasoningEffort) ? fallback.reasoningEffort : '', disabled: saving, onChange: (event) => updateFallback(index, { reasoningEffort: event.target.value === '' ? undefined : event.target.value }), style: selectStyle },
+                  React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
+                  ...rowEffortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))) : null,
+                fallbackIconButton('subagent-fallback-up-' + index, index === 0, () => moveFallback(index, -1), translate('subagent.fallback.up')),
+                fallbackIconButton('subagent-fallback-down-' + index, index === fallbacks.length - 1, () => moveFallback(index, 1), translate('subagent.fallback.down')),
+                fallbackIconButton('subagent-fallback-remove-' + index, false, () => removeFallback(index), translate('subagent.fallback.remove'), true))
+            }),
+            fallbacks.length >= FALLBACK_MAX
+              ? React.createElement('p', { 'data-testid': 'subagent-fallback-limit', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.fallback.limit', { max: String(FALLBACK_MAX) }))
+              : React.createElement('button', { type: 'button', 'data-testid': 'subagent-fallback-add', disabled: saving || providers.length === 0, onClick: () => addFallback(), style: { fontSize: '12px', padding: '5px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px dashed var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsh-svc-text)', cursor: saving || providers.length === 0 ? 'default' : 'pointer', opacity: saving || providers.length === 0 ? 0.55 : 1, marginTop: '8px' } }, translate('subagent.fallback.add'))) : null,
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },

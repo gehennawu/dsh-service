@@ -4651,9 +4651,10 @@ function createSubagentRenderer(options = {}) {
     if (endpoint === 'subagent-route-save') {
       state.saves.push(payload)
       if (options.saveError) return { ok: false, error: options.saveError }
+      const savedFallbacks = Array.isArray(payload.fallbacks) && payload.fallbacks.length > 0 ? { fallbacks: payload.fallbacks } : {}
       state.route = payload.mode === 'custom'
-        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model, ...(payload.reasoningEffort !== undefined ? { reasoningEffort: payload.reasoningEffort } : {}) }
-        : { available: true, mode: payload.mode }
+        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model, ...(payload.reasoningEffort !== undefined ? { reasoningEffort: payload.reasoningEffort } : {}), ...savedFallbacks }
+        : { available: true, mode: payload.mode, ...savedFallbacks }
       return { ok: true, ...state.route }
     }
     if (endpoint === 'version') return { ok: true, value: { current: '0.26.0', instanceId: 'old-instance' } }
@@ -4718,6 +4719,58 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   // v0.39：子代理的设置页左列入口已撤销——段内开关不复存在，也不再注册独立 section。
   assert.equal(renderer.hasTest('subagent-nav-switch'), false)
   assert.equal((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
+})
+
+test('subagent fallback list: load/add/move/remove rows and save ordered fallbacks with follow and custom modes', async () => {
+  const { renderer, state } = createSubagentRenderer()
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // inherit 无回退块；切到 follow 出现，初始为空提示。
+  assert.equal(renderer.hasTest('subagent-fallback-block'), false)
+  renderer.findByTestId('subagent-mode-follow').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('subagent-fallback-block'), true)
+  assert.equal(renderer.hasTest('subagent-fallback-empty'), true)
+
+  // 添加两条：默认取目录首项；第二条换供应商后模型联动。
+  renderer.findByTestId('subagent-fallback-add').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('subagent-fallback-add').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-fallback-provider-0').props.value, 'deepseek-official')
+  renderer.findByTestId('subagent-fallback-provider-1').props.onChange({ target: { value: 'cpa' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-fallback-model-1').props.value, 'gpt-5.6-sol')
+  // 上移第二条 → 顺序交换。
+  renderer.findByTestId('subagent-fallback-up-1').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-fallback-provider-0').props.value, 'cpa')
+  // 移除第二条（deepseek）→ 只剩 cpa 一条。
+  renderer.findByTestId('subagent-fallback-remove-1').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-fallback-provider-0').props.value, 'cpa')
+
+  // 保存 follow 带回退列表。
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'follow', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
+
+  // custom 回落：回退列表由快照原样带回并随保存下发。
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-provider').props.value, 'deepseek-official')
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
 })
 
 test('subagent tab is feature-gated and renders host errors/unavailable status in localized text', async () => {
