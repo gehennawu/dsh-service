@@ -165,6 +165,8 @@ window.__ModuleLoader__.load({
       'subagent.turnTail.label': '子代理模型：',
       'subagent.turnTail.count': '子代理 ×{count}',
       'subagent.turnTail.unknown': '（模型未记录）',
+      'subagent.dock.title': '输入框底部显示子代理信息',
+      'subagent.dock.desc': '在对话页输入框下方常驻一行本会话子代理实际使用的模型（20 秒刷新，不受事件折叠影响）。关闭后仅保留回合尾部小字行。',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
       'skills.error.network': '网络错误，请稍后重试',
@@ -846,6 +848,8 @@ window.__ModuleLoader__.load({
       'subagent.turnTail.label': 'Subagent models: ',
       'subagent.turnTail.count': '{count} subagent',
       'subagent.turnTail.unknown': ' (models not recorded)',
+      'subagent.dock.title': 'Show subagent info under the composer',
+      'subagent.dock.desc': 'Keeps a session-level line under the composer listing the models your subagents actually used (20s refresh, unaffected by compaction). When off, only the per-turn tail line remains.',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
       'skills.error.network': 'Network error, try again later',
@@ -1802,7 +1806,7 @@ window.__ModuleLoader__.load({
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mobileAdaptation: false, sessionManager: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -3434,6 +3438,9 @@ window.__ModuleLoader__.load({
       function SubagentSection() {
         const translate = useTranslation()
         const { useState, useEffect } = React
+        // v1.2：输入框底部累计行独立开关（默认开，存 dsh-service settings，热生效）。
+        const features = useFeatures()
+        const dockEnabled = features.value.subagentModelsDock !== false
         // v0.39：子代理的设置页左列入口已撤销（维护页内有完整功能），不再有段内入口开关。
         const [snapshot, setSnapshot] = useState(null)
         const [mode, setMode] = useState('inherit')
@@ -3628,6 +3635,14 @@ window.__ModuleLoader__.load({
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
           React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
+          // v1.2：输入框底部累计行开关（独立于路由配置，feature 热生效；关闭仅隐藏累计行，
+          // 回合尾行不受影响）。
+          React.createElement('div', { 'data-testid': 'subagent-dock-toggle-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', padding: '10px 12px', border: '1px solid var(--dsh-svc-border)', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
+            React.createElement('div', { style: { flex: 1, minWidth: 0 } },
+              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.dock.title')),
+              React.createElement('p', { style: { ...hintStyle, marginTop: '2px', marginBottom: 0 } }, translate('subagent.dock.desc'))),
+            React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': String(dockEnabled), 'data-testid': 'subagent-dock-toggle', onClick: () => { featureScope.set('subagentModelsDock', !dockEnabled).catch(() => {}) }, style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 } },
+              React.createElement('span', { style: { position: 'absolute', top: '1px', left: dockEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: dockEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)', transition: 'left 150ms ease' } }))),
           snapshot !== null && snapshot.available === false ? React.createElement('p', { 'data-testid': 'subagent-unavailable', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.unavailable')) : null,
           React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
             SUBAGENT_MODES.map(modeButton)),
@@ -6922,7 +6937,8 @@ window.__ModuleLoader__.load({
         let dispose = null
         const sync = () => {
           if (dispose !== null) { dispose(); dispose = null }
-          if (!featureEnabled('subagentRoute')) return
+          // 双门控：v1.2 独立开关（子代理页可关）+ 路由功能总门。
+          if (!featureEnabled('subagentRoute') || !featureEnabled('subagentModelsDock')) return
           dispose = ctx.slots.register({
             name: 'conversation.composer.dock',
             id: 'dsh-service-subagent-models-dock',

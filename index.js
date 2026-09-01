@@ -63,6 +63,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   healthz: true,
   skillManager: true,
   subagentRoute: true,
+  // v1.2：输入框底部常驻子代理模型累计行（独立于路由功能，可在子代理页单独关闭）。
+  subagentModelsDock: true,
   // v0.31 用户点名：移动端适配默认改为关闭（需要时到插件配置卡打开）。
   mobileAdaptation: false,
   // v0.35：会话管理（查看/导出/归档/搜索/删除）。
@@ -77,6 +79,7 @@ const FeatureSettingsSchema = z.object({
   healthz: z.boolean().default(true),
   skillManager: z.boolean().default(true),
   subagentRoute: z.boolean().default(true),
+  subagentModelsDock: z.boolean().default(true),
   mobileAdaptation: z.boolean().default(false),
   sessionManager: z.boolean().default(true),
 })

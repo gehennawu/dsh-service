@@ -1082,6 +1082,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,
   })
@@ -1094,6 +1095,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,
   })

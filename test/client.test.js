@@ -5151,11 +5151,44 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   assert.equal(renderer.text('conversation.composer.dock'), '')
   assert.equal(renderer.hasTest('subagent-models-dock'), false)
 
-  // 功能关闭：条目注销。
+  // 路由功能关闭：条目注销。
   await renderer.setFeature('subagentRoute', false)
   assert.equal((renderer.registrations()['conversation.composer.dock'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models-dock').length, 0)
   await renderer.setFeature('subagentRoute', true)
   assert.equal(renderer.registrations()['conversation.composer.dock'].some((item) => item.id === 'dsh-service-subagent-models-dock'), true)
+  // 独立开关（v1.2）：subagentModelsDock 关闭同样注销；重开恢复。
+  await renderer.setFeature('subagentModelsDock', false)
+  assert.equal((renderer.registrations()['conversation.composer.dock'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models-dock').length, 0)
+  await renderer.setFeature('subagentModelsDock', true)
+  assert.equal(renderer.registrations()['conversation.composer.dock'].some((item) => item.id === 'dsh-service-subagent-models-dock'), true)
+})
+
+test('subagent page: composer subagent-info toggle defaults on, flips the independent feature, and persists', async () => {
+  const { renderer } = createSubagentRenderer()
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  // 默认开（DEFAULT_FEATURES subagentModelsDock: true）。
+  assert.equal(renderer.hasTest('subagent-dock-toggle-row'), true)
+  assert.equal(renderer.findByTestId('subagent-dock-toggle').props['aria-checked'], 'true')
+  assert.match(renderer.findByTestId('subagent-dock-toggle-row').children[0].children[0].children.join(''), /输入框底部显示子代理信息/)
+  // 切换 → feature 落盘（harness featureScope.set）。
+  renderer.findByTestId('subagent-dock-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.featureSettings().subagentModelsDock, false)
+  assert.equal(renderer.findByTestId('subagent-dock-toggle').props['aria-checked'], 'false')
+  // 再开回来。
+  renderer.findByTestId('subagent-dock-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.featureSettings().subagentModelsDock, true)
+  // 英文文案。
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.match(renderer.findByTestId('subagent-dock-toggle-row').children[0].children[0].children.join(''), /Show subagent info under the composer/)
 })
 
 // ── v0.30 移动端适配·客户端引擎 ─────────────────────────────────────────────
