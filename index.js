@@ -15,6 +15,8 @@ import { promisify } from 'node:util'
 import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { createBackupIntegrity } from './backup-integrity.js'
+import { collectPluginCompat, pluginCompatCheckItem } from './plugin-compat.js'
+import { collectPluginHealth, pluginCheckItem, restartPluginEntry } from './plugin-health.js'
 import {
   buildCliproxyAccountPlan as buildCliproxyAccountPlanAdapter,
   cliproxyFetchGuard as cliproxyFetchGuardAdapter,
@@ -2263,11 +2265,42 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   const nodeMajor = parseInt(process.versions.node, 10)
   add('node-version', Number.isFinite(nodeMajor) && nodeMajor >= requiredNodeMajor ? 'ok' : 'warning', `${process.version}:${requiredNodeMajor}`)
 
+  // v1.3 插件健康检查：只检查异常——loader 缺席降级为 info 检查项、不带异常行数组；
+  // 停用条目（无论内置/自定义）一律不算异常，正常插件不下发（官方设置页已有完整清单与开关）。
+  let pluginReport
+  try {
+    pluginReport = await collectPluginHealth(ctx)
+  } catch (error) {
+    pluginReport = { available: false, total: 0, issues: [] }
+  }
+  if (!pluginReport.available) add('plugins', 'info', 'unavailable')
+  else checks.push(pluginCheckItem(pluginReport))
+
+  // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单（client-runtime 供应商移除、SQLite
+  // persistence 移除、聊天/统计条 CSS 哈希漂移、data-time-hover-root 删除）扫描启用插件的
+  // 清单与入口代码；loader 缺席降级为 info 检查项、不带扫描结果。
+  let compatReport
+  try {
+    compatReport = await collectPluginCompat(ctx)
+  } catch (error) {
+    compatReport = { available: false, scanned: 0, issues: [], declaredOnly: [], unknown: [] }
+  }
+  if (!compatReport.available) add('plugin-compat', 'info', 'unavailable')
+  else checks.push(pluginCompatCheckItem(compatReport))
+
   let status = 'ok'
   // advisory 警告（手动启动环境的黄色提示）只做行内呈现：不把 overall 拉成 warning。
   if (checks.some((check) => check.status === 'error')) status = 'error'
   else if (checks.some((check) => check.status === 'warning' && check.advisory !== true)) status = 'warning'
-  return { status, checkedAt: Date.now(), checks }
+  return {
+    status,
+    checkedAt: Date.now(),
+    checks,
+    ...(pluginReport.available ? { pluginIssues: pluginReport.issues } : {}),
+    ...(compatReport.available
+      ? { pluginCompat: { scanned: compatReport.scanned, issues: compatReport.issues, declaredOnly: compatReport.declaredOnly, unknown: compatReport.unknown } }
+      : {}),
+  }
 }
 
 async function collectHealth(ctx) {
@@ -4492,6 +4525,19 @@ function apply(ctx) {
     } },
     'diagnostics': { feature: 'healthDiagnostics', handle: async (payload, rpcEndpoint) => {
       return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
+
+    } },
+    'plugin-restart': { feature: 'healthDiagnostics', audit: true, handle: async (payload, rpcEndpoint) => {
+      try {
+        const result = await restartPluginEntry(ctx, payload?.entryId)
+        if (result.ok) return { ok: true, value: {} }
+        // 稳定业务码（unknown-plugin / loader-unavailable / plugin-disabled / not-failed /
+        // restart-failed）走严格 RPC 归一（strictRpcResult），客户端词典映射；restart-failed
+        // 的底层错误原文并入 message（码: 详情 后缀语义）。
+        return rpcFailure(new Error(result.code === 'restart-failed' ? `restart-failed: ${result.error}` : result.code))
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
 
     } },
     'usage': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {

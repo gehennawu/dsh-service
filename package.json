@@ -19,6 +19,8 @@
     "index.js",
     "quota-adapters.js",
     "backup-integrity.js",
+    "plugin-health.js",
+    "plugin-compat.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",

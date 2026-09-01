@@ -1474,6 +1474,246 @@ test('permission panel shows the host plan and requires explicit confirmation be
   assert.match(renderer.text('settings.section'), /DSH_HOME.*1000:1000.*0700/)
 })
 
+test('health diagnostics lists only abnormal plugins and reloads failed ones with a two-stage confirm', async () => {
+  const restartCalls = []
+  let diagnosticsCalls = 0
+  let marketFailed = true
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') {
+      diagnosticsCalls += 1
+      return {
+        ok: true,
+        value: {
+          status: marketFailed ? 'error' : 'ok',
+          checkedAt: Date.now(),
+          checks: [
+            { id: 'session-storage', status: 'ok', detail: '1' },
+            { id: 'plugins', status: marketFailed ? 'error' : 'ok', detail: marketFailed ? '4:1:1' : '4:0:0' },
+          ],
+          // 只有异常插件下发：运行中的官方插件与已停用的自定义插件都不在列表里。
+          pluginIssues: marketFailed
+            ? [
+                { entryId: 'include:market', moduleName: 'dshmarket', phase: 'failed', error: 'config invalid' },
+                { entryId: 'include:waiting', moduleName: '@scope/pending', phase: 'pending', missingDeps: ['settings', 'llm'] },
+              ]
+            : [],
+        },
+      }
+    }
+    if (endpoint === 'plugin-restart') {
+      restartCalls.push(payload)
+      return { ok: true, value: {} }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  const initialText = renderer.text('settings.section')
+  // 检查行内摘要：失败与等待依赖分段显示，停用/正常插件不进统计文案。
+  assert.match(initialText, /插件1 个插件失败，1 个插件未就绪/)
+  // 异常插件行直接可见（无折叠清单）：失败行带错误与重新加载，等待依赖行带缺失依赖。
+  assert.notEqual(renderer.findByTestId('plugin-issue-include:market'), undefined)
+  assert.notEqual(renderer.findByTestId('plugin-issue-include:waiting'), undefined)
+  assert.match(initialText, /dshmarket.*失败.*错误：config invalid/)
+  assert.match(initialText, /@scope\/pending.*等待依赖.*依赖缺失：settings, llm/)
+  // 运行中的内置插件与已停用插件不渲染任何行。
+  assert.equal(renderer.hasTest('plugin-issue-include:llm'), false)
+  assert.doesNotMatch(renderer.text('settings.section'), /@deepseek-ai\/dsh-llm/)
+
+  // 两段式：第一次点击只进入确认，不发 RPC；取消可退出。
+  await renderer.findByTestId('plugin-restart-include:market').props.onClick()
+  await renderer.flush()
+  assert.equal(restartCalls.length, 0)
+  assert.notEqual(renderer.findByTestId('plugin-restart-confirm-include:market'), undefined)
+  assert.match(renderer.text('settings.section'), /重新加载「dshmarket」/)
+  await renderer.findButton('取消').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('plugin-restart-confirm-include:market'), false)
+
+  // 确认：发 RPC + 强刷诊断；宿主返回已恢复后异常行消失、摘要回到正常。
+  await renderer.findByTestId('plugin-restart-include:market').props.onClick()
+  await renderer.flush()
+  marketFailed = false
+  await renderer.findByTestId('plugin-restart-confirm-include:market').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(restartCalls, [{ entryId: 'include:market' }])
+  assert.equal(diagnosticsCalls, 2, 'successful reload forces a diagnostics refresh')
+  assert.equal(renderer.hasTest('plugin-issue-include:market'), false)
+  assert.equal(renderer.hasTest('plugin-issue-include:waiting'), false)
+  assert.match(renderer.text('settings.section'), /插件共 4 个插件，状态正常/)
+})
+
+test('plugin reload surfaces a mapped failure and reopens with a fresh confirm', async () => {
+  let diagnosticsCalls = 0
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') {
+      diagnosticsCalls += 1
+      return {
+        ok: true,
+        value: {
+          status: 'error',
+          checkedAt: Date.now(),
+          checks: [{ id: 'plugins', status: 'error', detail: '1:1:0' }],
+          pluginIssues: [{ entryId: 'broken', moduleName: 'pkg-broken', phase: 'failed', error: 'boom' }],
+        },
+      }
+    }
+    if (endpoint === 'plugin-restart') return { ok: false, error: 'unknown-plugin' }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('plugin-restart-broken').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('plugin-restart-confirm-broken').props.onClick()
+  await renderer.flush()
+  assert.equal(diagnosticsCalls, 1, 'a rejected reload does not force a diagnostics refresh')
+  assert.match(renderer.text('settings.section'), /重新加载失败：未找到该插件/)
+  // 重试按钮仍可再次打开确认流程，错误在再次点击时清空。
+  await renderer.findByTestId('plugin-restart-broken').props.onClick()
+  await renderer.flush()
+  assert.doesNotMatch(renderer.text('settings.section'), /重新加载失败/)
+})
+
+test('plugin check degrades to an informational row when the host has no loader and renders no issue list', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'plugins', status: 'info', detail: 'unavailable' }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /插件体检不可用（宿主未暴露 Loader）/)
+  assert.equal(renderer.hasTest('plugin-issue-list'), false)
+})
+
+test('health diagnostics lists plugins that reference alpha-changed interfaces with reasons', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return {
+      ok: true,
+      value: {
+        status: 'warning',
+        checkedAt: Date.now(),
+        checks: [
+          { id: 'session-storage', status: 'ok', detail: '1' },
+          { id: 'plugins', status: 'ok', detail: '3:0:0' },
+          { id: 'plugin-compat', status: 'warning', detail: '3:2:1:1' },
+        ],
+        pluginCompat: {
+          scanned: 3,
+          issues: [
+            { moduleName: 'dshmarket', breaks: ['client-runtime', 'chat-hash'] },
+            { moduleName: 'dsh-dream-skin', breaks: ['sqlite-persistence'] },
+          ],
+          declaredOnly: [{ moduleName: 'stale-skin', breaks: ['client-runtime'] }],
+          unknown: [{ moduleName: 'huge-pkg', reason: 'too-large' }],
+        },
+      },
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 检查行内摘要：broken / declaredOnly / unknown 分段
+  assert.match(text, /插件兼容性2 个插件可能不兼容，1 个插件仅声明残留（代码未引用），1 个插件未能扫描/)
+  // 命中行：名称 + 每条破坏面说明
+  assert.notEqual(renderer.findByTestId('plugin-compat-broken-0'), undefined)
+  assert.match(text, /dshmarket.*声明了已移除的客户端供应商.*引用已迁移的聊天界面旧样式前缀/)
+  assert.match(text, /dsh-dream-skin.*依赖已移除的会话持久化后端/)
+  // 仅声明残留行：info 提示（代码未引用、无害）
+  assert.notEqual(renderer.findByTestId('plugin-compat-declared-0'), undefined)
+  assert.match(text, /stale-skin.*声明了已移除的接口但代码未引用.*静默跳过/)
+  // unknown 行：名称 + 原因
+  assert.notEqual(renderer.findByTestId('plugin-compat-unknown-0'), undefined)
+  assert.match(text, /huge-pkg.*入口文件超过扫描上限/)
+  // 不渲染运行状态 issues 行
+  assert.equal(renderer.hasTest('plugin-issue-include:market'), false)
+})
+
+test('plugin compatibility check shows a clean summary and no list when nothing references changed interfaces', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return {
+      ok: true,
+      value: {
+        status: 'ok',
+        checkedAt: Date.now(),
+        checks: [{ id: 'plugin-compat', status: 'ok', detail: '4:0:0:0' }],
+        pluginCompat: { scanned: 4, issues: [], unknown: [] },
+      },
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /插件兼容性已扫描 4 个插件，未发现对已变更接口的引用/)
+  assert.equal(renderer.hasTest('plugin-compat-list'), false)
+})
+
+test('plugin compatibility check degrades to an informational row when the host has no loader', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'plugin-compat', status: 'info', detail: 'unavailable' }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /插件兼容性检查不可用（宿主未暴露 Loader）/)
+  assert.equal(renderer.hasTest('plugin-compat-list'), false)
+})
+
 test('permission panel stays hidden when the host reports a non-Linux platform', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')

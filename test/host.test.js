@@ -1102,7 +1102,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -1206,6 +1206,192 @@ test('diagnostics RPC returns one overall report with storage, workspace, backup
   const nodeCheck = result.value.checks.find((check) => check.id === 'node-version')
   assert.match(nodeCheck.detail, /^v\d+\.\d+\.\d+:\d+$/)
   assert.equal(nodeCheck.status, 'ok')
+})
+
+test('diagnostics degrades the plugins check to info when the loader service is absent', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-no-loader-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-no-loader-workspace-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugins'), { id: 'plugins', status: 'info', detail: 'unavailable' })
+  assert.equal(result.value.pluginIssues, undefined, 'no plugin issues without the loader')
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugin-compat'), { id: 'plugin-compat', status: 'info', detail: 'unavailable' })
+  assert.equal(result.value.pluginCompat, undefined, 'no compatibility scan result without the loader')
+  assert.equal(result.value.status, 'ok', 'info does not affect the overall status')
+})
+
+test('diagnostics carries per-plugin rows and a failed plugin escalates the report', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-with-loader-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-with-loader-workspace-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+      loader: {
+        ctx: { baseUrl: 'file:///home/node/.dsh/profiles/web/' },
+        entries: () => [
+          { id: 'include:group', options: { name: 'group', group: true } },
+          { id: 'include:llm', options: { name: '@deepseek-ai/dsh-llm' }, fiber: { state: 2, inject: {}, store: {} } },
+          { id: 'include:dsh-service', options: { name: '@gehennawu/dsh-service' }, fiber: { state: 2, inject: { connection: null }, store: { connection: {} } } },
+          { id: 'include:market', options: { name: 'dshmarket' }, fiber: { state: 3, inject: {}, store: {}, _error: new Error('config invalid') } },
+          { id: 'include:off', options: { name: 'dsh-off' }, disabled: true },
+        ],
+      },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  const pluginCheck = result.value.checks.find((check) => check.id === 'plugins')
+  assert.deepEqual(pluginCheck, { id: 'plugins', status: 'error', detail: '3:1:0' }, 'total counts enabled entries only; disabled (built-in or custom) are excluded')
+  assert.equal(result.value.status, 'error')
+  assert.equal(result.value.pluginIssues.length, 1, 'only abnormal entries are delivered')
+  assert.deepEqual(result.value.pluginIssues[0], {
+    entryId: 'include:market',
+    moduleName: 'dshmarket',
+    phase: 'failed',
+    error: 'config invalid',
+  })
+  assert.equal(result.value.pluginIssues.some((issue) => issue.entryId === 'include:llm'), false, 'active built-in plugins are not listed')
+  assert.equal(result.value.pluginIssues.some((issue) => issue.entryId === 'include:off'), false, 'disabled plugins are not listed')
+})
+
+test('diagnostics scans plugin breakage fixtures and flags possibly incompatible plugins as a warning', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-compat-home-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-compat-workspace-'))
+  const profile = await mkdtemp(join(tmpdir(), 'dsh-service-compat-profile-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true }), rm(profile, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  // fixture 包：hst-old-a 在 manifest 与代码里都引用已变更接口；hst-old-b 只引用代码层旧钩子
+  await mkdir(join(profile, 'node_modules', 'hst-old-a'), { recursive: true })
+  await writeFile(join(profile, 'node_modules', 'hst-old-a', 'package.json'), JSON.stringify({
+    name: 'hst-old-a',
+    exports: { './client': './client.js', '.': './index.js' },
+    dsh: { client: { inject: ['@deepseek-ai/dsh-client-runtime'] } },
+  }))
+  await writeFile(join(profile, 'node_modules', 'hst-old-a', 'client.js'), "const cls = 'Md3f7G_toBottom'")
+  await writeFile(join(profile, 'node_modules', 'hst-old-a', 'index.js'), 'module.exports = {}')
+  await mkdir(join(profile, 'node_modules', 'hst-old-b'), { recursive: true })
+  await writeFile(join(profile, 'node_modules', 'hst-old-b', 'package.json'), JSON.stringify({ name: 'hst-old-b', main: './index.js' }))
+  await writeFile(join(profile, 'node_modules', 'hst-old-b', 'index.js'), "const s = 'data-time-hover-root'")
+  await mkdir(join(profile, 'node_modules', 'hst-clean'), { recursive: true })
+  await writeFile(join(profile, 'node_modules', 'hst-clean', 'package.json'), JSON.stringify({ name: 'hst-clean', main: './index.js' }))
+  await writeFile(join(profile, 'node_modules', 'hst-clean', 'index.js'), 'const fine = 1')
+  await mkdir(join(profile, 'node_modules', 'hst-missing'), { recursive: true })
+  await writeFile(join(profile, 'node_modules', 'hst-missing', 'package.json'), JSON.stringify({ name: 'hst-missing', main: './gone.js' }))
+
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+      loader: {
+        ctx: { baseUrl: `file://${profile}/` },
+        entries: () => [
+          { id: 'inc:group', options: { name: 'group', group: true } },
+          { id: 'inc:a', options: { name: 'hst-old-a' }, fiber: { state: 2, inject: {}, store: {} } },
+          { id: 'inc:b', options: { name: 'hst-old-b' }, fiber: { state: 2, inject: {}, store: {} } },
+          { id: 'inc:clean', options: { name: 'hst-clean' }, fiber: { state: 2, inject: {}, store: {} } },
+          { id: 'inc:missing', options: { name: 'hst-missing' }, fiber: { state: 2, inject: {}, store: {} } },
+          { id: 'inc:off', options: { name: 'hst-old-b' }, disabled: true },
+        ],
+      },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  const compatCheck = result.value.checks.find((check) => check.id === 'plugin-compat')
+  // scanned=4（a/b/clean/missing，group/disabled 跳过）：broken=2（a 的 chat-hash + b 的
+  // time-hover-root 真引用）、declaredOnly=1（a 的 client-runtime 仅声明）、unknown=1。
+  assert.deepEqual(compatCheck, { id: 'plugin-compat', status: 'warning', detail: '4:2:1:1' })
+  assert.equal(result.value.status, 'warning', 'compatibility risk escalates the report to warning')
+  assert.deepEqual(result.value.pluginCompat.issues, [
+    { moduleName: 'hst-old-a', breaks: ['chat-hash'] },
+    { moduleName: 'hst-old-b', breaks: ['time-hover-root'] },
+  ])
+  assert.deepEqual(result.value.pluginCompat.declaredOnly, [{ moduleName: 'hst-old-a', breaks: ['client-runtime'] }])
+  assert.deepEqual(result.value.pluginCompat.unknown, [{ moduleName: 'hst-missing', reason: 'missing-entry' }])
+  assert.equal(result.value.pluginCompat.scanned, 4)
+})
+
+test('diagnostics reports a healthy compatibility scan when every plugin is clean', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-compat-home2-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-compat-workspace2-'))
+  const profile = await mkdtemp(join(tmpdir(), 'dsh-service-compat-profile2-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true }), rm(profile, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  await mkdir(join(profile, 'node_modules', 'hst-clean2'), { recursive: true })
+  await writeFile(join(profile, 'node_modules', 'hst-clean2', 'package.json'), JSON.stringify({ name: 'hst-clean2', main: './index.js' }))
+  await writeFile(join(profile, 'node_modules', 'hst-clean2', 'index.js'), 'const fine = 1')
+
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+      loader: {
+        ctx: { baseUrl: `file://${profile}/` },
+        entries: () => [{ id: 'inc:clean2', options: { name: 'hst-clean2' }, fiber: { state: 2, inject: {}, store: {} } }],
+      },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugin-compat'), { id: 'plugin-compat', status: 'ok', detail: '1:0:0:0' })
+  assert.deepEqual(result.value.pluginCompat, { scanned: 1, issues: [], declaredOnly: [], unknown: [] })
+})
+
+test('plugin-restart endpoint reloads only failed fibers of listed entries', async () => {
+  const restarted = []
+  const { handler, logs } = createHost({
+    featureSettings: {},
+    services: {
+      loader: {
+        entries: () => [
+          { id: 'ok', options: { name: 'pkg-ok' }, fiber: { state: 2, inject: {}, store: {} } },
+          {
+            id: 'broken',
+            options: { name: 'pkg-broken' },
+            fiber: {
+              state: 3,
+              inject: {},
+              store: {},
+              _error: new Error('boom'),
+              restart: async () => { restarted.push('broken') },
+            },
+          },
+          { id: 'off', options: { name: 'pkg-off' }, disabled: true },
+        ],
+      },
+    },
+  })
+  assert.deepEqual(await handler('plugin-restart', { entryId: 'broken' }), { ok: true, value: {} })
+  assert.deepEqual(restarted, ['broken'])
+
+  // publicHandler 把严格 RPC 错误信封归一为字符串码（等价客户端 rpcCall wrapper 语义）。
+  assert.deepEqual(await handler('plugin-restart', { entryId: 'nope' }), { ok: false, error: 'unknown-plugin' })
+  assert.deepEqual(await handler('plugin-restart', { entryId: 'ok' }), { ok: false, error: 'not-failed' })
+  assert.deepEqual(await handler('plugin-restart', { entryId: 'off' }), { ok: false, error: 'plugin-disabled' })
+  assert.deepEqual(await handler('plugin-restart', {}), { ok: false, error: 'unknown-plugin' })
+  assert.ok(logs.info.some((line) => String(line).includes('endpoint=plugin-restart')), 'restart is audited')
 })
 
 test('health RPC reports process and service metrics with persisted-only session count', async () => {

@@ -326,6 +326,45 @@ window.__ModuleLoader__.load({
       'health.detail.permissions.ok': '文件权限检查正常，未发现异常',
       'health.detail.permissions.warning': '发现 {count} 个文件或目录权限异常',
       'health.detail.generic': '{status}',
+      // v1.3 插件健康检查：只检查异常（官方设置页已有完整插件清单与开关，这里不做重复清单）。
+      'health.check.plugins': '插件',
+      'health.detail.plugins.unavailable': '插件体检不可用（宿主未暴露 Loader）',
+      'health.detail.plugins.ok': '共 {total} 个插件，状态正常',
+      'plugin.issue.failed': '{failed} 个插件失败',
+      'plugin.issue.pending': '{pending} 个插件未就绪',
+      'plugin.state.pending': '等待依赖',
+      'plugin.state.loading': '加载中',
+      'plugin.state.failed': '失败',
+      'plugin.state.unloading': '卸载中',
+      'plugin.missingDeps': '依赖缺失：{deps}',
+      'plugin.error': '错误：{error}',
+      'plugin.restart': '重新加载',
+      'plugin.restarting': '重新加载中…',
+      'plugin.restartConfirm': '确认重新加载',
+      'plugin.restartHint': '重新加载「{name}」，其启动逻辑将重新执行，失败状态会随之刷新。',
+      'plugin.restartCancel': '取消',
+      'plugin.restartFailed': '重新加载失败：{detail}',
+      'plugin.error.unknown-plugin': '未找到该插件',
+      'plugin.error.loader-unavailable': '宿主 Loader 不可用',
+      'plugin.error.plugin-disabled': '插件已停用，无法重新加载',
+      'plugin.error.not-failed': '该插件未处于失败状态',
+      'plugin.error.restart-failed': '重新加载后仍然失败',
+      // v1.3 插件兼容性：对照已核实的 DSH alpha 破坏面清单（供应商移除/后端移除/样式哈希漂移/属性删除）。
+      'health.check.plugin-compat': '插件兼容性',
+      'health.detail.plugin-compat.unavailable': '插件兼容性检查不可用（宿主未暴露 Loader）',
+      'health.detail.plugin-compat.ok': '已扫描 {total} 个插件，未发现对已变更接口的引用',
+      'plugin.compat.issue.broken': '{count} 个插件可能不兼容',
+      'plugin.compat.issue.declared': '{count} 个插件仅声明残留（代码未引用）',
+      'plugin.compat.issue.unknown': '{count} 个插件未能扫描',
+      'plugin.compat.declared': '声明了已移除的接口但代码未引用——官方加载器对缺失供应商静默跳过，当前无害，可提示作者清理',
+      'plugin.compat.break.client-runtime': '声明了已移除的客户端供应商 @deepseek-ai/dsh-client-runtime（0.1.2-alpha.2 起官方 roster 移除，浏览器半可能无法挂载）',
+      'plugin.compat.break.sqlite-persistence': '依赖已移除的会话持久化后端 @deepseek-ai/dsh-session-persistence-sqlite（0.1.2-alpha.3 起官方仅交付 JSONL）',
+      'plugin.compat.break.chat-hash': '引用已迁移的聊天界面旧样式前缀（Md3f7G_，0.1.2-alpha.2 起漂移至 EvIC1a_）',
+      'plugin.compat.break.stats-hash': '引用已迁移的统计条旧样式前缀（FJxK0a_，0.1.2-alpha.2 起漂移至 -NDN2W_）',
+      'plugin.compat.break.time-hover-root': '使用已移除的元素属性 data-time-hover-root（0.1.2-alpha.2 起由 data-turn-tail 取代）',
+      'plugin.compat.unknown.unresolved': '包清单不可解析',
+      'plugin.compat.unknown.missing-entry': '未找到可扫描的入口文件',
+      'plugin.compat.unknown.too-large': '入口文件超过扫描上限（4 MiB）',
       'tabs.overview': '概览',
       'tabs.notify': '通知',
       'tabs.health': '健康诊断',
@@ -1009,6 +1048,43 @@ window.__ModuleLoader__.load({
       'health.detail.permissions.ok': 'Permission check passed with no anomalies',
       'health.detail.permissions.warning': 'Found {count} file or directory permission anomalies',
       'health.detail.generic': '{status}',
+      'health.check.plugins': 'Plugins',
+      'health.detail.plugins.unavailable': 'Plugin health check unavailable (host loader is not exposed)',
+      'health.detail.plugins.ok': '{total} plugins healthy',
+      'plugin.issue.failed': '{failed} failed plugin(s)',
+      'plugin.issue.pending': '{pending} pending plugin(s)',
+      'plugin.state.pending': 'Waiting',
+      'plugin.state.loading': 'Loading',
+      'plugin.state.failed': 'Failed',
+      'plugin.state.unloading': 'Unloading',
+      'plugin.missingDeps': 'Missing deps: {deps}',
+      'plugin.error': 'Error: {error}',
+      'plugin.restart': 'Reload',
+      'plugin.restarting': 'Reloading…',
+      'plugin.restartConfirm': 'Confirm reload',
+      'plugin.restartHint': 'Reloading "{name}" re-runs its startup logic; the failure state refreshes afterwards.',
+      'plugin.restartCancel': 'Cancel',
+      'plugin.restartFailed': 'Reload failed: {detail}',
+      'plugin.error.unknown-plugin': 'Plugin not found',
+      'plugin.error.loader-unavailable': 'Host loader unavailable',
+      'plugin.error.plugin-disabled': 'The plugin is disabled and cannot be reloaded',
+      'plugin.error.not-failed': 'The plugin is not in a failed state',
+      'plugin.error.restart-failed': 'Still failed after reload',
+      'health.check.plugin-compat': 'Plugin compatibility',
+      'health.detail.plugin-compat.unavailable': 'Plugin compatibility check unavailable (host loader is not exposed)',
+      'health.detail.plugin-compat.ok': 'Scanned {total} plugins; no references to changed interfaces',
+      'plugin.compat.issue.broken': '{count} plugin(s) possibly incompatible',
+      'plugin.compat.issue.declared': '{count} plugin(s) with stale declarations only (not referenced in code)',
+      'plugin.compat.issue.unknown': '{count} plugin(s) could not be scanned',
+      'plugin.compat.declared': 'Declares a removed interface but never references it in code — the official loader silently skips missing suppliers, so this is harmless today and only signals the author to clean up',
+      'plugin.compat.break.client-runtime': 'Declares the removed client supplier @deepseek-ai/dsh-client-runtime (dropped from the official roster in 0.1.2-alpha.2; the browser half may fail to mount)',
+      'plugin.compat.break.sqlite-persistence': 'Depends on the removed session persistence backend @deepseek-ai/dsh-session-persistence-sqlite (JSONL is the only official provider since 0.1.2-alpha.3)',
+      'plugin.compat.break.chat-hash': 'References the old chat UI style prefix (Md3f7G_, migrated to EvIC1a_ since 0.1.2-alpha.2)',
+      'plugin.compat.break.stats-hash': 'References the old status-line style prefix (FJxK0a_, migrated to -NDN2W_ since 0.1.2-alpha.2)',
+      'plugin.compat.break.time-hover-root': 'Uses the removed attribute data-time-hover-root (replaced by data-turn-tail in 0.1.2-alpha.2)',
+      'plugin.compat.unknown.unresolved': 'Package manifest could not be resolved',
+      'plugin.compat.unknown.missing-entry': 'No scannable entry file found',
+      'plugin.compat.unknown.too-large': 'Entry file exceeds the 4 MiB scan limit',
       'tabs.overview': 'Overview',
       'tabs.notify': 'Notifications',
       'tabs.health': 'Health',
@@ -5626,6 +5702,10 @@ window.__ModuleLoader__.load({
         const [diagnostics, setDiagnostics] = useState(null)
         const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
         const [diagnosticsLoadedAt, setDiagnosticsLoadedAt] = useState(0)
+        // v1.3 插件健康检查：失败插件「重新加载」两段式（确认条目/忙碌条目/错误文案）。
+        const [pluginConfirmEntry, setPluginConfirmEntry] = useState(null)
+        const [pluginBusyEntry, setPluginBusyEntry] = useState(null)
+        const [pluginRestartError, setPluginRestartError] = useState(null)
         const [permissions, setPermissions] = useState(null)
         const [permissionConfirm, setPermissionConfirm] = useState(false)
         const [permissionBusy, setPermissionBusy] = useState(false)
@@ -5774,6 +5854,42 @@ window.__ModuleLoader__.load({
             setHealthError(translate('health.error'))
           } finally {
             setDiagnosticsBusy(false)
+          }
+        }
+
+        // v1.3 插件失败状态映射：稳定码走词典；restart-failed 码带底层原文（宿主并入 message）。
+        const mapPluginRestartError = (error) => {
+          const message = typeof error === 'string' && error.length > 0 ? error : 'internal-error'
+          if (message.startsWith('restart-failed:')) {
+            const detail = message.slice('restart-failed:'.length).trim()
+            const base = translate('plugin.error.restart-failed')
+            return translate('plugin.restartFailed', { detail: detail === '' ? base : `${base}（${detail}）` })
+          }
+          const known = {
+            'unknown-plugin': 'plugin.error.unknown-plugin',
+            'loader-unavailable': 'plugin.error.loader-unavailable',
+            'plugin-disabled': 'plugin.error.plugin-disabled',
+            'not-failed': 'plugin.error.not-failed',
+          }
+          const key = known[message]
+          return translate('plugin.restartFailed', { detail: key === undefined ? message : translate(key) })
+        }
+
+        const restartPlugin = async (entry) => {
+          if (entry === null || typeof entry !== 'object' || pluginBusyEntry !== null) return
+          setPluginBusyEntry(entry.entryId)
+          setPluginRestartError(null)
+          try {
+            const res = await rpcCall('plugin-restart', { entryId: entry.entryId })
+            if (!res || res.ok !== true) throw Object.assign(new Error('plugin restart failed'), { code: res?.error })
+            setPluginConfirmEntry(null)
+            // 成功即强刷诊断：失败行换成新相位（仍失败则错误原文更新为新一次启动的报错）。
+            await runDiagnostics(true)
+          } catch (error) {
+            setPluginConfirmEntry(null)
+            setPluginRestartError(mapPluginRestartError(error?.code ?? String(error?.message || error)))
+          } finally {
+            setPluginBusyEntry(null)
           }
         }
 
@@ -6201,6 +6317,27 @@ window.__ModuleLoader__.load({
             const [version = '', required = ''] = detail.split(':')
             return translate(check.status === 'ok' ? 'health.detail.node-version.ok' : 'health.detail.node-version.warning', { version, required })
           }
+          if (check.id === 'plugins') {
+            // detail 三段 total:failed:pending（宿主 pluginCheckItem）；停用插件不进统计。
+            if (detail === 'unavailable') return translate('health.detail.plugins.unavailable')
+            const [total, failed, pending] = detail.split(':')
+            if (check.status === 'ok') return translate('health.detail.plugins.ok', { total })
+            const segments = []
+            if ((Number(failed) || 0) > 0) segments.push(translate('plugin.issue.failed', { failed }))
+            if ((Number(pending) || 0) > 0) segments.push(translate('plugin.issue.pending', { pending }))
+            return segments.join('，')
+          }
+          if (check.id === 'plugin-compat') {
+            // detail 四段 scanned:broken:declaredOnly:unknown（宿主 pluginCompatCheckItem）。
+            if (detail === 'unavailable') return translate('health.detail.plugin-compat.unavailable')
+            const [scanned, broken, declaredOnly, unknown] = detail.split(':')
+            if (check.status === 'ok' && (Number(declaredOnly) || 0) === 0) return translate('health.detail.plugin-compat.ok', { total: scanned })
+            const segments = []
+            if ((Number(broken) || 0) > 0) segments.push(translate('plugin.compat.issue.broken', { count: broken }))
+            if ((Number(declaredOnly) || 0) > 0) segments.push(translate('plugin.compat.issue.declared', { count: declaredOnly }))
+            if ((Number(unknown) || 0) > 0) segments.push(translate('plugin.compat.issue.unknown', { count: unknown }))
+            return segments.join('，')
+          }
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
         const summaryItems = (totals) => [
@@ -6368,6 +6505,78 @@ window.__ModuleLoader__.load({
                       React.createElement('div', { style: { fontSize: '11px', lineHeight: 1.5, marginTop: '2px', color: check.status === 'ok' ? 'var(--dsh-svc-text-muted)' : abnormal ? (check.status === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)') : 'var(--dsh-svc-text-muted)' } }, diagnosticDetail(check))))
                 }))
             : null)
+        // v1.3 插件健康检查：只显示异常插件（官方设置页已有完整插件清单与开关，不做重复清单）。
+        // 检查项行内摘要把 failed/pending 计数说清楚；这里列出每个异常插件的名字、
+        // 错误原文/缺失依赖，并对失败插件提供「重新加载」两段式。
+        const pluginIssues = Array.isArray(diagnostics?.pluginIssues) ? diagnostics.pluginIssues : []
+        const pluginIssueBlock = pluginIssues.length === 0
+          ? null
+          : React.createElement('div', { 'data-testid': 'plugin-issue-list', style: { marginTop: '6px', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
+              pluginIssues.map((issue, index) => {
+                const failed = issue.phase === 'failed'
+                const phaseColor = failed ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)'
+                const confirming = pluginConfirmEntry === issue.entryId
+                const busy = pluginBusyEntry === issue.entryId
+                return React.createElement('div', { key: issue.entryId, 'data-testid': `plugin-issue-${issue.entryId}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
+                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '6px', background: phaseColor } }),
+                  React.createElement('div', { style: { minWidth: 0, flex: 1 } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
+                      React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, issue.moduleName),
+                      React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: phaseColor } }, translate('plugin.state.' + issue.phase))),
+                    issue.error !== undefined && issue.error !== null
+                      ? React.createElement('div', { style: { fontSize: '11px', marginTop: '3px', color: 'var(--dsh-svc-danger)', lineHeight: 1.5, overflowWrap: 'anywhere' } }, translate('plugin.error', { error: issue.error }))
+                      : null,
+                    issue.missingDeps !== undefined && issue.missingDeps.length > 0
+                      ? React.createElement('div', { style: { fontSize: '11px', marginTop: '3px', color: 'var(--dsh-svc-warning)', lineHeight: 1.5, overflowWrap: 'anywhere' } }, translate('plugin.missingDeps', { deps: issue.missingDeps.join(', ') }))
+                      : null,
+                    failed
+                      ? React.createElement('div', { style: { marginTop: '6px' } },
+                          confirming
+                            ? React.createElement('div', { style: { padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'rgba(211,51,51,0.08)' } },
+                                React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 6px', color: 'var(--dsw-alias-state-error-primary)' }) }, translate('plugin.restartHint', { name: issue.moduleName })),
+                                React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                                  React.createElement('button', { type: 'button', 'data-testid': `plugin-restart-confirm-${issue.entryId}`, style: danger, disabled: busy, onClick: () => restartPlugin(issue) }, translate(busy ? 'plugin.restarting' : 'plugin.restartConfirm')),
+                                  React.createElement('button', { type: 'button', style: ghost, disabled: busy, onClick: () => { setPluginConfirmEntry(null); setPluginRestartError(null) } }, translate('plugin.restartCancel'))))
+                            : React.createElement('button', { type: 'button', 'data-testid': `plugin-restart-${issue.entryId}`, style: dangerGhost, disabled: busy, onClick: () => { setPluginConfirmEntry(issue.entryId); setPluginRestartError(null) } }, translate(busy ? 'plugin.restarting' : 'plugin.restart')))
+                      : null,
+                    pluginRestartError ? React.createElement('p', { 'data-testid': 'plugin-restart-error', style: Object.assign({}, hint, { margin: '4px 0 0', color: 'var(--dsw-alias-state-error-primary)' }) }, pluginRestartError) : null))
+              }))
+        // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单扫描启用插件，命中才显示行
+        // （字体说明见 plugin-compat.js 的 COMPAT_BREAKS；未扫成的插件单独提示原因）。
+        // 三档分级：真引用（可能不兼容，warning）→ 仅声明残留（代码未引用、官方 loader 静默
+        // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。统一渲染为一行行条目。
+        const pluginCompatScan = diagnostics?.pluginCompat !== null && typeof diagnostics?.pluginCompat === 'object' ? diagnostics.pluginCompat : null
+        const pluginCompatIssues = Array.isArray(pluginCompatScan?.issues) ? pluginCompatScan.issues : []
+        const pluginCompatDeclared = Array.isArray(pluginCompatScan?.declaredOnly) ? pluginCompatScan.declaredOnly : []
+        const pluginCompatUnknown = Array.isArray(pluginCompatScan?.unknown) ? pluginCompatScan.unknown : []
+        const pluginCompatRows = [
+          ...pluginCompatIssues.map((issue, index) => ({ key: `broken-${index}`, kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
+          ...pluginCompatDeclared.map((item, index) => ({ key: `declared-${index}`, kind: 'declared', moduleName: item.moduleName })),
+          ...pluginCompatUnknown.map((item, index) => ({ key: `unknown-${index}`, kind: 'unknown', moduleName: item.moduleName, reason: item.reason })),
+        ]
+        const pluginCompatBlock = pluginCompatScan === null || pluginCompatRows.length === 0
+          ? null
+          : React.createElement('div', { 'data-testid': 'plugin-compat-list', style: { marginTop: '6px', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
+              pluginCompatRows.map((row, index) => {
+                const warning = row.kind === 'broken'
+                const dotColor = warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)'
+                const line = warning
+                  ? row.breaks.map((id) => translate('plugin.compat.break.' + id)).join('；')
+                  : row.kind === 'declared'
+                    ? translate('plugin.compat.declared')
+                    : translate(`plugin.compat.unknown.${row.reason}`)
+                return React.createElement('div', { key: row.key, 'data-testid': `plugin-compat-${row.key}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
+                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '6px', background: dotColor } }),
+                  React.createElement('div', { style: { minWidth: 0, flex: 1 } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
+                      React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
+                      warning
+                        ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-warning)' } }, translate('plugin.compat.issue.broken', { count: 1 }))
+                        : row.kind === 'declared'
+                          ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.declared', { count: 1 }))
+                          : null),
+                    React.createElement('div', { style: { fontSize: '11px', marginTop: '3px', lineHeight: 1.5, overflowWrap: 'anywhere', color: warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' } }, line)))
+              }))
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length
           : 0
@@ -6419,6 +6628,8 @@ window.__ModuleLoader__.load({
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
           // v0.39 省空间：页头标题即「健康诊断」，去掉内容区重复区块标题。
           healthSummaryBlock,
+          pluginIssueBlock,
+          pluginCompatBlock,
           permissionBlock)
 
         // v0.45 进度显示：一根连续不清零的总进度条，按阶段加权映射——
