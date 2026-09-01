@@ -240,11 +240,14 @@ test('collectPluginCompat scans enabled entries only, caches, and degrades witho
         mkEntry('e1', 'good-pkg'),
         mkEntry('e2', 'disabled-pkg', true),
         mkEntry('e3', 'nope-pkg'),
+        // Cordis 内建声明名/相对路径不是可扫描的 npm 插件：跳过且不计 scanned（用户实测噪音回归）
+        mkEntry('e4', 'cordis:include'),
+        mkEntry('e5', './plugins/local.js'),
       ],
     }
     const first = await collectPluginCompat(createFakeCtx(loader), { requireFn })
     assert.equal(first.available, true)
-    assert.equal(first.scanned, 2, 'group and disabled entries are skipped')
+    assert.equal(first.scanned, 2, 'group, disabled, cordis: and relative-path entries are all skipped')
     assert.deepEqual(first.issues, [{ moduleName: 'good-pkg', breaks: ['chat-hash'] }])
     assert.deepEqual(first.declaredOnly, [{ moduleName: 'good-pkg', breaks: ['client-runtime'] }])
     assert.deepEqual(first.unknown, [{ moduleName: 'nope-pkg', reason: 'unresolved' }])

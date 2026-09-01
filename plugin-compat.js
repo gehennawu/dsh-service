@@ -338,6 +338,9 @@ export async function collectPluginCompat(ctx, options = {}) {
     const moduleName = entry?.options?.name
     if (typeof entry?.id !== 'string' || typeof moduleName !== 'string') continue
     if (entry.disabled === true) continue
+    // 无法形成合法包名的条目跳过且不计 scanned：`cordis:include` 这类 Cordis 内建声明名、
+    // 相对路径/`file:` 形态不是可扫描的 npm 插件（没有清单可查），不该渲染「未能扫描」提示。
+    if (packageNameOf(moduleName) === null) continue
     scanned += 1
     let result
     if (options.noCache === true) {
