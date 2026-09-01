@@ -1745,12 +1745,37 @@ function pruneSessionErrors(session, cutoff) {
   }
 }
 
-function foldUsageEvents(ctx, record, previous, events) {
+function validSessionOffset(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0) ? value : undefined
+}
+
+// alpha.4 moves the fork cut out of SessionHeader and into body-bearing reads;
+// older DSH releases expose it as header/meta.seedLength. Keep this normalization
+// at the persistence seam so the usage fold never has to know which runtime spoke.
+function inheritedEventCountFor(record, read) {
+  const fromRead = validSessionOffset(read?.inheritedEventCount)
+  if (fromRead !== undefined) return fromRead
+  const fromMeta = validSessionOffset(read?.meta?.seedLength)
+  if (fromMeta !== undefined) return fromMeta
+  const fromHeader = validSessionOffset(record?.header?.seedLength)
+  return fromHeader ?? 0
+}
+
+function usageReadStart(previous) {
+  return previous === undefined ? 0 : Math.max(0, previous.lastSeq + 1)
+}
+
+function usageReadEvents(read) {
+  return Array.isArray(read?.events) ? read.events : []
+}
+
+function foldUsageEvents(ctx, record, previous, events, inheritedEventCount = 0) {
   const project = projectForCwd(ctx, record.header.cwd)
-  const session = previous || { revision: '', lastSeq: Math.max(0, record.header.seedLength || 0) - 1, project, currentModel: null, hours: {} }
+  const cut = validSessionOffset(inheritedEventCount) ?? 0
+  const session = previous || { revision: '', lastSeq: cut - 1, project, currentModel: null, hours: {} }
   session.project = project
   for (const event of events) {
-    if (event.seq < (record.header.seedLength || 0)) continue
+    if (event.seq < cut) continue
     session.lastSeq = Math.max(session.lastSeq, event.seq)
     if (event.type === 'request/header') {
       const provider = event.data?.header?.config?.provider
@@ -1848,9 +1873,10 @@ async function refreshUsageIndex(ctx, dshHome, index) {
     const revision = revisionKey(record.revision)
     const previous = index.sessions[id]
     if (previous?.revision === revision) continue
-    const fromSeq = previous === undefined ? Math.max(0, record.header.seedLength || 0) : previous.lastSeq + 1
+    const fromSeq = usageReadStart(previous)
     const read = await persistence.readFrom(record.header.id, fromSeq)
-    const next = foldUsageEvents(ctx, record, previous, read.events)
+    const inheritedEventCount = inheritedEventCountFor(record, read)
+    const next = foldUsageEvents(ctx, record, previous, usageReadEvents(read), inheritedEventCount)
     next.revision = revision
     index.sessions[id] = next
   }
@@ -3187,7 +3213,15 @@ function buildSubagentDispatchRecord(agent, parent, dispatch, options = {}) {
 
 /** 父会话事件尾向上扫最近一条带数字 `data.turn` 的事件（≤scanLimit 条）；无则 undefined。 */
 function lastSubagentTurn(parent, scanLimit = 50) {
-  const events = parent?.session?.events
+  let events
+  try {
+    if (typeof parent?.session?.snapshotEvents === 'function') events = parent.session.snapshotEvents()
+  } catch (_) {
+    events = undefined
+  }
+  if (!Array.isArray(events)) {
+    try { events = parent?.session?.events } catch (_) { events = undefined }
+  }
   if (!Array.isArray(events)) return undefined
   const limit = Number.isFinite(scanLimit) && scanLimit > 0 ? scanLimit : 50
   const from = Math.max(0, events.length - limit)

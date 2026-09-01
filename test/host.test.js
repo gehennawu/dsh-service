@@ -604,7 +604,9 @@ test('usage index skips inherited fork events and removes deleted sessions', asy
   let snapshots = [{ header: { id: 'fork', version: 0, createdAt: time, cwd: '/workspace', seedLength: 2 }, revision: 'a' }]
   const persistence = {
     listSnapshots: async () => snapshots,
-    readFrom: async () => ({ meta: snapshots[0].header, events: [
+    readFrom: async () => ({ meta: { ...snapshots[0].header, seedLength: 2 }, events: [
+      { type: 'request/header', seq: 0, time, data: { header: { config: { provider: 'inherited', model: 'old' } }, reason: 'seed' } },
+      { type: 'assistant/message', seq: 1, time, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 999, outputTokens: 999, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
       { type: 'request/header', seq: 2, time, data: { header: { config: { provider: 'anthropic', model: 'claude' } }, reason: 'resume' } },
       { type: 'assistant/message', seq: 3, time, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
     ] }),
@@ -617,6 +619,43 @@ test('usage index skips inherited fork events and removes deleted sessions', asy
   const deleted = await handler('usage-refresh', {})
   assert.equal(deleted.value.totals.steps, 0)
   assert.equal(deleted.value.indexedSessions, 0)
+})
+
+test('usage index reads alpha.4 inheritedEventCount while retaining old header fallback', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-alpha4-fork-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const time = new Date(2026, 7, 19, 8).getTime()
+  const header = { id: 'alpha4-fork', version: 0, createdAt: time, cwd: '/workspace', isSeeded: true }
+  let snapshots = [{ header, revision: 'a' }]
+  let events = [
+    { type: 'request/header', seq: 0, time, data: { header: { config: { provider: 'inherited', model: 'old' } }, reason: 'seed' } },
+    { type: 'assistant/message', seq: 1, time, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 999, outputTokens: 999, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+    { type: 'request/header', seq: 2, time, data: { header: { config: { provider: 'anthropic', model: 'claude' } }, reason: 'resume' } },
+    { type: 'assistant/message', seq: 3, time, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ]
+  const reads = []
+  const persistence = {
+    listSnapshots: async () => snapshots,
+    readFrom: async (id, fromSeq) => {
+      reads.push({ id, fromSeq })
+      return { meta: header, inheritedEventCount: 2, fromSeq, events: events.filter((event) => event.seq >= fromSeq) }
+    },
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const built = await handler('usage-refresh', {})
+  assert.equal(built.value.totals.steps, 1)
+  assert.equal(built.value.totals.inputTokens, 60)
+  assert.deepEqual(reads, [{ id: 'alpha4-fork', fromSeq: 0 }])
+
+  snapshots = [{ header, revision: 'b' }]
+  events = events.concat([
+    { type: 'request/header', seq: 4, time, data: { header: { config: { provider: 'openai', model: 'gpt-5' } }, reason: 'next' } },
+    { type: 'assistant/message', seq: 5, time, data: { turn: 2, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 40, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ])
+  const resumed = await handler('usage-refresh', {})
+  assert.equal(resumed.value.totals.steps, 2)
+  assert.equal(resumed.value.totals.inputTokens, 100)
+  assert.deepEqual(reads, [{ id: 'alpha4-fork', fromSeq: 0 }, { id: 'alpha4-fork', fromSeq: 4 }])
 })
 
 test('usage ignores assistant steps whose provider reports no token data', async (t) => {
@@ -4877,6 +4916,13 @@ test('buildSubagentDispatchRecord：routed/inherited/default/跳过四态与 tur
   assert.equal(buildSubagentDispatchRecord(null, parent, { provider: 'cpa', model: 'm' }), undefined)
   assert.equal(buildSubagentDispatchRecord({ id: '' }, parent, { provider: 'cpa', model: 'm' }), undefined)
   assert.equal(buildSubagentDispatchRecord({ id: 'c' }, { session: {} }, { provider: 'cpa', model: 'm' }), undefined)
+  // alpha.4 只公开 snapshotEvents()；旧版仍走 events getter。
+  assert.equal(lastSubagentTurn({ session: { snapshotEvents: () => [{ data: { turn: 7 } }] } }), 7)
+  assert.equal(lastSubagentTurn({ session: { snapshotEvents: (from, to) => [{ data: { turn: 9 } }] } }), 9)
+  // 新 API 异常时必须 fail-open，并回退旧 getter。
+  assert.equal(lastSubagentTurn({ session: { snapshotEvents: () => { throw new Error('boom') }, events: [{ data: { turn: 6 } }] } }), 6)
+  assert.equal(lastSubagentTurn({ session: { snapshotEvents: () => 'not-an-array', events: [{ data: { turn: 8 } }] } }), 8)
+  assert.equal(lastSubagentTurn({ session: { snapshotEvents: () => 'not-an-array', get events() { throw new Error('old getter boom') } } }), undefined)
   // 非法 events / 超长扫描：异常安全（scanLimit 0 视为非法回落默认 50）。
   assert.equal(lastSubagentTurn({ session: { events: 'not-an-array' } }), undefined)
   assert.equal(lastSubagentTurn({ session: { events: [{ data: { turn: 1 } }] } }, 0), 1)
