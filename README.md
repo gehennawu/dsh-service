@@ -118,7 +118,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 | 供应商 | 数据来源 |
 | --- | --- |
 | DeepSeek 开放平台 | 官方余额 + 峰谷时段提示（忙/闲色带、换挡倒计时） |
-| 智谱 GLM Coding Plan | 官方端点：5 小时滚动 / 每周 / MCP 月度三窗口 |
+| 智谱 GLM Coding Plan | 官方端点：5 小时滚动 / 每周 / MCP 月度三窗口 + 峰谷时段提示（忙/闲色带、换挡倒计时；高峰=周一至周五 14:00–18:00 UTC+8） |
 | OpenCode Go | `{baseURL}/usage` |
 | OpenRouter | credits 已用百分比 |
 | Kimi / 硅基流动 | 人民币余额 |

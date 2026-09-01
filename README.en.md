@@ -116,7 +116,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 | Provider | Data source |
 | --- | --- |
 | DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown |
-| Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows |
+| Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows + peak/off-peak ribbon and countdown (peak = Mon–Fri 14:00–18:00 UTC+8) |
 | OpenCode Go | `{baseURL}/usage` |
 | OpenRouter | Credits used % |
 | Kimi / SiliconFlow | CNY balance |

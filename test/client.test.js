@@ -3894,6 +3894,76 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
   }
 })
 
+test('zai-coding-cn card shows its own peak/off-peak timeline (weekdays 14:00–18:00 UTC+8)', async () => {
+  // 固定时刻驱动（Date.now 覆盖 + ctx.timer 桩推进）：智谱 GLM Coding Plan 高峰 = 周一至周五
+  // 14:00–18:00（北京时间）。场景一：周三 15:00 北京 = UTC 07:00，高峰中段。
+  const realNow = Date.now
+  Date.now = () => Date.UTC(2026, 0, 7, 7, 0)
+  try {
+    const wednesdayPeak = Date.UTC(2026, 0, 7, 7, 0)
+    const renderer = createRenderer(async (channel, endpoint) => {
+      if (endpoint === 'version') return { ok: true, value: { current: '1.3.0', instanceId: 'x' } }
+      if (endpoint === 'quota') {
+        return {
+          ok: true,
+          value: {
+            providers: [
+              { provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 11 }], fetchedAt: wednesdayPeak },
+              { provider: 'kimi-row', displayName: 'Kimi', adapted: true, kind: 'kimi', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥1.00' }], fetchedAt: wednesdayPeak },
+            ],
+            serverTime: wednesdayPeak,
+          },
+        }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+
+    // 忙时状态徽标；换挡倒计时指向 18:00 转空闲（3 小时）。
+    assert.ok(renderer.hasTest('quota-provider-card-zai-row'))
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'true')
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /18:00 转空闲（3 小时后）/)
+    // 两段式色带：高峰剩余 180 分钟（13.0435%）+ 闲时到次日 14:00 的 1200 分钟（86.9565%）。
+    const segments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
+    assert.deepEqual(segments.map((segment) => segment.props['data-peak']), ['true', 'false'])
+    assert.equal(segments[0].props.style.width, '13.0435%')
+    assert.equal(segments[1].props.style.left, '13.0435%')
+    assert.equal(segments[1].props.style.width, '86.9565%')
+    assert.deepEqual(segments.map((segment) => String(segment.children[0].children[0])), ['忙时', '闲时'])
+    // 规则说明行为 GLM 专属文案（50% 抵扣、14:00–18:00），与 deepseek 说明行同键位不同键。
+    assert.match(renderer.text('settings.section'), /非高峰时段模型调用按基础积分的 50% 抵扣。高峰时段：每周一至周五 14:00–18:00（UTC\+8）；其余时间为非高峰时段，周六和周日全天空闲。/)
+
+    // 切到周六 15:00 北京时间（UTC 07:00）：周末全天空闲，下个高峰是周一 14:00。
+    Date.now = () => Date.UTC(2026, 0, 10, 7, 0)
+    renderer.advanceTimer(30000)
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    const weekendSegments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
+    // 周六 15:00 闲时：第一段跨周末到周一 14 点（2820/3060 = 92.1569%），第二段是周一 14-18 忙时（7.8431%，过窄不标字）。
+    assert.deepEqual(weekendSegments.map((segment) => segment.props['data-peak']), ['false', 'true'])
+    assert.equal(weekendSegments[0].props.style.width, '92.1569%')
+    assert.equal(String(weekendSegments[0].children[0].children[0]), '闲时')
+    assert.equal(weekendSegments[1].props.style.width, '7.8431%')
+    assert.deepEqual(weekendSegments[1].children.filter(Boolean), [])
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /14:00 转高峰（1 天 23 小时后）/)
+
+    // 切到周三 13:00 北京时间（UTC 05:00）：闲时中段，60 分钟后 14:00 转高峰。
+    Date.now = () => Date.UTC(2026, 0, 7, 5, 0)
+    renderer.advanceTimer(30000)
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    const idleSegments = renderer.findAllByTestIdPrefix('quota-peak-segment-')
+    assert.deepEqual(idleSegments.map((segment) => segment.props['data-peak']), ['false', 'true'])
+    assert.equal(idleSegments[0].props.style.width, '20%') // 60 / 300
+    assert.equal(idleSegments[1].props.style.width, '80%') // 240 / 300
+    assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /14:00 转高峰（1 小时后）/)
+  } finally {
+    Date.now = realNow
+  }
+})
+
 test('quota card header has a refresh icon that forces per-provider refresh', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const refreshCalls = []

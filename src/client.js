@@ -730,6 +730,7 @@ window.__ModuleLoader__.load({
       'quota.peak.tag.peak': '忙时',
       'quota.peak.tag.idle': '闲时',
       'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
+      'quota.peak.caption.zai': '非高峰时段模型调用按基础积分的 50% 抵扣。高峰时段：每周一至周五 14:00–18:00（UTC+8）；其余时间为非高峰时段，周六和周日全天空闲。',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -1445,6 +1446,7 @@ window.__ModuleLoader__.load({
       'quota.peak.tag.peak': 'Peak',
       'quota.peak.tag.idle': 'Off-peak',
       'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
+      'quota.peak.caption.zai': 'Off-peak calls deduct 50% of the base credits. Peak hours: Mon–Fri 14:00–18:00 (UTC+8). All other times are off-peak, including all day Saturday and Sunday.',
     }
 
     // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
@@ -3009,13 +3011,20 @@ window.__ModuleLoader__.load({
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
 
-      // ─── DeepSeek 峰谷时段（v0.25）───────────────────────────────────────────
-      // 官方计费口径：空闲时段价格为高峰的一半。高峰 = 北京时间周一至周五 9:00–12:00、14:00–18:00；
-      // 其余全为空闲（周六日全天空闲）。北京时间固定 UTC+8 无夏令时：nowMs 平移 8h 后读 UTC 字段即得。
-      const DEEPSEEK_PEAK_SEGMENTS = [[540, 720], [840, 1080]] // 当日分钟数（北京零点起算）
-      const DEEPSEEK_PEAK_COLOR = '#f0952f'
-      const DEEPSEEK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
-      const DEEPSEEK_PEAK_TICK_MS = 30000
+      // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
+      // 各家计费口径同族：非高峰时段按高峰价格的一半计/抵扣。北京时间固定 UTC+8 无夏令时：
+      // nowMs 平移 8h 后读 UTC 字段即得。segments = 高峰分钟区间（当日分钟数，北京零点起算），
+      // 仅周一至周五生效；两家周六日全天空闲。captionKey 指向各自的规则说明词典键。
+      // 用 null 原型表防 kind 撞上 Object.prototype 键名（constructor 等）。
+      const QUOTA_PEAK_SCHEDULES = Object.assign(Object.create(null), {
+        // DeepSeek 开放平台：高峰 = 9:00–12:00、14:00–18:00（官方定价页）。
+        deepseek: { segments: [[540, 720], [840, 1080]], captionKey: 'quota.peak.caption' },
+        // 智谱 GLM Coding Plan：高峰 = 14:00–18:00（官方套餐概览：非高峰时段模型调用按基础积分的 50% 抵扣）。
+        'zai-coding-cn': { segments: [[840, 1080]], captionKey: 'quota.peak.caption.zai' },
+      })
+      const QUOTA_PEAK_COLOR = '#f0952f'
+      const QUOTA_PEAK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
+      const QUOTA_PEAK_TICK_MS = 30000
       // 换挡倒计时用数字钟时刻（formatBeijingClockTime），无 boundary 类词典键。
       // 色带无外部刻度：只画两段——当前时段剩余 + 下一个相反时段（可跨天，用户点名隐藏
       // 过去时间），左缘细标线即当前时刻，段内短词「忙时/闲时」过窄自动隐藏。
@@ -3023,14 +3032,14 @@ window.__ModuleLoader__.load({
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
       }
-      function deepseekIsPeakMinute(dayIndex, minutesOfDay) {
+      function quotaIsPeakMinute(segments, dayIndex, minutesOfDay) {
         if (dayIndex === 0 || dayIndex === 6) return false
-        return DEEPSEEK_PEAK_SEGMENTS.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
+        return segments.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
       }
       /** 从当前时刻起收集前 count 个峰谷切换时刻（毫秒，升序）。
-       * 工作日的四个边界点必为状态翻转；周末无边界。最坏情形（周五 18:00 后）下个翻转在
-       * 周一 09:00，扫 7 天必然覆盖（现有调用最多取 2 个）。 */
-      function deepseekUpcomingFlips(nowMs, count) {
+       * 工作日的高峰边界点必为状态翻转；周末无边界。最坏情形（周五最后一个边界点之后）下个翻转在
+       * 周一，扫 7 天必然覆盖（现有调用最多取 2 个）。 */
+      function quotaUpcomingFlips(segments, nowMs, count) {
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         shifted.setUTCHours(0, 0, 0, 0)
         const beijingDayStart = shifted.getTime() - 8 * 3600 * 1000
@@ -3039,7 +3048,7 @@ window.__ModuleLoader__.load({
           const dayStart = beijingDayStart + dayOffset * 86400000
           const dayIndex = new Date(dayStart + 8 * 3600 * 1000).getUTCDay()
           if (dayIndex === 0 || dayIndex === 6) continue
-          for (const minute of DEEPSEEK_PEAK_SEGMENTS.flat()) {
+          for (const minute of segments.flat()) {
             const candidate = dayStart + minute * 60000
             if (candidate <= nowMs) continue
             flips.push(candidate)
@@ -3054,40 +3063,43 @@ window.__ModuleLoader__.load({
         return `${digits(shifted.getUTCHours())}:${digits(shifted.getUTCMinutes())}`
       }
 
-      /** 峰谷块显隐判定：仅 DeepSeek 行且有窗口数据（额度卡与圆环面板共用一处口径）。 */
-      function deepseekPeakVisible(row, windows) {
-        return row?.kind === 'deepseek' && Array.isArray(windows) && windows.length > 0
+      /** 峰谷块显隐判定：kind 命中峰谷时段表且有窗口数据（额度卡与圆环面板共用一处口径）。
+       * 返回命中的 schedule（segments + captionKey），未命中返回 null。 */
+      function quotaPeakScheduleFor(row, windows) {
+        if (Array.isArray(windows) === false || windows.length === 0) return null
+        return QUOTA_PEAK_SCHEDULES[row?.kind] ?? null
       }
 
-      /** DeepSeek 余额卡专属的峰谷提示块：当前状态徽标 + 数字钟换挡倒计时、两段式峰谷色带
-       * （橙=高峰、绿=空闲；当前时段剩余 + 下一个相反时段，可跨天）、左缘细标线即当前时刻，
-       * 规则说明行可选。额度卡与圆环面板共用，圆环面板窄所以不渲染说明行（showCaption:false）。
+      /** 峰谷提示块（kind 对应时段表见 QUOTA_PEAK_SCHEDULES，当前 deepseek 与 zai-coding-cn）：
+       * 当前状态徽标 + 数字钟换挡倒计时、两段式峰谷色带（橙=高峰、绿=空闲；当前时段剩余 +
+       * 下一个相反时段，可跨天）、左缘细标线即当前时刻，规则说明行可选。额度卡与圆环面板共用，
+       * 圆环面板窄所以不渲染说明行（showCaption:false）。schedule 必传（由 quotaPeakScheduleFor 判定）。
        * 时刻推进用 ctx.timer 自续链而非 setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。 */
-      function QuotaPeakTimeline({ showCaption }) {
+      function QuotaPeakTimeline({ showCaption, schedule }) {
         const translate = useTranslation()
         // 测试桩的 useState 不调用函数式初始化器，直接传值（多算一次 Date.now 无副作用）。
         const [now, setNow] = useState(Date.now())
         useEffect(() => {
           let disposed = false
           let disposer = null
-          const schedule = () => {
+          const tick = () => {
             if (disposed) return
             disposer = ctx.timer.timeout(() => {
               setNow(Date.now())
-              schedule()
-            }, DEEPSEEK_PEAK_TICK_MS)
+              tick()
+            }, QUOTA_PEAK_TICK_MS)
           }
-          schedule()
+          tick()
           return () => {
             disposed = true
             if (disposer !== null && disposer !== undefined) disposer()
           }
         }, [])
         const civil = beijingCivilParts(now)
-        const inPeak = deepseekIsPeakMinute(civil.dayIndex, civil.minutesOfDay)
-        const flips = deepseekUpcomingFlips(now, 2)
+        const inPeak = quotaIsPeakMinute(schedule.segments, civil.dayIndex, civil.minutesOfDay)
+        const flips = quotaUpcomingFlips(schedule.segments, now, 2)
         const nextFlip = flips[0] ?? null
-        const accentColor = inPeak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR
+        const accentColor = inPeak ? QUOTA_PEAK_COLOR : QUOTA_PEAK_IDLE_COLOR
         // pctOf 复用 /1440 归一：传入「权重占比 ×1440」得到百分比（保留 4 位小数）。
         const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
         return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
@@ -3123,7 +3135,7 @@ window.__ModuleLoader__.load({
               key: index,
               'data-testid': `quota-peak-segment-${index}`,
               'data-peak': String(segment.peak),
-              style: { position: 'absolute', top: 0, bottom: 0, left: `${index === 0 ? 0 : pctOf(all[0].weight / totalWeight * 1440)}%`, width: `${widthPct}%`, background: segment.peak ? DEEPSEEK_PEAK_COLOR : DEEPSEEK_IDLE_COLOR, overflow: 'hidden' },
+              style: { position: 'absolute', top: 0, bottom: 0, left: `${index === 0 ? 0 : pctOf(all[0].weight / totalWeight * 1440)}%`, width: `${widthPct}%`, background: segment.peak ? QUOTA_PEAK_COLOR : QUOTA_PEAK_IDLE_COLOR, overflow: 'hidden' },
             },
             widthPct >= 11 ? React.createElement('span', { style: { position: 'absolute', inset: 0, textAlign: 'center', fontSize: '9px', lineHeight: '14px', fontWeight: 500, color: 'rgba(255,255,255,0.95)' } }, translate(segment.peak ? 'quota.peak.tag.peak' : 'quota.peak.tag.idle')) : null)
           }),
@@ -3135,7 +3147,7 @@ window.__ModuleLoader__.load({
           showCaption === true ? React.createElement('div', {
             'data-testid': 'quota-peak-caption',
             style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
-          }, translate('quota.peak.caption')) : null)
+          }, translate(schedule.captionKey)) : null)
       }
 
       /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。v0.20 起免次数。 */
@@ -3392,6 +3404,7 @@ window.__ModuleLoader__.load({
         // 水平居中、垂直中心下移到屏幕高度 75%；宽视口或 react-dom 缺席时锚定圆环上方。
         const centered = open && narrow && quotaCreatePortal !== null
           && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
+        const panelPeakSchedule = quotaPeakScheduleFor(row, windows)
         const triggerNode = React.createElement('button', {
             type: 'button',
             'data-testid': 'quota-ring-trigger',
@@ -3428,8 +3441,8 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             windows.map((window) => renderQuotaWindowRow(window, translate, null))),
-          ...(deepseekPeakVisible(row, windows)
-            ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false })]
+          ...(panelPeakSchedule !== null
+            ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false, schedule: panelPeakSchedule })]
             : []),
           ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
             ? [React.createElement('div', { key: 'panel-reset-cards', style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
@@ -5509,9 +5522,11 @@ window.__ModuleLoader__.load({
                   } else {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }
-                  // DeepSeek 余额卡专属：峰谷提示（状态徽标 + 换挡倒计时 + 24h 色带 + 随北京时间移动的圆点）。
-                  const peakTimeline = deepseekPeakVisible(row, windows)
-                    ? React.createElement(QuotaPeakTimeline, { key: 'peak-timeline', showCaption: true })
+                  // 峰谷提示块（deepseek / zai-coding-cn，时段表见 QUOTA_PEAK_SCHEDULES）：
+                  // 状态徽标 + 换挡倒计时 + 两段色带 + 规则说明行。
+                  const peakSchedule = quotaPeakScheduleFor(row, windows)
+                  const peakTimeline = peakSchedule !== null
+                    ? React.createElement(QuotaPeakTimeline, { key: 'peak-timeline', showCaption: true, schedule: peakSchedule })
                     : null
                                     // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，行尾自带「移除」。
                   const resetCardNodes = Array.isArray(row.resetCards)
