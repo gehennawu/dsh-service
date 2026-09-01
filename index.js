@@ -131,6 +131,16 @@ const SESSIONS_BYTES_MAX_IDS = 200
 const SESSIONS_BYTES_MAX_ENTRIES = 1000
 // 详情快照缓存（v0.36 查看渲染优化）：live 会话 30s 后重读保新鲜，冷会话长期复用至槽位失效/删除。
 const SESSIONS_VIEW_LIVE_TTL_MS = 30 * 1000
+// 会话标题缓存（v1.1.3 列表加载优化）：0.1.2-alpha.3 的 readTitleSnapshots 经 SessionCorpus.
+// projectMany → persistence.inspect 对每个冷会话全量解析整份 JSONL 日志且零官方缓存——会话一多，
+// 每次 sessions-list 都是整库日志重读，远贵于体积 stat。标题按 revision（stat 指纹，跨重启稳定）
+// 键控缓存：冷会话文件不变标题不变，只对新增/revision 变更/live 超时条目重读；缓存持久化到
+// DSH_HOME（仅标题+revision，不含内容），宿主重启后首个列表加载同样命中。
+const SESSIONS_TITLE_FILE = 'dsh-service-session-titles.json'
+const SESSIONS_TITLE_VERSION = 1
+const SESSIONS_TITLE_MAX_ENTRIES = 2000
+const SESSIONS_TITLE_LIVE_TTL_MS = 30 * 1000
+const SESSIONS_TITLE_COLD_TTL_MS = 5 * 60 * 1000
 // 详情/检索里视为「机制性噪声」的事件类型：折叠展示计数，用户可展开。
 const SESSION_NOISE_TYPES = new Set([
   'turn/start', 'step/start', 'step/end', 'assistant/chunk', 'request/header',
@@ -3256,6 +3266,46 @@ async function saveDeletedSessions(dshHome, data) {
   }
 }
 
+// 标题缓存磁盘持久化：{version, items: {id: {title, revision?, live}}}——只存标题与指纹，
+// 不含任何会话内容；损坏/版本不符整体丢弃（回退全量拉取，宁慢勿错）。at 不落盘：
+// 加载后按 0 处理，revision 对不上或缺失时自然判定过期重读。
+function createEmptySessionTitles() {
+  return { version: SESSIONS_TITLE_VERSION, items: {} }
+}
+
+async function loadSessionTitles(dshHome) {
+  try {
+    const parsed = JSON.parse(await readFile(join(dshHome, SESSIONS_TITLE_FILE), 'utf8'))
+    if (parsed?.version !== SESSIONS_TITLE_VERSION || typeof parsed.items !== 'object' || parsed.items === null) return new Map()
+    const entries = new Map()
+    for (const [id, entry] of Object.entries(parsed.items)) {
+      if (typeof id !== 'string' || id === '') continue
+      if (typeof entry?.title !== 'string' || typeof entry.revision !== 'string') continue
+      entries.set(id, { title: entry.title, revision: entry.revision, live: entry.live === true, at: 0 })
+    }
+    return entries
+  } catch (_) {
+    return new Map()
+  }
+}
+
+async function saveSessionTitles(dshHome, cache) {
+  const items = {}
+  for (const [id, entry] of cache) {
+    if (typeof entry?.title !== 'string') continue
+    items[id] = { title: entry.title, ...(typeof entry.revision === 'string' ? { revision: entry.revision } : {}), live: entry.live === true }
+  }
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, SESSIONS_TITLE_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, JSON.stringify({ version: SESSIONS_TITLE_VERSION, items }), { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
 /** 单个会话的事件文本（与官方 extractSessionEventText 语义一致，不依赖官方内部包）。 */
 function sessionEventText(event) {
   if (typeof event !== 'object' || event === null) return ''
@@ -3320,9 +3370,26 @@ async function sessionDirectoryBytes(ctx, header) {
   }
 }
 
+// 标题缓存条目是否仍新鲜：有 revision 源（sessionPersistence.listSnapshots 可用）时按指纹
+// 精确判定——文件没变标题就不变，冷会话永久命中；快照清单里缺席的 id（纯内存 live 会话）
+// 及 revision 源不可用时按 TTL 兜底。宁重读不展示旧标题。
+function sessionTitleFresh(entry, record, revisions, now) {
+  if (entry === undefined) return false
+  if (revisions !== null) {
+    const revision = revisions.get(record.header.id)
+    if (revision !== undefined) return entry.revision === revision
+    return now - entry.at < SESSIONS_TITLE_LIVE_TTL_MS
+  }
+  const ttl = record.live === true ? SESSIONS_TITLE_LIVE_TTL_MS : SESSIONS_TITLE_COLD_TTL_MS
+  return now - entry.at < ttl
+}
+
 // 会话管理列表：live + 冷会话合并，标注归档/已删除，补标题。列表不携带体积——
 // 体积走 sessions-bytes 懒加载（v0.36：全量下发意味着打开/切换就要逐个 readdir+stat）。
-async function listSessionsForManage(ctx, dshHome, scope = 'all') {
+// v1.1.3：readTitleSnapshots 对每个冷会话全量解析整份日志（官方零缓存），改为 revision
+// 键控缓存——列表加载只对新增/变更条目重读，重复加载/面板重开零整库扫描；listing 与
+// 已删除清单并行获取。
+async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = null) {
   const sessionQuery = ctx.get('sessionQuery')
   const workspaceRegistry = ctx.get('workspaceRegistry')
   const available = sessionQuery !== undefined && typeof sessionQuery.listSessions === 'function'
@@ -3332,25 +3399,70 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all') {
   if (scope === 'deleted') {
     return { available: true, items: [], archivedIds: [], deleted: (await loadDeletedSessions(dshHome)).items }
   }
-  const records = await sessionQuery.listSessions()
+  const now = Date.now()
+  // revision 源：缓存启用时尽早并行拉取（一次 header-only 目录遍历 + 每会话一次 stat，
+  // 与 listSessions 内部同量级）；不可用/失败回落 null → TTL 兜底。
+  const sessionPersistence = titleCache !== null ? ctx.get('sessionPersistence') : undefined
+  const revisionsPromise = sessionPersistence !== undefined && typeof sessionPersistence.listSnapshots === 'function'
+    ? sessionPersistence.listSnapshots().then((snapshots) => {
+      const revisions = new Map()
+      for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+        if (typeof snapshot?.header?.id === 'string' && typeof snapshot.revision === 'string') revisions.set(snapshot.header.id, snapshot.revision)
+      }
+      return revisions
+    }).catch(() => null)
+    : Promise.resolve(null)
+  const [records, deletedSnapshot] = await Promise.all([
+    sessionQuery.listSessions(),
+    loadDeletedSessions(dshHome),
+  ])
+  const deleted = deletedSnapshot.items
+  const revisions = await revisionsPromise
   const archivedIds = workspaceRegistry !== undefined && Array.isArray(workspaceRegistry.archivedSessionIds)
     ? [...workspaceRegistry.archivedSessionIds]
     : []
   const archivedSet = new Set(archivedIds)
-  const deleted = (await loadDeletedSessions(dshHome)).items
   const deletedSet = new Set(deleted.map((item) => item.id))
   // scope=archived 只保留归档条目（含 live 会话被归档的情况）；此时仍需标题。
   const recordsInScope = scope === 'archived'
     ? records.filter((record) => archivedSet.has(record.header.id))
     : records
-  // 标题批量折叠：只对 scope 内的 id 取（按请求序）；缺席时逐个回落为默认。
-  const ids = recordsInScope.map((record) => record.header.id)
+  // 标题折叠（缓存优先）：只重读新增/revision 变更/live 超时的条目；fulfilled 才入缓存
+  //（rejected 留空且不缓存，下次自动重试）。缓存条目按插入序 LRU 式淘汰封顶。
+  const staleRecords = []
+  if (titleCache !== null) {
+    for (const record of recordsInScope) {
+      if (deletedSet.has(record.header.id)) continue
+      if (!sessionTitleFresh(titleCache.get(record.header.id), record, revisions, now)) staleRecords.push(record)
+    }
+  } else {
+    for (const record of recordsInScope) {
+      if (!deletedSet.has(record.header.id)) staleRecords.push(record)
+    }
+  }
   const titles = new Map()
-  if (typeof sessionQuery.readTitleSnapshots === 'function' && ids.length > 0) {
-    const observed = await sessionQuery.readTitleSnapshots(ids)
+  if (typeof sessionQuery.readTitleSnapshots === 'function' && staleRecords.length > 0) {
+    const observed = await sessionQuery.readTitleSnapshots(staleRecords.map((record) => record.header.id))
     for (const entry of observed) {
       if (entry?.sessionId !== undefined && entry?.status === 'fulfilled' && entry.value?.title?.title !== undefined) {
         titles.set(entry.sessionId, entry.value.title.title)
+      }
+    }
+    if (titleCache !== null) {
+      const recordById = new Map(staleRecords.map((record) => [record.header.id, record]))
+      for (const [id, title] of titles) {
+        const record = recordById.get(id)
+        if (record === undefined) continue
+        titleCache.set(id, { title, revision: revisions !== null ? revisions.get(id) : undefined, at: now, live: record.live === true })
+      }
+      while (titleCache.size > SESSIONS_TITLE_MAX_ENTRIES) {
+        const oldest = titleCache.keys().next().value
+        if (oldest === undefined) break
+        titleCache.delete(oldest)
+      }
+      // 落盘随 RPC 收敛（不留在 Fiber 外）：仅本次确实重读过标题才写，原子替换 0600。
+      if (titles.size > 0) {
+        try { await saveSessionTitles(dshHome, titleCache) } catch (_) {}
       }
     }
   }
@@ -3360,7 +3472,7 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all') {
     if (deletedSet.has(id)) continue
     items.push({
       id,
-      title: titles.get(id) ?? '',
+      title: titles.get(id) ?? (titleCache !== null ? titleCache.get(id)?.title : undefined) ?? '',
       cwd: record.header.cwd ?? null,
       createdAt: record.header.createdAt ?? 0,
       live: record.live === true,
@@ -3397,20 +3509,27 @@ async function resolveSessionBytesForIds(ctx, ids, cache) {
       headerById = null
     }
   }
-  for (const id of misses) {
-    const header = headerById === null ? undefined : headerById.get(id)
-    if (header === undefined) {
-      bytes[id] = null
-      continue
+  // 未命中目录 stat 并发执行（8 路封顶）：首个列表加载的 stat 风暴从串行排队压成小批并行。
+  const SESSIONS_BYTES_STAT_CONCURRENCY = 8
+  let statCursor = 0
+  const statWorkers = Array.from({ length: Math.min(SESSIONS_BYTES_STAT_CONCURRENCY, misses.length) }, async () => {
+    while (statCursor < misses.length) {
+      const id = misses[statCursor++]
+      const header = headerById === null ? undefined : headerById.get(id)
+      if (header === undefined) {
+        bytes[id] = null
+        continue
+      }
+      const value = await sessionDirectoryBytes(ctx, header)
+      cache.set(id, { bytes: value, at: Date.now() })
+      if (cache.size > SESSIONS_BYTES_MAX_ENTRIES) {
+        const oldest = cache.keys().next().value
+        if (oldest !== undefined) cache.delete(oldest)
+      }
+      bytes[id] = value
     }
-    const value = await sessionDirectoryBytes(ctx, header)
-    cache.set(id, { bytes: value, at: Date.now() })
-    if (cache.size > SESSIONS_BYTES_MAX_ENTRIES) {
-      const oldest = cache.keys().next().value
-      if (oldest !== undefined) cache.delete(oldest)
-    }
-    bytes[id] = value
-  }
+  })
+  await Promise.all(statWorkers)
   return bytes
 }
 
@@ -3489,13 +3608,13 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
 }
 
 // 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
-async function searchSessionsContent(ctx, dshHome, query, scope = 'all') {
+async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCache = null) {
   const sessionQuery = ctx.get('sessionQuery')
   const result = { available: sessionQuery !== undefined && typeof sessionQuery.filterEvents === 'function', query, scope, hits: [] }
   if (!result.available) return result
   const q = typeof query === 'string' ? query.trim() : ''
   if (q === '') return result
-  const listed = await listSessionsForManage(ctx, dshHome)
+  const listed = await listSessionsForManage(ctx, dshHome, 'all', titleCache)
   if (!listed.available) return result
   // scope=all 搜全部会话（含 live，readSession/filterEvents 均支持 live 快照）；archived 只搜归档冷会话。
   const targets = scope === 'archived'
@@ -3858,6 +3977,12 @@ function apply(ctx) {
   // 会话体积懒加载缓存（v0.36）：宿主进程不重启就一直在——浏览器刷新/面板重开直接命中，
   // 不用重新 readdir+stat（归档冷会话体积不变；live 会话靠 TTL 兜底、删除时主动失效）。
   const sessionBytesCache = new Map()
+  // 会话标题缓存（v1.1.3）：revision 键控 + 磁盘持久化，宿主启动即异步预加载，
+  // 首个 sessions-list 前等待填充完成（失败静默回落全量拉取）。
+  const sessionTitleCache = new Map()
+  const sessionTitlesReady = loadSessionTitles(dshHome).then((entries) => {
+    for (const [id, entry] of entries) sessionTitleCache.set(id, entry)
+  }).catch(() => {})
   // 会话详情快照缓存（v0.36）：单槽位只留最近打开的会话，翻页零重复 readSession。
   const sessionViewCache = { id: null, snapshot: null, at: 0, live: false }
   let usageIndexPromise = loadUsageIndex(dshHome)
@@ -4214,6 +4339,7 @@ function apply(ctx) {
   ctx.effect(() => () => { backupIntegrity.dispose().catch(() => {}) }, 'dsh-service backup restore plans')
   ctx.effect(() => () => sessionDeletePlans.clear(), 'dsh-service session delete plans')
   ctx.effect(() => () => sessionBytesCache.clear(), 'dsh-service session bytes cache')
+  ctx.effect(() => () => sessionTitleCache.clear(), 'dsh-service session title cache')
   ctx.effect(() => { sessionViewCache.id = null; sessionViewCache.snapshot = null }, 'dsh-service session view cache')
   ctx.effect(() => () => {
     quotaDisposed = true
@@ -5071,7 +5197,8 @@ function apply(ctx) {
     'sessions-list': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const scope = payload?.scope === 'archived' || payload?.scope === 'deleted' ? payload.scope : 'all'
       try {
-        const value = await listSessionsForManage(ctx, dshHome, scope)
+        await sessionTitlesReady
+        const value = await listSessionsForManage(ctx, dshHome, scope, sessionTitleCache)
         // 已删除记录独立下发（供「已删除」筛选）：字段只为展示，绝不包含内容。
         return { ok: true, value }
       } catch (error) {
@@ -5115,7 +5242,8 @@ function apply(ctx) {
       const query = typeof payload?.query === 'string' ? payload.query : ''
       const scope = payload?.scope === 'archived' ? 'archived' : 'all'
       try {
-        return { ok: true, value: await searchSessionsContent(ctx, dshHome, query, scope) }
+        await sessionTitlesReady
+        return { ok: true, value: await searchSessionsContent(ctx, dshHome, query, scope, sessionTitleCache) }
       } catch (error) {
         return rpcTechnicalFailure(error)
       }

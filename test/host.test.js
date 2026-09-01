@@ -5382,6 +5382,81 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   assert.deepEqual(Object.keys(mixed.value.bytes), ['session-beta'])
 })
 
+test('session list titles are revision-cached, only refetched on change, and survive host restarts', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-titles-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const headers = {
+    'session-alpha': { id: 'session-alpha', createdAt: 1000, cwd: '/workspace/projects' },
+    'session-beta': { id: 'session-beta', createdAt: 900, cwd: '/workspace/projects' },
+  }
+  // readTitleSnapshots 在真实宿主里对每个冷会话全量解析整份日志——用计数器断言只按需发生。
+  let titleCalls = 0
+  let titleIds = []
+  const revisions = new Map([['session-alpha', 'rev-a'], ['session-beta', 'rev-b']])
+  const sessionQuery = {
+    async listSessions() {
+      return [
+        { header: { ...headers['session-alpha'] }, live: false, persisted: true },
+        { header: { ...headers['session-beta'] }, live: false, persisted: true },
+      ]
+    },
+    async readTitleSnapshots(ids) {
+      titleCalls += 1
+      titleIds = [...ids]
+      return ids.map((sessionId) => ({ sessionId, status: 'fulfilled', value: { title: { title: `标题-${sessionId}` } } }))
+    },
+  }
+  const sessionPersistence = {
+    async listSnapshots() {
+      return [...revisions].map(([id, revision]) => ({ header: { id }, revision }))
+    },
+  }
+  const hostOptions = () => ({
+    services: { sessionQuery, sessionPersistence, workspaceRegistry: { archivedSessionIds: [] }, sessions: { get: () => undefined } },
+    env: { DSH_HOME: dshHome },
+  })
+
+  // 首次：无缓存 → 一次全量标题拉取（2 ids），并携带当次 revision 入缓存。
+  const first = createHost(hostOptions())
+  const firstList = await first.handler('sessions-list', {})
+  assert.equal(firstList.ok, true)
+  assert.equal(titleCalls, 1)
+  assert.deepEqual([...titleIds].sort(), ['session-alpha', 'session-beta'])
+  assert.equal(firstList.value.items.find((item) => item.id === 'session-alpha').title, '标题-session-alpha')
+
+  // 第二次：revision 未变 → 零整库日志重读，标题照常展示。
+  const secondList = await first.handler('sessions-list', {})
+  assert.equal(secondList.ok, true)
+  assert.equal(titleCalls, 1, 'unchanged revisions skip the full-log title read entirely')
+  assert.equal(secondList.value.items.find((item) => item.id === 'session-beta').title, '标题-session-beta', 'titles are served from cache')
+
+  // revision 变更 → 只重读变更的那个会话。
+  revisions.set('session-alpha', 'rev-a2')
+  const thirdList = await first.handler('sessions-list', {})
+  assert.equal(thirdList.ok, true)
+  assert.equal(titleCalls, 2)
+  assert.deepEqual(titleIds, ['session-alpha'], 'only the revision-changed session is refetched')
+
+  // 等待落盘：磁盘缓存必须已含 rev-a2 再模拟宿主重启，避免写入竞态。
+  const titlesFile = join(dshHome, 'dsh-service-session-titles.json')
+  for (let i = 0; i < 200; i += 1) {
+    try {
+      const persisted = JSON.parse(await readFile(titlesFile, 'utf8'))
+      if (persisted?.items?.['session-alpha']?.revision === 'rev-a2') break
+    } catch (_) {}
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  // 宿主重启（同 DSH_HOME）：内存缓存已空，磁盘缓存 + revision 指纹命中 → 首个列表零重读。
+  titleCalls = 0
+  const restarted = createHost(hostOptions())
+  const restartedList = await restarted.handler('sessions-list', {})
+  assert.equal(restartedList.ok, true)
+  assert.equal(titleCalls, 0, 'restart reuses the persisted title cache via stat revisions')
+  assert.equal(restartedList.value.items.find((item) => item.id === 'session-alpha').title, '标题-session-alpha')
+  assert.equal(restartedList.value.items.find((item) => item.id === 'session-beta').title, '标题-session-beta')
+})
+
 test('session event text matches the official semantic extractor contract', () => {
   const cases = [
     { type: 'user/message', data: { content: [{ type: 'text', text: ' first ' }, { type: 'reasoning', text: 'hidden' }, { type: 'text', text: 'second' }] } },
