@@ -3149,7 +3149,50 @@ window.__ModuleLoader__.load({
         const translate = useTranslation()
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
         useEffect(() => quotaStore.subscribe(() => setQuota(quotaStore.getSnapshot())), [])
-        const store = props && props.directoryStore
+        // 自愈（v1.1.2）：真实渲染器把 inject 产物按 (entry,binding) 缓存——刷新/首进
+        // 旧会话时 directoryFor 可能因会话作用域尚未热身抛错，空 props 被缓存后圆环静默。
+        // 注入失败也携带 sessionId；store 缺席时组件内按 ctx.timer 退避重试解析目录，
+        // 成功即接管后续 effect（成功路径零变化，失败路径最多 7 次 ≈30s 后放弃）。
+        const propsStore = props && props.directoryStore
+        const sessionId = props && typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : undefined
+        const [retriedStore, setRetriedStore] = useState(null)
+        const store = propsStore !== undefined && propsStore !== null ? propsStore : retriedStore
+        useEffect(() => {
+          if (propsStore !== undefined && propsStore !== null) return undefined
+          if (sessionId === undefined) return undefined
+          let stopped = false
+          let dispose = null
+          const RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000, 15000]
+          const attempt = (round) => {
+            if (stopped) return
+            let models = null
+            try {
+              models = getModelDirectories()
+            } catch (_) {
+              models = null
+            }
+            // 服务彻底缺席（老版本 DSH）是永久条件：不重试、不挂定时器。
+            if (models === undefined || models === null || typeof models.directoryFor !== 'function') return
+            let next = null
+            try {
+              next = models.directoryFor(sessionId)
+            } catch (_) {
+              next = null
+            }
+            if (next !== null && next !== undefined && next.store !== undefined && next.store !== null) {
+              setRetriedStore(next.store)
+              try {
+                const pending = next.load()
+                if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+              } catch (_) {}
+              return
+            }
+            if (round >= RETRY_DELAYS_MS.length) return
+            dispose = ctx.timer.timeout(() => { dispose = null; attempt(round + 1) }, RETRY_DELAYS_MS[round])
+          }
+          attempt(0)
+          return () => { stopped = true; if (dispose !== null) dispose() }
+        }, [propsStore, sessionId])
         useEffect(() => {
           // 无 modelDirectories 服务（或条目 props 为空）：不启动轮询、不发 RPC、不渲染内容。
           if (!store) return undefined
@@ -6810,8 +6853,10 @@ window.__ModuleLoader__.load({
 
       // 额度查询圆环：跟随当前会话所选模型的供应商。modelDirectories 是可选服务
       // （老版本 DSH 没有）。槽位条目无条件注册，服务在条目渲染时（inject(sessionId)）
-      // 经 ctx.get 惰性解析——此时会话已渲染、model-selection 必然已挂载，不受注入时序影响；
-      // 拿不到服务时 props 为空，QuotaRing 渲染 null 且不启动轮询，其他功能零影响。
+      // 经 ctx.get 惰性解析——此时会话已渲染、model-selection 必然已挂载，不受注入时序影响。
+      // 真实渲染器按 (entry,binding) 缓存注入产物（v1.1.2 教训）：目录未热身时 inject
+      // 只带 sessionId，QuotaRing 组件内按 ctx.timer 退避重试自愈，不能指望重渲染重算 inject；
+      // 老版本 DSH 无该服务时 props 同样只带 sessionId，重试永远落空即静默，其他功能零影响。
       ctx.slots.inject('conversation.input.right', () => {
         let dispose = null
         const sync = () => {
@@ -6826,9 +6871,10 @@ window.__ModuleLoader__.load({
               if (sessionId === undefined || sessionId === null) return {}
               try {
                 const models = getModelDirectories()
-                if (models === undefined || typeof models.directoryFor !== 'function') return {}
+                if (models === undefined || typeof models.directoryFor !== 'function') return { sessionId }
                 const directory = models.directoryFor(sessionId)
                 return {
+                  sessionId,
                   directoryStore: directory.store,
                   loadDirectory: () => {
                     try {
@@ -6838,7 +6884,10 @@ window.__ModuleLoader__.load({
                   },
                 }
               } catch (_) {
-                return {}
+                // 渲染器按 (entry,binding) 缓存注入产物：这里绝不能返回空对象——
+                // 带上 sessionId 让 QuotaRing 组件内退避重试自愈（刷新/首进旧会话时
+                // 会话作用域可能尚未热身，directoryFor 会暂时抛错）。
+                return { sessionId }
               }
             },
           }, (props) => React.createElement(QuotaRing, props))

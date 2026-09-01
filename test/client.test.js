@@ -61,6 +61,17 @@ function createRenderer(rpcCall, options = {}) {
   let hookCursor = 0
   let roots = new Map()
   let reloads = 0
+  // strict session 槽语义（opt-in）：模拟真实渲染器的 (entry,binding) inject 缓存与
+  // 会话绑定生命周期（undefined→session、卸载重挂都换新 binding；同 binding 重渲染
+  // 复用首次注入产物）。默认关闭，行为与既有硬编码 session-1 完全一致。
+  const sessionSlot = {
+    mounted: options.initialSessionMounted !== false,
+    sessionId: options.initialSessionId === undefined ? 'session-1' : options.initialSessionId,
+    binding: {},
+    epoch: 0,
+  }
+  const sessionInjectCache = new WeakMap()
+  let activeModelDirectories = options.modelDirectories
 
   function scheduleRender() {
     renderAll()
@@ -141,7 +152,8 @@ function createRenderer(rpcCall, options = {}) {
     if (typeof node.type === 'function') {
       const previousComponent = currentComponent
       const previousCursor = hookCursor
-      currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name
+      const epochSuffix = currentSlot === 'conversation.input.right' && options.strictSessionSlots === true ? ':' + sessionSlot.epoch : ''
+      currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name + epochSuffix
       hookCursor = 0
       const output = node.type(node.props)
       currentComponent = previousComponent
@@ -158,10 +170,27 @@ function createRenderer(rpcCall, options = {}) {
       currentSlot = slot
       const rendered = []
       for (const { component, options: entryOptions } of entries.values()) {
-        // 与真实外壳一致：条目 meta 的 inject(sessionId) 产物作为组件 props。
-        const occupantProps = entryOptions && typeof entryOptions.inject === 'function'
-          ? entryOptions.inject(entryOptions.testSessionId === undefined ? 'session-1' : entryOptions.testSessionId)
-          : null
+        let occupantProps
+        if (options.strictSessionSlots === true && slot === 'conversation.input.right') {
+          // strict 语义：会话未就绪不渲染；同 (entry,binding) 缓存首次注入产物。
+          if (sessionSlot.mounted !== true || sessionSlot.sessionId === undefined || sessionSlot.sessionId === null) continue
+          if (entryOptions === undefined || typeof entryOptions.inject !== 'function') continue
+          let perBinding = sessionInjectCache.get(entryOptions)
+          if (perBinding === undefined) {
+            perBinding = new WeakMap()
+            sessionInjectCache.set(entryOptions, perBinding)
+          }
+          occupantProps = perBinding.get(sessionSlot.binding)
+          if (occupantProps === undefined) {
+            occupantProps = entryOptions.inject(sessionSlot.sessionId)
+            perBinding.set(sessionSlot.binding, occupantProps)
+          }
+        } else {
+          // 与真实外壳一致：条目 meta 的 inject(sessionId) 产物作为组件 props。
+          occupantProps = entryOptions && typeof entryOptions.inject === 'function'
+            ? entryOptions.inject(entryOptions.testSessionId === undefined ? 'session-1' : entryOptions.testSessionId)
+            : null
+        }
         rendered.push(evaluate(React.createElement(component, occupantProps)))
       }
       currentSlot = undefined
@@ -338,7 +367,7 @@ function createRenderer(rpcCall, options = {}) {
             return () => {}
           },
           get(service) {
-            if (service === 'modelDirectories') return options.modelDirectories
+            if (service === 'modelDirectories') return activeModelDirectories
             return options.services?.[service]
           },
         } : {}),
@@ -472,6 +501,26 @@ function createRenderer(rpcCall, options = {}) {
     },
     featureSettings() {
       return { ...featureSettings }
+    },
+    setSessionSlot({ sessionId, mounted = true, keepBinding = false } = {}) {
+      const changed = sessionId !== undefined && sessionId !== sessionSlot.sessionId
+      if (changed || !keepBinding) {
+        sessionSlot.binding = {}
+        sessionSlot.epoch += 1
+      }
+      if (sessionId !== undefined) sessionSlot.sessionId = sessionId
+      if (mounted === false) {
+        sessionSlot.mounted = false
+        unmountSlot('conversation.input.right')
+        return
+      }
+      sessionSlot.mounted = true
+      mountedSlots.add('conversation.input.right')
+      renderAll()
+    },
+    setModelDirectories(value) {
+      activeModelDirectories = value
+      renderAll()
     },
     registrations() {
       const out = {}
@@ -2661,6 +2710,102 @@ test('quota ring follows the session provider, renders the tightest window, and 
   for (const fn of [...storeListeners]) fn()
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+})
+
+test('quota ring recovers when the first strict-session injection missed the directory', async () => {
+  // 真机事实（v0.1.2-alpha.3 渲染器源码核实）：strict session 槽的 inject 产物按
+  // (entry,binding) 缓存——刷新/首进旧会话时 directoryFor 可能因会话作用域尚未热身
+  // 抛错，空 props 被缓存后圆环从此静默（用户报告的「刷新/新会话后圆环不见」）。
+  // 本用例用 (entry,binding) 缓存语义复现：首次注入拿到空 props，服务就绪后同一
+  // binding 内必须自愈。
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: null },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  let directoryCalls = 0
+  let loadCalls = 0
+  let ready = false
+  let resolveLoad = () => {}
+  const directory = {
+    store,
+    load() {
+      loadCalls += 1
+      return new Promise((resolve) => {
+        resolveLoad = () => {
+          store.snapshot = { current: { provider: 'opencode-go', model: 'deepseek-v4-flash' } }
+          for (const fn of [...storeListeners]) fn()
+          resolve()
+        }
+      })
+    },
+  }
+  const modelDirectories = {
+    directoryFor(sessionId) {
+      assert.equal(sessionId, 'session-1')
+      directoryCalls += 1
+      if (!ready) throw new Error('session directory is warming up')
+      return directory
+    },
+  }
+  const quotaPayloads = []
+  const renderer = quotaRingRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      quotaPayloads.push(payload)
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go',
+            refreshing: false, status: 'ok',
+            windows: [{ id: 'weekly', percent: 40, resetsAt: new Date(Date.now() + 3600_000).toISOString() }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, modelDirectories, { strictSessionSlots: true, initialSessionId: 'session-1' })
+
+  await renderer.load()
+  await renderer.flush()
+  // 首次注入撞上目录未热身：inject 记 1 次；组件挂载立刻原地补解一次（attempt 0）
+  // 仍失败 → 环不渲染、零 quota 请求、挂起 250ms 退避重试。
+  assert.equal(directoryCalls, 2)
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+  assert.equal(quotaPayloads.length, 0)
+
+  // 服务就绪后（同一 binding）：退避重试必须再次解析目录并触发加载。
+  ready = true
+  renderer.setModelDirectories(modelDirectories)
+  await renderer.advanceTimer(250)
+  assert.equal(directoryCalls, 3, 'retry must resolve the directory again within the same binding')
+  assert.equal(loadCalls, 1)
+  // 目录 current 未到：环仍隐藏，也不提前发 provider 级请求。
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+  assert.equal(quotaPayloads.length, 0)
+
+  // 目录加载落地：环出现且唯一一次 quota 请求精确指向当前 provider。
+  resolveLoad()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), true)
+  assert.deepEqual(quotaPayloads, [{ providers: ['opencode-go'] }])
+
+  // strict 生命周期护栏：卸载即摘环；同会话重新挂载（新 binding）重新解析并恢复。
+  renderer.setSessionSlot({ mounted: false })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+  renderer.setSessionSlot({ sessionId: 'session-1', mounted: true })
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), true)
+  assert.equal(directoryCalls, 4, 'remount mints a new binding and resolves the directory again')
+  assert.equal(loadCalls, 1)
+  renderer.disposeFactory()
 })
 
 test('ring keeps its panel open while refreshing and shows reset times once data lands', async () => {
