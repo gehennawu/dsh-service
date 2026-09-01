@@ -1568,10 +1568,12 @@ window.__ModuleLoader__.load({
         const byTurn = dispatchByParent.get(sessionId)
         return byTurn === undefined ? new Map() : byTurn
       }
-      const refreshSubagentDispatches = (sessionId) => {
+      const refreshSubagentDispatches = (sessionId, force = false) => {
         if (typeof sessionId !== 'string' || sessionId === '') return Promise.resolve(new Map())
         const now = Date.now()
-        if (now - (dispatchFetchedAt.get(sessionId) ?? 0) < DISPATCH_TTL_MS) return Promise.resolve(dispatchRecordsFor(sessionId))
+        // force：会话级累计行的轮询刷新（绕过 TTL 去重，保证轮值总是实拉；回合尾行的
+        // 挂载首拉不受影响——第二次拉取仍受 TTL 保护）。
+        if (!force && now - (dispatchFetchedAt.get(sessionId) ?? 0) < DISPATCH_TTL_MS) return Promise.resolve(dispatchRecordsFor(sessionId))
         let inflight = dispatchInflight.get(sessionId)
         if (inflight === undefined) {
           inflight = rpcCall('subagent-dispatches', { parentId: sessionId, limit: 200 }).then((result) => {
@@ -1591,9 +1593,10 @@ window.__ModuleLoader__.load({
             dispatchFetchedAt.set(sessionId, Date.now())
             return byTurn
           }).catch(() => {
-            // 失败进冷却：避免一回合内同一会话渲染风暴；旧缓存原样保留。
+            // 失败进冷却：避免一回合内同一会话渲染风暴；旧缓存原样保留。返回 null 区分「失败」，
+            // 会话级累计行的首拉据此决定是否启动轮询链（宿主不可用时静默、不常驻定时器）。
             dispatchFetchedAt.set(sessionId, Date.now())
-            return dispatchRecordsFor(sessionId)
+            return null
           })
           dispatchInflight.set(sessionId, inflight)
           inflight.finally(() => dispatchInflight.delete(sessionId)).catch(() => {})
@@ -1615,9 +1618,11 @@ window.__ModuleLoader__.load({
           }
           refreshSubagentDispatches(sessionId).then((byTurn) => {
             if (cancelled) return
-            const entries = aggregateSubagentRoutes(byTurn.get(turn))
+            const byTurnSafe = byTurn === null ? new Map() : byTurn
+            const turnRecords = byTurnSafe.get(turn)
+            const entries = aggregateSubagentRoutes(turnRecords)
             if (entries.length === 0) {
-              const count = Number.isFinite(props.matched.subagentCount) && props.matched.subagentCount > 0 ? String(props.matched.subagentCount) : String(byTurn.get(turn)?.length ?? 1)
+              const count = Number.isFinite(props.matched.subagentCount) && props.matched.subagentCount > 0 ? String(props.matched.subagentCount) : String(turnRecords?.length ?? 1)
               setText(`${translate('subagent.turnTail.count', { count })}${translate('subagent.turnTail.unknown')}`)
               return
             }
@@ -1638,6 +1643,80 @@ window.__ModuleLoader__.load({
             lineHeight: '18px',
             color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
             padding: '2px 0',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: '100%',
+          },
+        }, text)
+      }
+
+      // 会话级累计行（v1.2 补）：composer 下方常驻「本会话子代理模型」。
+      // 回合尾行依赖官方 turn-process 计数触发，compaction 折叠子代理工具调用后
+      // （官方自身也不再显示计数）回合尾行会静默消失——累计行由宿主派发记录驱动，
+      // 不受事件流折叠影响，任何视图/任意回合都能看到。轮询走 ctx.timer 自续链
+      // （20s，测试桩可推进、卸载即断）；与回合尾行共享同一份记录缓存。
+      const SUBAGENT_DOCK_POLL_MS = 20 * 1000
+      function SubagentModelsDock(props) {
+        const translate = useTranslation()
+        const [text, setText] = useState('')
+        useEffect(() => {
+          let cancelled = false
+          let pollDispose = undefined
+          const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
+          if (sessionId === undefined) {
+            setText('')
+            return undefined
+          }
+          const refresh = () => refreshSubagentDispatches(sessionId).then((byTurn) => {
+            if (cancelled) return false
+            setFromByTurn(byTurn)
+            return byTurn !== null
+          }).catch(() => {
+            if (!cancelled) setText('')
+            return false
+          })
+          const setFromByTurn = (byTurn) => {
+            const byTurnSafe = byTurn === null ? new Map() : byTurn
+            const records = []
+            for (const list of byTurnSafe.values()) {
+              if (Array.isArray(list)) records.push(...list)
+            }
+            const entries = aggregateSubagentRoutes(records)
+            setText(entries.length === 0 ? '' : `${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
+          }
+          refresh()
+          // 首拉成功才启动轮询链：宿主不可用/RPC 失败时静默且不常驻定时器
+          // （重进会话或页面刷新后自愈）。轮询轮内失败保留链，下轮再试。
+          const tick = () => {
+            if (cancelled) return
+            refreshSubagentDispatches(sessionId, true).then((byTurn) => {
+              if (cancelled) return
+              setFromByTurn(byTurn)
+            }).catch(() => {
+              if (!cancelled) setText('')
+            })
+            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
+          }
+          let pollChain = undefined
+          Promise.resolve(refresh()).then((ok) => {
+            if (cancelled || !ok) return
+            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
+          })
+          return () => {
+            cancelled = true
+            if (typeof pollChain === 'function') pollChain()
+          }
+        }, [props.sessionId])
+        if (text === '') return null
+        return React.createElement('div', {
+          'data-testid': 'subagent-models-dock',
+          'data-dsh-service-subagent-models-dock': true,
+          style: {
+            fontSize: '12px',
+            lineHeight: '18px',
+            color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
+            padding: '2px 4px',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -6782,6 +6861,26 @@ window.__ModuleLoader__.load({
             { name: 'conversation.chat.turnTail', id: 'dsh-service-subagent-models', select: selectSubagentModelsTurnTail },
             (props) => React.createElement(SubagentModelsTurnTail, props),
           )
+        }
+        sync()
+        const unsubscribe = featureScope.subscribe(sync)
+        return () => { unsubscribe(); if (dispose !== null) dispose() }
+      })
+
+      // 会话级累计行（composer 下方）：与回合尾行同 feature 门控；不依赖回合数据，
+      // compaction 折叠导致回合尾行缺席时兜底可见。顺序后置（order 60）不打扰官方内容。
+      ctx.slots.inject('conversation.composer.dock', () => {
+        let dispose = null
+        const sync = () => {
+          if (dispose !== null) { dispose(); dispose = null }
+          if (!featureEnabled('subagentRoute')) return
+          dispose = ctx.slots.register({
+            name: 'conversation.composer.dock',
+            id: 'dsh-service-subagent-models-dock',
+            order: 60,
+            label: () => t('subagent.turnTail.label'),
+            inject: (sessionId) => ({ sessionId }),
+          }, (props) => React.createElement(SubagentModelsDock, props))
         }
         sync()
         const unsubscribe = featureScope.subscribe(sync)

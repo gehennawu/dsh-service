@@ -4906,6 +4906,7 @@ test('subagent turn-tail row: registered under the subagentRoute feature, select
   const calls = []
   const renderer = createRenderer(async (channel, endpoint) => {
     calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
@@ -4928,11 +4929,13 @@ test('subagent turn-tail row: registered under the subagentRoute feature, select
   assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models').length, 0)
   await renderer.setFeature('subagentRoute', true)
   assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).some((item) => item.id === 'dsh-service-subagent-models'), true)
-  // 槽位挂载（无 matched 时组件渲染 null）不应触发任何 subagent-dispatches 拉取。
+  // 槽位挂载（无 matched 时组件渲染 null）不应触发任何 subagent-dispatches 拉取
+  // （累计行组件随槽自动挂载会产生 1 次拉取，这里对比挂载前后的差值）。
+  const before = calls.filter((entry) => entry === 'subagent-dispatches').length
   renderer.mount('conversation.chat.turnTail')
   await renderer.flush()
   assert.equal(renderer.text('conversation.chat.turnTail'), '')
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 0)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, before)
 })
 
 test('subagent turn-tail row: route aggregation and line text assembly', async () => {
@@ -4970,6 +4973,44 @@ test('subagent turn-tail row: route aggregation and line text assembly', async (
   assert.match(en['subagent.turnTail.label'], /Subagent models/)
   assert.equal(zh['subagent.turnTail.unknown'].includes('模型未记录'), true)
   assert.ok(Object.keys(zh).every((key) => key in en), 'zh/en key sets must match')
+})
+
+test('subagent models dock row: session-level aggregate renders from dispatch records, polls on the timer chain, and is feature-gated', async () => {
+  const calls = []
+  let records = [
+    { childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+    { childId: 'c2', parentId: 'session-1', turn: 2, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+  ]
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.ok(renderer.registrations()['conversation.composer.dock'].some((entry) => entry.id === 'dsh-service-subagent-models-dock'))
+  renderer.mount('conversation.composer.dock')
+  await renderer.flush()
+  // 初始拉取 + 聚合文本（跨回合累计、×n 计数）。
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×2')
+
+  // 轮询自续链：advanceTimer(20000) 推进一次（两次拉取后去重 TTL 失效需越过 10s）。
+  await renderer.advanceTimer(20000)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 2)
+
+  // 记录无 → 空渲染（null），不再有文本。
+  records = []
+  await renderer.advanceTimer(20000)
+  await renderer.advanceTimer(20000)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 4)
+  assert.equal(renderer.text('conversation.composer.dock'), '')
+  assert.equal(renderer.hasTest('subagent-models-dock'), false)
+
+  // 功能关闭：条目注销。
+  await renderer.setFeature('subagentRoute', false)
+  assert.equal((renderer.registrations()['conversation.composer.dock'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models-dock').length, 0)
+  await renderer.setFeature('subagentRoute', true)
+  assert.equal(renderer.registrations()['conversation.composer.dock'].some((item) => item.id === 'dsh-service-subagent-models-dock'), true)
 })
 
 // ── v0.30 移动端适配·客户端引擎 ─────────────────────────────────────────────
