@@ -5117,6 +5117,11 @@ test('subagent turn-tail row: route aggregation and line text assembly', async (
   assert.match(zh['subagent.turnTail.label'], /子代理模型/)
   assert.match(en['subagent.turnTail.label'], /Subagent models/)
   assert.equal(zh['subagent.turnTail.unknown'].includes('模型未记录'), true)
+  // 未记录兜底行的英文单复数（v1.1.2 发布前评审修复）：1 subagent / N subagents，zh 同形。
+  assert.equal(zh['subagent.turnTail.countOne'], '子代理 ×1')
+  assert.match(zh['subagent.turnTail.countMany'], /子代理 ×\{count\}/)
+  assert.equal(en['subagent.turnTail.countOne'], '1 subagent')
+  assert.equal(en['subagent.turnTail.countMany'], '{count} subagents')
   assert.ok(Object.keys(zh).every((key) => key in en), 'zh/en key sets must match')
 })
 
@@ -5126,9 +5131,13 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
     { childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
     { childId: 'c2', parentId: 'session-1', turn: 2, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
   ]
+  let fail = false
   const renderer = createRenderer(async (channel, endpoint) => {
     calls.push(endpoint)
-    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records } }
+    if (endpoint === 'subagent-dispatches') {
+      if (fail) throw new Error('boom')
+      return { ok: true, value: { records } }
+    }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
@@ -5139,15 +5148,31 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
   assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×2')
 
-  // 轮询自续链：advanceTimer(20000) 推进一次（两次拉取后去重 TTL 失效需越过 10s）。
+  // 轮询自续链：advanceTimer(20000) 推进一次（force 强刷绕过 TTL 去重）。
   await renderer.advanceTimer(20000)
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 2)
+
+  // 缺 turn 的派发记录（宿主允许缺 turn）同样计入累计行（v1.1.2 发布前评审修复）。
+  records = [
+    ...records,
+    { childId: 'c3', parentId: 'session-1', provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'default' },
+  ]
+  await renderer.advanceTimer(20000)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 3)
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×3')
+
+  // 轮询轮内 RPC 失败：沿用旧缓存、已显示的行不闪断（v1.1.2 发布前评审修复）。
+  fail = true
+  await renderer.advanceTimer(20000)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 4)
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×3')
+  fail = false
 
   // 记录无 → 空渲染（null），不再有文本。
   records = []
   await renderer.advanceTimer(20000)
   await renderer.advanceTimer(20000)
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 4)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 6)
   assert.equal(renderer.text('conversation.composer.dock'), '')
   assert.equal(renderer.hasTest('subagent-models-dock'), false)
 

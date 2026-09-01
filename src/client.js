@@ -163,7 +163,8 @@ window.__ModuleLoader__.load({
       'subagent.fallback.limit': '已达上限（{max} 个）',
       'subagent.error.invalid-fallback-route': '回退条目不在宿主清单内，请重新选择',
       'subagent.turnTail.label': '子代理模型：',
-      'subagent.turnTail.count': '子代理 ×{count}',
+      'subagent.turnTail.countOne': '子代理 ×1',
+      'subagent.turnTail.countMany': '子代理 ×{count}',
       'subagent.turnTail.unknown': '（模型未记录）',
       'subagent.dock.title': '输入框底部显示子代理信息',
       'subagent.dock.desc': '在对话页输入框下方常驻一行本会话子代理实际使用的模型（20 秒刷新，不受事件折叠影响）。关闭后仅保留回合尾部小字行。',
@@ -846,7 +847,8 @@ window.__ModuleLoader__.load({
       'subagent.fallback.limit': 'Limit reached ({max})',
       'subagent.error.invalid-fallback-route': 'Fallback entry is not in the host catalog, please choose again',
       'subagent.turnTail.label': 'Subagent models: ',
-      'subagent.turnTail.count': '{count} subagent',
+      'subagent.turnTail.countOne': '1 subagent',
+      'subagent.turnTail.countMany': '{count} subagents',
       'subagent.turnTail.unknown': ' (models not recorded)',
       'subagent.dock.title': 'Show subagent info under the composer',
       'subagent.dock.desc': 'Keeps a session-level line under the composer listing the models your subagents actually used (20s refresh, unaffected by compaction). When off, only the per-turn tail line remains.',
@@ -1565,12 +1567,16 @@ window.__ModuleLoader__.load({
       // 宿主记录在宿主内存（进程重启即清、页面刷新不丢）；拉取失败进冷却并保留旧缓存（fail-open，
       // 渲染已有行不闪断）。同一会话连续回合尾行共享一次请求。
       const DISPATCH_TTL_MS = 10 * 1000
+      // 与宿主 SUBAGENT_DISPATCH_PAGE_MAX 同步（= 环形容量）：一次请求取回环内全部记录。
+      const SUBAGENT_DISPATCH_LIMIT = 400
       const dispatchByParent = new Map()
       const dispatchFetchedAt = new Map()
       const dispatchInflight = new Map()
+      // 缓存条目 = { byTurn: Map<turn, records[]>, records: 原始记录全量 }。records 保留
+      // 无 turn 的派发（宿主允许记录缺 turn）：回合尾行按 turn 索引取用，会话级累计行聚合全量。
       const dispatchRecordsFor = (sessionId) => {
-        const byTurn = dispatchByParent.get(sessionId)
-        return byTurn === undefined ? new Map() : byTurn
+        const entry = dispatchByParent.get(sessionId)
+        return entry === undefined ? new Map() : entry.byTurn
       }
       const refreshSubagentDispatches = (sessionId, force = false) => {
         if (typeof sessionId !== 'string' || sessionId === '') return Promise.resolve(new Map())
@@ -1580,11 +1586,15 @@ window.__ModuleLoader__.load({
         if (!force && now - (dispatchFetchedAt.get(sessionId) ?? 0) < DISPATCH_TTL_MS) return Promise.resolve(dispatchRecordsFor(sessionId))
         let inflight = dispatchInflight.get(sessionId)
         if (inflight === undefined) {
-          inflight = rpcCall('subagent-dispatches', { parentId: sessionId, limit: 200 }).then((result) => {
+          // limit = 宿主单次上限（= 环形容量）一次性取回：累计行按此拉全量，回合尾行按 turn 过滤。
+          inflight = rpcCall('subagent-dispatches', { parentId: sessionId, limit: SUBAGENT_DISPATCH_LIMIT }).then((result) => {
             const records = result && result.ok === true && Array.isArray(result.value?.records) ? result.value.records : []
             const byTurn = new Map()
+            const raw = []
             for (const record of records) {
-              const turn = record !== null && typeof record === 'object' && typeof record.turn === 'number' && Number.isFinite(record.turn) ? record.turn : undefined
+              if (record === null || typeof record !== 'object') continue
+              raw.push(record)
+              const turn = typeof record.turn === 'number' && Number.isFinite(record.turn) ? record.turn : undefined
               if (turn === undefined) continue
               let list = byTurn.get(turn)
               if (list === undefined) {
@@ -1593,7 +1603,7 @@ window.__ModuleLoader__.load({
               }
               list.push(record)
             }
-            dispatchByParent.set(sessionId, byTurn)
+            dispatchByParent.set(sessionId, { byTurn, records: raw })
             dispatchFetchedAt.set(sessionId, Date.now())
             return byTurn
           }).catch(() => {
@@ -1622,12 +1632,22 @@ window.__ModuleLoader__.load({
           }
           refreshSubagentDispatches(sessionId).then((byTurn) => {
             if (cancelled) return
-            const byTurnSafe = byTurn === null ? new Map() : byTurn
+            // 拉取失败（null）沿用旧缓存：瞬时失败不把已正确的行替换成兜底文案；
+            // 从未成功过（无缓存条目）按设计静默（RPC 失败渲染 null），不编造计数。
+            const staleEntry = dispatchByParent.get(sessionId)
+            const byTurnSafe = byTurn === null
+              ? (staleEntry === undefined ? new Map() : staleEntry.byTurn)
+              : byTurn
             const turnRecords = byTurnSafe.get(turn)
             const entries = aggregateSubagentRoutes(turnRecords)
             if (entries.length === 0) {
+              if (byTurn === null && staleEntry === undefined) {
+                setText('')
+                return
+              }
               const count = Number.isFinite(props.matched.subagentCount) && props.matched.subagentCount > 0 ? String(props.matched.subagentCount) : String(turnRecords?.length ?? 1)
-              setText(`${translate('subagent.turnTail.count', { count })}${translate('subagent.turnTail.unknown')}`)
+              const countKey = count === '1' ? 'subagent.turnTail.countOne' : 'subagent.turnTail.countMany'
+              setText(`${translate(countKey, { count })}${translate('subagent.turnTail.unknown')}`)
               return
             }
             setText(`${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
@@ -1672,23 +1692,23 @@ window.__ModuleLoader__.load({
             setText('')
             return undefined
           }
+          // 展示一律从缓存条目读取（成功=新数据，失败=旧缓存原样）：瞬时 RPC 失败不闪断。
+          // 聚合用原始全量记录（含无 turn 的派发）——累计行就是「不依赖回合数据、任何视图
+          // 可见」的兜底面，不能把缺 turn 的记录丢掉。
+          const setFromCache = () => {
+            const entry = dispatchByParent.get(sessionId)
+            const records = entry === undefined ? [] : entry.records
+            const entries = aggregateSubagentRoutes(records)
+            setText(entries.length === 0 ? '' : `${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
+          }
           const refresh = () => refreshSubagentDispatches(sessionId).then((byTurn) => {
             if (cancelled) return false
-            setFromByTurn(byTurn)
+            setFromCache()
             return byTurn !== null
           }).catch(() => {
             if (!cancelled) setText('')
             return false
           })
-          const setFromByTurn = (byTurn) => {
-            const byTurnSafe = byTurn === null ? new Map() : byTurn
-            const records = []
-            for (const list of byTurnSafe.values()) {
-              if (Array.isArray(list)) records.push(...list)
-            }
-            const entries = aggregateSubagentRoutes(records)
-            setText(entries.length === 0 ? '' : `${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
-          }
           refresh()
           // 首拉成功才启动轮询链：宿主不可用/RPC 失败时静默且不常驻定时器
           // （重进会话或页面刷新后自愈）。轮询轮内失败保留链，下轮再试。
@@ -1696,7 +1716,7 @@ window.__ModuleLoader__.load({
             if (cancelled) return
             refreshSubagentDispatches(sessionId, true).then((byTurn) => {
               if (cancelled) return
-              setFromByTurn(byTurn)
+              setFromCache()
             }).catch(() => {
               if (!cancelled) setText('')
             })

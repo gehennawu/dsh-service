@@ -171,9 +171,11 @@ const MAX_SUBAGENT_ROUTE_FIELD = 256
 const SUBAGENT_ROUTE_FALLBACK_MAX = 10
 // 子代理派发记录（v1.2）：内存环形上限与端点单页上限。记录不落盘——宿主进程重启即清，
 // 页面刷新不丢（记录在宿主内存）；客户端按 (parentSessionId, turn) 匹配回合尾行。
+// 单页上限 = 环形容量：一次请求即可取回环内全部记录，客户端无需分页
+// （超出环容量的记录本就被环形淘汰，不存在「静默少计」窗口）。
 const SUBAGENT_DISPATCH_MAX = 400
 const SUBAGENT_DISPATCH_PAGE_DEFAULT = 50
-const SUBAGENT_DISPATCH_PAGE_MAX = 200
+const SUBAGENT_DISPATCH_PAGE_MAX = 400
 const QUOTA_UNUSABLE_ERROR_RE = /^(credential-missing|credential-rejected|credentials-unavailable|no-base-url|no-subscription|host-not-pinned|mgmt-disabled|transport-unavailable|bad-payload)/i
 const QUOTA_UNUSABLE_STATUS_RE = /^(?:http-status|upstream-status):4\d\d$/i
 
