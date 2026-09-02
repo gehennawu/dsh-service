@@ -301,7 +301,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-**DSH compatibility statement**: adapted to DSH `0.1.2-alpha.2` conversation UI changes (chat view split into its own package, draggable conversation pane width, turn navigation rail) — the mobile immersive swipe and the up-arrow reply jump work fully on alpha.2. Older DSH releases (`>=0.1.1-rc.2`) remain supported: the plugin installs and runs normally, and only a few alpha.2-specific mobile style tweaks are inert there (purely cosmetic, no functional loss).
+**DSH compatibility statement**: adapted to DSH `0.1.2-alpha.2` conversation UI changes (chat view split into its own package, draggable conversation pane width, turn navigation rail), and to the `0.1.2-alpha.4` session-reading API changes; the mobile immersive swipe and up-arrow reply jump work fully on alpha.2, while alpha.4 seeded/fork usage indexing and subagent turn-record paths are supported. Older DSH releases (`>=0.1.1-rc.2`) remain supported: the plugin installs and runs normally, and only a few alpha.2-specific mobile style tweaks are inert there (purely cosmetic, no functional loss).
 
 ## 🔒 Security design
 

@@ -11,7 +11,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.3.0-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.1.2--alpha.3-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.1.2--alpha.4-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -303,7 +303,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 适配口径**：已针对 DSH `0.1.2-alpha.2` 的会话界面调整（聊天视图拆包、对话主框手动调宽、回合导航条）完成适配——移动端滑动沉浸、上箭头跳转在 alpha.2 上全部生效；旧版 DSH（`>=0.1.1-rc.2`）保持兼容，可正常安装运行，个别针对 alpha.2 结构的移动端样式微调在旧版上不生效（纯展示，无功能损失）。
+**DSH 适配口径**：已针对 DSH `0.1.2-alpha.2` 的会话界面调整（聊天视图拆包、对话主框手动调宽、回合导航条）完成适配，并兼容 `0.1.2-alpha.4` 的会话读取 API 变化；移动端滑动沉浸、上箭头跳转在 alpha.2 上全部生效，alpha.4 的 seeded/fork 用量与子代理回合记录路径已适配。旧版 DSH（`>=0.1.1-rc.2`）保持兼容，可正常安装运行，个别针对 alpha.2 结构的移动端样式微调在旧版上不生效（纯展示，无功能损失）。
 
 ## 🔒 安全设计
 
