@@ -380,7 +380,6 @@ window.__ModuleLoader__.load({
       'overview.status.info': '有 {count} 条提示',
       'overview.status.warning': '有 {count} 项需要注意',
       'overview.status.error': '有 {count} 项需要处理',
-      'overview.quotaCritical': '存在使用量已达 80% 的额度窗口',
       'overview.backupEmpty': '还没有备份，建议创建一份',
       'overview.updateAvailable': '检测到新版本可用',
       'overview.action.health': '健康检查',
@@ -1103,7 +1102,6 @@ window.__ModuleLoader__.load({
       'overview.status.info': 'You have {count} note(s)',
       'overview.status.warning': 'You have {count} item(s) to review',
       'overview.status.error': 'You have {count} item(s) needing attention',
-      'overview.quotaCritical': 'A quota window has reached 80% usage',
       'overview.backupEmpty': 'No backups yet — consider creating one',
       'overview.updateAvailable': 'A new version is available',
       'overview.action.health': 'Health check',
@@ -6870,14 +6868,11 @@ window.__ModuleLoader__.load({
                       notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn),
                       // 铃铛显隐独立于通知总开关：藏掉只是收起输入框旁的快捷入口（v0.31 用户点名）。
                       notifyRow('notify-row-bell', translate('notification.bellShow'), null, notifyBellOn, setNotifyBellOn, false))))
-        // ── 概览状态聚合与六段式布局（v0.39 确认规格）──────────────────────
+        // ── 概览状态聚合与六段式布局（v0.39 确认规格；v1.4.1 用户点名移除额度提醒）──
         // 状态摘要 → 可行动项（仅在存在时）→ 版本/运行时 → 指标格 → 核心操作 → 近期错误。
         // 严重度 error > warning > info > normal：error=RPC/健康/诊断/备份/统计/额度/重启错误；
-        // warning=权限异常/非 advisory 诊断警告/额度窗口 ≥80%；info=可更新/运行环境提示/无备份。
-        const quotaSnapshot = quotaStore.getSnapshot()
-        const quotaCritical = Array.isArray(quotaSnapshot.providers)
-          ? quotaSnapshot.providers.some((row) => Array.isArray(row.windows) && row.windows.some((window) => typeof window.percent === 'number' && window.percent >= 80))
-          : false
+        // warning=权限异常/非 advisory 诊断警告；info=可更新/运行环境提示/无备份。
+        // 额度窗口占用不再聚合进概览状态（额度页内的高占用进度条展示保留）。
         const updateOutdated = updateInfo !== null && updateInfo !== undefined &&
           ((updateInfo.dsh && updateInfo.dsh.upToDate === false) || (updateInfo.plugin && updateInfo.plugin.upToDate === false))
         const backupLoaded = backups !== null && !backupBusy && !backupError
@@ -6892,7 +6887,6 @@ window.__ModuleLoader__.load({
           statusItems.push({ level: check.status === 'error' ? 'error' : 'warning', text: translate(`health.check.${check.id}`) + '：' + diagnosticDetail(check) })
         }
         if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
-        if (quotaCritical) statusItems.push({ level: 'warning', text: translate('overview.quotaCritical') })
         if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
         if (runtimeEnv !== null && runtimeEnv.manualStartLikely === true) statusItems.push({ level: 'info', text: translate('health.detail.runtime-env.manual') })
         if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })

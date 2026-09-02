@@ -1206,6 +1206,41 @@ test('overview status is informational when only update or empty-backup hints ex
   assert.match(clean.text('settings.section'), /所有系统运行正常/)
 })
 
+test('quota windows at high usage no longer surface as overview attention items', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            windows: [{ id: 'rolling', percent: 95, resetsAt: new Date(Date.now() + 3600_000).toISOString() }],
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 先进额度页把 ≥80% 窗口灌进 quota store，再回概览：额度高占用不再生成可行动项（v1.4.1 用户点名移除）。
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'quota windows must not create overview attention items')
+  assert.equal(renderer.hasTest('overview-status'), true)
+  assert.match(renderer.text('settings.section'), /所有系统运行正常/)
+})
+
 test('configuration page aggregates features and notifications without subpage memory', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
