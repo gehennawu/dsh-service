@@ -93,6 +93,11 @@ window.__ModuleLoader__.load({
       'sessions.detail.noiseCollapse': '收起',
       'sessions.detail.cwd': '{cwd}',
       'sessions.detail.created': '创建于 {time}',
+      // v1.4.2 修复：alpha.4 外壳 MarkdownText 的代码块渲染器无条件读 labels.code.copyLabel/
+      // copiedLabel（footnotes 同理）——不传 labels 时事件文本含 ``` 栅栏会整节崩成空白。
+      'sessions.md.copy': '复制',
+      'sessions.md.copied': '已复制',
+      'sessions.md.footnotes': '脚注',
       'sessions.hit.title': '命中 {count} 条',
       'sessions.hit.return': '返回搜索结果',
       'sessions.hit.badge': '命中',
@@ -819,6 +824,9 @@ window.__ModuleLoader__.load({
       'sessions.detail.noiseCollapse': 'Collapse',
       'sessions.detail.cwd': '{cwd}',
       'sessions.detail.created': 'Created {time}',
+      'sessions.md.copy': 'Copy',
+      'sessions.md.copied': 'Copied',
+      'sessions.md.footnotes': 'Footnotes',
       'sessions.hit.title': '{count} hits',
       'sessions.hit.return': 'Back to search results',
       'sessions.hit.badge': 'HIT',
@@ -4426,6 +4434,23 @@ window.__ModuleLoader__.load({
         return false
       }
       let sessionMarkdownText = null
+      // v1.4.2 修复（alpha.4 详情空白根因）：外壳 MarkdownText 的代码块渲染器无条件读
+      // labels.code.copyLabel / labels.code.copiedLabel（脚注标题同族 labels.footnotes）。
+      // 选项对象不像 text 有默认值——缺失又碰到 ``` 栅栏就会 TypeError 把整个 settings.section
+      // 崩成空白。词典键带兜底常量：即便未来词典缺键也绝不传 undefined。memo 组件用同一引用
+      // 无妨（labels 只是文案字典，不参与渲染 memo 判定）；逐次新建只为语言切换即时生效。
+      const sessionMarkdownLabels = (translate) => {
+        const copy = translate('sessions.md.copy')
+        const copied = translate('sessions.md.copied')
+        const footnotes = translate('sessions.md.footnotes')
+        return {
+          code: {
+            copyLabel: typeof copy === 'string' && copy !== '' ? copy : 'Copy',
+            copiedLabel: typeof copied === 'string' && copied !== '' ? copied : 'Copied',
+          },
+          footnotes: typeof footnotes === 'string' && footnotes !== '' ? footnotes : 'Footnotes',
+        }
+      }
       try {
         const uiPrimitives = require('@deepseek-ai/dsh-client-ui-primitives')
         let candidate = uiPrimitives === null || uiPrimitives === undefined ? null : uiPrimitives.MarkdownText
@@ -5113,7 +5138,7 @@ window.__ModuleLoader__.load({
           const body = typeof event.text === 'string' && event.text !== ''
             ? React.createElement('div', { 'data-testid': 'sessions-event-text-' + event.seq, style: { marginTop: '4px' } },
                 sessionMarkdownText !== null
-                  ? React.createElement(sessionMarkdownText, { text: event.text })
+                  ? React.createElement(sessionMarkdownText, { text: event.text, labels: sessionMarkdownLabels(translate) })
                   : React.createElement('div', { style: { fontSize: '12px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, event.text))
             : null
           return React.createElement('div', { key: String(event.seq), 'data-testid': 'sessions-event-' + event.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)', marginBottom: '5px' } },

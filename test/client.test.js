@@ -266,7 +266,19 @@ function createRenderer(rpcCall, options = {}) {
         if (name === '@deepseek-ai/dsh-client-ui-primitives') {
           if (options.noUiPrimitives === true) throw new Error('simulated legacy shell without ui-primitives seed')
           const plain = {
-            MarkdownText: (props) => React.createElement('div', { 'data-testid': 'md-markdown' }, props && props.text),
+            // v1.4.2 回归替身：复现 DSH 0.1.2-alpha.4 外壳的崩溃语义——渲染器对代码块
+            // 无条件解引用 labels.code.copyLabel/copiedLabel（源码核实：wp 内 o.labels.code.*）。
+            // text 含 ``` 栅栏而调用方没传 labels 时，抛与真机一致的 TypeError（整节空白根因）。
+            MarkdownText: (props) => {
+              const text = props && props.text
+              const hasFence = typeof text === 'string' && text.includes('```')
+              if (hasFence && (props === undefined || props.labels === undefined || props.labels.code === undefined)) {
+                throw new TypeError("Cannot read properties of undefined (reading 'code')")
+              }
+              const node = React.createElement('div', { 'data-testid': 'md-markdown' }, text)
+              if (props !== undefined && props.labels !== undefined) node.props['data-labels-code-copy'] = String(props.labels.code && props.labels.code.copyLabel)
+              return node
+            },
             MessageText: (props) => React.createElement('div', { 'data-testid': 'md-message' }, props && props.text),
           }
           // options.nestedMarkdown=true 模拟互操作包裹形态：组件被包成 {default: fn}。
@@ -7418,4 +7430,32 @@ test('session manager accepts the memo-wrapped official MarkdownText (real shell
   assert.ok(inner !== undefined && inner.type !== undefined && inner.type.$$typeof === Symbol.for('react.memo'),
       'memo-wrapped MarkdownText accepted as a renderable component (not falling back)')
   assert.equal(inner.props && inner.props.text, 'hello **world**', 'text flows to the memo-wrapped renderer')
+})
+
+test('session manager detail survives a fenced code block in event text: MarkdownText receives labels (v1.4.2 regression, DSH 0.1.2-alpha.4)', async () => {
+  // 回归：alpha.4 外壳的 MarkdownText 渲染代码块时无条件读 labels.code.copyLabel/copiedLabel；
+  // 旧实现只传 { text } → 事件文本含 ``` 栅栏时整节崩溃（「查看点开后空白」根因）。
+  // 替身已在 seed 层复现该崩溃语义；断言插件调用始终携带 labels。
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': () => ({ ok: true, value: SESSION_LIST_VALUE }),
+    'sessions-view': () => ({ ok: true, value: { session: { id: 'session-cold', title: 'Cold session' }, items: [
+      { seq: 0, type: 'user/message', time: 2001, text: '模板：\n```\n# 标题\n```\n结束', noise: false },
+    ], nextCursor: undefined, total: 1 } }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  // alpha.4 真机复现：点「查看」渲染含代码栅栏的事件 → 不再抛 TypeError、整节不空白。
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true, 'detail still renders (no section crash)')
+  const mdText = renderer.findByTestId('sessions-event-text-0').children[0]
+  assert.ok(mdText !== undefined && mdText.type === 'div' && mdText.props['data-testid'] === 'md-markdown', 'MarkdownText rendered the fenced body')
+  const copyLabel = mdText.props['data-labels-code-copy']
+  assert.ok(typeof copyLabel === 'string' && copyLabel !== '', 'labels.code.copyLabel was passed to MarkdownText')
 })
