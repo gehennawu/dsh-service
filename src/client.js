@@ -332,9 +332,12 @@ window.__ModuleLoader__.load({
       'health.detail.plugins.ok': '共 {total} 个插件，状态正常',
       'plugin.issue.failed': '{failed} 个插件失败',
       'plugin.issue.pending': '{pending} 个插件未就绪',
+      'plugin.issue.info': '{count} 个插件状态需确认',
       'plugin.state.pending': '等待依赖',
       'plugin.state.loading': '加载中',
       'plugin.state.failed': '失败',
+      'plugin.state.disposed': '已释放',
+      'plugin.state.unknown': '未知状态',
       'plugin.state.unloading': '卸载中',
       'plugin.missingDeps': '依赖缺失：{deps}',
       'plugin.error': '错误：{error}',
@@ -1054,9 +1057,12 @@ window.__ModuleLoader__.load({
       'health.detail.plugins.ok': '{total} plugins healthy',
       'plugin.issue.failed': '{failed} failed plugin(s)',
       'plugin.issue.pending': '{pending} pending plugin(s)',
+      'plugin.issue.info': '{count} plugin state(s) need review',
       'plugin.state.pending': 'Waiting',
       'plugin.state.loading': 'Loading',
       'plugin.state.failed': 'Failed',
+      'plugin.state.disposed': 'Disposed',
+      'plugin.state.unknown': 'Unknown state',
       'plugin.state.unloading': 'Unloading',
       'plugin.missingDeps': 'Missing deps: {deps}',
       'plugin.error': 'Error: {error}',
@@ -6333,13 +6339,14 @@ window.__ModuleLoader__.load({
             return translate(check.status === 'ok' ? 'health.detail.node-version.ok' : 'health.detail.node-version.warning', { version, required })
           }
           if (check.id === 'plugins') {
-            // detail 三段 total:failed:pending（宿主 pluginCheckItem）；停用插件不进统计。
+            // detail 四段 total:failed:pending:informational（前三段兼容旧客户端）；停用插件不进统计。
             if (detail === 'unavailable') return translate('health.detail.plugins.unavailable')
-            const [total, failed, pending] = detail.split(':')
+            const [total, failed, pending, informational] = detail.split(':')
             if (check.status === 'ok') return translate('health.detail.plugins.ok', { total })
             const segments = []
             if ((Number(failed) || 0) > 0) segments.push(translate('plugin.issue.failed', { failed }))
             if ((Number(pending) || 0) > 0) segments.push(translate('plugin.issue.pending', { pending }))
+            if ((Number(informational) || 0) > 0) segments.push(translate('plugin.issue.info', { count: informational }))
             return segments.join('，')
           }
           if (check.id === 'plugin-compat') {
@@ -6521,7 +6528,7 @@ window.__ModuleLoader__.load({
                 }))
             : null)
         // v1.3 插件健康检查：只显示异常插件（官方设置页已有完整插件清单与开关，不做重复清单）。
-        // 检查项行内摘要把 failed/pending 计数说清楚；这里列出每个异常插件的名字、
+        // 检查项行内摘要把 failed/pending/informational 计数说清楚；这里列出每个异常插件的名字、
         // 错误原文/缺失依赖，并对失败插件提供「重新加载」两段式。
         const pluginIssues = Array.isArray(diagnostics?.pluginIssues) ? diagnostics.pluginIssues : []
         const pluginIssueBlock = pluginIssues.length === 0
@@ -6529,7 +6536,8 @@ window.__ModuleLoader__.load({
           : React.createElement('div', { 'data-testid': 'plugin-issue-list', style: { marginTop: '6px', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
               pluginIssues.map((issue, index) => {
                 const failed = issue.phase === 'failed'
-                const phaseColor = failed ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)'
+                const informational = issue.phase === 'disposed' || issue.phase === 'unknown'
+                const phaseColor = failed ? 'var(--dsh-svc-danger)' : informational ? 'var(--dsh-svc-info)' : 'var(--dsh-svc-warning)'
                 const confirming = pluginConfirmEntry === issue.entryId
                 const busy = pluginBusyEntry === issue.entryId
                 return React.createElement('div', { key: issue.entryId, 'data-testid': `plugin-issue-${issue.entryId}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },

@@ -1270,6 +1270,43 @@ test('diagnostics degrades the plugins check to info when the loader service is 
   assert.equal(result.value.status, 'ok', 'info does not affect the overall status')
 })
 
+test('diagnostics exposes disposed and unknown plugin states without leaking failure details', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-plugin-state-'))
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-plugin-state-workspace-'))
+  t.after(() => Promise.all([rm(dshHome, { recursive: true, force: true }), rm(workspace, { recursive: true, force: true })]))
+  await chmod(dshHome, 0o755)
+  await chmod(workspace, 0o755)
+  const secret = 'sk-live-abcdefghijklmnopqrstuvwxyz0123456789'
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+      loader: {
+        entries: () => [
+          { id: 'disposed', options: { name: 'pkg-disposed' }, fiber: { state: 4, inject: {}, store: {} } },
+          { id: 'unknown', options: { name: 'pkg-unknown' }, fiber: { state: 99, inject: {}, store: {} } },
+          { id: 'failed', options: { name: 'pkg-failed' }, fiber: { state: 3, inject: {}, store: {}, _error: new Error(`Bearer ${secret} path=/home/node/.dsh/${secret}`) } },
+          { id: 'fresh', options: { name: 'pkg-fresh' }, fiber: { state: 1, inject: {}, store: {} } },
+        ],
+      },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.pluginIssues.map(({ entryId, phase }) => ({ entryId, phase })), [
+    { entryId: 'disposed', phase: 'disposed' },
+    { entryId: 'unknown', phase: 'unknown' },
+    { entryId: 'failed', phase: 'failed' },
+  ])
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugins'), { id: 'plugins', status: 'error', detail: '4:1:0:2' })
+  const failure = result.value.pluginIssues.find((issue) => issue.entryId === 'failed')
+  assert.doesNotMatch(failure.error, new RegExp(secret))
+  assert.doesNotMatch(failure.error, /\/home\/node\/\.dsh/)
+  assert.match(failure.error, /<redacted-path>/)
+})
+
 test('diagnostics carries per-plugin rows and a failed plugin escalates the report', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-with-loader-'))
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-with-loader-workspace-'))
@@ -1297,7 +1334,7 @@ test('diagnostics carries per-plugin rows and a failed plugin escalates the repo
   const result = await handler('diagnostics', {})
   assert.equal(result.ok, true)
   const pluginCheck = result.value.checks.find((check) => check.id === 'plugins')
-  assert.deepEqual(pluginCheck, { id: 'plugins', status: 'error', detail: '3:1:0' }, 'total counts enabled entries only; disabled (built-in or custom) are excluded')
+  assert.deepEqual(pluginCheck, { id: 'plugins', status: 'error', detail: '3:1:0:0' }, 'total counts enabled entries only; disabled (built-in or custom) are excluded')
   assert.equal(result.value.status, 'error')
   assert.equal(result.value.pluginIssues.length, 1, 'only abnormal entries are delivered')
   assert.deepEqual(result.value.pluginIssues[0], {
@@ -1306,6 +1343,7 @@ test('diagnostics carries per-plugin rows and a failed plugin escalates the repo
     phase: 'failed',
     error: 'config invalid',
   })
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugins'), { id: 'plugins', status: 'error', detail: '3:1:0:0' })
   assert.equal(result.value.pluginIssues.some((issue) => issue.entryId === 'include:llm'), false, 'active built-in plugins are not listed')
   assert.equal(result.value.pluginIssues.some((issue) => issue.entryId === 'include:off'), false, 'disabled plugins are not listed')
 })

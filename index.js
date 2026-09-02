@@ -2300,7 +2300,11 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
     pluginReport = { available: false, total: 0, issues: [] }
   }
   if (!pluginReport.available) add('plugins', 'info', 'unavailable')
-  else checks.push(pluginCheckItem(pluginReport))
+  else {
+    const pluginCheck = pluginCheckItem(pluginReport)
+    if (pluginCheck.status === 'info') pluginCheck.advisory = true
+    checks.push(pluginCheck)
+  }
 
   // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单（client-runtime 供应商移除、SQLite
   // persistence 移除、聊天/统计条 CSS 哈希漂移、data-time-hover-root 删除）扫描启用插件的

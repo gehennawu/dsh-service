@@ -1495,13 +1495,15 @@ test('health diagnostics lists only abnormal plugins and reloads failed ones wit
           checkedAt: Date.now(),
           checks: [
             { id: 'session-storage', status: 'ok', detail: '1' },
-            { id: 'plugins', status: marketFailed ? 'error' : 'ok', detail: marketFailed ? '4:1:1' : '4:0:0' },
+            { id: 'plugins', status: marketFailed ? 'error' : 'ok', detail: marketFailed ? '6:1:1:2' : '4:0:0:0' },
           ],
           // 只有异常插件下发：运行中的官方插件与已停用的自定义插件都不在列表里。
           pluginIssues: marketFailed
             ? [
                 { entryId: 'include:market', moduleName: 'dshmarket', phase: 'failed', error: 'config invalid' },
                 { entryId: 'include:waiting', moduleName: '@scope/pending', phase: 'pending', missingDeps: ['settings', 'llm'] },
+                { entryId: 'include:disposed', moduleName: 'pkg-disposed', phase: 'disposed' },
+                { entryId: 'include:unknown', moduleName: 'pkg-unknown', phase: 'unknown' },
               ]
             : [],
         },
@@ -1525,8 +1527,12 @@ test('health diagnostics lists only abnormal plugins and reloads failed ones wit
   assert.notEqual(renderer.findByTestId('plugin-issue-include:waiting'), undefined)
   assert.match(initialText, /dshmarket.*失败.*错误：config invalid/)
   assert.match(initialText, /@scope\/pending.*等待依赖.*依赖缺失：settings, llm/)
+  assert.match(initialText, /pkg-disposed.*已释放/)
+  assert.match(initialText, /pkg-unknown.*未知状态/)
   // 运行中的内置插件与已停用插件不渲染任何行。
   assert.equal(renderer.hasTest('plugin-issue-include:llm'), false)
+  assert.equal(renderer.findByTestId('plugin-issue-include:disposed').props['data-testid'], 'plugin-issue-include:disposed')
+  assert.equal(renderer.findByTestId('plugin-issue-include:unknown').props['data-testid'], 'plugin-issue-include:unknown')
   assert.doesNotMatch(renderer.text('settings.section'), /@deepseek-ai\/dsh-llm/)
 
   // 两段式：第一次点击只进入确认，不发 RPC；取消可退出。
