@@ -1,6 +1,6 @@
 {
   "name": "@gehennawu/dsh-service",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "DSH Web 运维面板：安全重启、健康监控、备份和 Linux 权限维护。",
   "type": "module",
   "scripts": {
