@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, normalizeAntigravityModels, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -3757,9 +3757,43 @@ test('cliproxy upstream parsers fold codex/gemini/antigravity shapes into used-p
   const antigravity = normalizeAntigravityModels({
     'claude-sonnet-4-5': { quotaInfo: { remainingFraction: 0.25, resetTime: 1756000000 } },
     'gpt-oss-120b-medium': { quota_info: { remaining_fraction: 0.5 } },
+    chat_20706: { isInternal: true, quotaInfo: { remainingFraction: 1 } },
     broken: {},
   })
-  assert.deepEqual(antigravity.map((w) => [w.kindKey, w.percent]), [['claude-sonnet-4-5', 75], ['gpt-oss-120b-medium', 50]])})
+  assert.deepEqual(antigravity.map((w) => [w.kindKey, w.percent]), [['claude-sonnet-4-5', 75], ['gpt-oss-120b-medium', 50]])
+
+  // 支持数组形态和直接挂在 entry 上的 remainingFraction
+  const antigravityArray = normalizeAntigravityModels([
+    { name: 'gemini-3-pro', quotaInfo: { remainingFraction: 0.8 } },
+    { name: 'gemini-3-flash', remainingFraction: 0.9 },
+    { name: 'internal-tool', isInternal: true, remainingFraction: 1 },
+  ])
+  assert.deepEqual(antigravityArray.map((w) => [w.kindKey, w.percent]), [['gemini-3-pro', 20], ['gemini-3-flash', 10]])
+
+  // Antigravity retrieveUserQuotaSummary 池化结构（1.8KB 官方配额汇总）
+  const summary = normalizeAntigravityQuotaSummary([
+    {
+      displayName: 'Gemini Models',
+      buckets: [
+        { bucketId: 'gemini-weekly', window: 'weekly', resetTime: '2026-09-10T13:48:45Z', remainingFraction: 0.95 },
+        { bucketId: 'gemini-5h', window: '5h', resetTime: '2026-09-03T18:48:45Z', remainingFraction: 0.78 },
+      ],
+    },
+    {
+      displayName: 'Claude and GPT models',
+      buckets: [
+        { bucketId: '3p-weekly', window: 'weekly', resetTime: '2026-09-10T14:48:53Z', remainingFraction: 1 },
+        { bucketId: '3p-5h', window: '5h', resetTime: '2026-09-03T19:48:53Z', remainingFraction: 0.8 },
+      ],
+    },
+  ])
+  assert.deepEqual(summary.map((w) => [w.kindKey, w.percent]), [
+    ['gemini-5h', 22],
+    ['gemini-week', 5],
+    ['claude-5h', 20],
+    ['claude-week', 0],
+  ])
+})
 
 test('cliproxy api-call envelope and account plan builders follow the management contract', () => {
   // 信封解包：body 字符串 / 对象 / 坏 JSON / 非对象。
@@ -3775,14 +3809,14 @@ test('cliproxy api-call envelope and account plan builders follow the management
   assert.equal(cliproxyProjectFor({ name: 'codex-something.json' }), '')
   assert.equal(cliproxyProjectFor({ name: 'gemini-nodash@local' }), '')
 
-  // 计划构建：codex GET wham、antigravity 三候选带 UA、gemini 带 project、其余不支持。
+  // 计划构建：codex GET wham、antigravity 五候选带 UA、gemini 带 project、其余不支持。
   const codexPlan = buildCliproxyAccountPlan({ provider: 'codex' })
   assert.equal(codexPlan.calls.length, 1)
   assert.equal(codexPlan.calls[0].method, 'GET')
   assert.ok(codexPlan.calls[0].url.includes('chatgpt.com/backend-api/wham/usage'))
   assert.equal(codexPlan.calls[0].header.Authorization, 'Bearer $TOKEN$')
   const antigravityPlan = buildCliproxyAccountPlan({ type: 'antigravity' })
-  assert.equal(antigravityPlan.calls.length, 3)
+  assert.equal(antigravityPlan.calls.length, 5)
   assert.ok(antigravityPlan.calls.every((call) => call.method === 'POST' && call.data === '{}'))
   assert.match(antigravityPlan.calls[0].header['User-Agent'], /antigravity\//)
   const geminiPlan = buildCliproxyAccountPlan({ provider: 'gemini-cli', name: 'gemini-u@gmail.com-p1.json' })
@@ -3923,6 +3957,119 @@ test('cliproxy RPC merges per-account windows via the management plane without t
   const codexCall = JSON.parse(requests.find((request) => request.body?.includes('wham/usage'))?.body ?? '{}')
   assert.equal(codexCall.auth_index, 'idx-codex')
   assert.equal(codexCall.header.Authorization, 'Bearer $TOKEN$')
+})
+
+test('cliproxy RPC merges Antigravity accounts when upstream fetchAvailableModels exceeds 64KB', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-ag-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } } } : undefined) },
+      credentials: { resolve: async (name) => (name === 'CPA_MANAGEMENT_KEY' ? { value: 'mgmt-secret' } : undefined) },
+    },
+  })
+  // 构造 >64KB 的 Antigravity 模型响应（模拟真实 Google Cloud Code 返回的大量系统提示词/实验参数）
+  const largeModels = {
+    'claude-sonnet-4-6': {
+      displayName: 'Claude Sonnet 4.6 (Thinking)',
+      quotaInfo: { remainingFraction: 0.75, resetTime: '2026-09-03T19:00:00Z' },
+      padding: 'x'.repeat(70 * 1024),
+    },
+    'gemini-3-flash': {
+      displayName: 'Gemini 3 Flash',
+      quotaInfo: { remainingFraction: 0.9, resetTime: '2026-09-03T19:00:00Z' },
+      padding: 'y'.repeat(20 * 1024),
+    },
+  }
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) {
+      return {
+        payload: {
+          files: [
+            { auth_index: 'idx-antigravity', provider: 'antigravity', email: 'ag@example.com' },
+          ],
+        },
+      }
+    }
+    if (request.url.endsWith('/v0/management/api-call')) {
+      return { payload: { status_code: 200, body: JSON.stringify({ models: largeModels }) } }
+    }
+    return { status: 500 }
+  })
+
+  const first = await host.handler('quota', {})
+  assert.equal(first.ok, true)
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'ok')
+  const byKind = new Map(row.windows.map((w) => [w.kindKey, w]))
+  assert.ok(byKind.has('claude-sonnet-4-6'), 'claude-sonnet-4-6 should be parsed from Antigravity')
+  assert.equal(byKind.get('claude-sonnet-4-6').percent, 25)
+  assert.equal(byKind.get('claude-sonnet-4-6').label, 'ag@example.com')
+})
+
+test('cliproxy RPC falls back to auth-file quota signals when Codex wham/usage is unavailable', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-codex-fallback-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } } } : undefined) },
+      credentials: { resolve: async (name) => (name === 'CPA_MANAGEMENT_KEY' ? { value: 'mgmt-secret' } : undefined) },
+    },
+  })
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) {
+      return {
+        payload: {
+          files: [
+            {
+              auth_index: 'idx-codex-fallback',
+              provider: 'codex',
+              email: 'codex-fallback@example.com',
+              quota: {
+                signals: {
+                  'X-Codex-Primary-Used-Percent': '21',
+                  'X-Codex-Primary-Reset-At': '1788444012',
+                  'X-Codex-Secondary-Used-Percent': '73',
+                  'X-Codex-Secondary-Reset-At': '1788748252',
+                },
+              },
+            },
+          ],
+        },
+      }
+    }
+    // 模拟 ChatGPT wham/usage 报 404
+    if (request.url.endsWith('/v0/management/api-call')) {
+      return { payload: { status_code: 404, body: '' } }
+    }
+    return { status: 500 }
+  })
+
+  const first = await host.handler('quota', {})
+  assert.equal(first.ok, true)
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'ok')
+  const byKind = new Map(row.windows.map((w) => [w.kindKey, w]))
+  assert.equal(byKind.get('codex-5h').percent, 21)
+  assert.equal(byKind.get('codex-5h').label, 'codex-fallback@example.com')
+  assert.equal(byKind.get('codex-week').percent, 73)
+  assert.equal(byKind.get('codex-week').label, 'codex-fallback@example.com')
 })
 
 test('cliproxy RPC surfaces mgmt-disabled and host-not-pinned as stable error codes', async (t) => {

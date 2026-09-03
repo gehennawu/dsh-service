@@ -27,6 +27,7 @@ import {
   fetchStepFunStepPlanUsage as fetchStepFunStepPlanAdapterUsage,
   fetchXiaomiTokenPlanUsage as fetchXiaomiTokenPlanAdapterUsage,
   normalizeAntigravityModels as normalizeAntigravityModelsAdapter,
+  normalizeAntigravityQuotaSummary as normalizeAntigravityQuotaSummaryAdapter,
   normalizeCodexRateLimit as normalizeCodexRateLimitAdapter,
   normalizeDeepseekBalance as normalizeDeepseekBalanceAdapter,
   normalizeGeminiBuckets as normalizeGeminiBucketsAdapter,
@@ -166,7 +167,7 @@ const QUOTA_BACKOFF_BASE_MS = 30000
 const QUOTA_BACKOFF_MAX_MS = 15 * 60 * 1000
 const QUOTA_CONFIG_STAT_TTL_MS = 5000
 const QUOTA_MAX_CONCURRENCY = 4
-const MAX_QUOTA_RESPONSE_BYTES = 64 * 1024
+const MAX_QUOTA_RESPONSE_BYTES = 1024 * 1024
 const MAX_QUOTA_CONFIG_BYTES = 256 * 1024
 const MAX_QUOTA_PROVIDERS = 256
 const MAX_QUOTA_PROVIDER_NAME = 128
@@ -1309,6 +1310,11 @@ function normalizeGeminiBuckets(buckets) {
 /** Antigravity fetchAvailableModels 的 models{} → 窗口（quotaInfo.remainingFraction 折算已用 %）。 */
 function normalizeAntigravityModels(models) {
   return normalizeAntigravityModelsAdapter(models)
+}
+
+/** Antigravity retrieveUserQuotaSummary 的 groups[] → 窗口（池化配额已用 %）。 */
+function normalizeAntigravityQuotaSummary(groups) {
+  return normalizeAntigravityQuotaSummaryAdapter(groups)
 }
 
 /** api-call 信封解包：{status_code:int, body:string|object} → {statusCode, payload}。 */
@@ -5468,6 +5474,7 @@ export {
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
+  normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,
@@ -5536,6 +5543,7 @@ export default {
   locateSkillFrontmatter,
   name,
   normalizeAntigravityModels,
+  normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,

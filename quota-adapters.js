@@ -11,7 +11,7 @@ const MAX_QUOTA_ERROR_DETAIL = 256
 const MAX_QUOTA_CPA_ACCOUNTS = 8
 const MAX_QUOTA_CPA_CALLS = 12
 const QUOTA_CPA_CONCURRENCY = 3
-const MAX_QUOTA_CPA_WINDOWS = 32
+const MAX_QUOTA_CPA_WINDOWS = 64
 
 function quotaErrorCode(error) {
   const raw = typeof error?.message === 'string' && error.message.length > 0 ? error.message : String(error ?? '')
@@ -543,8 +543,10 @@ async function fetchStepFunStepPlanUsage({ credential, signal, requestJson }) {
 const CLIPROXY_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const CLIPROXY_GEMINI_QUOTA_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
 const CLIPROXY_ANTIGRAVITY_QUOTA_URLS = [
+  'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
+  'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
+  'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-  'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
   'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
 ]
 const CLIPROXY_SUPPORTED_ACCOUNT_KINDS = new Set(['codex', 'gemini', 'gemini-cli', 'antigravity'])
@@ -555,6 +557,12 @@ const CODEX_WINDOW_ORDER = new Map([
   ['codex-month', 3],
   ['codex-primary', 4],
   ['codex-secondary', 5],
+])
+const ANTIGRAVITY_WINDOW_ORDER = new Map([
+  ['gemini-5h', 0],
+  ['gemini-week', 1],
+  ['claude-5h', 2],
+  ['claude-week', 3],
 ])
 
 function safeCliproxyOrigin(baseURL, pinnedHosts) {
@@ -623,6 +631,23 @@ function normalizeCodexRateLimit(rateLimit) {
   return sortCodexWindows(windows)
 }
 
+function parseCodexSignals(quota) {
+  const signals = quota?.signals
+  if (signals === null || typeof signals !== 'object') return []
+  const windows = []
+  const pUsed = normalizePercentValue(signals['X-Codex-Primary-Used-Percent'] ?? signals['x-codex-primary-used-percent'])
+  const pReset = normalizeResetTimestamp(signals['X-Codex-Primary-Reset-At'] ?? signals['x-codex-primary-reset-at'])
+  if (pUsed !== null) {
+    windows.push({ id: 'codex-5h', kindKey: 'codex-5h', percent: pUsed, ...(pReset !== undefined ? { resetsAt: pReset } : {}) })
+  }
+  const sUsed = normalizePercentValue(signals['X-Codex-Secondary-Used-Percent'] ?? signals['x-codex-secondary-used-percent'])
+  const sReset = normalizeResetTimestamp(signals['X-Codex-Secondary-Reset-At'] ?? signals['x-codex-secondary-reset-at'])
+  if (sUsed !== null) {
+    windows.push({ id: 'codex-week', kindKey: 'codex-week', percent: sUsed, ...(sReset !== undefined ? { resetsAt: sReset } : {}) })
+  }
+  return sortCodexWindows(windows)
+}
+
 function normalizeGeminiBuckets(buckets) {
   const windows = []
   if (!Array.isArray(buckets)) return windows
@@ -643,18 +668,56 @@ function normalizeGeminiBuckets(buckets) {
   return windows.sort((a, b) => b.percent - a.percent)
 }
 
+function normalizeAntigravityQuotaSummary(groups) {
+  const windows = []
+  if (!Array.isArray(groups)) return windows
+  for (const group of groups) {
+    if (group === null || typeof group !== 'object' || !Array.isArray(group.buckets)) continue
+    const isGemini = String(group.displayName ?? '').toLowerCase().includes('gemini')
+    for (const bucket of group.buckets) {
+      if (bucket === null || typeof bucket !== 'object') continue
+      const windowType = String(bucket.window ?? bucket.bucketId ?? '').toLowerCase()
+      const is5h = windowType.includes('5h')
+      const code = isGemini
+        ? (is5h ? 'gemini-5h' : 'gemini-week')
+        : (is5h ? 'claude-5h' : 'claude-week')
+      const remaining = Number(bucket.remainingFraction)
+      if (!Number.isFinite(remaining)) continue
+      const fraction = Math.max(0, Math.min(1, remaining))
+      const resetsAt = normalizeResetTimestamp(bucket.resetTime)
+      windows.push({
+        id: code,
+        kindKey: code,
+        percent: Math.round((1 - fraction) * 100),
+        ...(resetsAt !== undefined ? { resetsAt } : {}),
+      })
+    }
+  }
+  return windows.sort((a, b) => {
+    const rankA = ANTIGRAVITY_WINDOW_ORDER.get(a.id) ?? 99
+    const rankB = ANTIGRAVITY_WINDOW_ORDER.get(b.id) ?? 99
+    return rankA - rankB
+  })
+}
+
 function normalizeAntigravityModels(models) {
   const windows = []
   if (models === null || typeof models !== 'object') return windows
-  for (const [modelId, entry] of Object.entries(models)) {
+  const entries = Array.isArray(models)
+    ? models.map((item) => [String(item?.name ?? item?.modelId ?? item?.id ?? item?.model ?? ''), item])
+    : Object.entries(models)
+  for (const [rawModelId, entry] of entries) {
     if (entry === null || typeof entry !== 'object') continue
+    if (entry.isInternal === true || entry.is_internal === true) continue
+    const modelId = String(rawModelId || entry.name || entry.modelId || entry.id || entry.model || '').trim()
+    if (modelId === '') continue
     const info = entry.quotaInfo !== null && typeof entry.quotaInfo === 'object' ? entry.quotaInfo
-      : entry.quota_info !== null && typeof entry.quota_info === 'object' ? entry.quota_info : null
-    if (info === null) continue
-    const remaining = Number(info.remainingFraction ?? info.remaining_fraction)
+      : entry.quota_info !== null && typeof entry.quota_info === 'object' ? entry.quota_info
+      : entry
+    const remaining = Number(info.remainingFraction ?? info.remaining_fraction ?? entry.remainingFraction ?? entry.remaining_fraction)
     if (!Number.isFinite(remaining)) continue
     const fraction = Math.max(0, Math.min(1, remaining))
-    const resetsAt = normalizeResetTimestamp(info.resetTime ?? info.reset_time)
+    const resetsAt = normalizeResetTimestamp(info.resetTime ?? info.reset_time ?? entry.resetTime ?? entry.reset_time)
     windows.push({
       id: String(modelId).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'model',
       kindKey: modelId,
@@ -717,6 +780,8 @@ function buildCliproxyAccountPlan(entry) {
 function parseCliproxyUpstream(provider, payload) {
   if (provider === 'codex') return normalizeCodexRateLimit(payload?.rate_limit)
   if (provider === 'antigravity') {
+    if (Array.isArray(payload?.groups)) return normalizeAntigravityQuotaSummary(payload.groups)
+    if (Array.isArray(payload?.buckets)) return normalizeGeminiBuckets(payload.buckets)
     const models = payload?.models
     return models !== null && typeof models === 'object' ? normalizeAntigravityModels(models) : []
   }
@@ -747,7 +812,8 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
       : typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name.trim() : ''
     const slugSource = `${label !== '' ? label : plan.provider}-${accounts.length}`
     const slug = slugSource.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `acct-${accounts.length}`
-    accounts.push({ authIndex: entry.auth_index, provider: plan.provider, label, slug, calls: plan.calls })
+    const fallbackWindows = plan.provider === 'codex' ? parseCodexSignals(entry.quota) : []
+    accounts.push({ authIndex: entry.auth_index, provider: plan.provider, label, slug, calls: plan.calls, fallbackWindows })
     if (accounts.length >= MAX_QUOTA_CPA_ACCOUNTS) break
   }
   if (accounts.length === 0) return []
@@ -769,6 +835,9 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         })
       } catch (error) {
         failures.push({ index: accountIndex, code: quotaErrorCode(error) })
+        if (account.fallbackWindows?.length > 0) {
+          accountResults.set(accountIndex, account.fallbackWindows)
+        }
         return
       }
       const { statusCode, payload } = unwrapCliproxyApiCallEnvelope(envelope)
@@ -778,9 +847,18 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         return
       }
       failures.push({ index: accountIndex, code: statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}` })
-      if (account.provider !== 'antigravity') return
+      if (account.provider !== 'antigravity') {
+        if (account.fallbackWindows?.length > 0) {
+          accountResults.set(accountIndex, account.fallbackWindows)
+        }
+        return
+      }
     }
-    accountResults.set(accountIndex, [])
+    if (account.fallbackWindows?.length > 0) {
+      accountResults.set(accountIndex, account.fallbackWindows)
+    } else {
+      accountResults.set(accountIndex, [])
+    }
   }
   const queue = accounts.map((account, index) => ({ account, index }))
   await Promise.all(Array.from({ length: Math.min(QUOTA_CPA_CONCURRENCY, queue.length) }, async () => {
@@ -946,6 +1024,7 @@ export {
   fetchXiaomiTokenPlanUsage,
   findQuotaAdapter,
   normalizeAntigravityModels,
+  normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,
