@@ -6740,20 +6740,33 @@ test('session manager list supports project (cwd) sorting rendered as grouped se
   const projectOption = sortSelect.children.find((option) => option.props.value === 'project')
   assert.notEqual(projectOption, undefined, 'sort dropdown offers the project option')
   assert.equal(projectOption.children[0], '按项目')
-  // 切到「按项目」：按 cwd 分区显示——每个工作区一个分区头（路径 + 会话数），
-  // 同项目（/workspace）内创建时间倒序
+  // 切到「按项目」：按 cwd 分区显示——每个工作区一个分区头（路径 + 会话数），且默认折叠
   sortSelect.props.onChange({ target: { value: 'project' } })
   const groups = renderer.findAllByTestIdPrefix('sessions-project-group-')
   assert.equal(groups.length, 2, 'one section per project')
   assert.deepEqual(groups.map((node) => node.props['data-testid']), ['sessions-project-group-0', 'sessions-project-group-1'])
   assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-project'], '/workspace')
   assert.equal(renderer.findByTestId('sessions-project-count-0').children[0], '2 个会话')
-  const group0Tests = groups[0].children.flat(Infinity).map((child) => child.props?.['data-testid'])
+  // 默认折叠：分区头常驻、行不渲染；分区头带可点击语义与展开指示
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-collapsed'], 'true')
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['aria-expanded'], 'false')
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props.role, 'button')
+  assert.deepEqual(rowIds(), [], 'project sections are collapsed by default')
+  // 点击分区头展开：行出现、同项目内最新在前；计数与 aria 同步翻转
+  renderer.findByTestId('sessions-project-header-0').props.onClick()
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-collapsed'], 'false')
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['aria-expanded'], 'true')
+  const group0Tests = renderer.findAllByTestIdPrefix('sessions-project-group-')[0].children.flat(Infinity).map((child) => child !== null && child !== undefined ? child.props?.['data-testid'] : undefined)
   assert.deepEqual(group0Tests.filter((id) => id !== undefined && id.startsWith('sessions-row-')), ['sessions-row-session-live', 'sessions-row-session-archived'], 'same project groups newest first')
-  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-project'], '/workspace/projects')
-  assert.equal(renderer.findByTestId('sessions-project-count-1').children[0], '1 个会话')
-  // 行全局顺序与分区一致；切换排序后滚动恢复上下文仍可计算（listScrollKey 含 sort）
+  // 其他分区保持折叠，逐个展开
+  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-collapsed'], 'true')
+  assert.equal(rowIds().includes('sessions-row-session-cold'), false)
+  renderer.findByTestId('sessions-project-header-1').props.onClick()
   assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-archived', 'sessions-row-session-cold'])
+  // 再点收起第一个分区：只渲染展开的分区行
+  renderer.findByTestId('sessions-project-header-0').props.onClick()
+  assert.deepEqual(rowIds(), ['sessions-row-session-cold'])
+  // 切换排序后滚动恢复上下文仍可计算（listScrollKey 含 sort）
   // 切回「按标题」：标题字母序，且回到平铺（无分区头）
   renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'title' } })
   assert.deepEqual(rowIds(), ['sessions-row-session-archived', 'sessions-row-session-cold', 'sessions-row-session-live'])

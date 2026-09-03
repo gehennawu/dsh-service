@@ -1894,6 +1894,9 @@ window.__ModuleLoader__.load({
           '[data-dshsvc-root] .dshsvc-page{width:100%;max-width:var(--dsh-svc-content-max);margin:0 auto}',
           '[data-dshsvc-root] button:focus-visible,[data-dshsvc-root] [role="switch"]:focus-visible,[data-dshsvc-root] select:focus-visible,[data-dshsvc-root] input:focus-visible{outline:2px solid var(--dsh-svc-brand);outline-offset:2px;border-radius:var(--dsh-svc-radius-control)}',
           '@media (prefers-reduced-motion:reduce){[data-dshsvc-root] *,[data-dshsvc-root] *::before,[data-dshsvc-root] *::after{transition-duration:0.01ms !important;animation-duration:0.01ms !important}}',
+          // v1.4.x：按项目分区头可点击——hover 背景提示可展开/收起。
+          '[data-testid^="sessions-project-header-"]{transition:background var(--dsh-svc-dur-fast,120ms)}',
+          '[data-testid^="sessions-project-header-"]:hover{background:var(--dsw-alias-bg-layer-3,#f2f3f5)}',
           // 主导航条：单行连续分段条；激活段=文字反色块（tab-active 别名）。
           '[data-dshsvc-root] .dshsvc-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;width:100%;box-sizing:border-box;border:0.5px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);overflow:hidden}',
           '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
@@ -4508,6 +4511,10 @@ window.__ModuleLoader__.load({
         // v0.35 用户反馈：默认停在「仅归档」——不再每次打开都全量拉全部会话（过得快）。
         const [filter, setFilter] = useState('archived')      // all | archived | deleted
         const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title | project
+        // v1.4.x：按项目分区默认折叠——展开集合按项目路径记忆于组件 state（切换筛选/排序保留，
+        // 面板重开回默认折叠；初始恒空 = 全折叠）。
+        const [expandedProjects, setExpandedProjects] = useState([])
+        const toggleProjectExpanded = (project) => setExpandedProjects((current) => current.includes(project) ? current.filter((value) => value !== project) : [...current, project])
         // 批量选择只作用于当前普通列表视图：进入后可点击整行（复选框仍可单独操作）或全选当前筛选结果；
         // 搜索结果/已删除记录不进入批量模式，切换筛选或进入详情时自动退出，避免把隐藏行带进选择集。
         const [batchMode, setBatchMode] = useState(false)
@@ -5183,6 +5190,8 @@ window.__ModuleLoader__.load({
           // 同项目内保持创建时间倒序；visibleItems 已按 (cwd, createdAt desc) 排序，
           // 分组只做遍历切段，零排序逻辑重复。仅项目排序 + 非已删除视图生效，
           // 已删除视图恒按删除时间倒序平铺（既有行为）。
+          // v1.4.x 二轮：分区默认折叠——只渲染分区头，行按需展开（点击分区头切换，
+          // 展开集合按项目路径记忆于组件 state：切换筛选/排序保留，重开面板回默认折叠）。
           if (sort !== 'project' || filter === 'deleted') return visibleItems.map(listRow)
           const groups = []
           for (const item of visibleItems) {
@@ -5191,19 +5200,27 @@ window.__ModuleLoader__.load({
             if (group === null) groups.push({ project, items: [item] })
             else group.items.push(item)
           }
-          return groups.map((group, index) => React.createElement('div', {
-            key: 'project-group-' + (group.project === '' ? '__none__' : group.project),
-            'data-testid': 'sessions-project-group-' + index,
-            style: { marginBottom: '14px' },
-          },
-            React.createElement('div', {
-              'data-testid': 'sessions-project-header-' + index,
-              'data-project': group.project,
-              style: { display: 'flex', alignItems: 'baseline', gap: '8px', margin: '0 2px 4px' },
+          return groups.map((group, index) => {
+            const collapsed = !expandedProjects.includes(group.project)
+            return React.createElement('div', {
+              key: 'project-group-' + (group.project === '' ? '__none__' : group.project),
+              'data-testid': 'sessions-project-group-' + index,
+              style: { marginBottom: '14px' },
             },
-              React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 650, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.project === '' ? translate('sessions.projectGroup.noCwd') : group.project),
-              React.createElement('span', { 'data-testid': 'sessions-project-count-' + index, style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 } }, group.items.length === 1 ? translate('sessions.projectGroup.countOne') : translate('sessions.projectGroup.countMany', { count: group.items.length }))),
-            group.items.map(listRow)))
+              React.createElement('div', {
+                'data-testid': 'sessions-project-header-' + index,
+                'data-project': group.project,
+                'data-collapsed': collapsed ? 'true' : 'false',
+                role: 'button',
+                'aria-expanded': String(!collapsed),
+                onClick: () => toggleProjectExpanded(group.project),
+                style: { display: 'flex', alignItems: 'baseline', gap: '8px', margin: '0 2px 4px', padding: '2px 5px', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
+              },
+                React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flex: 'none' } }, translate(collapsed ? 'sessions.glyph.expand' : 'sessions.glyph.collapse')),
+                React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 650, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.project === '' ? translate('sessions.projectGroup.noCwd') : group.project),
+                React.createElement('span', { 'data-testid': 'sessions-project-count-' + index, style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 } }, group.items.length === 1 ? translate('sessions.projectGroup.countOne') : translate('sessions.projectGroup.countMany', { count: group.items.length }))),
+              collapsed ? null : group.items.map(listRow))
+          })
         }
 
         const renderDetail = () => {
