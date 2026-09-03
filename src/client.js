@@ -59,6 +59,7 @@ window.__ModuleLoader__.load({
       'sessions.sort.createdDesc': '创建时间倒序',
       'sessions.sort.createdAsc': '创建时间正序',
       'sessions.sort.title': '按标题',
+      'sessions.sort.project': '按项目',
       'sessions.row.live': '运行中',
       'sessions.row.archived': '已归档',
       'sessions.row.deleted': '已删除',
@@ -790,6 +791,7 @@ window.__ModuleLoader__.load({
       'sessions.sort.createdDesc': 'Created (newest first)',
       'sessions.sort.createdAsc': 'Created (oldest first)',
       'sessions.sort.title': 'By title',
+      'sessions.sort.project': 'By project',
       'sessions.row.live': 'Running',
       'sessions.row.archived': 'Archived',
       'sessions.row.deleted': 'Deleted',
@@ -4499,7 +4501,7 @@ window.__ModuleLoader__.load({
         const bytesInFlight = useRef(new Set())
         // v0.35 用户反馈：默认停在「仅归档」——不再每次打开都全量拉全部会话（过得快）。
         const [filter, setFilter] = useState('archived')      // all | archived | deleted
-        const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title
+        const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title | project
         // 批量选择只作用于当前普通列表视图：进入后可点击整行（复选框仍可单独操作）或全选当前筛选结果；
         // 搜索结果/已删除记录不进入批量模式，切换筛选或进入详情时自动退出，避免把隐藏行带进选择集。
         const [batchMode, setBatchMode] = useState(false)
@@ -4966,6 +4968,9 @@ window.__ModuleLoader__.load({
           let items = (Array.isArray(list.items) ? list.items : []).slice()
           if (sort === 'createdAsc') items.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
           else if (sort === 'title') items.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')))
+          // v1.4.x：按项目排序——项目即会话 cwd（行内展示的工作区路径）；同项目内保持默认
+          // 的创建时间倒序（最新在前），跨项目按路径字母序。
+          else if (sort === 'project') items.sort((a, b) => String(a.cwd || '').localeCompare(String(b.cwd || '')) || (b.createdAt || 0) - (a.createdAt || 0))
           else items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
           return items
         }
@@ -5274,7 +5279,8 @@ window.__ModuleLoader__.load({
             React.createElement('select', { 'data-testid': 'sessions-sort', style: selectStyle, value: sort, onChange: (event) => setSort(event.target.value) },
               React.createElement('option', { value: 'createdDesc' }, translate('sessions.sort.createdDesc')),
               React.createElement('option', { value: 'createdAsc' }, translate('sessions.sort.createdAsc')),
-              React.createElement('option', { value: 'title' }, translate('sessions.sort.title'))),
+              React.createElement('option', { value: 'title' }, translate('sessions.sort.title')),
+              React.createElement('option', { value: 'project' }, translate('sessions.sort.project'))),
             // v0.36：切换筛选复用已取过的 scope 缓存；「刷新」才强制重拉当前 scope。
             React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => refreshList() }, translate('sessions.refresh')),
             detail === null && filter !== 'deleted' && search.trim() === '' ? React.createElement('button', {

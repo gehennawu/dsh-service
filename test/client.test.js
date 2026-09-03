@@ -6721,6 +6721,37 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   assert.equal(renderer.hasTest('sessions-row-delete-session-gone'), false, 'deleted record is read-only')
 })
 
+test('session manager list supports project (cwd) sorting with newest-first tie-break', async () => {
+  const renderer = sessionManagerRenderer(createSessionRpcMock())
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  const rowIds = () => renderer.findAllByTestIdPrefix('sessions-row-').filter((node) => !/^sessions-row-(view|export|archive|delete)-/.test(node.props['data-testid'])).map((node) => node.props['data-testid'])
+  // 默认排序：创建时间倒序（live 3000 → cold 2000 → archived 1000）
+  assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-cold', 'sessions-row-session-archived'])
+  // 排序下拉包含「按项目」选项（zh/en 词典平衡由词典用例覆盖）
+  const sortSelect = renderer.findByTestId('sessions-sort')
+  const projectOption = sortSelect.children.find((option) => option.props.value === 'project')
+  assert.notEqual(projectOption, undefined, 'sort dropdown offers the project option')
+  assert.equal(projectOption.children[0], '按项目')
+  // 切到「按项目」：cwd 路径字母序，同项目（/workspace）内创建时间倒序
+  sortSelect.props.onChange({ target: { value: 'project' } })
+  assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-archived', 'sessions-row-session-cold'])
+  // 切换排序后滚动恢复上下文仍可计算（listScrollKey 含 sort）
+  // 切回「按标题」：标题字母序
+  renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'title' } })
+  assert.deepEqual(rowIds(), ['sessions-row-session-archived', 'sessions-row-session-cold', 'sessions-row-session-live'])
+  // 再切回默认：创建时间倒序恢复
+  renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'createdDesc' } })
+  assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-cold', 'sessions-row-session-archived'])
+})
+
 test('session manager batch mode supports multi-select, actions, select all, clear all, and resets across views', async () => {
   const calls = []
   const downloaded = []
