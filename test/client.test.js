@@ -3005,6 +3005,85 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(renderer.hasTest('quota-ring-trigger'), false)
 })
 
+test('quota ring routes cliproxy CPA windows by current model family (Claude, Gemini, Codex) and toggles all', async () => {
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'cpa', model: 'claude-sonnet-4-6' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor: () => ({ store, load: () => Promise.resolve() }),
+  }
+  const cpaWindows = [
+    { id: 'gemini-5h', kindKey: 'gemini-5h', percent: 20 },
+    { id: 'gemini-week', kindKey: 'gemini-week', percent: 10 },
+    { id: 'claude-5h', kindKey: 'claude-5h', percent: 0 },
+    { id: 'claude-week', kindKey: 'claude-week', percent: 0 },
+    { id: 'codex-5h', kindKey: 'codex-5h', percent: 5 },
+    { id: 'codex-week', kindKey: 'codex-week', percent: 70 },
+  ]
+  const renderer = quotaRingRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          providers: [
+            { provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', windows: cpaWindows },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, modelDirectories)
+
+  await renderer.load()
+  await renderer.flush()
+
+  // 1) 当前模型是 claude-sonnet-4-6：环展示 Claude 0% 额度
+  const trigger = renderer.findByTestId('quota-ring-trigger')
+  assert.ok(trigger)
+  assert.match(trigger.props.title, /CPA · Claude/)
+  assert.match(trigger.props.title, /0%/)
+
+  trigger.props.onClick()
+  await renderer.flush()
+  const panel = renderer.findByTestId('quota-ring-panel')
+  assert.ok(panel)
+  assert.match(renderer.text(), /CPA · Claude/)
+  assert.match(renderer.text(), /Claude 5 小时窗/)
+  assert.match(renderer.text(), /Claude 本周窗/)
+  // 此时未点「查看全部」：不展示 Codex / Gemini 窗口
+  assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), false)
+  assert.equal(renderer.hasTest('quota-window-bar-gemini-5h'), false)
+
+  // 点击展开全部额度
+  const toggleBtn = renderer.findByTestId('quota-ring-toggle-all')
+  assert.ok(toggleBtn)
+  assert.match(toggleBtn.children[0], /查看全部额度 \(6\)/)
+  toggleBtn.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), true)
+  assert.equal(renderer.hasTest('quota-window-bar-gemini-5h'), true)
+
+  // 2) 切到 gpt-5.5：自动折算为 Codex 上游，反映 70% 用量
+  store.snapshot = { current: { provider: 'cpa', model: 'gpt-5.5' } }
+  for (const fn of [...storeListeners]) fn()
+  await renderer.flush()
+  assert.match(renderer.text(), /CPA · Codex/)
+  assert.match(renderer.text(), /Codex 本周窗.*70%/)
+  assert.equal(renderer.hasTest('quota-window-bar-claude-5h'), false)
+
+  // 3) 切到 gemini-3.1-pro：自动折算为 Gemini 上游，反映 20% 用量
+  store.snapshot = { current: { provider: 'cpa', model: 'gemini-3.1-pro' } }
+  for (const fn of [...storeListeners]) fn()
+  await renderer.flush()
+  assert.match(renderer.text(), /CPA · Gemini/)
+  assert.match(renderer.text(), /Gemini 5 小时窗.*20%/)
+  assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), false)
+})
+
 test('quota ring recovers when the first strict-session injection missed the directory', async () => {
   // 真机事实（v0.1.2-alpha.3 渲染器源码核实）：strict session 槽的 inject 产物按
   // (entry,binding) 缓存——刷新/首进旧会话时 directoryFor 可能因会话作用域尚未热身

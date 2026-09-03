@@ -656,6 +656,8 @@ window.__ModuleLoader__.load({
       'quota.panel.used': '已用',
       'quota.panel.remaining': '剩余',
       'quota.ring.label': '额度查询',
+      'quota.filter.showAll': '查看全部额度 ({count})',
+      'quota.filter.currentOnly': '仅看当前模型',
       'quota.updated': '更新于 {time}',
       'quota.refreshing': '刷新中…',
       'quota.empty': '暂无数据',
@@ -1386,6 +1388,8 @@ window.__ModuleLoader__.load({
       'quota.panel.used': 'Used',
       'quota.panel.remaining': 'Remaining',
       'quota.ring.label': 'Quota lookup',
+      'quota.filter.showAll': 'Show all quotas ({count})',
+      'quota.filter.currentOnly': 'Current model only',
       'quota.updated': 'Updated {time}',
       'quota.refreshing': 'Refreshing…',
       'quota.empty': 'No data yet',
@@ -3289,6 +3293,28 @@ window.__ModuleLoader__.load({
         return typeof window.innerWidth === 'number' && window.innerWidth <= 1023
       }
 
+      /** 从模型名称推断上游产品家族（CPA 多账号适配路由）：
+       * - claude / gpt-oss -> 'claude'
+       * - gemini -> 'gemini'
+       * - codex / gpt / chatgpt / o1 / o3 -> 'codex' */
+      function inferModelFamily(modelId) {
+        if (typeof modelId !== 'string' || modelId.trim() === '') return null
+        const m = modelId.trim().toLowerCase()
+        if (m.includes('claude') || m.includes('gpt-oss')) return 'claude'
+        if (m.includes('gemini')) return 'gemini'
+        if (m.includes('codex') || m.includes('gpt') || m.includes('chatgpt') || /(?:^|[-_/])o[134](?:[-_/]|$)/.test(m)) return 'codex'
+        return null
+      }
+
+      function windowMatchesFamily(window, family) {
+        if (!family) return true
+        const key = String(window.kindKey ?? window.id ?? '').toLowerCase()
+        if (family === 'claude') return key.includes('claude')
+        if (family === 'gemini') return key.includes('gemini')
+        if (family === 'codex') return key.includes('codex')
+        return true
+      }
+
       function QuotaRing(props) {
         const translate = useTranslation()
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
@@ -3370,13 +3396,26 @@ window.__ModuleLoader__.load({
             else if (typeof query.removeListener === 'function') query.removeListener(sync)
           }
         }, [])
+        const [showAll, setShowAll] = useState(false)
         const provider = directoryState?.current?.provider ?? null
+        const currentModel = directoryState?.current?.model ?? null
         const row = provider !== null ? (quota.providers || []).find((entry) => entry.provider === provider && entry.adapted === true) : null
-        const windows = Array.isArray(row?.windows) ? row.windows : []
-        const percentWindows = windows.filter((window) => typeof window.percent === 'number')
+        const allWindows = Array.isArray(row?.windows) ? row.windows : []
+
+        // 当提供方是 cliproxy (CPA) 时，根据当前会话模型推断上游（Claude / Gemini / Codex）
+        const family = row?.kind === 'cliproxy' ? inferModelFamily(currentModel) : null
+        const familyLabel = family === 'claude' ? 'Claude' : family === 'gemini' ? 'Gemini' : family === 'codex' ? 'Codex' : null
+        const matchedWindows = family !== null ? allWindows.filter((w) => windowMatchesFamily(w, family)) : allWindows
+        const activeWindows = (matchedWindows.length > 0 && !showAll) ? matchedWindows : allWindows
+
+        const percentWindows = (matchedWindows.length > 0 ? matchedWindows : allWindows).filter((window) => typeof window.percent === 'number')
         // 最紧约束：已用口径取最高占用；剩余口径取最低余量。两种口径并存时按压力值（贴近耗尽程度）比较。
         const pressureOf = (window) => (window.remaining === true ? 100 - window.percent : window.percent)
         const tightest = percentWindows.length > 0 ? percentWindows.reduce((best, current) => (pressureOf(current) > pressureOf(best) ? current : best), percentWindows[0]) : null
+
+        useEffect(() => {
+          setShowAll(false)
+        }, [provider, currentModel, open])
 
         // 切换会话/模型后，若目标 provider 有适配行但尚无数据（重启后首拉缺失等），
         // 主动补一次快照请求（宿主节流兜底）；Set 防抖避免发布→重渲染死循环。
@@ -3418,9 +3457,11 @@ window.__ModuleLoader__.load({
         const color = (remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
         const radius = 5.5
         const circumference = 2 * Math.PI * radius
+        const providerDisplayName = row?.displayName || provider
+        const providerTag = familyLabel ? `${providerDisplayName} · ${familyLabel}` : providerDisplayName
         const ariaText = hasPercentWindow
-          ? `${translate('quota.ring.label')} · ${provider} · ${usedWord} ${percent}%`
-          : `${translate('quota.ring.label')} · ${provider}`
+          ? `${translate('quota.ring.label')} · ${providerTag} · ${usedWord} ${percent}%`
+          : `${translate('quota.ring.label')} · ${providerTag}`
         const retrySuffix = typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
           ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
           : ''
@@ -3436,7 +3477,7 @@ window.__ModuleLoader__.load({
         // 水平居中、垂直中心下移到屏幕高度 75%；宽视口或 react-dom 缺席时锚定圆环上方。
         const centered = open && narrow && quotaCreatePortal !== null
           && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
-        const panelPeakSchedule = quotaPeakScheduleFor(row, windows)
+        const panelPeakSchedule = quotaPeakScheduleFor(row, allWindows)
         const triggerNode = React.createElement('button', {
             type: 'button',
             'data-testid': 'quota-ring-trigger',
@@ -3470,9 +3511,26 @@ window.__ModuleLoader__.load({
         },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
-            React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, provider)),
+            React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, providerTag)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
-            windows.map((window) => renderQuotaWindowRow(window, translate, null))),
+            activeWindows.map((window) => renderQuotaWindowRow(window, translate, null))),
+          allWindows.length > matchedWindows.length && matchedWindows.length > 0
+            ? React.createElement('div', { style: { marginTop: '6px', textAlign: 'center' } },
+                React.createElement('button', {
+                  type: 'button',
+                  'data-testid': 'quota-ring-toggle-all',
+                  onClick: () => setShowAll(!showAll),
+                  style: {
+                    fontSize: '11px',
+                    color: 'var(--dsw-alias-brand-primary)',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '2px 6px',
+                    textDecoration: 'underline',
+                  },
+                }, showAll ? translate('quota.filter.currentOnly') : translate('quota.filter.showAll', { count: allWindows.length })))
+            : null,
           ...(panelPeakSchedule !== null
             ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false, schedule: panelPeakSchedule })]
             : []),
