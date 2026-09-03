@@ -3226,6 +3226,7 @@ window.__ModuleLoader__.load({
       function renderQuotaWindowRow(window, translate, provider) {
         const inCard = provider !== null && provider !== undefined
         // 标签可能很长（cliproxy 是「账号 · 窗口名」两段式）：标签溢出省略，百分比整体不换行、不被挤压。
+        const labelText = quotaWindowDisplayLabel(window, translate)
         const labelStyle = { color: 'var(--dsw-alias-label-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
         const valueStyle = { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 }
         if (typeof window.text === 'string') {
@@ -3234,7 +3235,7 @@ window.__ModuleLoader__.load({
             ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
             style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' },
           },
-          React.createElement('span', { style: labelStyle }, quotaWindowDisplayLabel(window, translate)),
+          React.createElement('span', { style: labelStyle, title: labelText }, labelText),
           React.createElement('span', {
             'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
             style: valueStyle,
@@ -3255,7 +3256,7 @@ window.__ModuleLoader__.load({
           ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
         },
         React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
-          React.createElement('span', { style: labelStyle }, quotaWindowDisplayLabel(window, translate)),
+          React.createElement('span', { style: labelStyle, title: labelText }, labelText),
           React.createElement('span', { style: valueStyle }, quotaWindowValueText(window))),
         quotaBar(inCard ? `quota-card-bar-${provider}-${window.id}` : `quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
         resetNode)
@@ -3465,7 +3466,7 @@ window.__ModuleLoader__.load({
           'data-testid': 'quota-ring-panel',
           style: centered
             ? { position: 'fixed', left: '50%', top: '75%', transform: 'translate(-50%, -50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: 'min(560px, calc(100dvh - 176px))', overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
-            : { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: '240px', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
+            : { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: 'max-content', minWidth: '240px', maxWidth: 'min(480px, calc(100vw - 32px))', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
         },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
