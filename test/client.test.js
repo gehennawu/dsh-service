@@ -6721,7 +6721,7 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   assert.equal(renderer.hasTest('sessions-row-delete-session-gone'), false, 'deleted record is read-only')
 })
 
-test('session manager list supports project (cwd) sorting with newest-first tie-break', async () => {
+test('session manager list supports project (cwd) sorting rendered as grouped sections', async () => {
   const renderer = sessionManagerRenderer(createSessionRpcMock())
   await renderer.load()
   renderer.mount('settings.section')
@@ -6740,13 +6740,24 @@ test('session manager list supports project (cwd) sorting with newest-first tie-
   const projectOption = sortSelect.children.find((option) => option.props.value === 'project')
   assert.notEqual(projectOption, undefined, 'sort dropdown offers the project option')
   assert.equal(projectOption.children[0], '按项目')
-  // 切到「按项目」：cwd 路径字母序，同项目（/workspace）内创建时间倒序
+  // 切到「按项目」：按 cwd 分区显示——每个工作区一个分区头（路径 + 会话数），
+  // 同项目（/workspace）内创建时间倒序
   sortSelect.props.onChange({ target: { value: 'project' } })
+  const groups = renderer.findAllByTestIdPrefix('sessions-project-group-')
+  assert.equal(groups.length, 2, 'one section per project')
+  assert.deepEqual(groups.map((node) => node.props['data-testid']), ['sessions-project-group-0', 'sessions-project-group-1'])
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-project'], '/workspace')
+  assert.equal(renderer.findByTestId('sessions-project-count-0').children[0], '2 个会话')
+  const group0Tests = groups[0].children.flat(Infinity).map((child) => child.props?.['data-testid'])
+  assert.deepEqual(group0Tests.filter((id) => id !== undefined && id.startsWith('sessions-row-')), ['sessions-row-session-live', 'sessions-row-session-archived'], 'same project groups newest first')
+  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-project'], '/workspace/projects')
+  assert.equal(renderer.findByTestId('sessions-project-count-1').children[0], '1 个会话')
+  // 行全局顺序与分区一致；切换排序后滚动恢复上下文仍可计算（listScrollKey 含 sort）
   assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-archived', 'sessions-row-session-cold'])
-  // 切换排序后滚动恢复上下文仍可计算（listScrollKey 含 sort）
-  // 切回「按标题」：标题字母序
+  // 切回「按标题」：标题字母序，且回到平铺（无分区头）
   renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'title' } })
   assert.deepEqual(rowIds(), ['sessions-row-session-archived', 'sessions-row-session-cold', 'sessions-row-session-live'])
+  assert.equal(renderer.findAllByTestIdPrefix('sessions-project-group-').length, 0, 'non-project sorts stay flat')
   // 再切回默认：创建时间倒序恢复
   renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'createdDesc' } })
   assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-cold', 'sessions-row-session-archived'])

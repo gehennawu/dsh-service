@@ -60,6 +60,9 @@ window.__ModuleLoader__.load({
       'sessions.sort.createdAsc': '创建时间正序',
       'sessions.sort.title': '按标题',
       'sessions.sort.project': '按项目',
+      'sessions.projectGroup.countOne': '1 个会话',
+      'sessions.projectGroup.countMany': '{count} 个会话',
+      'sessions.projectGroup.noCwd': '（无工作区）',
       'sessions.row.live': '运行中',
       'sessions.row.archived': '已归档',
       'sessions.row.deleted': '已删除',
@@ -792,6 +795,9 @@ window.__ModuleLoader__.load({
       'sessions.sort.createdAsc': 'Created (oldest first)',
       'sessions.sort.title': 'By title',
       'sessions.sort.project': 'By project',
+      'sessions.projectGroup.countOne': '1 session',
+      'sessions.projectGroup.countMany': '{count} sessions',
+      'sessions.projectGroup.noCwd': '(no workspace)',
       'sessions.row.live': 'Running',
       'sessions.row.archived': 'Archived',
       'sessions.row.deleted': 'Deleted',
@@ -5173,7 +5179,31 @@ window.__ModuleLoader__.load({
             const emptyKey = filter === 'archived' ? 'sessions.empty.archived' : filter === 'deleted' ? 'sessions.empty.deleted' : 'sessions.empty.all'
             return React.createElement('p', { style: hint }, translate(emptyKey))
           }
-          return visibleItems.map(listRow)
+          // v1.4.x：按项目排序时分区显示——每个工作区一个分区头（路径 + 会话数），
+          // 同项目内保持创建时间倒序；visibleItems 已按 (cwd, createdAt desc) 排序，
+          // 分组只做遍历切段，零排序逻辑重复。仅项目排序 + 非已删除视图生效，
+          // 已删除视图恒按删除时间倒序平铺（既有行为）。
+          if (sort !== 'project' || filter === 'deleted') return visibleItems.map(listRow)
+          const groups = []
+          for (const item of visibleItems) {
+            const project = String(item.cwd || '')
+            const group = groups.length > 0 && groups[groups.length - 1].project === project ? groups[groups.length - 1] : null
+            if (group === null) groups.push({ project, items: [item] })
+            else group.items.push(item)
+          }
+          return groups.map((group, index) => React.createElement('div', {
+            key: 'project-group-' + (group.project === '' ? '__none__' : group.project),
+            'data-testid': 'sessions-project-group-' + index,
+            style: { marginBottom: '14px' },
+          },
+            React.createElement('div', {
+              'data-testid': 'sessions-project-header-' + index,
+              'data-project': group.project,
+              style: { display: 'flex', alignItems: 'baseline', gap: '8px', margin: '0 2px 4px' },
+            },
+              React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 650, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.project === '' ? translate('sessions.projectGroup.noCwd') : group.project),
+              React.createElement('span', { 'data-testid': 'sessions-project-count-' + index, style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 } }, group.items.length === 1 ? translate('sessions.projectGroup.countOne') : translate('sessions.projectGroup.countMany', { count: group.items.length }))),
+            group.items.map(listRow)))
         }
 
         const renderDetail = () => {
