@@ -9,9 +9,9 @@
   <em>DeepSeek Harness (DSH) Web 服务控制与运维插件。</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-1.4.1-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-1.4.3-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20alpha.3%20ready-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.1.2--rc.1-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -301,7 +301,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-**DSH compatibility statement**: adapted to DSH `0.1.2-alpha.2` conversation UI changes (chat view split into its own package, draggable conversation pane width, turn navigation rail), and to the `0.1.2-alpha.4` session-reading API changes; the mobile immersive swipe and up-arrow reply jump work fully on alpha.2, while alpha.4 seeded/fork usage indexing and subagent turn-record paths are supported. Older DSH releases (`>=0.1.1-rc.2`) remain supported: the plugin installs and runs normally, and only a few alpha.2-specific mobile style tweaks are inert there (purely cosmetic, no functional loss).
+**DSH compatibility statement**: adapted to DSH `0.1.2-alpha.2` conversation UI changes (chat view split into its own package, draggable conversation pane width, turn navigation rail), and to the `0.1.2-alpha.4` / `0.1.2-rc.1` session-reading API changes; the mobile immersive swipe and up-arrow reply jump work fully on alpha.2, while alpha.4/rc.1 seeded/fork usage indexing and subagent turn-record paths are supported. Older DSH releases (`>=0.1.1-rc.2`) remain supported: the plugin installs and runs normally, and only a few alpha.2-specific mobile style tweaks are inert there (purely cosmetic, no functional loss).
 
 ## 🔒 Security design
 
