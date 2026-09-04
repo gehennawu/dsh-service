@@ -4223,34 +4223,17 @@ window.__ModuleLoader__.load({
           showHeader ? React.createElement('div', { style: { fontSize: '11px', fontWeight: 700, color: 'var(--dsw-alias-label-secondary)', marginBottom: '3px' } }, translate('skills.log.title')) : null,
           ...lines.map((line, index) => React.createElement('div', { key: index, style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflowWrap: 'anywhere' } }, line)))
 
-        const renderGroups = () => {
-          if (data === null || data.entries.length === 0) return React.createElement('p', { style: hint }, translate('skills.empty'))
-          const needle = filterText.trim().toLowerCase()
-          const visible = needle === '' ? data.entries : data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
-          const invalidEntries = visible.filter((entry) => entry.invalid !== undefined)
-          const validEntries = visible.filter((entry) => entry.invalid === undefined)
-          const groups = [
-            ['skills.group.auto', validEntries.filter((entry) => entry.invocation.model)],
-            ['skills.group.manual', validEntries.filter((entry) => !entry.invocation.model && entry.invocation.user)],
-            ['skills.group.disabled', validEntries.filter((entry) => !entry.invocation.model && !entry.invocation.user)],
-          ]
-          return React.createElement('div', null,
-            invalidEntries.length > 0 ? React.createElement('div', { 'data-testid': 'skills-invalid-group', style: { marginBottom: '12px' } }, invalidEntries.map(renderEntry)) : null,
-            groups.map(([label, items]) => items.length === 0 ? null : React.createElement('div', { key: label, 'data-testid': 'skills-group-' + label.split('.').pop(), style: { marginBottom: '14px' } },
-              React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, margin: '0 0 7px', color: 'var(--dsw-alias-label-secondary)' } }, translate(label) + ' · ' + items.length),
-              items.map(renderEntry))))
-        }
-
-        const renderDescribeDialog = () => {
+        const renderDescribeDialog = (entryOverride) => {
           if (describe === null) return null
-          const { entry, models, modelItem, draft, busy, error, applied } = describe
+          const entry = entryOverride ?? describe.entry
+          const { models, modelItem, draft, busy, error, applied } = describe
           const inputStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
           const diffRows = draft === null ? null : [['description', entry.note !== undefined ? entry.note.description : '', draft.description], ['usage', entry.note !== undefined ? entry.note.usage : '', draft.usage === '' ? null : draft.usage]].map(([field, oldText, newText]) =>
             React.createElement('div', { key: field, 'data-testid': 'skill-diff-' + field, style: { marginBottom: '9px' } },
               React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '3px' } }, translate('skills.apply.' + field)),
               React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', textDecoration: 'line-through', lineHeight: 1.45 } }, translate('skills.apply.old') + '：' + (oldText === '' ? '—' : oldText)),
               React.createElement('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', lineHeight: 1.45 } }, translate('skills.apply.new') + '：' + (newText === null ? translate('skills.apply.keepusage') : newText))))
-          return React.createElement('div', { 'data-testid': 'skill-describe-dialog', style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '12px', padding: '14px 16px', marginBottom: '14px', background: 'var(--dsh-svc-raised-bg)' } },
+          return React.createElement('div', { key: 'skill-describe-' + entry.id, 'data-testid': 'skill-describe-dialog', style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '12px', padding: '14px 16px', marginBottom: '14px', background: 'var(--dsh-svc-raised-bg)' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' } },
               React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('skills.describe.title', { name: entry.name })),
               React.createElement('button', { type: 'button', onClick: () => setDescribe(null), style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer', fontSize: '15px' } }, '✕')),
@@ -4267,6 +4250,31 @@ window.__ModuleLoader__.load({
             applied ? React.createElement('p', { 'data-testid': 'skill-apply-done', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('skills.apply.done')) : null,
             draft !== null && !applied ? React.createElement('p', { 'data-testid': 'skill-note-disclaimer', style: { ...hint, fontSize: '11px' } }, translate('skills.note.panelOnly')) : null,
             draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
+        }
+
+        const renderGroups = () => {
+          if (data === null || data.entries.length === 0) return React.createElement('p', { style: hint }, translate('skills.empty'))
+          const needle = filterText.trim().toLowerCase()
+          const visible = needle === '' ? data.entries : data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
+          const invalidEntries = visible.filter((entry) => entry.invalid !== undefined)
+          const validEntries = visible.filter((entry) => entry.invalid === undefined)
+          const groups = [
+            ['skills.group.auto', validEntries.filter((entry) => entry.invocation.model)],
+            ['skills.group.manual', validEntries.filter((entry) => !entry.invocation.model && entry.invocation.user)],
+            ['skills.group.disabled', validEntries.filter((entry) => !entry.invocation.model && !entry.invocation.user)],
+          ]
+          const renderItem = (entry) => {
+            const entryNode = renderEntry(entry)
+            if (describe !== null && describe.entry.id === entry.id) {
+              return [entryNode, renderDescribeDialog(entry)]
+            }
+            return [entryNode]
+          }
+          return React.createElement('div', null,
+            invalidEntries.length > 0 ? React.createElement('div', { 'data-testid': 'skills-invalid-group', style: { marginBottom: '12px' } }, invalidEntries.flatMap(renderItem)) : null,
+            groups.map(([label, items]) => items.length === 0 ? null : React.createElement('div', { key: label, 'data-testid': 'skills-group-' + label.split('.').pop(), style: { marginBottom: '14px' } },
+              React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, margin: '0 0 7px', color: 'var(--dsw-alias-label-secondary)' } }, translate(label) + ' · ' + items.length),
+              items.flatMap(renderItem))))
         }
 
         // 跳过原因 → 本地化标签：已知原因走词典，未知原因原样透出（已注释条目不再进跳过清单，
@@ -4356,7 +4364,6 @@ window.__ModuleLoader__.load({
           (error !== '' || batchError !== '') ? React.createElement('p', { 'data-testid': 'skills-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, mapSkillErrorMessage(translate, error !== '' ? error : batchError)) : null,
           data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skills-batch-toggle', 'aria-expanded': String(batchCardOpen), onClick: () => setBatchCardOpen((value) => !value), style: { margin: '0 0 12px', fontSize: '12px', padding: '6px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid ' + (batchCardOpen ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsh-svc-border-strong)'), background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' } }, (batchCardOpen ? '▾ ' : '▸ ') + translate('skills.batch.toggle')) : null,
           batchCardOpen && data !== null && data.llmAvailable ? renderBatchCard() : null,
-          renderDescribeDialog(),
           renderGroups())
       }
 

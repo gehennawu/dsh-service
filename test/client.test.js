@@ -4978,6 +4978,48 @@ test('describe dialog shows the panel-only disclaimer before saving a note', asy
   assert.match(renderer.findByTestId('skill-apply-done').children.join(''), /注释已保存/)
 })
 
+test('AI describe dialog renders directly below the target skill item instead of at the top of the section', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // 未打开补全前：无补全设置框
+  assert.equal(renderer.hasTest('skill-describe-dialog'), false)
+
+  // 为 alpha（位于 auto 组）开启补全
+  renderer.findByTestId('skill-describe-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-describe-dialog'), true)
+
+  // 补全设置框不得出现在 skills-section 顶层直接子节点中
+  const sectionNode = renderer.findByTestId('skills-section')
+  const sectionDirectIds = sectionNode.children.filter((c) => c && c.props && c.props['data-testid']).map((c) => c.props['data-testid'])
+  assert.equal(sectionDirectIds.includes('skill-describe-dialog'), false, 'describe dialog must not be at section top')
+
+  // 补全设置框必须直接位于 skill-entry-alpha 下方（在同一个分组内相邻）
+  const autoGroup = renderer.findByTestId('skills-group-auto')
+  const autoChildIds = autoGroup.children.flat(Infinity).filter((c) => c && c.props && c.props['data-testid']).map((c) => c.props['data-testid'])
+  assert.deepEqual(autoChildIds, ['skill-entry-alpha', 'skill-describe-dialog'])
+
+  // 切换为 beta（位于 manual 组）开启补全：设置框必须移到 beta 下方，auto 组不再包含设置框
+  renderer.findByTestId('skill-describe-beta').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  const autoGroupAfter = renderer.findByTestId('skills-group-auto')
+  const autoChildIdsAfter = autoGroupAfter.children.flat(Infinity).filter((c) => c && c.props && c.props['data-testid']).map((c) => c.props['data-testid'])
+  assert.deepEqual(autoChildIdsAfter, ['skill-entry-alpha'])
+  const manualGroup = renderer.findByTestId('skills-group-manual')
+  const manualChildIds = manualGroup.children.flat(Infinity).filter((c) => c && c.props && c.props['data-testid']).map((c) => c.props['data-testid'])
+  assert.deepEqual(manualChildIds, ['skill-entry-beta', 'skill-describe-dialog'])
+})
+
 test('ordinary client startup skips skills batch recovery without a pending marker', async () => {
   const fixture = createSkillsRpcFixture()
   const originalHandler = fixture.handler
