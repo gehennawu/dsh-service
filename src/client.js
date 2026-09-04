@@ -673,6 +673,10 @@ window.__ModuleLoader__.load({
       'quota.resetIn': '重置于 {time}',
       'quota.window.stale': '缓存',
       'quota.window.staleTip': '该账号实时查询失败，显示的是 CPA 上次缓存的快照（非实时值）',
+      'quota.family.gemini': 'Gemini',
+      'quota.family.claude': 'Claude',
+      'quota.family.codex': 'Codex',
+      'quota.family.other': '其他',
       'quota.resetCard.title': '重置卡',
       'quota.resetCard.expires': '{date} 到期',
       'quota.resetCard.expired': '已过期',
@@ -1416,6 +1420,10 @@ window.__ModuleLoader__.load({
       'quota.resetIn': 'Resets in {time}',
       'quota.window.stale': 'cached',
       'quota.window.staleTip': "Live query failed for this account; showing CPA's last cached snapshot (not realtime)",
+      'quota.family.gemini': 'Gemini',
+      'quota.family.claude': 'Claude',
+      'quota.family.codex': 'Codex',
+      'quota.family.other': 'Other',
       'quota.resetCard.title': 'Reset card',
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
@@ -3345,13 +3353,37 @@ window.__ModuleLoader__.load({
         return null
       }
 
+      const CPA_FAMILIES = ['gemini', 'claude', 'codex']
+
+      function windowFamily(window) {
+        const key = String(window?.kindKey ? window.kindKey : (window?.id ?? '')).toLowerCase()
+        if (key.includes('gemini')) return 'gemini'
+        if (key.includes('claude') || key.includes('gpt-oss')) return 'claude'
+        if (key.includes('codex') || key.includes('chatgpt')) return 'codex'
+        return 'other'
+      }
+
       function windowMatchesFamily(window, family) {
         if (!family) return true
-        const key = String(window.kindKey ?? window.id ?? '').toLowerCase()
-        if (family === 'claude') return key.includes('claude')
-        if (family === 'gemini') return key.includes('gemini')
-        if (family === 'codex') return key.includes('codex')
-        return true
+        return windowFamily(window) === family
+      }
+
+      function groupWindowsByFamily(windows) {
+        const map = new Map()
+        for (const w of windows) {
+          const fam = windowFamily(w)
+          const list = map.get(fam) || []
+          list.push(w)
+          map.set(fam, list)
+        }
+        const groups = []
+        for (const fam of [...CPA_FAMILIES, 'other']) {
+          const list = map.get(fam)
+          if (list && list.length > 0) {
+            groups.push({ family: fam, windows: list })
+          }
+        }
+        return groups
       }
 
       function QuotaRing(props) {
@@ -3552,7 +3584,34 @@ window.__ModuleLoader__.load({
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, providerTag)),
           React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
-            activeWindows.map((window) => renderQuotaWindowRow(window, translate, null))),
+            (() => {
+              const ringGroups = (row?.kind === 'cliproxy' && (showAll || family === null)) ? groupWindowsByFamily(activeWindows) : null
+              if (ringGroups && ringGroups.length > 1) {
+                return ringGroups.map((group, groupIndex) => React.createElement('div', {
+                  key: `ring-family-${group.family}`,
+                  'data-testid': `quota-ring-family-${group.family}`,
+                  style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    marginTop: groupIndex === 0 ? '0' : '4px',
+                    paddingTop: groupIndex === 0 ? '0' : '8px',
+                    borderTop: groupIndex === 0 ? 'none' : '1px solid var(--dsw-alias-border-l1)',
+                  },
+                },
+                  React.createElement('div', {
+                    'data-testid': `quota-ring-family-title-${group.family}`,
+                    style: {
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: 'var(--dsw-alias-label-secondary)',
+                    },
+                  }, translate('quota.family.' + group.family)),
+                  group.windows.map((window) => renderQuotaWindowRow(window, translate, null))
+                ))
+              }
+              return activeWindows.map((window) => renderQuotaWindowRow(window, translate, null))
+            })()),
           allWindows.length > matchedWindows.length && matchedWindows.length > 0
             ? React.createElement('div', { style: { marginTop: '6px', textAlign: 'center' } },
                 React.createElement('button', {
@@ -5826,8 +5885,43 @@ window.__ModuleLoader__.load({
                     body = React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
                       `${quotaErrorMessage(row.errorCode, translate)}${row.errorDetail !== undefined ? ` (${row.errorDetail})` : ''}${typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now() ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) }) }` : ''}`)
                   } else if (windows.length > 0) {
-                    // 窗口块之间的留白由列容器统一控制（14px），进度条吃满整行宽度。
-                    body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, windowBlocks)
+                    const cpaGroups = row.kind === 'cliproxy' ? groupWindowsByFamily(windows) : null
+                    if (cpaGroups && cpaGroups.length > 0) {
+                      body = React.createElement('div', {
+                        'data-testid': `quota-card-families-${row.provider}`,
+                        style: { display: 'flex', flexDirection: 'column', gap: '10px' },
+                      },
+                        cpaGroups.map((group, groupIndex) => React.createElement('div', {
+                          key: `family-${group.family}`,
+                          'data-testid': `quota-card-family-${row.provider}-${group.family}`,
+                          style: {
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '10px',
+                            marginTop: groupIndex === 0 ? '0' : '4px',
+                            paddingTop: groupIndex === 0 ? '0' : '10px',
+                            borderTop: groupIndex === 0 ? 'none' : '1px solid var(--dsw-alias-border-l1)',
+                          },
+                        },
+                          React.createElement('div', {
+                            'data-testid': `quota-card-family-title-${row.provider}-${group.family}`,
+                            style: {
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              color: 'var(--dsw-alias-label-primary)',
+                            },
+                          }, translate('quota.family.' + group.family)),
+                          React.createElement('div', {
+                            style: { display: 'flex', flexDirection: 'column', gap: '14px' },
+                          },
+                            group.windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
+                          )
+                        ))
+                      )
+                    } else {
+                      // 窗口块之间的留白由列容器统一控制（14px），进度条吃满整行宽度。
+                      body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, windowBlocks)
+                    }
                   } else {
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.empty'))
                   }

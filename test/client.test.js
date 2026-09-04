@@ -3080,6 +3080,13 @@ test('quota ring routes cliproxy CPA windows by current model family (Claude, Ge
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), true)
   assert.equal(renderer.hasTest('quota-window-bar-gemini-5h'), true)
+  // 展开全部后按 Gemini / Claude / Codex 分区
+  assert.ok(renderer.findByTestId('quota-ring-family-gemini'))
+  assert.ok(renderer.findByTestId('quota-ring-family-claude'))
+  assert.ok(renderer.findByTestId('quota-ring-family-codex'))
+  assert.equal(renderer.findByTestId('quota-ring-family-title-gemini').children.join(''), 'Gemini')
+  assert.equal(renderer.findByTestId('quota-ring-family-title-claude').children.join(''), 'Claude')
+  assert.equal(renderer.findByTestId('quota-ring-family-title-codex').children.join(''), 'Codex')
 
   // 2) 切到 gpt-5.5：自动折算为 Codex 上游，反映 70% 用量
   store.snapshot = { current: { provider: 'cpa', model: 'gpt-5.5' } }
@@ -5120,6 +5127,11 @@ test('cliproxy windows render as「账号 · 本地化窗口名」and management
   assert.match(text, /43%/)
   // 稳定错误码 mgmt-disabled 的本地化文案。
   assert.match(text, /CLIProxyAPI 管理面未启用/)
+  // CPA 卡片按 Gemini / Codex 分区
+  assert.ok(renderer.findByTestId('quota-card-family-cpa-gemini'))
+  assert.ok(renderer.findByTestId('quota-card-family-cpa-codex'))
+  assert.equal(renderer.findByTestId('quota-card-family-title-cpa-gemini').children.join(''), 'Gemini')
+  assert.equal(renderer.findByTestId('quota-card-family-title-cpa-codex').children.join(''), 'Codex')
 })
 
 test('stale cliproxy snapshot windows render a cached badge while live windows stay unmarked', async () => {
