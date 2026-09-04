@@ -43,11 +43,14 @@ window.__ModuleLoader__.load({
       'sessions.batch.export': '导出 ({count})',
       'sessions.batch.archive': '归档 ({count})',
       'sessions.batch.delete': '删除 ({count})',
+      'sessions.batch.clear': '清除 ({count})',
       'sessions.batch.completed': '已完成{action}：{count} 项',
       'sessions.batch.failed': '{action}完成 {done}/{total} 项；{error}',
       'sessions.batch.deleteTitle': '删除 {count} 个会话',
       'sessions.batch.deleteBody': '将永久删除以下已归档会话的日志文件，删除后不可恢复。',
       'sessions.batch.deleteItem': '{title}（{bytes}）',
+      'sessions.batch.clearTitle': '清除 {count} 条已删除记录',
+      'sessions.batch.clearBody': '确定要清除以下 {count} 条已删除记录吗？清除后将从记录列表中永久移除。',
       'sessions.status.loading': '加载中…',
       'sessions.status.working': '处理中…',
       'sessions.status.unavailableTime': '时间未知',
@@ -72,6 +75,7 @@ window.__ModuleLoader__.load({
       'sessions.action.export': '导出',
       'sessions.action.archive': '归档',
       'sessions.action.delete': '删除',
+      'sessions.action.clear': '清除',
       'sessions.empty.all': '没有会话',
       'sessions.empty.archived': '没有归档会话',
       'sessions.empty.deleted': '暂无删除记录',
@@ -83,6 +87,7 @@ window.__ModuleLoader__.load({
       'sessions.error.live-session-rejected': '会话正在运行，无法删除',
       'sessions.error.session-not-archived': '仅已归档会话可以删除',
       'sessions.error.unknown-delete-plan': '删除请求已失效，请重新发起',
+      'sessions.error.invalid-session-ids': '无效的会话标识',
       'sessions.error.export-failed': '导出失败：{error}',
       'sessions.detail.back': '返回列表',
       'sessions.detail.open': '在官方会话中打开',
@@ -115,6 +120,10 @@ window.__ModuleLoader__.load({
       'sessions.delete.confirm': '确认删除',
       'sessions.delete.cancel': '取消',
       'sessions.delete.done': '已删除',
+      'sessions.clear.title': '清除已删除记录',
+      'sessions.clear.body': '确定要清除该条已删除记录吗？清除后将从记录列表中永久移除。',
+      'sessions.clear.confirm': '确认清除',
+      'sessions.clear.cancel': '取消',
       'sessions.export.includes': '含子代理与附件',
       'sessions.navToggle': '设置页左列显示「会话管理」入口',
       'sessions.navToggleHint': '默认关闭；开启后在设置页左侧标签列显示会话管理入口',
@@ -784,11 +793,14 @@ window.__ModuleLoader__.load({
       'sessions.batch.export': 'Export ({count})',
       'sessions.batch.archive': 'Archive ({count})',
       'sessions.batch.delete': 'Delete ({count})',
+      'sessions.batch.clear': 'Clear ({count})',
       'sessions.batch.completed': '{action} completed for {count}',
       'sessions.batch.failed': '{action} completed for {done}/{total}; {error}',
       'sessions.batch.deleteTitle': 'Delete {count} sessions',
       'sessions.batch.deleteBody': 'This permanently deletes the logs of the archived sessions below. This cannot be undone.',
       'sessions.batch.deleteItem': '{title} ({bytes})',
+      'sessions.batch.clearTitle': 'Clear {count} deleted records',
+      'sessions.batch.clearBody': 'Are you sure you want to clear the following {count} deleted records? They will be permanently removed from the record list.',
       'sessions.status.loading': 'Loading…',
       'sessions.status.working': 'Working…',
       'sessions.status.unavailableTime': 'Time unavailable',
@@ -813,6 +825,7 @@ window.__ModuleLoader__.load({
       'sessions.action.export': 'Export',
       'sessions.action.archive': 'Archive',
       'sessions.action.delete': 'Delete',
+      'sessions.action.clear': 'Clear',
       'sessions.empty.all': 'No sessions',
       'sessions.empty.archived': 'No archived sessions',
       'sessions.empty.deleted': 'No deleted sessions yet',
@@ -824,6 +837,7 @@ window.__ModuleLoader__.load({
       'sessions.error.live-session-rejected': 'Session is running and cannot be deleted',
       'sessions.error.session-not-archived': 'Only archived sessions can be deleted',
       'sessions.error.unknown-delete-plan': 'Delete request expired, please retry',
+      'sessions.error.invalid-session-ids': 'Invalid session IDs',
       'sessions.error.export-failed': 'Export failed: {error}',
       'sessions.detail.back': 'Back to list',
       'sessions.detail.open': 'Open in official view',
@@ -854,6 +868,10 @@ window.__ModuleLoader__.load({
       'sessions.delete.confirm': 'Delete',
       'sessions.delete.cancel': 'Cancel',
       'sessions.delete.done': 'Deleted',
+      'sessions.clear.title': 'Clear deleted record',
+      'sessions.clear.body': 'Are you sure you want to clear this deleted record? It will be permanently removed from the record list.',
+      'sessions.clear.confirm': 'Clear',
+      'sessions.clear.cancel': 'Cancel',
       'sessions.export.includes': 'Includes subagents and attachments',
       'sessions.navToggle': 'Show “Sessions” entry in the settings sidebar',
       'sessions.navToggleHint': 'Disabled by default; shows the session manager entry at the bottom of the settings sidebar when enabled',
@@ -1671,7 +1689,14 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
-      const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload))
+      // v1.4.x（白屏修复）：宿主对 ok:false 一律回 rpcErrorSchema 枚举对象
+      // （{code,message,details}），真实外壳的严格校验放行对象后，消费方若把
+      // res.error 直接当字符串用（mapSessionError 透传 → setClearError → React
+      // children），React 会以 #31「object is not a valid React child」炸掉整个
+      // 渲染树——插件设置节被外壳错误边界吞成白屏（「清除已删除记录」实测触发，
+      // 宿主未重载新端点时 unknown-endpoint 即命中）。归一回字符串语义（error=message、
+      // 恢复 details.detail）后全插件既有 `res.error` 字符串消费零改动。
+      const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload)).then(normalizeRpcResult)
 
       // ── v1.2 子代理派发记录缓存：按父会话聚合、turn 索引；TTL 10s 按会话单飞去重 ──
       // 宿主记录在宿主内存（进程重启即清、页面刷新不丢）；拉取失败进冷却并保留旧缓存（fail-open，
@@ -4411,11 +4436,18 @@ window.__ModuleLoader__.load({
         return children
       }
       function mapSessionError(translate, code) {
+        // 白屏修复二道闸：rpcCall 出口已把枚举对象归一为字符串；此处兜底把一切
+        // 非字符串（未来绕过归一层的形状）压成可读文本，杜绝对象进 React children。
+        if (typeof code !== 'string') {
+          const error = code && typeof code === 'object' ? code : {}
+          return typeof error.message === 'string' && error.message !== '' ? error.message : typeof error.code === 'string' && error.code !== '' ? error.code : 'unknown'
+        }
         if (code === 'feature-disabled') return translate('sessions.error.feature-disabled')
         if (code === 'session-not-found') return translate('sessions.error.session-not-found')
         if (code === 'live-session-rejected') return translate('sessions.error.live-session-rejected')
         if (code === 'session-not-archived') return translate('sessions.error.session-not-archived')
         if (code === 'unknown-delete-plan') return translate('sessions.error.unknown-delete-plan')
+        if (code === 'invalid-session-ids') return translate('sessions.error.invalid-session-ids')
         if (code === 'network') return translate('sessions.error.network')
         return code
       }
@@ -4622,6 +4654,10 @@ window.__ModuleLoader__.load({
         const [deleting, setDeleting] = useState(false)
         const [deleteError, setDeleteError] = useState('')
         const [doneTick, setDoneTick] = useState(0)
+        // 清除已删除记录状态
+        const [clearPlan, setClearPlan] = useState(null)
+        const [clearing, setClearing] = useState(false)
+        const [clearError, setClearError] = useState('')
         // 归档状态
         const [archivingId, setArchivingId] = useState('')
         const [archiveError, setArchiveError] = useState('')
@@ -4686,6 +4722,8 @@ window.__ModuleLoader__.load({
           setSearch('')
           setSearchResult(null)
           setDetail(null)
+          setClearPlan(null)
+          setClearError('')
           void loadList(key)
         }
         useEffect(() => { void loadList('archived', { silent: true }) }, [])
@@ -4768,6 +4806,8 @@ window.__ModuleLoader__.load({
           setSelectedIds([])
           setBatchResult('')
           setBatchError('')
+          setClearPlan(null)
+          setClearError('')
           // v0.37：进详情前沿点击行的 DOM 祖先链找官方面板内容滚动容器（.VOzbGW_options），
           // 记下列表位置；找不到容器（宽度撑不满/异常布局/无点击事件）→ 不保存，返回时保持现状。
           const scrollContainer = findSessionScrollContainer(event)
@@ -5062,14 +5102,17 @@ window.__ModuleLoader__.load({
           return items
         }
         const visibleItems = computeVisibleItems()
-        const visibleSelectableIds = filter === 'deleted' || search.trim() !== ''
+        const visibleSelectableIds = search.trim() !== ''
           ? []
-          : visibleItems.filter((item) => item._deleted !== true).map((item) => item.id)
+          : filter === 'deleted'
+            ? visibleItems.map((item) => item.id)
+            : visibleItems.filter((item) => item._deleted !== true).map((item) => item.id)
         const selectedSet = new Set(selectedIds)
         const selectedItems = visibleItems.filter((item) => selectedSet.has(item.id))
         const batchExportItems = selectedItems.filter((item) => item._deleted !== true)
         const batchArchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived !== true)
         const batchDeleteItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
+        const batchClearItems = selectedItems.filter((item) => item._deleted === true)
         const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedSet.has(id))
         useEffect(() => {
           if (!batchMode) return
@@ -5166,6 +5209,76 @@ window.__ModuleLoader__.load({
             consequences: ['deletes-session-log'],
           })
         }
+        const requestClear = (item) => {
+          if (clearPlan !== null || clearing) return
+          setClearError('')
+          setClearPlan({
+            batch: false,
+            items: [{ id: item.id, title: item.title }],
+          })
+        }
+        const requestBatchClear = () => {
+          if (clearPlan !== null || clearing || batchClearItems.length === 0) return
+          setClearError('')
+          setClearPlan({
+            batch: true,
+            items: batchClearItems.map((item) => ({ id: item.id, title: item.title })),
+          })
+        }
+        const applyClearedDeletedSessions = (ids) => {
+          const idSet = new Set(ids)
+          const deletedCache = sessionPanelListCache.deleted
+          if (deletedCache !== undefined && Array.isArray(deletedCache.deleted)) {
+            sessionPanelListCache.deleted = {
+              ...deletedCache,
+              deleted: deletedCache.deleted.filter((item) => !idSet.has(item.id)),
+            }
+          }
+          setList((current) => {
+            if (current === null) return current
+            const currentDeleted = Array.isArray(current.deleted) ? current.deleted : []
+            return {
+              ...current,
+              deleted: currentDeleted.filter((item) => !idSet.has(item.id)),
+            }
+          })
+          setSelectedIds((current) => current.filter((id) => !idSet.has(id)))
+        }
+        const confirmClear = async () => {
+          if (clearPlan === null || clearing) return
+          setClearing(true)
+          setClearError('')
+          const items = Array.isArray(clearPlan.items) ? clearPlan.items : []
+          const ids = items.map((item) => item.id)
+          const isBatch = clearPlan.batch === true
+          try {
+            const res = await rpcCall('sessions-clear-deleted', { ids })
+            if (res.ok) {
+              applyClearedDeletedSessions(ids)
+              setClearPlan(null)
+              if (isBatch) {
+                setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.clear'), count: ids.length }))
+                setBatchError('')
+              }
+            } else {
+              const msg = mapSessionError(translate, res.error || 'unknown')
+              if (isBatch) {
+                setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.clear'), done: 0, total: ids.length, error: msg }))
+              } else {
+                setClearError(msg)
+              }
+            }
+          } catch (_) {
+            const msg = translate('sessions.error.network')
+            if (isBatch) {
+              setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.clear'), done: 0, total: ids.length, error: msg }))
+            } else {
+              setClearError(msg)
+            }
+          } finally {
+            setClearing(false)
+          }
+        }
 
         const listRow = (item) => {
           const isDeleted = item._deleted === true
@@ -5195,16 +5308,18 @@ window.__ModuleLoader__.load({
             if (!live && archived) {
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
+          } else {
+            actions.push(React.createElement('button', { key: 'clear', type: 'button', 'data-testid': 'sessions-row-clear-' + id, style: dangerOutlineButton, onClick: () => void requestClear(item) }, translate('sessions.action.clear')))
           }
           return React.createElement('div', {
             key: id,
             'data-testid': 'sessions-row-' + id,
             'data-selected': batchMode && selected ? 'true' : undefined,
-            onClick: batchMode && !isDeleted ? () => toggleSelected(id) : undefined,
-            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '4px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none', cursor: batchMode && !isDeleted ? 'pointer' : 'default' },
+            onClick: batchMode ? () => toggleSelected(id) : undefined,
+            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '4px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none', cursor: batchMode ? 'pointer' : 'default' },
           },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: '1 1 auto' } },
-              batchMode && !isDeleted ? React.createElement('input', {
+              batchMode ? React.createElement('input', {
                 type: 'checkbox',
                 'data-testid': 'sessions-select-' + id,
                 'aria-label': translate('sessions.batch.selectRow', { title }),
@@ -5356,6 +5471,25 @@ window.__ModuleLoader__.load({
             detail.view !== 'search' && detail.cursor === undefined && detail.items.length > 0 ? React.createElement('p', { style: hint }, translate('sessions.detail.noMore', { total: detail.total })) : null)
         }
 
+        const renderClearModal = () => {
+          if (clearPlan === null) return null
+          const isBatch = clearPlan.batch === true
+          const items = Array.isArray(clearPlan.items) ? clearPlan.items : []
+          const count = items.length
+          return React.createElement('div', { 'data-testid': 'sessions-clear-modal', style: { position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)' } },
+            React.createElement('div', { style: { width: 'min(480px, calc(100vw - 32px))', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '14px', padding: '18px', boxShadow: '0 12px 40px rgba(0,0,0,0.25)' } },
+              React.createElement('div', { style: { fontSize: '15px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, isBatch ? translate('sessions.batch.clearTitle', { count }) : translate('sessions.clear.title')),
+              React.createElement('p', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.5, margin: '0 0 10px' } }, isBatch ? translate('sessions.batch.clearBody', { count }) : translate('sessions.clear.body')),
+              isBatch
+                ? React.createElement('ul', { 'data-testid': 'sessions-clear-list', style: { margin: '0 0 12px', paddingLeft: '18px', maxHeight: '220px', overflowY: 'auto', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.7 } },
+                    items.map((item) => React.createElement('li', { key: item.id }, item.title || translate('sessions.row.noTitle'))))
+                : React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '12px' } }, items[0]?.title || translate('sessions.row.noTitle')),
+              clearError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, clearError) : null,
+              React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-clear-cancel', style: chipButton, disabled: clearing, onClick: () => { setClearPlan(null); setClearError('') } }, translate('sessions.clear.cancel')),
+                React.createElement('button', { type: 'button', 'data-testid': 'sessions-clear-confirm', style: dangerSolidButton, disabled: clearing, onClick: () => void confirmClear() }, clearing ? translate('sessions.status.working') : translate('sessions.clear.confirm')))))
+        }
+
         const renderDeleteModal = () => {
           if (deletePlan === null) return null
           const batchSessions = deletePlan.batch === true && Array.isArray(deletePlan.sessions) ? deletePlan.sessions : null
@@ -5404,7 +5538,7 @@ window.__ModuleLoader__.load({
               React.createElement('option', { value: 'project' }, translate('sessions.sort.project'))),
             // v0.36：切换筛选复用已取过的 scope 缓存；「刷新」才强制重拉当前 scope。
             React.createElement('button', { type: 'button', 'data-testid': 'sessions-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => refreshList() }, translate('sessions.refresh')),
-            detail === null && filter !== 'deleted' && search.trim() === '' ? React.createElement('button', {
+            detail === null && search.trim() === '' ? React.createElement('button', {
               type: 'button',
               'data-testid': 'sessions-batch-toggle',
               'data-variant': batchMode ? 'primary' : 'neutral',
@@ -5412,11 +5546,15 @@ window.__ModuleLoader__.load({
               onClick: batchMode ? exitBatchMode : enterBatchMode,
             }, translate(batchMode ? 'sessions.batch.exit' : 'sessions.batch.enter')) : null),
           detail === null && batchMode ? React.createElement('div', { 'data-testid': 'sessions-batch-bar', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px', padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-3)' } },
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-select-all', style: chipButton, disabled: visibleSelectableIds.length === 0 || batchWorking !== '' || deleting, onClick: toggleSelectAll }, translate(allVisibleSelected ? 'sessions.batch.clearAll' : 'sessions.batch.selectAll')),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-select-all', style: chipButton, disabled: visibleSelectableIds.length === 0 || batchWorking !== '' || deleting || clearing, onClick: toggleSelectAll }, translate(allVisibleSelected ? 'sessions.batch.clearAll' : 'sessions.batch.selectAll')),
             React.createElement('span', { 'data-testid': 'sessions-selected-count', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginRight: 'auto' } }, translate('sessions.batch.selected', { count: selectedIds.length })),
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-export', style: chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-archive', style: chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length }))) : null,
+            filter === 'deleted'
+              ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-clear', style: dangerOutlineButton, disabled: batchClearItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchClear() }, translate('sessions.batch.clear', { count: batchClearItems.length }))
+              : [
+                  React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-batch-export', style: chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
+                  React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-batch-archive', style: chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
+                  React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
+                ]) : null,
           detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
             React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) }, style: inputStyle }),
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
@@ -5427,7 +5565,8 @@ window.__ModuleLoader__.load({
           batchResult !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-result', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, batchResult) : null,
           batchError !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, batchError) : null,
           renderDetail() ?? renderListBody(),
-          renderDeleteModal())
+          renderDeleteModal(),
+          renderClearModal())
       }
 
       function RemoteQuotaCard() {

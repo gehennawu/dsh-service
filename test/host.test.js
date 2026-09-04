@@ -6197,3 +6197,65 @@ test('session management delete is two-phase: plan lists consequences, live reje
   assert.equal(afterList.value.items.some((item) => item.id === 'session-beta'), false)
   assert.equal(afterList.value.deleted.some((item) => item.id === 'session-beta'), true)
 })
+
+test('session management clear deleted removes tombstones by id or all, and updates deleted list', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-clear-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  const { handler } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions },
+    env: { DSH_HOME: dshHome },
+  })
+
+  // 空参数或非法 id 被拒
+  const emptyCall = await handler('sessions-clear-deleted', {})
+  assert.deepEqual(emptyCall, { ok: false, error: 'invalid-session-ids' })
+  const emptyIds = await handler('sessions-clear-deleted', { ids: [] })
+  assert.deepEqual(emptyIds, { ok: false, error: 'invalid-session-ids' })
+  const blankIds = await handler('sessions-clear-deleted', { ids: ['', '   ', null] })
+  assert.deepEqual(blankIds, { ok: false, error: 'invalid-session-ids' })
+
+  // 写入两条初始已删除记录
+  const deletedFile = join(dshHome, 'dsh-service-sessions-deleted.json')
+  await writeFile(deletedFile, JSON.stringify({
+    version: 1,
+    items: [
+      { id: 'del-1', title: 'Deleted one', cwd: '/workspace', deletedAt: 1000 },
+      { id: 'del-2', title: 'Deleted two', cwd: '/workspace', deletedAt: 2000 },
+      { id: 'del-3', title: 'Deleted three', cwd: '/workspace', deletedAt: 3000 },
+    ],
+  }), 'utf8')
+
+  // 初始验证 deleted scope 返回 3 条
+  const initial = await handler('sessions-list', { scope: 'deleted' })
+  assert.equal(initial.ok, true)
+  assert.equal(initial.value.deleted.length, 3)
+
+  // 清除单条/多条：del-1
+  const clearOne = await handler('sessions-clear-deleted', { ids: ['del-1'] })
+  assert.deepEqual(clearOne, { ok: true, value: { cleared: true, count: 1, ids: ['del-1'] } })
+
+  const afterOne = await handler('sessions-list', { scope: 'deleted' })
+  assert.equal(afterOne.ok, true)
+  assert.deepEqual(afterOne.value.deleted.map((item) => item.id), ['del-2', 'del-3'])
+
+  // 清除多条：del-2
+  const clearMulti = await handler('sessions-clear-deleted', { ids: ['del-2', 'del-nonexistent'] })
+  assert.deepEqual(clearMulti, { ok: true, value: { cleared: true, count: 1, ids: ['del-2'] } })
+
+  const afterMulti = await handler('sessions-list', { scope: 'deleted' })
+  assert.equal(afterMulti.ok, true)
+  assert.deepEqual(afterMulti.value.deleted.map((item) => item.id), ['del-3'])
+
+  // 全选清除：all: true 清除剩余所有记录
+  const clearAll = await handler('sessions-clear-deleted', { all: true })
+  assert.deepEqual(clearAll, { ok: true, value: { cleared: true, count: 1, ids: ['del-3'] } })
+
+  const afterAll = await handler('sessions-list', { scope: 'deleted' })
+  assert.equal(afterAll.ok, true)
+  assert.deepEqual(afterAll.value.deleted, [])
+
+  // 再次全选清除（空记录）：返回 count: 0
+  const clearEmpty = await handler('sessions-clear-deleted', { all: true })
+  assert.deepEqual(clearEmpty, { ok: true, value: { cleared: true, count: 0, ids: [] } })
+})

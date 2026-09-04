@@ -5439,6 +5439,51 @@ function apply(ctx) {
         return rpcTechnicalFailure(error)
       }
     } },
+    'sessions-clear-deleted': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
+      const all = payload?.all === true
+      const raw = Array.isArray(payload?.ids) ? payload.ids : []
+      const ids = []
+      const seen = new Set()
+      for (const id of raw) {
+        if (typeof id !== 'string' || id.trim() === '') continue
+        const cleanId = id.trim()
+        if (seen.has(cleanId)) continue
+        seen.add(cleanId)
+        ids.push(cleanId)
+      }
+      if (!all && ids.length === 0) return rpcFailure(new Error('invalid-session-ids'))
+      try {
+        const deleted = await loadDeletedSessions(dshHome)
+        let removedCount = 0
+        const removedIds = []
+        if (all) {
+          removedCount = deleted.items.length
+          for (const item of deleted.items) removedIds.push(item.id)
+          deleted.items = []
+        } else {
+          const targetSet = new Set(ids)
+          const remaining = []
+          for (const item of deleted.items) {
+            if (targetSet.has(item.id)) {
+              removedCount++
+              removedIds.push(item.id)
+            } else {
+              remaining.push(item)
+            }
+          }
+          deleted.items = remaining
+        }
+        if (removedCount > 0) {
+          await saveDeletedSessions(dshHome, deleted)
+        }
+        if (sessionTitleCache !== null) {
+          for (const id of removedIds) sessionTitleCache.delete(id)
+        }
+        return { ok: true, value: { cleared: true, count: removedCount, ids: removedIds } }
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+    } },
   }
   const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
   ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })

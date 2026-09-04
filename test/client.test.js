@@ -61,6 +61,19 @@ function createRenderer(rpcCall, options = {}) {
   let hookCursor = 0
   let roots = new Map()
   let reloads = 0
+  // React #31 语义（真实 react-dom 行为）：children 里出现「裸对象」——不是本替身
+  // createElement 产物（无 type 字段）、也不是带 $$typeof 的官方元素——就抛错。
+  // 真壳会把这类树整个炸掉（设置节槽位错误边界吞成白屏），软替身曾把它掩盖
+  // （会话管理「清除已删除记录」白屏根因：对象形态 res.error 直接进了 React children）。
+  const isElementLike = (value) => value !== null && typeof value === 'object' && (('type' in value) || ('$$typeof' in value))
+  const assertValidChildren = (children) => {
+    for (const child of children) {
+      if (child === null || child === undefined || typeof child !== 'object') continue
+      if (Array.isArray(child)) { assertValidChildren(child); continue }
+      if (isElementLike(child)) continue
+      throw new Error('Minified React error #31 (test double): object is not a valid React child: ' + JSON.stringify(child).slice(0, 120))
+    }
+  }
   // strict session 槽语义（opt-in）：模拟真实渲染器的 (entry,binding) inject 缓存与
   // 会话绑定生命周期（undefined→session、卸载重挂都换新 binding；同 binding 重渲染
   // 复用首次注入产物）。默认关闭，行为与既有硬编码 session-1 完全一致。
@@ -79,6 +92,7 @@ function createRenderer(rpcCall, options = {}) {
 
   const React = {
     createElement(type, props, ...children) {
+      assertValidChildren(children)
       return { type, props: props || {}, children }
     },
     useState(initial) {
@@ -6175,6 +6189,10 @@ function createSessionRpcMock({ onCall, ...overrides } = {}) {
       return { ok: true, value: { bytes } }
     },
     'sessions-search': () => ({ ok: true, value: { available: true, query: '', scope: 'all', hits: [] } }),
+    'sessions-clear-deleted': (payload) => {
+      const ids = payload?.ids || []
+      return { ok: true, value: { cleared: true, count: ids.length, ids } }
+    },
   }
   return async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
@@ -7016,13 +7034,181 @@ test('session manager batch mode supports multi-select, actions, select all, cle
 
     await renderer.findByTestId('sessions-filter-deleted').props.onClick()
     await renderer.flush()
-    assert.equal(renderer.hasTest('sessions-batch-toggle'), false, 'deleted records stay read-only without a batch selector')
+    assert.equal(renderer.hasTest('sessions-batch-toggle'), true, 'deleted records support batch selection for clearing')
   } finally {
     if (previousFetch === undefined) delete globalThis.fetch
     else globalThis.fetch = previousFetch
     if (previousDocument === undefined) delete globalThis.document
     else globalThis.document = previousDocument
   }
+})
+
+test('session manager deleted records support single clear, multi-select clear, and select-all clear with confirmation', async () => {
+  const calls = []
+  const initialDeleted = [
+    { id: 'del-alpha', title: 'Deleted Alpha', cwd: '/workspace', deletedAt: 3000 },
+    { id: 'del-beta', title: 'Deleted Beta', cwd: '/workspace', deletedAt: 2000 },
+    { id: 'del-gamma', title: 'Deleted Gamma', cwd: '/workspace', deletedAt: 1000 },
+  ]
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-list': (payload) => {
+      const scope = payload?.scope || 'all'
+      if (scope === 'deleted') return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: initialDeleted } }
+      return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: initialDeleted } }
+    },
+    'sessions-clear-deleted': (payload) => {
+      const ids = payload?.ids || []
+      return { ok: true, value: { cleared: true, count: ids.length, ids } }
+    },
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+
+  // 切换到已删除筛选
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+
+  // 验证三条记录展示，每行有清除按钮，无删除按钮
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), true)
+  assert.equal(renderer.hasTest('sessions-row-del-beta'), true)
+  assert.equal(renderer.hasTest('sessions-row-del-gamma'), true)
+  assert.equal(renderer.hasTest('sessions-row-clear-del-alpha'), true)
+  assert.equal(renderer.hasTest('sessions-row-delete-del-alpha'), false)
+
+  // 1. 单条清除流程：点击清除 -> 弹出两段式确认模态 -> 点击取消 -> 模态关闭且记录仍在
+  await renderer.findByTestId('sessions-row-clear-del-alpha').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), true)
+  await renderer.findByTestId('sessions-clear-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), true)
+
+  // 再次点击清除 -> 确认清除 -> 调用 RPC 并从视图移除 del-alpha
+  await renderer.findByTestId('sessions-row-clear-del-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-clear-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-beta'), true)
+  assert.equal(renderer.hasTest('sessions-row-del-gamma'), true)
+  assert.deepEqual(calls.filter((c) => c.endpoint === 'sessions-clear-deleted').map((c) => c.payload.ids), [['del-alpha']])
+
+  // 2. 批量选择（多选）清除流程：进入批量态
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-batch-bar'), true)
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 0 项')
+  assert.equal(renderer.findByTestId('sessions-batch-clear').props.disabled, true)
+
+  // 选中 del-beta
+  await renderer.findByTestId('sessions-row-del-beta').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 1 项')
+  assert.equal(renderer.findByTestId('sessions-batch-clear').props.disabled, false)
+  assert.equal(renderer.findByTestId('sessions-batch-clear').children[0], '清除 (1)')
+
+  // 点击批量清除 -> 确认模态 -> 确认
+  await renderer.findByTestId('sessions-batch-clear').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), true)
+  assert.equal(renderer.hasTest('sessions-clear-list'), true)
+  await renderer.findByTestId('sessions-clear-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-beta'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-gamma'), true)
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 0 项')
+  assert.equal(renderer.findByTestId('sessions-batch-result').children[0], '已完成清除：1 项')
+
+  // 3. 全选清除流程：点击全选 -> 选中剩余的 del-gamma -> 批量清除
+  await renderer.findByTestId('sessions-select-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 1 项')
+  assert.equal(renderer.findByTestId('sessions-select-all').children[0], '取消全选')
+
+  await renderer.findByTestId('sessions-batch-clear').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), true)
+  await renderer.findByTestId('sessions-clear-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), false)
+  assert.equal(renderer.hasTest('sessions-row-del-gamma'), false)
+
+  // 全部清除后列表显示空提示
+  assert.match(renderer.text(), /暂无删除记录/)
+
+  // 退出批量态
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-batch-bar'), false)
+})
+
+test('session manager clear error path renders message text instead of crashing the panel on strict rpc error objects', async () => {
+  // 真壳回归（白屏根因）：宿主/派发层对 ok:false 一律回 rpcErrorSchema 枚举对象
+  // （如 {code:'internal',message:'unknown-endpoint',details:{}}——宿主未重载新端点、
+  // 磁盘写失败等都走它）。真实 React 把对象 children 判 #31 → 整个 settings.section
+  // 槽位错误边界吞成白屏。替身 createElement 已开 #31 严格语义，此测试在坏代码上
+  // 必炸、修复后必须存活。
+  const initialDeleted = [
+    { id: 'del-alpha', title: 'Deleted Alpha', cwd: '/workspace', deletedAt: 3000 },
+    { id: 'del-beta', title: 'Deleted Beta', cwd: '/workspace', deletedAt: 2000 },
+  ]
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': (payload) => {
+      const scope = payload?.scope || 'all'
+      if (scope === 'deleted') return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: initialDeleted } }
+      return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: initialDeleted } }
+    },
+    // 真壳派发层对未知端点的返回形状（逐字节同款）
+    'sessions-clear-deleted': () => ({ ok: false, error: { code: 'internal', message: 'unknown-endpoint', details: {} } }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+
+  // 单条清除失败：模态保持打开、错误以可读文本呈现、面板其余部分照常渲染（无白屏）
+  await renderer.findByTestId('sessions-row-clear-del-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-clear-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-clear-modal'), true, 'failed single clear keeps the confirm modal open')
+  assert.match(renderer.text(), /unknown-endpoint/)
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), true, 'panel still renders rows after error')
+  assert.equal(renderer.hasTest('sessions-row-del-beta'), true)
+  assert.equal(renderer.hasTest('sessions-filter-deleted'), true, 'filter bar still alive (no section crash)')
+
+  // 取消后行仍在
+  await renderer.findByTestId('sessions-clear-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), true)
+
+  // 批量清除失败：同形状错误进批量错误条（也是 children 渲染），面板同样必须存活
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-del-alpha').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-batch-clear').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-clear-confirm').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('sessions-batch-error').children.join(''), /unknown-endpoint/)
+  assert.equal(renderer.hasTest('sessions-row-del-alpha'), true, 'panel still renders rows after batch error')
 })
 
 test('session manager detail pages events, loads more with seq cursor, and triggers export', async () => {
