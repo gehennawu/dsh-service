@@ -3817,14 +3817,16 @@ test('cliproxy api-call envelope and account plan builders follow the management
   assert.ok(codexPlan.calls[0].url.includes('chatgpt.com/backend-api/wham/usage'))
   assert.equal(codexPlan.calls[0].header.Authorization, 'Bearer $TOKEN$')
   const antigravityPlan = buildCliproxyAccountPlan({ type: 'antigravity' })
-  assert.equal(antigravityPlan.calls.length, 6)
+  assert.equal(antigravityPlan.calls.length, 3)
   assert.ok(antigravityPlan.calls.every((call) => call.method === 'POST' && call.data === '{}'))
   assert.match(antigravityPlan.calls[0].header['User-Agent'], /antigravity\//)
-  // v1.4.8：daily-cloudcode-pa 是 CPA antigravity 流量的真实去向（executor "Consumer credentials
-  // default to daily"），必须在 prod 之前命中，否则面板显示的是 prod 空池的数字。
-  assert.ok(antigravityPlan.calls[0].url.startsWith('https://daily-cloudcode-pa.'))
+  // v1.4.8 复核：候选收敛为 daily-only——daily 是 CPA antigravity 流量的真实去向（executor
+  // "Consumer credentials default to daily"）；prod 是独立空池且管理面无法识别企业 base_url，
+  // 错池数字比窗口缺席更糟，任何候选都不得指向 cloudcode-pa。
+  for (const call of antigravityPlan.calls) {
+    assert.ok(call.url.startsWith('https://daily-cloudcode-pa.'), call.url)
+  }
   assert.ok(antigravityPlan.calls[0].url.endsWith('/v1internal:retrieveUserQuotaSummary'))
-  assert.ok(antigravityPlan.calls[1].url.startsWith('https://daily-cloudcode-pa.') || antigravityPlan.calls[1].url.startsWith('https://cloudcode-pa.'))
   const geminiPlan = buildCliproxyAccountPlan({ provider: 'gemini-cli', name: 'gemini-u@gmail.com-p1.json' })
   assert.deepEqual(JSON.parse(geminiPlan.calls[0].data), { project: 'p1' })
   assert.equal(buildCliproxyAccountPlan({ provider: 'gemini-cli', name: 'no-project.json' }), null)
@@ -4325,36 +4327,52 @@ test('fetchCliproxyUsage marks snapshot fallback windows stale and drops windows
   assert.equal(week.stale, true)
 })
 
-test('fetchCliproxyUsage reads antigravity quota from the daily pool where CPA spends it, not the empty prod pool', async (t) => {
+test('fetchCliproxyUsage never falls back to the prod pool: daily summary failure lands on daily model-level data', async (t) => {
   const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
   const context = { allowedHosts: { cpa: ['cli.example.org'] } }
-  // 同一账号同一时刻两池数字不同（2026-09-04 真机实测）：daily 5h≈38%/周≈7%，prod 5h=0%/周=15%。
-  // prod 摘要返回合法形状，旧顺序 prod 先命中即停 → 面板长期显示空池数字。
-  const groupsFor = (weeklyUsed, fiveUsed) => ({
-    groups: [
-      {
-        displayName: 'Gemini Models',
-        buckets: [
-          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 1 - weeklyUsed / 100, resetTime: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString() },
-          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 1 - fiveUsed / 100, resetTime: new Date(Date.now() + 2 * 3600 * 1000).toISOString() },
-        ],
-      },
-    ],
-  })
-  stubHttpsRequest(t, (request) => {
+  // prod（cloudcode-pa）对同一账号返回合法形状的空池数字（2026-09-04 真机实测）——即使它 200
+  // 可解析，也绝不能成为 daily 失败时的数据源；daily 摘要挂了应落到 daily 的模型级端点。
+  const requests = stubHttpsRequest(t, (request) => {
     if (request.url.endsWith('/auth-files')) {
       return { payload: { files: [{ auth_index: 'idx-0', provider: 'antigravity', email: 'ag@example.com' }] } }
     }
     const body = JSON.parse(request.body ?? '{}')
     const url = String(body.url ?? '')
-    if (url.startsWith('https://daily-cloudcode-pa')) return { payload: { status_code: 200, body: JSON.stringify(groupsFor(7, 38)) } }
-    if (url.startsWith('https://cloudcode-pa')) return { payload: { status_code: 200, body: JSON.stringify(groupsFor(15, 0)) } }
+    if (url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
+      return { payload: { status_code: 429, body: '' } }
+    }
+    if (url.startsWith('https://cloudcode-pa.')) {
+      return {
+        payload: {
+          status_code: 200,
+          body: JSON.stringify({ groups: [{ displayName: 'Gemini Models', buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.85, resetTime: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString() },
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 1, resetTime: new Date(Date.now() + 5 * 3600 * 1000).toISOString() },
+          ] }] }),
+        },
+      }
+    }
+    if (url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels') {
+      return {
+        payload: {
+          status_code: 200,
+          body: JSON.stringify({ models: { 'gemini-3-pro': { quotaInfo: { remainingFraction: 0.62, resetTime: new Date(Date.now() + 2 * 3600 * 1000).toISOString() } } } }),
+        },
+      }
+    }
     return { payload: { status_code: 404, body: '' } }
   })
   const windows = await fetchCliproxyUsage({ profile, config: context, credential: 'Bearer k', signal: undefined })
-  const byKind = new Map(windows.map((window) => [window.kindKey, window.percent]))
-  assert.equal(byKind.get('gemini-5h'), 38)
-  assert.equal(byKind.get('gemini-week'), 7)
+  // 数据必须来自 daily 的模型级端点（同池），prod 空池数字一次都不许出现。
+  const proModel = windows.find((window) => window.kindKey === 'gemini-3-pro')
+  assert.notEqual(proModel, undefined)
+  assert.equal(proModel.percent, 38)
+  assert.equal(proModel.label, 'ag@example.com')
+  // 注意不能用子串匹配：daily-cloudcode-pa.googleapis.com 包含 cloudcode-pa.googleapis.com。
+  const prodCalled = requests.some((request) => {
+    try { return String(JSON.parse(request.body ?? '{}').url ?? '').startsWith('https://cloudcode-pa.') } catch { return false }
+  })
+  assert.equal(prodCalled, false)
 })
 
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）────────────────────────────

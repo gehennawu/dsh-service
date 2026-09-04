@@ -542,19 +542,17 @@ async function fetchStepFunStepPlanUsage({ credential, signal, requestJson }) {
 
 const CLIPROXY_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const CLIPROXY_GEMINI_QUOTA_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
-// antigravity 额度候选（v1.4.8 修订顺序）：CPA 的 antigravity 流量默认全打 daily-cloudcode-pa
-// （executor 源码 "Consumer credentials default to daily"），真实用量落在 daily 池；prod 池对同一
-// 账号返回合法形状但近乎全空（2026-09-04 真机实测同一时刻 daily 5h≈38% vs prod 5h=0%，且 prod
-// 的重置点全是 now+5h 滚动=从未消费的池子特征）。旧顺序 prod 先命中导致面板长期显示另一池的
-// 数字。每层内部 daily 优先、prod 兜底；summary（组级 5h/周）→ fetchAvailableModels（模型级）→
-// retrieveUserQuota（项目级，空 body 走账号默认项目）。
+// antigravity 额度候选（v1.4.8 修订 + 复核收敛为 daily-only）：CPA 的 antigravity 流量默认全打
+// daily-cloudcode-pa（executor 源码 "Consumer credentials default to daily"），真实用量只在 daily
+// 池。prod（cloudcode-pa）是独立配额池：对同一账号返回 200+合法形状但数字近乎全空（2026-09-04
+// 真机实测 daily 5h≈38% vs prod 5h=0%，周窗锚点 23:56 vs 13:48 两池各异），且管理面 auth-files
+// 不回传企业自定义 base_url（存在 auth 文件 metadata 里），插件无法识别「该查 prod」的部署——
+// 错池数字一经展示即成「数据不对」，比窗口缺席更糟，故 prod 候选整段移除，daily 失败诚实报错。
+// 层内顺序：summary（组级 5h/周）→ fetchAvailableModels（模型级）→ retrieveUserQuota（项目级）。
 const CLIPROXY_ANTIGRAVITY_QUOTA_URLS = [
   'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
-  'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-  'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
   'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
-  'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
 ]
 const CLIPROXY_SUPPORTED_ACCOUNT_KINDS = new Set(['codex', 'gemini', 'gemini-cli', 'antigravity'])
 const CODEX_WINDOW_ORDER = new Map([
