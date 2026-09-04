@@ -671,6 +671,8 @@ window.__ModuleLoader__.load({
       'quota.refreshing': '刷新中…',
       'quota.empty': '暂无数据',
       'quota.resetIn': '重置于 {time}',
+      'quota.window.stale': '缓存',
+      'quota.window.staleTip': '该账号实时查询失败，显示的是 CPA 上次缓存的快照（非实时值）',
       'quota.resetCard.title': '重置卡',
       'quota.resetCard.expires': '{date} 到期',
       'quota.resetCard.expired': '已过期',
@@ -1412,6 +1414,8 @@ window.__ModuleLoader__.load({
       'quota.refreshing': 'Refreshing…',
       'quota.empty': 'No data yet',
       'quota.resetIn': 'Resets in {time}',
+      'quota.window.stale': 'cached',
+      'quota.window.staleTip': "Live query failed for this account; showing CPA's last cached snapshot (not realtime)",
       'quota.resetCard.title': 'Reset card',
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
@@ -3286,7 +3290,17 @@ window.__ModuleLoader__.load({
         },
         React.createElement('div', { 'data-value': window.percent, style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
           React.createElement('span', { style: labelStyle, title: labelText }, labelText),
-          React.createElement('span', { style: valueStyle }, quotaWindowValueText(window))),
+          // stale（v1.3.1）：cliproxy 实时 api-call 失败时回退的 auth-files 快照窗口，宿主打标——
+          // 没有徽标时缓存值与实时值在面板上不可区分，正是「额度一直停在昨天」观感的来源。
+          React.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 } },
+            React.createElement('span', { style: valueStyle }, quotaWindowValueText(window)),
+            window.stale === true
+              ? React.createElement('span', {
+                  'data-testid': inCard ? `quota-card-stale-${provider}-${window.id}` : `quota-stale-${window.id}`,
+                  title: translate('quota.window.staleTip'),
+                  style: svcBadgeStyle('warning', { padding: '1px 7px', flexShrink: 0 }),
+                }, translate('quota.window.stale'))
+              : null)),
         quotaBar(inCard ? `quota-card-bar-${provider}-${window.id}` : `quota-window-bar-${window.id}`, window.percent, '4px', window.remaining === true),
         resetNode)
       }

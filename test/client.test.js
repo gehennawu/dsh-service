@@ -5122,6 +5122,54 @@ test('cliproxy windows render as「账号 · 本地化窗口名」and management
   assert.match(text, /CLIProxyAPI 管理面未启用/)
 })
 
+test('stale cliproxy snapshot windows render a cached badge while live windows stay unmarked', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            {
+              provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+              refreshing: false, status: 'ok', fetchedAt: Date.now(),
+              windows: [
+                // 实时 api-call 失败回退的快照窗口（宿主打 stale 标，重置点已过的死窗口宿主已丢弃）。
+                { id: 'u0-example-com-0-codex-week', kindKey: 'codex-week', label: 'u0@example.com', percent: 5, resetsAt: new Date(Date.now() + 3600_000).toISOString(), stale: true },
+                { id: 'u1-example-com-1-codex-week', kindKey: 'codex-week', label: 'u1@example.com', percent: 73, resetsAt: new Date(Date.now() + 3600_000).toISOString() },
+              ],
+            },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // stale 窗口带「缓存」徽标与悬停说明；实时窗口不带任何标记。
+  const staleBadge = renderer.findByTestId('quota-card-stale-cpa-u0-example-com-0-codex-week')
+  assert.equal(staleBadge.children.join(''), '缓存')
+  assert.match(String(staleBadge.props.title), /CPA 上次缓存的快照/)
+  assert.equal(renderer.findByTestId('quota-card-window-cpa-u1-example-com-1-codex-week') !== undefined, true)
+  let liveStaleBadge
+  try {
+    liveStaleBadge = renderer.findByTestId('quota-card-stale-cpa-u1-example-com-1-codex-week')
+  } catch (_) {
+    liveStaleBadge = null
+  }
+  assert.equal(liveStaleBadge, null)
+})
+
 test('unconfigured quota rows offer an inline credential form that writes via the store RPC', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const rpcLog = []

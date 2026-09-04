@@ -4065,11 +4065,13 @@ test('cliproxy RPC falls back to auth-file quota signals when Codex wham/usage i
 
   const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
   assert.equal(row.status, 'ok')
+  // v1.3.1 修订：快照窗口重置点已过（fixture 的 Primary-Reset-At=1788444012 在过去）＝快照描述的
+  // 窗口已结束，是死数据 → 直接丢弃；未过期的副窗保留但带 stale 标记（客户端渲染「缓存」徽标）。
   const byKind = new Map(row.windows.map((w) => [w.kindKey, w]))
-  assert.equal(byKind.get('codex-5h').percent, 21)
-  assert.equal(byKind.get('codex-5h').label, 'codex-fallback@example.com')
+  assert.equal(byKind.get('codex-5h'), undefined)
   assert.equal(byKind.get('codex-week').percent, 73)
   assert.equal(byKind.get('codex-week').label, 'codex-fallback@example.com')
+  assert.equal(byKind.get('codex-week').stale, true)
 })
 
 test('cliproxy RPC surfaces mgmt-disabled and host-not-pinned as stable error codes', async (t) => {
@@ -4283,6 +4285,38 @@ test('fetchCliproxyUsage keeps account and Codex window order stable when calls 
     ['b@example.com', 'codex-5h'],
     ['b@example.com', 'codex-week'],
   ])
+})
+
+test('fetchCliproxyUsage marks snapshot fallback windows stale and drops windows whose reset has passed', async (t) => {
+  const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
+  const context = { allowedHosts: { cpa: ['cli.example.org'] } }
+  // auth-files 内嵌 quota.signals 是 CPA 上次代调时缓存的快照，age 无上界（实测可到昨天）：
+  // 主窗重置点已过（快照描述的窗口已结束=死数据），副窗重置点在未来（仍是可用近似值）。
+  const pastReset = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+  const futureReset = new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString()
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) {
+      return {
+        payload: {
+          files: [{
+            auth_index: 'idx-0',
+            provider: 'codex',
+            email: 'u@example.com',
+            quota: { signals: { 'X-Codex-Primary-Used-Percent': '1', 'X-Codex-Primary-Reset-At': pastReset, 'X-Codex-Secondary-Used-Percent': '5', 'X-Codex-Secondary-Reset-At': futureReset } },
+          }],
+        },
+      }
+    }
+    // 实时 api-call 失败 → 回退快照窗口。
+    return { payload: { status_code: 500, body: 'boom' } }
+  })
+  const windows = await fetchCliproxyUsage({ profile, config: context, credential: 'Bearer k', signal: undefined })
+  // 已过重置点的快照窗口直接丢弃：面板绝不显示「重置时间在过去」的窗口。
+  assert.equal(windows.some((window) => window.kindKey === 'codex-5h'), false)
+  // 未过期的快照窗口保留，但必须带 stale 标记（客户端渲染「缓存」徽标，与实时窗口可区分）。
+  const week = windows.find((window) => window.kindKey === 'codex-week')
+  assert.notEqual(week, undefined)
+  assert.equal(week.stale, true)
 })
 
 // ─── 小米 MiMo Token Plan（xiaomi-token-plan-cn）────────────────────────────

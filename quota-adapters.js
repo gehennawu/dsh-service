@@ -648,6 +648,20 @@ function parseCodexSignals(quota) {
   return sortCodexWindows(windows)
 }
 
+/** 快照回退窗口（v1.3.1 复核修订）：auth-files 内嵌 quota.signals 是 CPA 上次代调时缓存的
+ * 快照，age 无上界（实测部署可停在昨天）——只在对应账号实时 api-call 失败时代用。两道处理：
+ * ① 重置点已过的窗口是死数据（快照描述的窗口已结束），直接丢弃，绝不显示「重置时间在过去」；
+ * ② 其余窗口保留但打 stale 标记，客户端渲染「缓存」徽标，与实时窗口可区分。 */
+function cliproxFallbackWindows(account, now = Date.now()) {
+  const usable = []
+  for (const window of account.fallbackWindows ?? []) {
+    const resetMs = typeof window.resetsAt === 'string' ? Date.parse(window.resetsAt) : Number(window.resetsAt)
+    if (Number.isFinite(resetMs) && resetMs <= now) continue
+    usable.push({ ...window, stale: true })
+  }
+  return usable
+}
+
 function normalizeGeminiBuckets(buckets) {
   const windows = []
   if (!Array.isArray(buckets)) return windows
@@ -835,8 +849,9 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         })
       } catch (error) {
         failures.push({ index: accountIndex, code: quotaErrorCode(error) })
-        if (account.fallbackWindows?.length > 0) {
-          accountResults.set(accountIndex, account.fallbackWindows)
+        const fallback = cliproxFallbackWindows(account)
+        if (fallback.length > 0) {
+          accountResults.set(accountIndex, fallback)
         }
         return
       }
@@ -848,14 +863,16 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
       }
       failures.push({ index: accountIndex, code: statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}` })
       if (account.provider !== 'antigravity') {
-        if (account.fallbackWindows?.length > 0) {
-          accountResults.set(accountIndex, account.fallbackWindows)
+        const fallback = cliproxFallbackWindows(account)
+        if (fallback.length > 0) {
+          accountResults.set(accountIndex, fallback)
         }
         return
       }
     }
-    if (account.fallbackWindows?.length > 0) {
-      accountResults.set(accountIndex, account.fallbackWindows)
+    const fallback = cliproxFallbackWindows(account)
+    if (fallback.length > 0) {
+      accountResults.set(accountIndex, fallback)
     } else {
       accountResults.set(accountIndex, [])
     }
@@ -883,6 +900,7 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         ...(account.label !== '' ? { label: account.label } : {}),
         percent: window.percent,
         ...(window.resetsAt !== undefined ? { resetsAt: window.resetsAt } : {}),
+        ...(window.stale === true ? { stale: true } : {}),
       })
     }
   }
