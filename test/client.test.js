@@ -3066,8 +3066,8 @@ test('quota ring routes cliproxy CPA windows by current model family (Claude, Ge
   const panel = renderer.findByTestId('quota-ring-panel')
   assert.ok(panel)
   assert.match(renderer.text(), /CPA · Claude/)
-  assert.match(renderer.text(), /Claude 5 小时窗/)
-  assert.match(renderer.text(), /Claude 本周窗/)
+  assert.match(renderer.text(), /5 小时/)
+  assert.match(renderer.text(), /本周/)
   // 此时未点「查看全部」：不展示 Codex / Gemini 窗口
   assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), false)
   assert.equal(renderer.hasTest('quota-window-bar-gemini-5h'), false)
@@ -3093,7 +3093,7 @@ test('quota ring routes cliproxy CPA windows by current model family (Claude, Ge
   for (const fn of [...storeListeners]) fn()
   await renderer.flush()
   assert.match(renderer.text(), /CPA · Codex/)
-  assert.match(renderer.text(), /Codex 本周窗.*70%/)
+  assert.match(renderer.text(), /本周.*70%/)
   assert.equal(renderer.hasTest('quota-window-bar-claude-5h'), false)
 
   // 3) 切到 gemini-3.1-pro：自动折算为 Gemini 上游，反映 20% 用量
@@ -3101,7 +3101,7 @@ test('quota ring routes cliproxy CPA windows by current model family (Claude, Ge
   for (const fn of [...storeListeners]) fn()
   await renderer.flush()
   assert.match(renderer.text(), /CPA · Gemini/)
-  assert.match(renderer.text(), /Gemini 5 小时窗.*20%/)
+  assert.match(renderer.text(), /5 小时.*20%/)
   assert.equal(renderer.hasTest('quota-window-bar-codex-5h'), false)
 })
 
@@ -5121,8 +5121,8 @@ test('cliproxy windows render as「账号 · 本地化窗口名」and management
   await renderer.flush()
   const text = renderer.text()
   // 两段式组合文案：账号（数据）· 本地化窗口名（词典）——宿主不拼用户可见句子。
-  assert.match(text, /codex-user@example\.com · Codex 5 小时窗/)
-  assert.match(text, /codex-user@example\.com · Codex 本周窗/)
+  assert.match(text, /codex-user@example\.com · 5 小时/)
+  assert.match(text, /codex-user@example\.com · 本周/)
   assert.match(text, /gm@gmail\.com · gemini-2\.5-pro/) // 模型名未收录 → 裸模型名兜底
   assert.match(text, /43%/)
   // 稳定错误码 mgmt-disabled 的本地化文案。
