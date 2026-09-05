@@ -1343,6 +1343,12 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
+  // 版本卡常驻「暂不支持 ≥ 0.1.3-alpha.1」声明；支持范围内的运行版本为中性色（v1.4.10）
+  const supportBound = renderer.findByTestId('version-dsh-support-bound')
+  assert.match(renderer.text('settings.section'), /0\.1\.3-alpha\.1/, 'support-bound declaration is always present')
+  assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
+  assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
+
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
@@ -1361,7 +1367,37 @@ test('settings mount automatically shows separate DSH and plugin update states w
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /正式版|预览版/)
-  assert.match(renderer.text('sidebar.footer.action'), /DSH 有更新/)
+  assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
+})
+
+test('version card flags the DSH support bound red when running ≥ 0.1.3-alpha.1', async () => {
+  const cases = [
+    { current: '0.1.2-rc.1', red: false },
+    { current: '0.1.3-alpha.0', red: false },
+    { current: '0.1.3-alpha.1', red: true },
+    { current: '0.1.3', red: true },
+  ]
+  for (const item of cases) {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: item.current, pluginVersion: '1.4.9', instanceId: 'x' } }
+      if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+      if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    const bound = renderer.findByTestId('version-dsh-support-bound')
+    assert.match(renderer.text('settings.section'), /0\.1\.3-alpha\.1/, `bound note present on ${item.current}`)
+    if (item.red) {
+      assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
+      assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
+    } else {
+      assert.equal(bound.props.style.color, 'var(--dsw-alias-label-secondary)', `${item.current} stays neutral`)
+      assert.equal(bound.props.style.background, 'transparent', `${item.current} has no danger background`)
+    }
+  }
 })
 
 test('channel version strings outside the safe charset render plain text without npm links', async () => {

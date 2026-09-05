@@ -500,6 +500,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
+      'version.dsh.supportBound': '本插件暂不支持 DSH ≥ {limit}（兼容适配进行中）',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -509,14 +510,11 @@ window.__ModuleLoader__.load({
       'update.unavailable': '暂时无法检查最新版本',
       'update.unpublished': '尚未发布可检查版本',
       'health.recheck': '重新诊断',
-      'update.badge': 'DSH 有更新',
-      'update.details.title': 'DSH 更新可用',
       'update.details.current': '当前版本：{version}',
       'update.details.latest': '最新版本：{version}',
       'update.channelStable': '正式版',
       'update.channelPreview': '预览版',
       'update.channelAlpha': 'Alpha 版',
-      'update.details.close': '关闭',
       'update.upgrade': '升级插件',
       'update.upgrading': '升级中…',
       'update.upgradeError': '插件升级失败',
@@ -1247,6 +1245,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
+      'version.dsh.supportBound': 'This plugin does not support DSH ≥ {limit} yet (compatibility adaptation in progress)',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -1256,14 +1255,11 @@ window.__ModuleLoader__.load({
       'update.unavailable': 'Latest version is temporarily unavailable',
       'update.unpublished': 'No published version is available to check',
       'health.recheck': 'Run again',
-      'update.badge': 'DSH update',
-      'update.details.title': 'DSH update available',
       'update.details.current': 'Current version: {version}',
       'update.details.latest': 'Latest version: {version}',
       'update.channelStable': 'Stable',
       'update.channelPreview': 'Preview',
       'update.channelAlpha': 'Alpha',
-      'update.details.close': 'Close',
       'update.upgrade': 'Upgrade plugin',
       'update.upgrading': 'Upgrading…',
       'update.upgradeError': 'Plugin upgrade failed',
@@ -2445,38 +2441,12 @@ window.__ModuleLoader__.load({
       }
 
       const recoveryListeners = new Set()
-      const updateListeners = new Set()
       let recoveryState = { status: 'idle', elapsedMs: 0 }
       let recoveryGeneration = 0
-      let availableUpdate = null
-      let updateDetailsOpen = false
 
       const setRecoveryState = (next) => {
         recoveryState = next
         for (const listener of recoveryListeners) listener(next)
-      }
-
-      const publishUpdateState = () => {
-        const snapshot = { update: availableUpdate, open: updateDetailsOpen }
-        for (const listener of updateListeners) listener(snapshot)
-      }
-      const setAvailableUpdate = (value) => {
-        availableUpdate = value
-        if (value === null) updateDetailsOpen = false
-        publishUpdateState()
-      }
-      const setUpdateDetailsOpen = (open) => {
-        updateDetailsOpen = open === true
-        publishUpdateState()
-      }
-      const useUpdateState = () => {
-        const [snapshot, setSnapshot] = useState({ update: availableUpdate, open: updateDetailsOpen })
-        useEffect(() => {
-          updateListeners.add(setSnapshot)
-          setSnapshot({ update: availableUpdate, open: updateDetailsOpen })
-          return () => updateListeners.delete(setSnapshot)
-        }, [])
-        return snapshot
       }
 
       // 重启流程共享状态：设置面板「重启」标签与专属设置页共用同一份 stage/activity/busy/error，
@@ -2629,22 +2599,10 @@ window.__ModuleLoader__.load({
         recoveryListeners.clear()
         restartFlowListeners.clear()
         runtimeEnvListeners.clear()
-        updateListeners.clear()
       }, 'dsh-service recovery')
 
-      function UpdateBadge() {
-        const state = useUpdateState()
-        const translate = useTranslation()
-        if (state.update === null) return null
-        return React.createElement('button', {
-          type: 'button',
-          onClick: () => setUpdateDetailsOpen(true),
-          style: { margin: '4px', padding: '5px 8px', borderRadius: '999px', border: 0, background: 'var(--dsh-svc-warning)', color: 'var(--dsh-svc-brand-text)', cursor: 'pointer', fontSize: '11px', fontWeight: 600 },
-        }, translate('update.badge'))
-      }
-
-      // 正式/预览通道行：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接。
-      // 版本串嵌进 URL 前过安全字符集校验，不过校验的标签降级为纯文本。供更新详情浮层使用。
+      // 正式/预览/Alpha 通道行：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接。
+      // 版本串嵌进 URL 前过安全字符集校验，不过校验的标签降级为纯文本。供版本卡行内展开使用。
       const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
       const packageVersionHref = (base, version) => {
         if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
@@ -2665,25 +2623,48 @@ window.__ModuleLoader__.load({
         channelLine(translate, 'next', tags && tags.next),
          ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
 
+      // 版本支持上限声明（v1.4.10，用户点名）：0.1.3-alpha.1 起官方移除旧 sessionPersistence
+      // seam（listSnapshots/readFrom/locate/readRaw），兼容适配推迟到官方下一 rc（TODO.md
+      // 「DSH 0.1.3-alpha.1 兼容适配」节）。该版本及更高一律判「暂不支持」；运行版本越界时
+      // 版本卡声明行转红警示。无法解析的版本串（如 unknown）按不支持判空、中性展示。
+      const DSH_NOT_SUPPORTED_FROM = '0.1.3-alpha.1'
+      const parseSemver = (value) => {
+        if (typeof value !== 'string') return null
+        const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
+        if (!match) return null
+        return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), pre: match[4] ? match[4].split('.') : null }
+      }
+      const semverIdentifier = (id) => (/^\d+$/.test(id) ? Number(id) : id)
+      const compareSemver = (a, b) => {
+        const pa = parseSemver(a)
+        const pb = parseSemver(b)
+        if (!pa || !pb) return null
+        for (const key of ['major', 'minor', 'patch']) {
+          if (pa[key] !== pb[key]) return pa[key] < pb[key] ? -1 : 1
+        }
+        if (pa.pre === null && pb.pre === null) return 0
+        if (pa.pre === null) return 1
+        if (pb.pre === null) return -1
+        const length = Math.min(pa.pre.length, pb.pre.length)
+        for (let i = 0; i < length; i += 1) {
+          const ia = semverIdentifier(pa.pre[i])
+          const ib = semverIdentifier(pb.pre[i])
+          if (ia === ib) continue
+          if (typeof ia === 'number' && typeof ib === 'number') return ia < ib ? -1 : 1
+          if (typeof ia === 'string' && typeof ib === 'string') return ia < ib ? -1 : 1
+          return typeof ia === 'number' ? -1 : 1
+        }
+        return pa.pre.length < pb.pre.length ? -1 : pa.pre.length === pb.pre.length ? 0 : 1
+      }
+      const isDshUnsupported = (current) => {
+        const cmp = compareSemver(current, DSH_NOT_SUPPORTED_FROM)
+        return cmp !== null && cmp >= 0
+      }
+
       function ServiceOverlay() {
         const recovery = useRecoveryState()
-        const updateState = useUpdateState()
         const translate = useTranslation()
-        if (recovery.status === 'idle' && !updateState.open) return null
-        if (recovery.status === 'idle') {
-          const update = updateState.update
-          if (update === null) return null
-          return React.createElement('div', {
-            style: { position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', background: 'rgba(12, 14, 20, 0.72)', backdropFilter: 'blur(4px)', pointerEvents: 'auto' },
-          }, React.createElement('div', {
-            style: { width: 'min(420px, 100%)', padding: '24px', borderRadius: '12px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 18px 60px rgba(0,0,0,0.35)', textAlign: 'center' },
-          },
-          React.createElement('div', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '10px' } }, translate('update.details.title')),
-          React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.current', { version: update.current })),
-          React.createElement('p', { style: { margin: '4px 0', fontSize: '13px' } }, translate('update.details.latest', { version: update.latest })),
-          channelLines(translate, update.tags),
-          React.createElement('button', { style: Object.assign({}, svcRowActionStyle(), { marginTop: '16px', padding: '7px 16px' }), onClick: () => setUpdateDetailsOpen(false) }, translate('update.details.close'))))
-        }
+        if (recovery.status === 'idle') return null
 
         const timedOut = recovery.status === 'timeout'
         return React.createElement('div', {
@@ -6190,7 +6171,6 @@ window.__ModuleLoader__.load({
             if (!active || !res || res.ok === false) { if (active) setUpdateError(translate('update.unavailable')); return }
             setUpdateInfo(res.value)
             setUpdateError(null)
-            setAvailableUpdate(res.value.dsh && !res.value.dsh.upToDate ? res.value.dsh : null)
           }).catch(() => { if (active) setUpdateError(translate('update.unavailable')) })
           return () => { active = false }
         }, [])
@@ -7196,6 +7176,7 @@ window.__ModuleLoader__.load({
         // 版本信息区块：DSH 行在有更新时状态文本（小三角 + 有新版本）整体可点击，行内下拉展开
         const dshUpdate = updateInfo?.dsh
         const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
+        const dshUnsupported = isDshUnsupported(version)
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         // 确认后果或已装好待手动重启期间收起升级按钮，避免重复触发或撞 no-newer-version 守卫。
         const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
@@ -7207,6 +7188,10 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: displaySurface },
             versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false),
             versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
+            // 支持上限声明常驻（v1.4.10）：运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
+            // 仅在宿主服务本身正常并提供可解析版本时判为越界；无法解析的版本串中性展示。
+            React.createElement('div', { key: 'dsh-support-bound', 'data-testid': 'version-dsh-support-bound', style: { marginTop: '6px', padding: dshUnsupported ? '7px 10px' : '2px 0', borderRadius: '6px', fontSize: '12px', lineHeight: 1.5, color: dshUnsupported ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)', background: dshUnsupported ? 'rgba(211,51,51,0.08)' : 'transparent', border: dshUnsupported ? '1px solid rgba(211,51,51,0.3)' : 0, fontWeight: dshUnsupported ? 650 : 400 } },
+              React.createElement('span', null, translate('version.dsh.supportBound', { limit: DSH_NOT_SUPPORTED_FROM }))),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
@@ -7480,10 +7465,6 @@ window.__ModuleLoader__.load({
         const unsubscribeBell = subscribeBellVisible(sync)
         return () => { unsubscribe(); unsubscribeBell(); if (dispose !== null) dispose() }
       })
-      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-        { name: 'sidebar.footer.action', id: 'dsh-service-update', order: 90, label: () => t('update.badge') },
-        () => React.createElement(UpdateBadge, null),
-      ))
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
         { name: 'settings.plugin.item', id: 'dsh-service', key: 'dsh-service', order: 40 },
         () => React.createElement(FeatureSettingsCard, null),
