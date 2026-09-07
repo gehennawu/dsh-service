@@ -7600,20 +7600,20 @@ window.__ModuleLoader__.load({
       const IMMERSIVE_ACC_CLAMP_PX = 240  // 累加器饱和界：防止极端长滑程数值无意义膨胀
       const IMMERSIVE_MIN_SCROLLABLE_PX = 24
       const GESTURE_WINDOW_MS = 800       // touchstart/move/wheel 后的有效窗口；窗口外一律视为程序化滚动
-      // —— 边缘手势开合抽屉（2026-09 用户点名；真机返工第二轮）——
-      // 系统手势竞争：iOS Safari / Android Chrome 的「边缘右滑=返回」会抢走从
-      // 物理边缘起滑的触摸，网页拦不住系统手势。四条缓解：判定带 32px（带内
-      // 起滑页面都能收到）；touchcancel 用取消事件最终触点按放宽阈值补完（被
-      // 接管的横滑尽量转化为成功动作）；快速短拂补完（未达完整阈就抬手的快拂，
-      // 类原生抽屉的速度语义，仅开启追踪）；debug 芯片边缘遥测（?dshsvc-mobile-
-      // debug=1 后显示起触点/事件流/补完判定，真机定位用）。
-      // 补完只作用于开启追踪：关闭路径任意起点 armed 本就工作正常，不动它。
-      const EDGE_ZONE_PX = 32             // 边缘判定带宽度（左缘开左抽屉 / 右缘开右抽屉）
+      // —— 边缘手势开合抽屉（2026-09 用户点名；真机返工第三轮）——
+      // 系统手势竞争：iOS Safari / Android Edge|Chrome 的「边缘滑动=返回」会抢走
+      // 从物理边缘起滑的触摸。四条缓解：开启追踪对齐关闭手势的任意起点语义
+      // （真机第三轮用户点名：贴边限制太严，滑动范围大了失败）；touchcancel 用
+      // 取消事件最终触点按放宽阈值补完；快速短拂补完（类原生抽屉速度语义）；
+      // debug 芯片边缘遥测（?dshsvc-mobile-debug=1，真机定位用）。
+      // 补完只作用于【贴边起滑】的开启追踪：系统手势竞争只存在于屏幕边缘，
+      // 非贴边起点走完整触发阈即可；关闭路径不放大（不扰动已验证行为）。
+      const EDGE_ZONE_PX = 32             // 贴边判定带（仅决定是否享有放宽补完，不再限制 arm）
       const EDGE_TRIGGER_PX = 56          // 水平位移触发阈值（触摸存活期间的完整触发）
       const EDGE_CANCEL_PX = 6            // touchcancel 补完阈值：系统接管时已达此横移即完成动作（
                                           // 6px 起判：静止触被取消 dx≈0 不命中，纵向滚动接管被斜率检查拒绝）
       const EDGE_SLANT_PX = 12            // 纵向主导作废阈：|dy|>|dx| 且超过此值即放弃（滚动优先）
-      const EDGE_FLICK_PX = 32            // 快速短拂补完阈值（touchend；仅开启追踪）
+      const EDGE_FLICK_PX = 32            // 快速短拂补完阈值（touchend；仅贴边起滑的开启追踪）
       const EDGE_FLICK_MS = 260           // 快速短拂的时长上限（起触到抬手）
       const MOBILE_CSS = `
 /* 侧栏/详情列改 absolute 后会退出 grid 排版流，中列会被自动放置进第 1 轨
@@ -8383,7 +8383,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
         /** touchstart：清旧追踪 → 多指/模态直接放弃 → 决定是否 arm。
             arm 规则（优先级即互斥）：某抽屉开着 → 只 arm 它的关闭追踪（任意起点，
-            横滚内容除外）；双关 → 只认贴边起点的开启追踪。
+            横滚内容除外）；双关 → arm 开启追踪（真机第三轮用户点名：对齐关闭手势
+            的任意起点语义，方向在 fire 时结算——+x 开左抽屉、−x 开右栏）。
             debug 模式下全程写遥测：armed/拒绝原因 + 起触点，配合芯片读数定位真机。 */
         const onEdgeTouchStart = (event) => {
           if (!state.active) return
@@ -8415,25 +8416,23 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               if (tele !== null) tele.kind = '横滚'
               return
             }
-            state.edgeGesture = { kind: leftOpen ? 'left-close' : 'right-close', startX: point.x, startY: point.y, at: Date.now(), fired: false }
+            state.edgeGesture = { kind: leftOpen ? 'left-close' : 'right-close', edge: null, startX: point.x, startY: point.y, at: Date.now(), fired: false }
             if (tele !== null) tele.kind = leftOpen ? '左关' : '右关'
             return
           }
-          // 开启追踪：贴边起点；横滚内容内同样不起（统计条横滑从左缘划过不算开抽屉）
+          // 开启追踪：任意起点；横滚内容内不起（编辑器/统计条的横滑是内容滚动语义）
           if (insideHorizontalScroller(event?.target)) {
             if (tele !== null) tele.kind = '横滚'
             return
           }
+          // 贴边起滑记录在案：只有贴边起点享有 touchcancel/短拂两类放宽补完
+          //（系统手势竞争只存在于屏幕边缘），非贴边起点走完整触发阈
           const vw = Number(window.innerWidth)
-          if (point.x <= EDGE_ZONE_PX) {
-            state.edgeGesture = { kind: 'left-open', startX: point.x, startY: point.y, at: Date.now(), fired: false }
-            if (tele !== null) tele.kind = '左开'
-          } else if (rightAvailable && Number.isFinite(vw) && point.x >= vw - EDGE_ZONE_PX) {
-            state.edgeGesture = { kind: 'right-open', startX: point.x, startY: point.y, at: Date.now(), fired: false }
-            if (tele !== null) tele.kind = '右开'
-          } else if (tele !== null) {
-            tele.kind = '未贴边'
-          }
+          let edge = null
+          if (point.x <= EDGE_ZONE_PX) edge = 'left'
+          else if (Number.isFinite(vw) && point.x >= vw - EDGE_ZONE_PX) edge = 'right'
+          state.edgeGesture = { kind: 'open', edge, startX: point.x, startY: point.y, at: Date.now(), fired: false }
+          if (tele !== null) tele.kind = edge === 'left' ? '左开' : edge === 'right' ? '右开' : '开'
           if (state.debugEnabled) updateDebugChip()
         }
 
@@ -8448,17 +8447,26 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             state.edgeGesture = null
             return
           }
-          // 方向表：left-open 与 right-close 沿 +x（往右推），left-close 与
-          // right-open 沿 −x（往左拉）——「开/关」与「左右」无关，只看抽屉在哪侧。
-          const rightward = gesture.kind === 'left-open' || gesture.kind === 'right-close'
-          const reached = rightward ? dx >= threshold : dx <= -threshold
-          if (!reached) return
+          // 方向结算：关闭追踪方向固定（left-close 沿 −x、right-close 沿 +x）；
+          // 开启追踪方向在达阈时结算——+x 开左抽屉、−x 开右栏（右栏缺席则该向
+          // 无效，手势自然落空，对齐「不存在支持右侧栏的插件则无效」的语义）。
+          let fire = null
+          let label = null
+          if (gesture.kind === 'open') {
+            if (dx >= threshold) { fire = fireLeftDrawerOpen; label = '左开' }
+            else if (dx <= -threshold && sidebarPanelHostNow()) { fire = fireSidebarPanelOpen; label = '右开' }
+          } else if (gesture.kind === 'left-close') {
+            if (dx <= -threshold) { fire = fireLeftDrawerClose; label = '左关' }
+          } else if (gesture.kind === 'right-close') {
+            if (dx >= threshold) { fire = fireSidebarPanelClose; label = '右关' }
+          }
+          if (fire === null) return
           gesture.fired = true
-          if (state.edgeTelemetry !== null) state.edgeTelemetry.fired = true
-          if (gesture.kind === 'left-open') fireLeftDrawerOpen()
-          else if (gesture.kind === 'left-close') fireLeftDrawerClose()
-          else if (gesture.kind === 'right-open') fireSidebarPanelOpen()
-          else fireSidebarPanelClose()
+          if (state.edgeTelemetry !== null) {
+            state.edgeTelemetry.fired = true
+            state.edgeTelemetry.kind = label
+          }
+          fire()
         }
 
         const onEdgeTouchMove = (event) => {
@@ -8474,9 +8482,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (state.debugEnabled && gesture.fired) updateDebugChip()
         }
 
-        /** touchend：只对【开启追踪】做快速短拂补完——边缘起滑、横移主导 ≥32px、
+        /** touchend：只对【贴边起滑的开启追踪】做快速短拂补完——横移主导 ≥32px、
             起触到抬手 ≤260ms 的快拂，是「系统手势没接管但位移不足完整阈」的最
-            自然形态（类原生抽屉的速度语义）。关闭路径工作正常，不做短拂放大；
+            自然形态（类原生抽屉的速度语义）。非贴边起点与关闭路径不做短拂放大；
             静止短触（FAB 点击、选择长按）位移为零自然不命中。绝不刷新 800ms
             手势窗口——沉浸引擎语义：touchend 不是可信手势信号。 */
         const onEdgeTouchEnd = (event) => {
@@ -8485,9 +8493,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             state.edgeGesture = null
             return
           }
-          const opening = gesture.kind === 'left-open' || gesture.kind === 'right-open'
-          const point = opening ? edgeTouchPoint(event) : null
-          if (opening && point !== null && Date.now() - gesture.at <= EDGE_FLICK_MS) {
+          const lenient = gesture.kind === 'open' && gesture.edge !== null
+          const point = lenient ? edgeTouchPoint(event) : null
+          if (lenient && point !== null && Date.now() - gesture.at <= EDGE_FLICK_MS) {
             evaluateEdgeGesture(gesture, point, EDGE_FLICK_PX)
           }
           state.edgeGesture = null
@@ -8495,11 +8503,10 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         /** touchcancel = 触摸被浏览器/系统接管（边缘返回手势、原生滚动接管等）。
-            开启手势必须贴边起滑，正好与系统边缘手势的认领带重叠，页面可能只收到
-            touchstart+touchcancel 就再无下文。此刻用取消事件的最终触点按放宽阈值
-            （EDGE_CANCEL_PX）补完动作——右向横移就被系统截走的触摸，意图显然是
-            开抽屉；纵向主导的（原生滚动接管）由共用判定的斜率检查天然拒绝。
-            关闭路径正常工作，不做补完（不扰动已验证的行为）。 */
+            系统手势竞争只存在于屏幕边缘：仅【贴边起滑的开启追踪】用取消事件的
+            最终触点按放宽阈值（EDGE_CANCEL_PX）补完——右向横移就被系统截走的
+            触摸，意图显然是开抽屉；纵向主导的（原生滚动接管）由共用判定的斜率
+            检查天然拒绝。非贴边起点与关闭路径不做补完（不扰动已验证的行为）。 */
         const onEdgeTouchCancel = (event) => {
           const gesture = state.edgeGesture
           const tele = state.edgeTelemetry
@@ -8508,12 +8515,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             if (state.debugEnabled) updateDebugChip()
             return
           }
-          const opening = gesture.kind === 'left-open' || gesture.kind === 'right-open'
+          const lenient = gesture.kind === 'open' && gesture.edge !== null
           const point = edgeTouchPoint(event)
           if (tele !== null && point !== null) {
             tele.cancel = `${Math.round(point.x - gesture.startX)},${Math.round(point.y - gesture.startY)}`
           }
-          if (opening) evaluateEdgeGesture(gesture, point, EDGE_CANCEL_PX)
+          if (lenient) evaluateEdgeGesture(gesture, point, EDGE_CANCEL_PX)
           state.edgeGesture = null
           if (state.debugEnabled) updateDebugChip()
         }
