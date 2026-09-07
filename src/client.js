@@ -133,6 +133,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.title': '移动端诊断',
       'mobile.debug.viewport': '视口',
       'mobile.debug.drawer': '抽屉',
+      'mobile.debug.sidebarPanel': '右栏',
       'mobile.debug.details': '预览列',
       'mobile.debug.errors': 'JS 错误',
       'mobile.debug.stateOn': '开',
@@ -885,6 +886,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.title': 'Mobile diagnostics',
       'mobile.debug.viewport': 'Viewport',
       'mobile.debug.drawer': 'Drawer',
+      'mobile.debug.sidebarPanel': 'Side panel',
       'mobile.debug.details': 'Details',
       'mobile.debug.errors': 'JS errors',
       'mobile.debug.stateOn': 'on',
@@ -7596,6 +7598,13 @@ window.__ModuleLoader__.load({
       const IMMERSIVE_ACC_CLAMP_PX = 240  // 累加器饱和界：防止极端长滑程数值无意义膨胀
       const IMMERSIVE_MIN_SCROLLABLE_PX = 24
       const GESTURE_WINDOW_MS = 800       // touchstart/move/wheel 后的有效窗口；窗口外一律视为程序化滚动
+      // —— 边缘手势开合抽屉（2026-09 用户点名）——
+      // 判定带收窄到 24px：iOS Safari / Android Chrome 的系统「边缘右滑=后退」
+      // 会抢走从物理边缘起滑的触摸，网页拦不住系统手势；边缘内 16-24px 起滑的
+      // 触摸页面能收到，真机可用率高但非 100%，最终以真机验收为准。
+      const EDGE_ZONE_PX = 24             // 边缘判定带宽度（左缘开左抽屉 / 右缘开右抽屉）
+      const EDGE_TRIGGER_PX = 56          // 水平位移触发阈值
+      const EDGE_SLANT_PX = 12            // 纵向主导作废阈：|dy|>|dx| 且超过此值即放弃（滚动优先）
       const MOBILE_CSS = `
 /* 侧栏/详情列改 absolute 后会退出 grid 排版流，中列会被自动放置进第 1 轨
    （0px）而整屏变黑 —— 三列必须用 grid-column 显式钉位，绝不依赖子元素顺序。 */
@@ -7850,6 +7859,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           drawerOpen: false,
           detailsOpen: false,
           workspaceOpen: false,
+          // —— 边缘手势（2026-09）状态：better-sidebar 右栏两态 + 当前追踪的触摸 ——
+          // 两态由观察器驱动（FAB/把手让位、debug 芯片用）；手势 fire 时另行实时
+          // 重读 DOM，不消费这里的缓存值，杜绝 50ms 调度窗口内的陈旧状态翻转。
+          sidebarPanelAvailable: false,
+          sidebarPanelOpen: false,
+          edgeGesture: null,
           lastFabDisplay: null,
           lastBackdropDisplay: null,
           // —— 滑动沉浸（v0.36）状态 ——
@@ -7883,9 +7898,10 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
           // 抽屉开启时收起 FAB：关闭走外壳原生侧栏钮或外侧遮罩，绝不在
           // 抽屉面板上叠画第二套关闭件（真机反馈：
-          // 那只会变成糊在侧栏 logo 上的不明物）。工作区侧板同理互斥。
+          // 那只会变成糊在侧栏 logo 上的不明物）。工作区侧板、better-sidebar
+          // 右栏全屏抽屉同理互斥。
           // 变化才写：innerHTML/display 若无条件重写会喂活 body 级观察器死循环。
-          const nextDisplay = (state.drawerOpen || state.workspaceOpen) ? 'none' : 'flex'
+          const nextDisplay = (state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen) ? 'none' : 'flex'
           if (state.fab !== null && state.lastFabDisplay !== nextDisplay) {
             state.lastFabDisplay = nextDisplay
             state.fab.style.display = nextDisplay
@@ -7928,6 +7944,16 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           const frame = document.querySelector('[data-dshsvc-frame]')
           state.drawerOpen = frame !== null && !frame.hasAttribute('data-sidebar-collapsed')
           state.detailsOpen = frame !== null && !frame.hasAttribute('data-details-collapsed')
+          // better-sidebar 右栏两态（插件自己发布的稳定标记，v0.18.0 源码核实）：
+          // [data-dsh-panel-host] 在 DOM = 插件已挂载渲染；body 的
+          // data-dsh-sidebar-collapsed 在 = 折叠、摘除 = 展开。body 级
+          // workspaceObserver（childList+subtree+attributes）捕获其挂载与开合。
+          state.sidebarPanelAvailable = false
+          try { state.sidebarPanelAvailable = document.querySelector('[data-dsh-panel-host]') !== null } catch (_) {}
+          state.sidebarPanelOpen = false
+          if (state.sidebarPanelAvailable) {
+            try { state.sidebarPanelOpen = !document.body.hasAttribute('data-dsh-sidebar-collapsed') } catch (_) {}
+          }
           // 工作区侧板（外壳 tab 系统 nArs4W_panel）：可见 = 任一匹配节点解除
           // PanelHidden 且进入视口。注意 panelBody 等 同哈希同名 子串节点会混入
           // querySelector 匹配，必须逐个甄别取「或」，否则状态时对时错。
@@ -8214,6 +8240,180 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
         }
 
+        // ===== 边缘手势开合抽屉（2026-09 用户点名）=====
+        // 左缘右滑开官方左抽屉 / 开着时右往左滑关；右缘左滑开 better-sidebar
+        // 右栏抽屉（插件缺席则手势无效）/ 开着时左往右滑关。识别器与沉浸引擎
+        // 共用 documentElement 捕获式监听；所有判定只消费触摸坐标，绝不可
+        // preventDefault（passive），翻转动作在阈值达成后走既有服务/DOM 缝。
+        // 状态读取铁律：arm（touchstart）与 fire（touchmove 达阈值）都实时重读
+        // DOM 缝，绝不消费观察器缓存的 state.sidebarPanel*（50ms 调度窗口会陈旧）。
+
+        /** 兼容桩环境的首触点提取：真浏览器读 touches[0]，桩直接给同形对象。 */
+        const edgeTouchPoint = (event) => {
+          try {
+            const list = event !== null && event !== undefined && event.touches !== undefined && event.touches !== null && event.touches.length > 0
+              ? event.touches
+              : (event !== null && event !== undefined ? event.changedTouches : null)
+            if (list === undefined || list === null || list.length === 0) return null
+            const x = Number(list[0].clientX)
+            const y = Number(list[0].clientY)
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+            return { x, y }
+          } catch (_) { return null }
+        }
+
+        /** 左抽屉实时开合态：true=折叠（含 frame 缺席的骨架未就绪期）。 */
+        const leftDrawerCollapsedNow = () => {
+          try {
+            const frame = document.querySelector('[data-dshsvc-frame]')
+            return frame === null || frame.hasAttribute('data-sidebar-collapsed')
+          } catch (_) { return true }
+        }
+
+        /** better-sidebar 右栏实时两态：挂载存在性 + body 状态属性（插件自维护）。 */
+        const sidebarPanelHostNow = () => {
+          try { return document.querySelector('[data-dsh-panel-host]') !== null } catch (_) { return false }
+        }
+        const sidebarPanelCollapsedNow = () => {
+          try { return document.body.hasAttribute('data-dsh-sidebar-collapsed') } catch (_) { return true }
+        }
+
+        /** 模态全屏态门控：与移动 CSS 的 body:has 规则同一判定选择器。
+            桩环境的 matchesSelector 不支持带值选择器时恒回 null → 视为无模态。 */
+        const modalOpenNow = () => {
+          try { return document.querySelector('[role="dialog"][aria-modal="true"]') !== null } catch (_) { return false }
+        }
+
+        /** 起点是否在某横向可滚内容内（CodeMirror 横滚区、tab 条、统计条）：
+            这类横滑属于内容自身的滚动语义，不得触发抽屉关闭。限深向上走、
+            到 body 即止——根元素级溢出属于布局 bug，不拿来禁手势。 */
+        const insideHorizontalScroller = (node) => {
+          try {
+            let cursor = node
+            for (let depth = 0; cursor !== null && cursor !== undefined && depth < 8; depth += 1) {
+              if (cursor === document.body || cursor === document.documentElement) return false
+              if (typeof cursor.scrollWidth === 'number' && typeof cursor.clientWidth === 'number' &&
+                cursor.scrollWidth > cursor.clientWidth + 1) return true
+              cursor = cursor.parentNode
+            }
+          } catch (_) {}
+          return false
+        }
+
+        /**
+         * better-sidebar 右栏开关钮：[data-dsh-toggle-cluster] 内最后一个非
+         * aria-disabled 的 BUTTON。窄视口簇内只有它一个；桌面态（768-1023px
+         * 仍在移动引擎范围内）底部面板开关排在其前、右栏钮固定末位。
+         * 点击与其自身 onClick（store.reduce(togglePanel)）同路径；无会话态
+         * 唯一钮 aria-disabled=true → 落空返回 false，手势自然无效。
+         * 手动递归不走 querySelectorAll（假桩环境全兼容，findHeaderNodeIn 先例）。
+         */
+        const collectLastEnabledButton = (node, found) => {
+          if (node === null || node === undefined || typeof node.children === 'undefined' || node.children === null) return
+          for (const child of node.children || []) {
+            const tag = typeof child.tagName === 'string' ? child.tagName.toUpperCase() : ''
+            if (tag === 'BUTTON') {
+              let disabled = false
+              try { disabled = child.getAttribute('aria-disabled') === 'true' } catch (_) {}
+              if (!disabled) found.push(child)
+            }
+            collectLastEnabledButton(child, found)
+          }
+        }
+        const clickSidebarPanelToggle = () => {
+          try {
+            const cluster = document.querySelector('[data-dsh-toggle-cluster]')
+            if (cluster === null) return false
+            const buttons = []
+            collectLastEnabledButton(cluster, buttons)
+            const target = buttons.length > 0 ? buttons[buttons.length - 1] : null
+            if (target === null || typeof target.click !== 'function') return false
+            target.click()
+            return true
+          } catch (_) { return false }
+        }
+
+        /** fire 动作：全部先复核实时状态再翻转，防 arm 后状态被人先改的竞态。 */
+        const fireLeftDrawerOpen = () => {
+          if (!leftDrawerCollapsedNow()) return
+          const layout = layoutService()
+          if (layout === undefined) return
+          try { layout.toggleSidebar() } catch (_) {}
+        }
+        const fireLeftDrawerClose = () => {
+          if (leftDrawerCollapsedNow()) return
+          const layout = layoutService()
+          if (layout === undefined) return
+          try { layout.toggleSidebar() } catch (_) {}
+        }
+        const fireSidebarPanelOpen = () => {
+          if (!sidebarPanelHostNow() || !sidebarPanelCollapsedNow()) return
+          clickSidebarPanelToggle()
+        }
+        const fireSidebarPanelClose = () => {
+          if (!sidebarPanelHostNow() || sidebarPanelCollapsedNow()) return
+          clickSidebarPanelToggle()
+        }
+
+        const cancelEdgeGesture = () => { state.edgeGesture = null }
+
+        /** touchstart：清旧追踪 → 多指/模态直接放弃 → 决定是否 arm。
+            arm 规则（优先级即互斥）：某抽屉开着 → 只 arm 它的关闭追踪（任意起点，
+            横滚内容除外）；双关 → 只认贴边起点的开启追踪。 */
+        const onEdgeTouchStart = (event) => {
+          if (!state.active) return
+          state.edgeGesture = null
+          try {
+            if (event !== null && event !== undefined && event.touches !== undefined && event.touches !== null && event.touches.length > 1) return
+          } catch (_) {}
+          if (modalOpenNow()) return
+          const point = edgeTouchPoint(event)
+          if (point === null) return
+          const leftOpen = !leftDrawerCollapsedNow()
+          const rightAvailable = sidebarPanelHostNow()
+          const rightOpen = rightAvailable && !sidebarPanelCollapsedNow()
+          if (leftOpen || rightOpen) {
+            // 关闭追踪：任意起点，但横滚内容（编辑器/tab 条）的横滑是内容滚动语义
+            if (insideHorizontalScroller(event?.target)) return
+            state.edgeGesture = { kind: leftOpen ? 'left-close' : 'right-close', startX: point.x, startY: point.y, fired: false }
+            return
+          }
+          const vw = Number(window.innerWidth)
+          if (point.x <= EDGE_ZONE_PX) {
+            state.edgeGesture = { kind: 'left-open', startX: point.x, startY: point.y, fired: false }
+          } else if (rightAvailable && Number.isFinite(vw) && point.x >= vw - EDGE_ZONE_PX) {
+            state.edgeGesture = { kind: 'right-open', startX: point.x, startY: point.y, fired: false }
+          }
+        }
+
+        /** touchmove：纵向主导即作废（滚动/沉浸优先）；达阈值 fire 一次并锁定
+            （fired 后同一触摸内不再重复翻转，等 touchend 清场）。 */
+        const onEdgeTouchMove = (event) => {
+          const gesture = state.edgeGesture
+          if (gesture === null || gesture.fired) return
+          const point = edgeTouchPoint(event)
+          if (point === null) return
+          const dx = point.x - gesture.startX
+          const dy = point.y - gesture.startY
+          if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > EDGE_SLANT_PX) {
+            state.edgeGesture = null
+            return
+          }
+          let fire = null
+          if (gesture.kind === 'left-open' && dx >= EDGE_TRIGGER_PX) fire = fireLeftDrawerOpen
+          else if (gesture.kind === 'left-close' && dx <= -EDGE_TRIGGER_PX) fire = fireLeftDrawerClose
+          else if (gesture.kind === 'right-open' && dx <= -EDGE_TRIGGER_PX) fire = fireSidebarPanelOpen
+          else if (gesture.kind === 'right-close' && dx >= EDGE_TRIGGER_PX) fire = fireSidebarPanelClose
+          if (fire !== null) {
+            gesture.fired = true
+            fire()
+          }
+        }
+
+        /** touchend/cancel 只清追踪器。绝不刷新 800ms 手势窗口（沉浸引擎语义：
+            touchend 不是可信手势信号，否则抬手后的程序化滚动会被误判为拖拽）。 */
+        const onEdgeTouchEnd = () => { cancelEdgeGesture() }
+
         /** 把手正反面：向上箭头=点开（当前沉浸），向下箭头=点收（当前展开）。 */
         const HANDLE_ICON_UP =
           '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
@@ -8241,8 +8441,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         const syncHandleVisibility = () => {
-          // 常驻把手仅在可沉浸会话里出现；抽屉/工作区侧板开着时让位（模态由 :has CSS 兜底）。
-          const blocked = state.drawerOpen || state.workspaceOpen
+          // 常驻把手仅在可沉浸会话里出现；抽屉/工作区侧板/better-sidebar 右栏开着时让位（模态由 :has CSS 兜底）。
+          const blocked = state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen
           const nextDisplay = state.chatAvailable && !blocked ? 'flex' : 'none'
           if (state.handle !== null && state.lastHandleDisplay !== nextDisplay) {
             state.lastHandleDisplay = nextDisplay
@@ -8292,6 +8492,11 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           ['scroll', onDocumentScroll, { capture: true, passive: true }],
           ['touchstart', markGesture, { capture: true, passive: true }],
           ['touchmove', markGesture, { capture: true, passive: true }],
+          ['touchstart', onEdgeTouchStart, { capture: true, passive: true }],
+          ['touchmove', onEdgeTouchMove, { capture: true, passive: true }],
+          // 只清边缘追踪器，不刷新手势窗口（见 onEdgeTouchEnd 注释）
+          ['touchend', onEdgeTouchEnd, { capture: true, passive: true }],
+          ['touchcancel', onEdgeTouchEnd, { capture: true, passive: true }],
           ['wheel', markGesture, { capture: true, passive: true }],
           ['focusin', onFocusIn, { capture: true }],
         ]
@@ -8326,6 +8531,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             `${t('mobile.debug.viewport')} ${window.innerWidth}×${window.innerHeight}`,
             `≤1023 ${onOff(state.active)}`,
             `${t('mobile.debug.drawer')} ${onOff(state.drawerOpen)}`,
+            `${t('mobile.debug.sidebarPanel')} ${onOff(state.sidebarPanelOpen)}`,
             `${t('mobile.debug.details')} ${onOff(state.detailsOpen)}`,
             `${t('mobile.debug.immersive')} ${onOff(state.immersive)}`,
             `${t('mobile.debug.errors')} ${state.errorCount}`,
@@ -8503,6 +8709,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           state.active = false
           state.drawerOpen = false
           state.detailsOpen = false
+          state.sidebarPanelAvailable = false
+          state.sidebarPanelOpen = false
+          state.edgeGesture = null
           detachImmersiveListeners()
           document.documentElement.removeAttribute('data-dshsvc-mobile')
           document.documentElement.removeAttribute('data-dshsvc-immersive')

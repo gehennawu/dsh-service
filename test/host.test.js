@@ -4049,10 +4049,13 @@ test('cliproxy RPC falls back to auth-file quota signals when Codex wham/usage i
               email: 'codex-fallback@example.com',
               quota: {
                 signals: {
+                  // 相对时间（2026-09 时敏教训：固定魔法数会随真实日期过期——
+                  // 原 fixture 副窗重置点在发布次日即沦为过去，测试无预兆转红）：
+                  // 主窗重置点=过去（死窗，下方断言其被丢弃）、副窗=未来（保留）。
                   'X-Codex-Primary-Used-Percent': '21',
-                  'X-Codex-Primary-Reset-At': '1788444012',
+                  'X-Codex-Primary-Reset-At': String(Math.floor(Date.now() / 1000) - 3600),
                   'X-Codex-Secondary-Used-Percent': '73',
-                  'X-Codex-Secondary-Reset-At': '1788748252',
+                  'X-Codex-Secondary-Reset-At': String(Math.floor(Date.now() / 1000) + 7 * 86400),
                 },
               },
             },
@@ -4073,7 +4076,7 @@ test('cliproxy RPC falls back to auth-file quota signals when Codex wham/usage i
 
   const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
   assert.equal(row.status, 'ok')
-  // v1.3.1 修订：快照窗口重置点已过（fixture 的 Primary-Reset-At=1788444012 在过去）＝快照描述的
+  // v1.3.1 修订：快照窗口重置点已过（fixture 主窗重置点取过去时刻）＝快照描述的
   // 窗口已结束，是死数据 → 直接丢弃；未过期的副窗保留但带 stale 标记（客户端渲染「缓存」徽标）。
   const byKind = new Map(row.windows.map((w) => [w.kindKey, w]))
   assert.equal(byKind.get('codex-5h'), undefined)

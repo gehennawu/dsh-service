@@ -6905,6 +6905,250 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
   }
 })
 
+test('mobile adaptation edge gestures drive the left drawer and a better-sidebar right drawer, and stay inert when unavailable', async () => {
+  // 边缘手势四向开合（2026-09 用户点名）：
+  //   左缘右滑开官方左抽屉 / 开着时任意起点右往左滑关；
+  //   右缘左滑开 better-sidebar 右栏 / 开着时任意起点左往右滑关；插件缺席手势无效。
+  // better-sidebar 控制缝（其 v0.18.0 发布源码核实）：
+  //   [data-dsh-panel-host]=挂载存在性、body[data-dsh-sidebar-collapsed]=折叠态
+  //   （插件自维护）、开关钮=[data-dsh-toggle-cluster] 内最后一个非 aria-disabled BUTTON。
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag
+      this.children = []
+      this.attributes = new Map()
+      this.style = {}
+      this.dataset = {}
+      this.parentNode = null
+      this.className = ''
+      this.listeners = new Map()
+      this.scrollWidth = 0
+      this.clientWidth = 0
+      this.clickCalls = 0
+    }
+    get isConnected() {
+      let node = this
+      while (node.parentNode !== null) node = node.parentNode
+      return node === root
+    }
+    appendChild(child) { child.parentNode = this; this.children.push(child); return child }
+    remove() {
+      if (this.parentNode === null) return
+      const index = this.parentNode.children.indexOf(this)
+      if (index >= 0) this.parentNode.children.splice(index, 1)
+      this.parentNode = null
+    }
+    setAttribute(name, value) { this.attributes.set(name, String(value)) }
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null }
+    hasAttribute(name) { return this.attributes.has(name) }
+    removeAttribute(name) { this.attributes.delete(name) }
+    addEventListener(type, handler) { (this.listeners.get(type) || this.listeners.set(type, new Set()).get(type)).add(handler) }
+    removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler) }
+    dispatch(type, event) { for (const handler of this.listeners.get(type) || []) handler(event || {}) }
+    click() { this.clickCalls += 1 } // 程序化 click：真实 DOM 走原生 click 派发同路径
+  }
+  // 支持裸属性、带值属性与带值复合（[role="dialog"][aria-modal="true"]）的迷你匹配器
+  const matchesSelector = (el, selector) => {
+    for (const part of selector.split(',')) {
+      const trimmed = part.trim()
+      const pairs = trimmed.match(/\[([a-z-]+)(?:="([^"]*)")?\]/gi)
+      if (pairs === null) continue
+      if (pairs.join('') !== trimmed) continue
+      const ok = pairs.every((pair) => {
+        const m = /^\[([a-z-]+)(?:="([^"]*)")?\]$/i.exec(pair)
+        if (m === null) return false
+        if (m[2] === undefined) return el.attributes.has(m[1])
+        return el.attributes.get(m[1]) === m[2]
+      })
+      if (ok) return true
+    }
+    return false
+  }
+  const walk = (node, visit_) => { visit_(node); for (const child of node.children) walk(child, visit_) }
+
+  const root = new FakeElement('#root')
+  const head = new FakeElement('head'); root.appendChild(head)
+  const bodyEl = new FakeElement('body'); root.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); root.appendChild(htmlEl)
+  // better-sidebar 初始折叠态（该属性由插件自维护，这里预置折叠）
+  bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
+
+  // 外壳骨架：折叠态 frame + 三栏 + overlay 子层
+  const frame = new FakeElement('div')
+  frame.className = 'pI_x6G_frame'
+  frame.setAttribute('data-sidebar-collapsed', '')
+  frame.setAttribute('data-details-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'pI_x6G_sidebarCol'
+  const centerCol = new FakeElement('div'); centerCol.className = 'pI_x6G_centerCol'
+  const detailsCol = new FakeElement('div'); detailsCol.className = 'pI_x6G_detailsCol'
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', '')
+  for (const el of [sidebarCol, centerCol, detailsCol, overlayLayer]) frame.appendChild(el)
+  bodyEl.appendChild(frame)
+
+  // better-sidebar 右栏夹具：挂载前右缘手势必须无效
+  const decoy = new FakeElement('button'); decoy.setAttribute('aria-disabled', 'true')
+  const rightToggle = new FakeElement('button')
+  const toggleCluster = new FakeElement('div'); toggleCluster.setAttribute('data-dsh-toggle-cluster', '')
+  toggleCluster.appendChild(decoy)
+  toggleCluster.appendChild(rightToggle)
+  const panelHost = new FakeElement('div'); panelHost.setAttribute('data-dsh-panel-host', '')
+  panelHost.appendChild(toggleCluster)
+  // 横滚内容夹具（CodeMirror 式）：scrollWidth > clientWidth
+  const hScroller = new FakeElement('div'); hScroller.scrollWidth = 800; hScroller.clientWidth = 300
+
+  const observerCallbacks = []
+  class FakeMutationObserver {
+    constructor(callback) { observerCallbacks.push(callback) }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl,
+    head,
+    body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      walk(root, (el) => { if (found === null && matchesSelector(el, selector)) found = el })
+      return found
+    },
+    querySelectorAll(selector) {
+      const found = []
+      walk(root, (el) => { if (matchesSelector(el, selector)) found.push(el) })
+      return found
+    },
+  }
+
+  const layoutCalls = { toggleSidebar: 0, closeDetails: 0 }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true, upstreamManaged: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+
+  try {
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: {
+      toggleSidebar() { layoutCalls.toggleSidebar += 1 },
+      closeDetails() { layoutCalls.closeDetails += 1 },
+    } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    globalThis.window.innerWidth = 390
+    await renderer.load()
+
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
+    const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
+    assert.notEqual(fab, undefined)
+    // buildSurfaces 先建 workspace 再建 frame 观察者 → 最后一个即 frame 回调（同步读改）
+    const sync = () => observerCallbacks[observerCallbacks.length - 1]([], () => {})
+    const touchAt = (x, y, extra) => ({ touches: [{ clientX: x, clientY: y }], target: extra?.target ?? null })
+
+    // —— 1. better-sidebar 缺席：右缘手势无效；左缘右滑开官方左抽屉 ——
+    htmlEl.dispatch('touchstart', touchAt(388, 300))
+    htmlEl.dispatch('touchmove', touchAt(360, 300))
+    htmlEl.dispatch('touchmove', touchAt(326, 300))
+    assert.equal(rightToggle.clickCalls, 0, 'right-edge gesture must be inert while no right-sidebar plugin is mounted')
+
+    htmlEl.dispatch('touchstart', touchAt(6, 300))
+    htmlEl.dispatch('touchmove', touchAt(30, 302))
+    htmlEl.dispatch('touchmove', touchAt(64, 302))
+    assert.equal(layoutCalls.toggleSidebar, 1, 'left-edge rightward swipe opens the official drawer')
+    frame.removeAttribute('data-sidebar-collapsed')
+    sync()
+    assert.equal(fab.style.display, 'none')
+
+    // 同一触摸内 fired 锁定：越阈后继续滑不重复翻转
+    htmlEl.dispatch('touchmove', touchAt(140, 302))
+    assert.equal(layoutCalls.toggleSidebar, 1)
+    htmlEl.dispatch('touchend', {})
+
+    // —— 2. 左抽屉开着：任意起点右往左滑关闭 ——
+    htmlEl.dispatch('touchstart', touchAt(220, 400))
+    htmlEl.dispatch('touchmove', touchAt(180, 402))
+    htmlEl.dispatch('touchmove', touchAt(160, 402))
+    assert.equal(layoutCalls.toggleSidebar, 2, 'leftward swipe anywhere closes the open left drawer')
+    frame.setAttribute('data-sidebar-collapsed', '')
+    sync()
+
+    // 纵向主导作废：左缘起滑先下垂再横移，绝不能开抽屉（滚动/沉浸优先）
+    htmlEl.dispatch('touchstart', touchAt(8, 200))
+    htmlEl.dispatch('touchmove', touchAt(4, 230))
+    htmlEl.dispatch('touchmove', touchAt(90, 230))
+    assert.equal(layoutCalls.toggleSidebar, 2)
+
+    // 多指（捏合）取消
+    htmlEl.dispatch('touchstart', { touches: [{ clientX: 6, clientY: 100 }, { clientX: 30, clientY: 120 }], target: null })
+    htmlEl.dispatch('touchmove', touchAt(80, 120))
+    assert.equal(layoutCalls.toggleSidebar, 2)
+
+    // 双抽屉全关 + 非贴边起点：横滑什么都不做
+    htmlEl.dispatch('touchstart', touchAt(120, 300))
+    htmlEl.dispatch('touchmove', touchAt(200, 300))
+    htmlEl.dispatch('touchmove', touchAt(60, 300))
+    assert.equal(layoutCalls.toggleSidebar, 2)
+    assert.equal(rightToggle.clickCalls, 0)
+
+    // —— 3. better-sidebar 上线：右缘左滑开右栏（簇内最后可用钮，decoy 跳过）——
+    bodyEl.appendChild(panelHost)
+    sync()
+    htmlEl.dispatch('touchstart', touchAt(388, 300))
+    htmlEl.dispatch('touchmove', touchAt(360, 298))
+    htmlEl.dispatch('touchmove', touchAt(330, 298))
+    assert.equal(rightToggle.clickCalls, 1, 'leftward swipe from the right edge opens the better-sidebar drawer')
+    assert.equal(decoy.clickCalls, 0, 'aria-disabled decoy must never be clicked')
+    bodyEl.removeAttribute('data-dsh-sidebar-collapsed')
+    sync()
+    assert.equal(fab.style.display, 'none', 'right drawer open must hide the fab')
+
+    // —— 4. 右栏开着：横滚内容内起点不关（CodeMirror 横滚语义），其余起点左往右滑关 ——
+    bodyEl.appendChild(hScroller)
+    htmlEl.dispatch('touchstart', touchAt(120, 300, { target: hScroller }))
+    htmlEl.dispatch('touchmove', touchAt(190, 300))
+    assert.equal(rightToggle.clickCalls, 1, 'horizontal scrolling content keeps its own swipe semantics')
+    hScroller.remove()
+    htmlEl.dispatch('touchstart', touchAt(120, 300))
+    htmlEl.dispatch('touchmove', touchAt(185, 300))
+    assert.equal(rightToggle.clickCalls, 2, 'rightward swipe anywhere closes the open right drawer')
+    bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
+    sync()
+    assert.equal(fab.style.display, 'flex', 'right drawer closed restores the fab')
+
+    // —— 5. 模态全屏态：边缘手势整套禁用 ——
+    const modal = new FakeElement('div')
+    modal.setAttribute('role', 'dialog')
+    modal.setAttribute('aria-modal', 'true')
+    bodyEl.appendChild(modal)
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(80, 300))
+    assert.equal(layoutCalls.toggleSidebar, 2)
+    htmlEl.dispatch('touchstart', touchAt(388, 300))
+    htmlEl.dispatch('touchmove', touchAt(320, 300))
+    assert.equal(rightToggle.clickCalls, 2)
+    modal.remove()
+
+    // —— 6. touchend 清追踪器：抬手后迟到的 move 不再翻转 ——
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchend', {})
+    htmlEl.dispatch('touchmove', touchAt(90, 300))
+    assert.equal(layoutCalls.toggleSidebar, 2)
+
+    // —— 7. 热关闭对称拆除 ——
+    await renderer.setFeature?.('mobileAdaptation', false)
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
+    htmlEl.dispatch('touchstart', touchAt(6, 300))
+    htmlEl.dispatch('touchmove', touchAt(90, 300))
+    assert.equal(layoutCalls.toggleSidebar, 2, 'no edge gestures after the engine is off')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+    delete globalThis.window.innerWidth
+  }
+})
+
 test('session manager tab lists sessions with archive marks, size info, and deleted filter', async () => {
   const calls = []
   const renderer = sessionManagerRenderer(createSessionRpcMock({
