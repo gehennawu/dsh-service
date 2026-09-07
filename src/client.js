@@ -7598,12 +7598,15 @@ window.__ModuleLoader__.load({
       const IMMERSIVE_ACC_CLAMP_PX = 240  // 累加器饱和界：防止极端长滑程数值无意义膨胀
       const IMMERSIVE_MIN_SCROLLABLE_PX = 24
       const GESTURE_WINDOW_MS = 800       // touchstart/move/wheel 后的有效窗口；窗口外一律视为程序化滚动
-      // —— 边缘手势开合抽屉（2026-09 用户点名）——
-      // 判定带收窄到 24px：iOS Safari / Android Chrome 的系统「边缘右滑=后退」
-      // 会抢走从物理边缘起滑的触摸，网页拦不住系统手势；边缘内 16-24px 起滑的
-      // 触摸页面能收到，真机可用率高但非 100%，最终以真机验收为准。
-      const EDGE_ZONE_PX = 24             // 边缘判定带宽度（左缘开左抽屉 / 右缘开右抽屉）
-      const EDGE_TRIGGER_PX = 56          // 水平位移触发阈值
+      // —— 边缘手势开合抽屉（2026-09 用户点名；真机返工参数见下）——
+      // 系统手势竞争：iOS Safari / Android Chrome 的「边缘右滑=返回」会抢走从
+      // 物理边缘起滑的触摸，网页拦不住系统手势。两条缓解：判定带放宽到 32px
+      // （带内任何起滑页面都能收到）；浏览器接管常以 touchcancel 收场——此刻用
+      // 最终触点按放宽阈值补完开合，把被截走的横滑尽量转化为成功动作。
+      // 真机若仍偏紧：用户可从离边缘约一指宽处起滑（仍在带内），FAB 永远可用。
+      const EDGE_ZONE_PX = 32             // 边缘判定带宽度（左缘开左抽屉 / 右缘开右抽屉）
+      const EDGE_TRIGGER_PX = 56          // 水平位移触发阈值（触摸存活期间的完整触发）
+      const EDGE_CANCEL_PX = 24           // touchcancel 补完阈值：系统接管时已达此横移即完成动作
       const EDGE_SLANT_PX = 12            // 纵向主导作废阈：|dy|>|dx| 且超过此值即放弃（滚动优先）
       const MOBILE_CSS = `
 /* 侧栏/详情列改 absolute 后会退出 grid 排版流，中列会被自动放置进第 1 轨
@@ -8355,8 +8358,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           clickSidebarPanelToggle()
         }
 
-        const cancelEdgeGesture = () => { state.edgeGesture = null }
-
         /** touchstart：清旧追踪 → 多指/模态直接放弃 → 决定是否 arm。
             arm 规则（优先级即互斥）：某抽屉开着 → 只 arm 它的关闭追踪（任意起点，
             横滚内容除外）；双关 → 只认贴边起点的开启追踪。 */
@@ -8378,6 +8379,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             state.edgeGesture = { kind: leftOpen ? 'left-close' : 'right-close', startX: point.x, startY: point.y, fired: false }
             return
           }
+          // 开启追踪：贴边起点；横滚内容内同样不起（统计条横滑从左缘划过不算开抽屉）
+          if (insideHorizontalScroller(event?.target)) return
           const vw = Number(window.innerWidth)
           if (point.x <= EDGE_ZONE_PX) {
             state.edgeGesture = { kind: 'left-open', startX: point.x, startY: point.y, fired: false }
@@ -8386,33 +8389,51 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
         }
 
-        /** touchmove：纵向主导即作废（滚动/沉浸优先）；达阈值 fire 一次并锁定
-            （fired 后同一触摸内不再重复翻转，等 touchend 清场）。 */
-        const onEdgeTouchMove = (event) => {
-          const gesture = state.edgeGesture
-          if (gesture === null || gesture.fired) return
-          const point = edgeTouchPoint(event)
-          if (point === null) return
+        /** 共用判定：记最终触点 → 纵向主导即作废（滚动/沉浸优先）→ 达阈值 fire 一次
+            并锁定（fired 后同一触摸内不重复翻转）。threshold 由调用方给：触摸存活
+            期间用完整触发阈，touchcancel 补完用放宽阈。 */
+        const evaluateEdgeGesture = (gesture, point, threshold) => {
+          if (gesture === null || gesture.fired || point === null) return
           const dx = point.x - gesture.startX
           const dy = point.y - gesture.startY
           if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > EDGE_SLANT_PX) {
             state.edgeGesture = null
             return
           }
-          let fire = null
-          if (gesture.kind === 'left-open' && dx >= EDGE_TRIGGER_PX) fire = fireLeftDrawerOpen
-          else if (gesture.kind === 'left-close' && dx <= -EDGE_TRIGGER_PX) fire = fireLeftDrawerClose
-          else if (gesture.kind === 'right-open' && dx <= -EDGE_TRIGGER_PX) fire = fireSidebarPanelOpen
-          else if (gesture.kind === 'right-close' && dx >= EDGE_TRIGGER_PX) fire = fireSidebarPanelClose
-          if (fire !== null) {
-            gesture.fired = true
-            fire()
-          }
+          // 方向表：left-open 与 right-close 沿 +x（往右推），left-close 与
+          // right-open 沿 −x（往左拉）——「开/关」与「左右」无关，只看抽屉在哪侧。
+          const rightward = gesture.kind === 'left-open' || gesture.kind === 'right-close'
+          const reached = rightward ? dx >= threshold : dx <= -threshold
+          if (!reached) return
+          gesture.fired = true
+          if (gesture.kind === 'left-open') fireLeftDrawerOpen()
+          else if (gesture.kind === 'left-close') fireLeftDrawerClose()
+          else if (gesture.kind === 'right-open') fireSidebarPanelOpen()
+          else fireSidebarPanelClose()
         }
 
-        /** touchend/cancel 只清追踪器。绝不刷新 800ms 手势窗口（沉浸引擎语义：
-            touchend 不是可信手势信号，否则抬手后的程序化滚动会被误判为拖拽）。 */
-        const onEdgeTouchEnd = () => { cancelEdgeGesture() }
+        const onEdgeTouchMove = (event) => {
+          const gesture = state.edgeGesture
+          if (gesture === null || gesture.fired) return
+          evaluateEdgeGesture(gesture, edgeTouchPoint(event), EDGE_TRIGGER_PX)
+        }
+
+        /** touchend 只清追踪器（能到阈值的 move 早已 fire 过）。绝不刷新 800ms
+            手势窗口——沉浸引擎语义：touchend 不是可信手势信号。 */
+        const onEdgeTouchEnd = () => { state.edgeGesture = null }
+
+        /** touchcancel = 触摸被浏览器/系统接管（边缘返回手势、原生滚动接管等）。
+            这是真机「贴边开抽屉失败、关抽屉正常」的主因：开启手势必须贴边起滑，
+            正好与系统边缘手势的认领带重叠，页面往往只收到 touchstart+touchcancel
+            就再无下文。此刻用取消事件的最终触点按放宽阈值（EDGE_CANCEL_PX）补完
+            动作——一个右向横移已达一指节就被系统截走的触摸，意图显然是开抽屉；
+            纵向主导的（原生滚动接管）由共用判定的斜率检查天然拒绝。 */
+        const onEdgeTouchCancel = (event) => {
+          const gesture = state.edgeGesture
+          if (gesture === null) return
+          evaluateEdgeGesture(gesture, edgeTouchPoint(event), EDGE_CANCEL_PX)
+          state.edgeGesture = null
+        }
 
         /** 把手正反面：向上箭头=点开（当前沉浸），向下箭头=点收（当前展开）。 */
         const HANDLE_ICON_UP =
@@ -8494,9 +8515,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           ['touchmove', markGesture, { capture: true, passive: true }],
           ['touchstart', onEdgeTouchStart, { capture: true, passive: true }],
           ['touchmove', onEdgeTouchMove, { capture: true, passive: true }],
-          // 只清边缘追踪器，不刷新手势窗口（见 onEdgeTouchEnd 注释）
+          // 只清边缘追踪器/补完被接管的触摸，不刷新手势窗口（见各自注释）
           ['touchend', onEdgeTouchEnd, { capture: true, passive: true }],
-          ['touchcancel', onEdgeTouchEnd, { capture: true, passive: true }],
+          ['touchcancel', onEdgeTouchCancel, { capture: true, passive: true }],
           ['wheel', markGesture, { capture: true, passive: true }],
           ['focusin', onFocusIn, { capture: true }],
         ]

@@ -7135,13 +7135,52 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchmove', touchAt(90, 300))
     assert.equal(layoutCalls.toggleSidebar, 2)
 
+    // —— 6b. 系统手势接管（touchcancel）补完：真机「贴边开不了、关正常」的主因。
+    // 浏览器认领边缘横滑后以 touchcancel 收场，页面拿不到后续 move——此刻用取消
+    // 事件的最终触点按放宽阈值补完，被截走的横滑转化为成功开合。
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(28, 303))
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 36, clientY: 304 }], target: null })
+    assert.equal(layoutCalls.toggleSidebar, 3, 'a system-stolen edge swipe completes on touchcancel')
+
+    // 补完阈值内的短横移被取消：不放行（避免系统随机取消误触发）
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 20, clientY: 300 }], target: null })
+    assert.equal(layoutCalls.toggleSidebar, 3)
+
+    // 纵向主导的原生滚动被接管：斜率检查拒绝补完
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(10, 340))
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 12, clientY: 380 }], target: null })
+    assert.equal(layoutCalls.toggleSidebar, 3, 'vertical scroll takeover must not complete an edge gesture')
+
+    // 完整抬手但未达触发阈（touchend）：不补完——短拖语义留给用户重滑
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(40, 300))
+    htmlEl.dispatch('touchend', {})
+    assert.equal(layoutCalls.toggleSidebar, 3)
+
+    // —— 6c. 右栏同样受益：右缘起滑被系统接管 → 取消补完开右栏 ——
+    htmlEl.dispatch('touchstart', touchAt(386, 300))
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 350, clientY: 298 }], target: null })
+    assert.equal(rightToggle.clickCalls, 3, 'stolen right-edge swipe opens the better-sidebar drawer on touchcancel')
+    bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
+    sync()
+
+    // —— 6d. 贴边起滑但落在横滚内容内：开启追踪同样不起 ——
+    bodyEl.appendChild(hScroller)
+    htmlEl.dispatch('touchstart', touchAt(6, 300, { target: hScroller }))
+    htmlEl.dispatch('touchmove', touchAt(90, 300))
+    assert.equal(layoutCalls.toggleSidebar, 3, 'edge swipe inside horizontally scrollable content must not open the drawer')
+    hScroller.remove()
+
     // —— 7. 热关闭对称拆除 ——
     await renderer.setFeature?.('mobileAdaptation', false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
     htmlEl.dispatch('touchstart', touchAt(6, 300))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
-    assert.equal(layoutCalls.toggleSidebar, 2, 'no edge gestures after the engine is off')
+    assert.equal(layoutCalls.toggleSidebar, 3, 'no edge gestures after the engine is off')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
