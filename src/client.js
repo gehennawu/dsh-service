@@ -7610,7 +7610,8 @@ window.__ModuleLoader__.load({
       // 补完只作用于开启追踪：关闭路径任意起点 armed 本就工作正常，不动它。
       const EDGE_ZONE_PX = 32             // 边缘判定带宽度（左缘开左抽屉 / 右缘开右抽屉）
       const EDGE_TRIGGER_PX = 56          // 水平位移触发阈值（触摸存活期间的完整触发）
-      const EDGE_CANCEL_PX = 12           // touchcancel 补完阈值：系统接管时已达此横移即完成动作
+      const EDGE_CANCEL_PX = 6            // touchcancel 补完阈值：系统接管时已达此横移即完成动作（
+                                          // 6px 起判：静止触被取消 dx≈0 不命中，纵向滚动接管被斜率检查拒绝）
       const EDGE_SLANT_PX = 12            // 纵向主导作废阈：|dy|>|dx| 且超过此值即放弃（滚动优先）
       const EDGE_FLICK_PX = 32            // 快速短拂补完阈值（touchend；仅开启追踪）
       const EDGE_FLICK_MS = 260           // 快速短拂的时长上限（起触到抬手）
@@ -8296,16 +8297,29 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           try { return document.querySelector('[role="dialog"][aria-modal="true"]') !== null } catch (_) { return false }
         }
 
-        /** 起点是否在某横向可滚内容内（CodeMirror 横滚区、tab 条、统计条）：
-            这类横滑属于内容自身的滚动语义，不得触发抽屉关闭。限深向上走、
-            到 body 即止——根元素级溢出属于布局 bug，不拿来禁手势。 */
+        /** 起点是否在某【可交互横滚】内容内（CodeMirror 横滚区、tab 条、统计条）：
+            这类横滑属于内容自身的滚动语义，不得触发边缘手势。
+            判据必须同时满足 scrollWidth > clientWidth **且** computed
+            overflow-x ∈ {auto, scroll, overlay}——只看 scrollWidth 会把
+            「纵向滚动 + overflow-x:hidden 裁剪」的容器误判成横滚区：会话
+            滚动体带一个宽代码块（横向溢出只是被裁掉、用户横拖它毫无反应）
+            就会把对话页全部边缘手势杀掉（真机第二轮「开不了」的主嫌疑）。
+            限深向上走、到 body 即止——根元素级溢出属布局 bug，不拿来禁手势。 */
         const insideHorizontalScroller = (node) => {
           try {
             let cursor = node
             for (let depth = 0; cursor !== null && cursor !== undefined && depth < 8; depth += 1) {
               if (cursor === document.body || cursor === document.documentElement) return false
               if (typeof cursor.scrollWidth === 'number' && typeof cursor.clientWidth === 'number' &&
-                cursor.scrollWidth > cursor.clientWidth + 1) return true
+                cursor.scrollWidth > cursor.clientWidth + 1) {
+                // 溢出还需「可横向滚」才算横滚语义：hidden/visible/clip 的横向
+                // 溢出是裁剪不是滚动。无 getComputedStyle（极简桩）时保守沿用
+                // 旧判据（真实浏览器必有 CSSOM，不受影响）。
+                if (typeof getComputedStyle !== 'function') return true
+                const style = getComputedStyle(cursor)
+                const overflowX = style !== null && style !== undefined ? String(style.overflowX || '') : ''
+                if (overflowX === 'auto' || overflowX === 'scroll' || overflowX === 'overlay') return true
+              }
               cursor = cursor.parentNode
             }
           } catch (_) {}

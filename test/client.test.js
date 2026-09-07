@@ -6995,6 +6995,9 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
   panelHost.appendChild(toggleCluster)
   // 横滚内容夹具（CodeMirror 式）：scrollWidth > clientWidth
   const hScroller = new FakeElement('div'); hScroller.scrollWidth = 800; hScroller.clientWidth = 300
+  // 裁剪型溢出夹具：横向溢出被 overflow-x:hidden 裁掉（会话滚动体带宽代码块的
+  // 真实形态）——v1 横滚守卫只看 scrollWidth 把它误判成横滚区，整页手势全灭
+  const hClipper = new FakeElement('div'); hClipper.scrollWidth = 800; hClipper.clientWidth = 300
 
   const observerCallbacks = []
   class FakeMutationObserver {
@@ -7037,6 +7040,9 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     } } })
     globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
     globalThis.window.innerWidth = 390
+    // 横滚守卫的 computed overflow-x 桩：hScroller=auto（真横滚）、hClipper=hidden
+    // （裁剪型溢出，不得误杀）、其余 visible。真实浏览器走 CSSOM，桩仅喂测试。
+    globalThis.getComputedStyle = (el) => ({ overflowX: el === hScroller ? 'auto' : 'hidden' })
     await renderer.load()
 
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
@@ -7143,9 +7149,9 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 36, clientY: 304 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 3, 'a system-stolen edge swipe completes on touchcancel')
 
-    // 补完阈值(12)内的短横移被取消：不放行（避免系统随机取消误触发）
+    // 补完阈值(6)内的短横移被取消：不放行（静止触被系统取消 dx≈0 的形态）
     htmlEl.dispatch('touchstart', touchAt(8, 300))
-    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 16, clientY: 300 }], target: null })
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 12, clientY: 300 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 3)
 
     // 纵向主导的原生滚动被接管：斜率检查拒绝补完
@@ -7184,12 +7190,21 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
     sync()
 
-    // —— 6d. 贴边起滑但落在横滚内容内：开启追踪同样不起 ——
+    // —— 6d. 贴边起滑但落在【真横滚】内容内：开启追踪不起 ——
     bodyEl.appendChild(hScroller)
     htmlEl.dispatch('touchstart', touchAt(6, 300, { target: hScroller }))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
     assert.equal(layoutCalls.toggleSidebar, 4, 'edge swipe inside horizontally scrollable content must not open the drawer')
     hScroller.remove()
+
+    // —— 6e. 裁剪型溢出（overflow-x:hidden）不是横滚语义：不误杀边缘手势 ——
+    // 会话滚动体带宽代码块时横向溢出被裁掉，v1 守卫只看 scrollWidth 曾把
+    // 整个对话页判成横滚区，真机表现为「开不了、关正常」
+    bodyEl.appendChild(hClipper)
+    htmlEl.dispatch('touchstart', touchAt(6, 300, { target: hClipper }))
+    htmlEl.dispatch('touchmove', touchAt(70, 302))
+    assert.equal(layoutCalls.toggleSidebar, 5, 'clipped horizontal overflow must not block the edge open')
+    hClipper.remove()
 
     // —— 7. 热关闭对称拆除 ——
     await renderer.setFeature?.('mobileAdaptation', false)
@@ -7197,11 +7212,12 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
     htmlEl.dispatch('touchstart', touchAt(6, 300))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
-    assert.equal(layoutCalls.toggleSidebar, 4, 'no edge gestures after the engine is off')
+    assert.equal(layoutCalls.toggleSidebar, 5, 'no edge gestures after the engine is off')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
     delete globalThis.window.innerWidth
+    delete globalThis.getComputedStyle
   }
 })
 
