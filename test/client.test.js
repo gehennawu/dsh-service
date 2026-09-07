@@ -7143,9 +7143,9 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 36, clientY: 304 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 3, 'a system-stolen edge swipe completes on touchcancel')
 
-    // 补完阈值内的短横移被取消：不放行（避免系统随机取消误触发）
+    // 补完阈值(12)内的短横移被取消：不放行（避免系统随机取消误触发）
     htmlEl.dispatch('touchstart', touchAt(8, 300))
-    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 20, clientY: 300 }], target: null })
+    htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 16, clientY: 300 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 3)
 
     // 纵向主导的原生滚动被接管：斜率检查拒绝补完
@@ -7154,11 +7154,28 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 12, clientY: 380 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 3, 'vertical scroll takeover must not complete an edge gesture')
 
-    // 完整抬手但未达触发阈（touchend）：不补完——短拖语义留给用户重滑
+    // 完整抬手但未达触发阈且无坐标的 touchend（桩 {}）：不补完也不崩
     htmlEl.dispatch('touchstart', touchAt(8, 300))
     htmlEl.dispatch('touchmove', touchAt(40, 300))
     htmlEl.dispatch('touchend', {})
     assert.equal(layoutCalls.toggleSidebar, 3)
+
+    // —— 6b2. 快速短拂补完（仅开启追踪）：未达完整阈就抬手的快拂，
+    // 类原生抽屉的速度语义；位移不足 32px 的短拖仍不放行 ——
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(44, 302))
+    htmlEl.dispatch('touchend', { changedTouches: [{ clientX: 52, clientY: 304 }], target: null })
+    assert.equal(layoutCalls.toggleSidebar, 4, 'a fast short flick from the edge completes the open on touchend')
+
+    // 关闭追踪不做短拂放大：开着时 -40px 快速抬手不关（完整阈仍是 56）
+    frame.removeAttribute('data-sidebar-collapsed')
+    sync()
+    htmlEl.dispatch('touchstart', touchAt(200, 400))
+    htmlEl.dispatch('touchmove', touchAt(160, 402))
+    htmlEl.dispatch('touchend', { changedTouches: [{ clientX: 160, clientY: 402 }], target: null })
+    assert.equal(layoutCalls.toggleSidebar, 4, 'the close path keeps its full 56px threshold')
+    frame.setAttribute('data-sidebar-collapsed', '')
+    sync()
 
     // —— 6c. 右栏同样受益：右缘起滑被系统接管 → 取消补完开右栏 ——
     htmlEl.dispatch('touchstart', touchAt(386, 300))
@@ -7171,7 +7188,7 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     bodyEl.appendChild(hScroller)
     htmlEl.dispatch('touchstart', touchAt(6, 300, { target: hScroller }))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
-    assert.equal(layoutCalls.toggleSidebar, 3, 'edge swipe inside horizontally scrollable content must not open the drawer')
+    assert.equal(layoutCalls.toggleSidebar, 4, 'edge swipe inside horizontally scrollable content must not open the drawer')
     hScroller.remove()
 
     // —— 7. 热关闭对称拆除 ——
@@ -7180,7 +7197,7 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
     htmlEl.dispatch('touchstart', touchAt(6, 300))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
-    assert.equal(layoutCalls.toggleSidebar, 3, 'no edge gestures after the engine is off')
+    assert.equal(layoutCalls.toggleSidebar, 4, 'no edge gestures after the engine is off')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
