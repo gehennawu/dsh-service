@@ -7040,6 +7040,14 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     } } })
     globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
     globalThis.window.innerWidth = 390
+    // 开 debug 参数：遥测行写入诊断条，测试直接断言芯片文本（含词典化原因值）
+    globalThis.window.location = { search: '?dshsvc-mobile-debug=1', reload() {} }
+    // debug 分支会往 window 挂 error/resize 监听（诊断条用），与 debug 芯片测试同款桩
+    const windowListeners = new Map()
+    globalThis.window.addEventListener = (type, handler) => {
+      ;(windowListeners.get(type) || windowListeners.set(type, new Set()).get(type)).add(handler)
+    }
+    globalThis.window.removeEventListener = (type, handler) => { windowListeners.get(type)?.delete(handler) }
     // 横滚守卫的 computed overflow-x 桩：hScroller=auto（真横滚）、hClipper=hidden
     // （裁剪型溢出，不得误杀）、其余 visible。真实浏览器走 CSSOM，桩仅喂测试。
     globalThis.getComputedStyle = (el) => ({ overflowX: el === hScroller ? 'auto' : 'hidden' })
@@ -7048,6 +7056,10 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(fab, undefined)
+    const chipText = () => {
+      const chip = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-debug'))
+      return chip !== undefined && chip.textContent !== undefined ? chip.textContent : ''
+    }
     // buildSurfaces 先建 workspace 再建 frame 观察者 → 最后一个即 frame 回调（同步读改）
     const sync = () => observerCallbacks[observerCallbacks.length - 1]([], () => {})
     const touchAt = (x, y, extra) => ({ touches: [{ clientX: x, clientY: y }], target: extra?.target ?? null })
@@ -7062,6 +7074,9 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchmove', touchAt(30, 302))
     htmlEl.dispatch('touchmove', touchAt(64, 302))
     assert.equal(layoutCalls.toggleSidebar, 1, 'left-edge rightward swipe opens the official drawer')
+    // 遥测词典化：fire 后芯片显示本地化的种类标签与生效标记
+    assert.match(chipText(), /左开/)
+    assert.ok(chipText().includes('✓'))
     frame.removeAttribute('data-sidebar-collapsed')
     sync()
     assert.equal(fab.style.display, 'none')
@@ -7090,6 +7105,14 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchmove', touchAt(80, 120))
     assert.equal(layoutCalls.toggleSidebar, 2)
 
+    // 中途并指（评审 Spec 防御）：单指起滑后第二指落下 → move 阶段复查作废追踪
+    htmlEl.dispatch('touchstart', touchAt(8, 300))
+    htmlEl.dispatch('touchmove', touchAt(40, 300))
+    htmlEl.dispatch('touchmove', { touches: [{ clientX: 80, clientY: 300 }, { clientX: 100, clientY: 320 }], target: null })
+    htmlEl.dispatch('touchmove', touchAt(120, 300))
+    assert.equal(layoutCalls.toggleSidebar, 2, 'a second finger joining mid-gesture must void the tracker')
+    assert.match(chipText(), /多指/)
+
     // 双抽屉全关 + 非贴边起点：开启语义对齐关闭手势——任意起点横移即可开
     // （真机第三轮用户点名：贴边限制太严）。+x 开左抽屉、−x 开右栏（缺席则该向无效）
     htmlEl.dispatch('touchstart', touchAt(120, 300))
@@ -7101,6 +7124,8 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchmove', touchAt(80, 300))
     assert.equal(layoutCalls.toggleSidebar, 3)
     assert.equal(rightToggle.clickCalls, 0, 'leftward swipe stays inert while no right-sidebar plugin is mounted')
+    // 遥测区分失败形态：左滑方向无效必须记录「右栏缺席」，而非笼统未触发
+    assert.match(chipText(), /右栏缺席/)
 
     // —— 3. better-sidebar 上线：右缘左滑开右栏（簇内最后可用钮，decoy 跳过）——
     bodyEl.appendChild(panelHost)
@@ -7234,6 +7259,7 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     delete globalThis.document
     delete globalThis.MutationObserver
     delete globalThis.window.innerWidth
+    delete globalThis.window.location.search
     delete globalThis.getComputedStyle
   }
 })

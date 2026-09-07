@@ -142,6 +142,23 @@ window.__ModuleLoader__.load({
       'mobile.immersive.show': '展开头部与输入框',
       'mobile.debug.immersive': '沉浸',
       'mobile.debug.edge': '边缘',
+      'mobile.debug.edge.fieldStart': '起',
+      'mobile.debug.edge.fieldMoves': '动',
+      'mobile.debug.edge.fieldLast': '末',
+      'mobile.debug.edge.fieldCancel': '消',
+      'mobile.debug.edge.fieldReason': '因',
+      'mobile.debug.edge.open': '开',
+      'mobile.debug.edge.leftOpen': '左开',
+      'mobile.debug.edge.rightOpen': '右开',
+      'mobile.debug.edge.leftClose': '左关',
+      'mobile.debug.edge.rightClose': '右关',
+      'mobile.debug.edge.reason.multiTouch': '多指',
+      'mobile.debug.edge.reason.modal': '模态',
+      'mobile.debug.edge.reason.hScroll': '横滚',
+      'mobile.debug.edge.reason.noPoint': '无触点',
+      'mobile.debug.edge.reason.absentRight': '右栏缺席',
+      'mobile.debug.edge.reason.badButton': '右栏钮不可用',
+      'mobile.debug.edge.reason.noTracker': '无追踪',
       'conversation.jump.previousReply': '上一条用户回复',
       'subagent.title': '子代理模型',
       'subagent.hint': '控制未显式指定模型的子代理所用模型；显式指定的不受影响。',
@@ -896,6 +913,23 @@ window.__ModuleLoader__.load({
       'mobile.immersive.show': 'Show header and composer',
       'mobile.debug.immersive': 'Immersive',
       'mobile.debug.edge': 'Edge',
+      'mobile.debug.edge.fieldStart': 'start',
+      'mobile.debug.edge.fieldMoves': 'moves',
+      'mobile.debug.edge.fieldLast': 'last',
+      'mobile.debug.edge.fieldCancel': 'cancel',
+      'mobile.debug.edge.fieldReason': 'reason',
+      'mobile.debug.edge.open': 'open',
+      'mobile.debug.edge.leftOpen': 'open L',
+      'mobile.debug.edge.rightOpen': 'open R',
+      'mobile.debug.edge.leftClose': 'close L',
+      'mobile.debug.edge.rightClose': 'close R',
+      'mobile.debug.edge.reason.multiTouch': 'multi-touch',
+      'mobile.debug.edge.reason.modal': 'modal',
+      'mobile.debug.edge.reason.hScroll': 'h-scroll',
+      'mobile.debug.edge.reason.noPoint': 'no point',
+      'mobile.debug.edge.reason.absentRight': 'right sidebar absent',
+      'mobile.debug.edge.reason.badButton': 'right sidebar toggle unavailable',
+      'mobile.debug.edge.reason.noTracker': 'no tracker',
       'conversation.jump.previousReply': 'Previous user message',
       'subagent.title': 'Subagent model',
       'subagent.hint': 'Controls the model used by subagents without an explicit model; explicitly specified ones are unaffected.',
@@ -8359,26 +8393,48 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           } catch (_) { return false }
         }
 
-        /** fire 动作：全部先复核实时状态再翻转，防 arm 后状态被人先改的竞态。 */
-        const fireLeftDrawerOpen = () => {
-          if (!leftDrawerCollapsedNow()) return
-          const layout = layoutService()
-          if (layout === undefined) return
-          try { layout.toggleSidebar() } catch (_) {}
+        /** 手势追踪种类/遥测原因的语义 token（评审收敛：不裸写魔法串）。 */
+        const EDGE_KIND = {
+          open: 'open',
+          leftClose: 'left-close',
+          rightClose: 'right-close',
+          leftOpen: 'left-open',
+          rightOpen: 'right-open',
+          // 遥测原因 token（渲染时经词典翻译，绝不直接进 UI）
+          multiTouch: 'multi-touch',
+          modal: 'modal',
+          hScroll: 'h-scroll',
+          noPoint: 'no-point',
+          absentRight: 'right-absent',
+          badButton: 'toggle-unavailable',
+          noTracker: 'no-tracker',
         }
-        const fireLeftDrawerClose = () => {
-          if (leftDrawerCollapsedNow()) return
-          const layout = layoutService()
-          if (layout === undefined) return
-          try { layout.toggleSidebar() } catch (_) {}
+
+        /**
+         * 开合动作统一包装（评审收敛）：四个 fire 原是同构的「实时读状态 → 门控 →
+         * 执行」，抽成表驱动的 target 描述 + 单一执行器。门控语义不变——状态已是
+         * 要达成的样子时 no-op（防 arm 后被抢先翻转的竞态）；左抽屉缺 layout 服务
+         * 时静默放弃；右栏执行失败（开关钮不可用）回报执行结果给遥测。
+         */
+        const drawerTargets = {
+          left: {
+            opened: () => !leftDrawerCollapsedNow(),
+            toggle: () => {
+              const layout = layoutService()
+              if (layout === undefined) return false
+              try { layout.toggleSidebar(); return true } catch (_) { return false }
+            },
+          },
+          right: {
+            opened: () => sidebarPanelHostNow() && !sidebarPanelCollapsedNow(),
+            toggle: () => clickSidebarPanelToggle(),
+          },
         }
-        const fireSidebarPanelOpen = () => {
-          if (!sidebarPanelHostNow() || !sidebarPanelCollapsedNow()) return
-          clickSidebarPanelToggle()
-        }
-        const fireSidebarPanelClose = () => {
-          if (!sidebarPanelHostNow() || sidebarPanelCollapsedNow()) return
-          clickSidebarPanelToggle()
+        const fireDrawer = (side, wantOpen) => {
+          const target = drawerTargets[side]
+          if (target === undefined) return false
+          if (target.opened() === wantOpen) return false
+          return target.toggle() === true
         }
 
         /** touchstart：清旧追踪 → 多指/模态直接放弃 → 决定是否 arm。
@@ -8393,17 +8449,17 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           state.edgeTelemetry = tele
           try {
             if (event !== null && event !== undefined && event.touches !== undefined && event.touches !== null && event.touches.length > 1) {
-              if (tele !== null) tele.kind = '多指'
+              if (tele !== null) tele.kind = EDGE_KIND.multiTouch
               return
             }
           } catch (_) {}
           if (modalOpenNow()) {
-            if (tele !== null) tele.kind = '模态'
+            if (tele !== null) tele.kind = EDGE_KIND.modal
             return
           }
           const point = edgeTouchPoint(event)
           if (point === null) {
-            if (tele !== null) tele.kind = '无触点'
+            if (tele !== null) tele.kind = EDGE_KIND.noPoint
             return
           }
           if (tele !== null) tele.start = `${Math.round(point.x)},${Math.round(point.y)}`
@@ -8413,16 +8469,16 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (leftOpen || rightOpen) {
             // 关闭追踪：任意起点，但横滚内容（编辑器/tab 条）的横滑是内容滚动语义
             if (insideHorizontalScroller(event?.target)) {
-              if (tele !== null) tele.kind = '横滚'
+              if (tele !== null) tele.kind = EDGE_KIND.hScroll
               return
             }
-            state.edgeGesture = { kind: leftOpen ? 'left-close' : 'right-close', edge: null, startX: point.x, startY: point.y, at: Date.now(), fired: false }
-            if (tele !== null) tele.kind = leftOpen ? '左关' : '右关'
+            state.edgeGesture = { kind: leftOpen ? EDGE_KIND.leftClose : EDGE_KIND.rightClose, edge: null, startX: point.x, startY: point.y, at: Date.now(), fired: false }
+            if (tele !== null) tele.kind = leftOpen ? EDGE_KIND.leftClose : EDGE_KIND.rightClose
             return
           }
           // 开启追踪：任意起点；横滚内容内不起（编辑器/统计条的横滑是内容滚动语义）
           if (insideHorizontalScroller(event?.target)) {
-            if (tele !== null) tele.kind = '横滚'
+            if (tele !== null) tele.kind = EDGE_KIND.hScroll
             return
           }
           // 贴边起滑记录在案：只有贴边起点享有 touchcancel/短拂两类放宽补完
@@ -8431,55 +8487,80 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           let edge = null
           if (point.x <= EDGE_ZONE_PX) edge = 'left'
           else if (Number.isFinite(vw) && point.x >= vw - EDGE_ZONE_PX) edge = 'right'
-          state.edgeGesture = { kind: 'open', edge, startX: point.x, startY: point.y, at: Date.now(), fired: false }
-          if (tele !== null) tele.kind = edge === 'left' ? '左开' : edge === 'right' ? '右开' : '开'
+          state.edgeGesture = { kind: EDGE_KIND.open, edge, startX: point.x, startY: point.y, at: Date.now(), fired: false }
+          if (tele !== null) tele.kind = edge === 'left' ? EDGE_KIND.leftOpen : edge === 'right' ? EDGE_KIND.rightOpen : EDGE_KIND.open
           if (state.debugEnabled) updateDebugChip()
         }
 
         /** 共用判定：纵向主导即作废（滚动/沉浸优先）→ 达阈值 fire 一次并锁定
             （fired 后同一触摸内不重复翻转）。threshold 由调用方给：触摸存活期间
-            用完整触发阈，touchcancel/touchend 补完用放宽阈。 */
+            用完整触发阈，touchcancel/touchend 补完用放宽阈。返回是否发生了值得
+            刷新遥测的事件（fire 或记录了原因）。 */
         const evaluateEdgeGesture = (gesture, point, threshold) => {
-          if (gesture === null || gesture.fired || point === null) return
+          if (gesture === null || gesture.fired || point === null) return false
           const dx = point.x - gesture.startX
           const dy = point.y - gesture.startY
           if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > EDGE_SLANT_PX) {
             state.edgeGesture = null
-            return
+            return false
           }
           // 方向结算：关闭追踪方向固定（left-close 沿 −x、right-close 沿 +x）；
           // 开启追踪方向在达阈时结算——+x 开左抽屉、−x 开右栏（右栏缺席则该向
-          // 无效，手势自然落空，对齐「不存在支持右侧栏的插件则无效」的语义）。
-          let fire = null
-          let label = null
-          if (gesture.kind === 'open') {
-            if (dx >= threshold) { fire = fireLeftDrawerOpen; label = '左开' }
-            else if (dx <= -threshold && sidebarPanelHostNow()) { fire = fireSidebarPanelOpen; label = '右开' }
-          } else if (gesture.kind === 'left-close') {
-            if (dx <= -threshold) { fire = fireLeftDrawerClose; label = '左关' }
-          } else if (gesture.kind === 'right-close') {
-            if (dx >= threshold) { fire = fireSidebarPanelClose; label = '右关' }
+          // 无效并记录原因，对齐「不存在支持右侧栏的插件则无效」的语义）。
+          let side = null
+          let wantOpen = false
+          let kind = null
+          if (gesture.kind === EDGE_KIND.open) {
+            if (dx >= threshold) { side = 'left'; wantOpen = true; kind = EDGE_KIND.leftOpen }
+            else if (dx <= -threshold) {
+              side = 'right'; wantOpen = true; kind = EDGE_KIND.rightOpen
+              if (!sidebarPanelHostNow()) {
+                // 右栏插件缺席：该向无效是设计语义。记录专属原因供遥测区分
+                // 「没到阈值 / 被横滚拦截 / 右栏不存在」三种失败形态
+                if (state.edgeTelemetry !== null) state.edgeTelemetry.reason = EDGE_KIND.absentRight
+                return true
+              }
+            }
+          } else if (gesture.kind === EDGE_KIND.leftClose) {
+            if (dx <= -threshold) { side = 'left'; kind = EDGE_KIND.leftClose }
+          } else if (gesture.kind === EDGE_KIND.rightClose) {
+            if (dx >= threshold) { side = 'right'; kind = EDGE_KIND.rightClose }
           }
-          if (fire === null) return
+          if (side === null) return false
+          const executed = fireDrawer(side, wantOpen)
           gesture.fired = true
           if (state.edgeTelemetry !== null) {
-            state.edgeTelemetry.fired = true
-            state.edgeTelemetry.kind = label
+            state.edgeTelemetry.fired = executed
+            state.edgeTelemetry.kind = kind
+            if (!executed && kind === EDGE_KIND.rightOpen) {
+              // 动作未生效：右栏开关钮不可用（无会话态 aria-disabled 等）
+              state.edgeTelemetry.reason = EDGE_KIND.badButton
+            }
           }
-          fire()
+          return true
         }
 
         const onEdgeTouchMove = (event) => {
           const gesture = state.edgeGesture
           if (gesture === null || gesture.fired) return
+          // 中途并指（评审 Spec 防御）：单指起滑后第二指落下（捏合/双指操作），
+          // 触摸序列不得被结算成边缘手势——move 阶段复查并作废追踪
+          try {
+            if (event !== null && event !== undefined && event.touches !== undefined && event.touches !== null && event.touches.length > 1) {
+              state.edgeGesture = null
+              if (state.edgeTelemetry !== null) state.edgeTelemetry.reason = EDGE_KIND.multiTouch
+              if (state.debugEnabled) updateDebugChip()
+              return
+            }
+          } catch (_) {}
           const point = edgeTouchPoint(event)
           const tele = state.edgeTelemetry
           if (tele !== null && point !== null) {
             tele.moves += 1
             tele.last = `${Math.round(point.x - gesture.startX)},${Math.round(point.y - gesture.startY)}`
           }
-          evaluateEdgeGesture(gesture, point, EDGE_TRIGGER_PX)
-          if (state.debugEnabled && gesture.fired) updateDebugChip()
+          const notable = evaluateEdgeGesture(gesture, point, EDGE_TRIGGER_PX)
+          if (state.debugEnabled && notable) updateDebugChip()
         }
 
         /** touchend：只对【贴边起滑的开启追踪】做快速短拂补完——横移主导 ≥32px、
@@ -8511,7 +8592,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           const gesture = state.edgeGesture
           const tele = state.edgeTelemetry
           if (gesture === null) {
-            if (tele !== null) tele.cancel = '无追踪'
+            if (tele !== null) tele.cancel = EDGE_KIND.noTracker
             if (state.debugEnabled) updateDebugChip()
             return
           }
@@ -8650,12 +8731,30 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             ].join(' · '),
           ]
           // 边缘遥测第二行：起触点 + armed/拒绝原因 + move 数 + 末次相对位移 +
-          // 取消时相对位移 + 是否补完成功。真机「开不了」时读这行即可定位环节。
+          // 取消时相对位移 + 遥测原因 + 是否生效。真机「开不了」时读这行即可
+          // 区分「没到阈值 / 被横滚拦截 / 右栏缺席 / 开关钮不可用」。种类与原因
+          // token 一律经词典翻译（评审：debug 面也是用户可见 UI，不得硬编码文案）。
+          const edgeKindLabel = (token) => {
+            if (token === EDGE_KIND.leftOpen) return t('mobile.debug.edge.leftOpen')
+            if (token === EDGE_KIND.rightOpen) return t('mobile.debug.edge.rightOpen')
+            if (token === EDGE_KIND.leftClose) return t('mobile.debug.edge.leftClose')
+            if (token === EDGE_KIND.rightClose) return t('mobile.debug.edge.rightClose')
+            if (token === EDGE_KIND.open) return t('mobile.debug.edge.open')
+            if (token === EDGE_KIND.multiTouch) return t('mobile.debug.edge.reason.multiTouch')
+            if (token === EDGE_KIND.modal) return t('mobile.debug.edge.reason.modal')
+            if (token === EDGE_KIND.hScroll) return t('mobile.debug.edge.reason.hScroll')
+            if (token === EDGE_KIND.noPoint) return t('mobile.debug.edge.reason.noPoint')
+            if (token === EDGE_KIND.absentRight) return t('mobile.debug.edge.reason.absentRight')
+            if (token === EDGE_KIND.badButton) return t('mobile.debug.edge.reason.badButton')
+            if (token === EDGE_KIND.noTracker) return t('mobile.debug.edge.reason.noTracker')
+            return token
+          }
           const tele = state.edgeTelemetry
           if (tele !== null && tele.start !== undefined) {
-            lines.push(
-              `${t('mobile.debug.edge')} 起(${tele.start}) ${tele.kind} 动${tele.moves} 末(${tele.last}) 消(${tele.cancel})${tele.fired ? ' ✓' : ''}`
-            )
+            let line = `${t('mobile.debug.edge')} ${t('mobile.debug.edge.fieldStart')}(${tele.start}) ${edgeKindLabel(tele.kind)} ${t('mobile.debug.edge.fieldMoves')}${tele.moves} ${t('mobile.debug.edge.fieldLast')}(${tele.last}) ${t('mobile.debug.edge.fieldCancel')}(${edgeKindLabel(tele.cancel)})`
+            if (tele.reason !== undefined) line += ` ${t('mobile.debug.edge.fieldReason')}(${edgeKindLabel(tele.reason)})`
+            if (tele.fired) line += ' ✓'
+            lines.push(line)
           }
           chip.textContent = lines.join('\n')
         }
