@@ -5398,10 +5398,20 @@ function createSubagentRenderer(options = {}) {
     if (endpoint === 'subagent-route-save') {
       state.saves.push(payload)
       if (options.saveError) return { ok: false, error: options.saveError }
-      const savedFallbacks = Array.isArray(payload.fallbacks) && payload.fallbacks.length > 0 ? { fallbacks: payload.fallbacks } : {}
-      state.route = payload.mode === 'custom'
-        ? { available: true, mode: 'custom', provider: payload.provider, model: payload.model, ...(payload.reasoningEffort !== undefined ? { reasoningEffort: payload.reasoningEffort } : {}), ...savedFallbacks }
-        : { available: true, mode: payload.mode, ...savedFallbacks }
+      // 镜像宿主 v1.4.12 草稿保留语义：切换模式不销毁 provider/model/reasoningEffort；
+      // 回退列表 custom/follow 全量提交（缺省 = 清空），inherit 无编辑器 = 保留。
+      const prior = state.route
+      const draft = payload.mode === 'custom'
+        ? { provider: payload.provider, model: payload.model, ...(payload.reasoningEffort !== undefined ? { reasoningEffort: payload.reasoningEffort } : {}) }
+        : {
+            ...(typeof prior.provider === 'string' ? { provider: prior.provider } : {}),
+            ...(typeof prior.model === 'string' ? { model: prior.model } : {}),
+            ...(typeof prior.reasoningEffort === 'string' ? { reasoningEffort: prior.reasoningEffort } : {}),
+          }
+      const savedFallbacks = payload.mode === 'inherit'
+        ? (Array.isArray(prior.fallbacks) && prior.fallbacks.length > 0 ? { fallbacks: prior.fallbacks } : {})
+        : (Array.isArray(payload.fallbacks) && payload.fallbacks.length > 0 ? { fallbacks: payload.fallbacks } : {})
+      state.route = { available: true, mode: payload.mode, ...draft, ...savedFallbacks }
       return { ok: true, ...state.route }
     }
     if (endpoint === 'version') return { ok: true, value: { current: '0.26.0', instanceId: 'old-instance' } }
@@ -5456,16 +5466,44 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   await renderer.flush()
   assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol' })
 
-  // 重置按钮直接保存 inherit，并清除 custom 路由。
+  // 重置按钮直接保存 inherit；已保存的自定义路由作为草稿保留（模式切换不销毁）。
   renderer.findByTestId('subagent-reset').props.onClick()
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(state.saves[2], { mode: 'inherit' })
   assert.equal(renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
+  // 切回「自定义」：草稿自动回填，无需重新选择（用户点名：切换模式不丢配置）。
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-provider').props.value, 'cpa')
+  assert.equal(renderer.findByTestId('subagent-model').props.value, 'gpt-5.6-sol')
 
   // v0.39：子代理的设置页左列入口已撤销——段内开关不复存在，也不再注册独立 section。
   assert.equal(renderer.hasTest('subagent-nav-switch'), false)
   assert.equal((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
+})
+
+test('subagent tab restores the saved custom route after switching modes (draft retention)', async () => {
+  // 场景：曾保存 custom(cpa/gpt-5.6-sol)，后切到 follow——快照仍携带草稿字段。
+  const { renderer, state } = createSubagentRenderer({ route: { available: true, mode: 'follow', provider: 'cpa', model: 'gpt-5.6-sol' } })
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-provider').props.value, 'cpa')
+  assert.equal(renderer.findByTestId('subagent-model').props.value, 'gpt-5.6-sol')
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol' })
 })
 
 test('subagent fallback list: load/add/move/remove rows and save ordered fallbacks with follow and custom modes', async () => {

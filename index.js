@@ -3038,7 +3038,12 @@ function createEmptySubagentRoute() {
   return { version: SUBAGENT_ROUTE_VERSION, mode: 'inherit' }
 }
 
-/** 解析磁盘上的子代理路由配置：损坏/版本不符/未知模式回退 inherit（零侵入，不因坏配置破坏派生）。 */
+/**
+ * 解析磁盘上的子代理路由配置：损坏/版本不符/未知模式回退 inherit（零侵入，不因坏配置破坏派生）。
+ * v1.4.12 起草稿保留：provider/model/reasoningEffort/fallbacks 在三个模式下统一保留（custom 仍必填
+ * 主路由）——模式只决定是否生效（resolveSubagentInjection 仅在 custom 消费主路由、follow/custom
+ * 消费回退），切换模式保存不再销毁已保存的自定义配置。
+ */
 function parseSubagentRouteText(text) {
   const fallback = createEmptySubagentRoute()
   let parsed
@@ -3062,18 +3067,19 @@ function parseSubagentRouteText(text) {
       fallbacks.push({ provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}) })
     }
   }
-  if (parsed.mode === 'inherit') return { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
-  if (parsed.mode !== 'custom') {
-    return fallbacks.length > 0
-      ? { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode, fallbacks }
-      : { version: SUBAGENT_ROUTE_VERSION, mode: parsed.mode }
-  }
   const provider = typeof parsed.provider === 'string' ? parsed.provider.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   const model = typeof parsed.model === 'string' ? parsed.model.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
-  if (provider === '' || model === '') return fallback
+  // custom 主路由必填：缺任一字段整体回退空档（历史行为不变）；草稿模式下缺字段仅视为「无草稿」。
+  if (parsed.mode === 'custom' && (provider === '' || model === '')) return fallback
   // reasoningEffort 是可选的 adapter 自有等级 ID：只有字符串、trim 后非空才保留（空串视为默认）。
-  const reasoningEffort = typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
-  return { version: SUBAGENT_ROUTE_VERSION, mode: 'custom', provider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}), ...(fallbacks.length > 0 ? { fallbacks } : {}) }
+  const reasoningEffort = provider !== '' && model !== '' && typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+  return {
+    version: SUBAGENT_ROUTE_VERSION,
+    mode: parsed.mode,
+    ...(provider !== '' && model !== '' ? { provider, model } : {}),
+    ...(reasoningEffort !== '' ? { reasoningEffort } : {}),
+    ...(fallbacks.length > 0 ? { fallbacks } : {}),
+  }
 }
 
 async function loadSubagentRoute(dshHome) {
@@ -3141,7 +3147,8 @@ function resolveSubagentInjection(request, config, options = {}) {
     const reasoningEffort = typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? config.reasoningEffort : undefined
     candidates.push({ provider: config.provider, model: config.model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) })
   }
-  // 回退只属于 follow/custom：inherit 保持零干预（磁盘解析也会丢弃，这里是纯函数层的纵深防御）。
+  // 回退只属于 follow/custom：inherit 不消费任何候选（配置可能按 v1.4.12 草稿保留回退条目，
+  // 这里是纯函数层的纵深防御，保证 inherit 恒零干预）。
   if ((config?.mode === 'follow' || config?.mode === 'custom') && Array.isArray(config?.fallbacks)) {
     for (const entry of config.fallbacks) {
       if (entry === null || typeof entry !== 'object') continue
@@ -5164,12 +5171,14 @@ function apply(ctx) {
           current = catalog.current
         }
         const config = subagentRouteConfig
+        // 自定义路由草稿（v1.4.12）：三模式统一下发——客户端据此回填表单，切换模式不丢配置。
+        const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
         return {
           ok: true,
           value: {
             available: subagentSeamInstalled,
             mode: config.mode,
-            ...(config.mode === 'custom' ? {
+            ...(routePresent ? {
               provider: config.provider,
               model: config.model,
               ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
@@ -5265,15 +5274,18 @@ function apply(ctx) {
             // 先删旧值，只有新值非空时才写入：空/未提供代表「使用模型默认」。
             delete config.reasoningEffort
             if (primary.reasoningEffort !== undefined) config.reasoningEffort = primary.reasoningEffort
-          } else {
-            // follow / inherit：不保留 custom 字段，重置回干净形状。
-            delete config.provider
-            delete config.model
-            delete config.reasoningEffort
           }
-          if (fallbacks.length > 0) config.fallbacks = fallbacks
-          else delete config.fallbacks
-          return { value: { ok: true, mode: config.mode, ...(config.mode === 'custom' ? {
+          // follow / inherit（v1.4.12 草稿保留）：不携带 provider/model/reasoningEffort 时已保存的
+          // 自定义路由原样保留（此时不生效，切回 custom 即恢复），切换模式不再销毁配置。
+          // 回退列表：custom/follow 页面渲染完整编辑器、总是全量提交（缺省/空 = 清空）；inherit
+          // 页面没有回退编辑器、payload 不会携带 → 保留原值（resolveSubagentInjection 对 inherit
+          // 零消费，纯函数层纵深防御不变）。
+          if (mode !== 'inherit') {
+            if (fallbacks.length > 0) config.fallbacks = fallbacks
+            else delete config.fallbacks
+          }
+          const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
+          return { value: { ok: true, mode: config.mode, ...(routePresent ? {
             provider: config.provider,
             model: config.model,
             ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),

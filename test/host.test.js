@@ -5020,10 +5020,10 @@ test('subagent-route seam：包装 start/startContinuable 注入未显式路由�
   assert.equal(disposedSnapshot.value.available, false)
 })
 
-test('subagent-route-save：unknown-mode 与功能门；follow/inherit 清干净 custom 字段并跨重启持久化', async (t) => {
+test('subagent-route-save：unknown-mode 与功能门；切换模式保留自定义路由草稿并跨重启持久化', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-persist-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
+  const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash', 'deepseek-v4-pro']]])
   const host = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
 
   assert.equal((await host.handler('subagent-route-save', { mode: 'pin' })).error, 'unknown-mode')
@@ -5032,22 +5032,36 @@ test('subagent-route-save：unknown-mode 与功能门；follow/inherit 清干净
   assert.equal((await host.handler('subagent-route-save', { mode: 'custom' })).error, 'invalid-model-route')
   assert.equal((await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official' })).error, 'invalid-model-route')
 
-  // 保存 custom → 重启后从磁盘恢复。
-  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  // 保存 custom（含回退）→ 重启后从磁盘恢复。
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-pro' }] })
   const rebooted = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
   const snapshot = await rebooted.handler('subagent-route', {})
   assert.equal(snapshot.value.mode, 'custom')
   assert.equal(snapshot.value.provider, 'deepseek-official')
   assert.equal(snapshot.value.model, 'deepseek-v4-flash')
+  assert.deepEqual(snapshot.value.fallbacks, [{ provider: 'deepseek-official', model: 'deepseek-v4-pro' }])
 
-  // follow 覆盖后 custom 字段不残留；重置回 inherit 落盘干净。
-  await rebooted.handler('subagent-route-save', { mode: 'follow' })
-  const afterFollow = await rebooted.handler('subagent-route', {})
-  assert.equal(afterFollow.value.mode, 'follow')
-  assert.equal(afterFollow.value.provider, undefined)
+  // 切换模式不销毁草稿（用户点名）：均不生效（resolveSubagentInjection 对非 custom 主路由、
+  // 对 inherit 回退零消费），快照仍下发供 UI 回填。回退按编辑器口径：inherit 页面没有编辑器、
+  // payload 不会携带 → 草稿连回退原样保留；custom/follow 页面渲染完整编辑器、总是全量提交 →
+  // 不携带 = 显式清空回退（provider/model 草稿仍保留）。
   await rebooted.handler('subagent-route-save', { mode: 'inherit' })
   const raw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
-  assert.deepEqual(raw, { version: 1, mode: 'inherit' })
+  assert.deepEqual(raw, { version: 1, mode: 'inherit', provider: 'deepseek-official', model: 'deepseek-v4-flash', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-pro' }] })
+  await rebooted.handler('subagent-route-save', { mode: 'follow' })
+  const afterFollowRaw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(afterFollowRaw, { version: 1, mode: 'follow', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  const afterFollow = await rebooted.handler('subagent-route', {})
+  assert.equal(afterFollow.value.mode, 'follow')
+  assert.equal(afterFollow.value.provider, 'deepseek-official')
+  assert.equal(afterFollow.value.model, 'deepseek-v4-flash')
+  assert.equal(afterFollow.value.fallbacks, undefined)
+
+  // 切回 custom：带上草稿原样保存即恢复生效（白名单校验照旧）。
+  await rebooted.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  const restored = await rebooted.handler('subagent-route', {})
+  assert.equal(restored.value.mode, 'custom')
+  assert.equal(restored.value.provider, 'deepseek-official')
 
   // 功能关闭：读写两端都被门住。
   await rebooted.updateFeatureSettings({ subagentRoute: false })
@@ -5055,7 +5069,7 @@ test('subagent-route-save：unknown-mode 与功能门；follow/inherit 清干净
   assert.equal((await rebooted.handler('subagent-route-save', { mode: 'follow' })).error, 'feature-disabled')
 })
 
-test('parseSubagentRouteText：回退列表解析（trim/去重/上限/非法条目丢弃；follow 与 custom 持有，inherit 丢弃）', () => {
+test('parseSubagentRouteText：回退列表解析（trim/去重/上限/非法条目丢弃）；草稿字段三模式统一保留', () => {
   const custom = parseSubagentRouteText(JSON.stringify({
     version: 1, mode: 'custom', provider: 'p', model: 'm',
     fallbacks: [
@@ -5074,8 +5088,14 @@ test('parseSubagentRouteText：回退列表解析（trim/去重/上限/非法条
   ])
   const follow = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow', fallbacks: [{ provider: 'x', model: 'y' }] }))
   assert.deepEqual(follow, { version: 1, mode: 'follow', fallbacks: [{ provider: 'x', model: 'y' }] })
-  const inherit = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'inherit', fallbacks: [{ provider: 'x', model: 'y' }] }))
-  assert.deepEqual(inherit, { version: 1, mode: 'inherit' })
+  // v1.4.12 草稿保留：follow/inherit 也保留 provider/model/reasoningEffort 与回退（custom 主路由仍必填）。
+  const followRoute = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow', provider: ' p ', model: 'm', reasoningEffort: ' low ' }))
+  assert.deepEqual(followRoute, { version: 1, mode: 'follow', provider: 'p', model: 'm', reasoningEffort: 'low' })
+  const inheritDraft = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'inherit', provider: 'p', model: 'm', fallbacks: [{ provider: 'x', model: 'y' }] }))
+  assert.deepEqual(inheritDraft, { version: 1, mode: 'inherit', provider: 'p', model: 'm', fallbacks: [{ provider: 'x', model: 'y' }] })
+  // 半个路由（缺 model）不算草稿；custom 缺主路由仍整体回退空档。
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'inherit', provider: 'p', model: '' })), { version: 1, mode: 'inherit' })
+  assert.deepEqual(parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'custom', provider: 'p', model: '' })), { version: 1, mode: 'inherit' })
   const many = parseSubagentRouteText(JSON.stringify({ version: 1, mode: 'follow', fallbacks: Array.from({ length: 12 }, (_, i) => ({ provider: 'p' + i, model: 'm' })) }))
   assert.equal(many.fallbacks.length, 10)
 })
@@ -5327,14 +5347,14 @@ test('subagent-route-save：回退列表白名单校验、持久化与 follow �
   const after = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
   assert.deepEqual(after, { version: 1, mode: 'follow' })
 
-  // custom + 回退：主路由与回退并存；inherit 丢弃回退。
+  // custom + 回退：主路由与回退并存；inherit 保留草稿（主路由 + 回退原样留在盘上，不生效）。
   const customSaved = await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-pro', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
   assert.equal(customSaved.ok, true)
   assert.equal(customSaved.mode, 'custom')
   assert.deepEqual(customSaved.fallbacks, [{ provider: 'cpa', model: 'gpt-5.6-sol' }])
   await host.handler('subagent-route-save', { mode: 'inherit' })
   const rawInherit = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
-  assert.deepEqual(rawInherit, { version: 1, mode: 'inherit' })
+  assert.deepEqual(rawInherit, { version: 1, mode: 'inherit', provider: 'deepseek-official', model: 'deepseek-v4-pro', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
   // 重启后回读 follow+custom 的持久化回退。
   await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash' }] })
   const rebooted = createHost({ featureSettings: {}, services: { subagents: fakeSubagents().registry, llm }, env: { DSH_HOME: dshHome } })
@@ -5424,7 +5444,7 @@ test('resolveSubagentInjection：custom 附带 reasoningEffort，inherit/follow 
   assert.deepEqual(resolveSubagentInjection({ parent }, { mode: 'follow' }, { readParentHeader: (p) => p?.session?.requestHeader?.()?.config }), { provider: 'a', model: 'b' })
 })
 
-test('subagent-route：快照返回精确模型 reasoning metadata；保存校验等级、空值不持久化、跨重启恢复、follow/inherit 清理', async (t) => {
+test('subagent-route：快照返回精确模型 reasoning metadata；保存校验等级、空值不持久化、跨重启恢复、切换模式保留草稿', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-reasoning-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const llm = fakeLlm([['deepseek-official', 'DeepSeek', ['deepseek-v4-flash']]])
@@ -5456,16 +5476,16 @@ test('subagent-route：快照返回精确模型 reasoning metadata；保存校�
   assert.equal((await rebooted.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'nope' })).error, 'invalid-reasoning-effort')
   assert.equal((await rebooted.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 5 })).error, 'invalid-reasoning-effort')
 
-  // follow 清理 reasoningEffort。
+  // follow 保留 reasoningEffort 草稿（不生效，切回 custom 即恢复）。
   await rebooted.handler('subagent-route-save', { mode: 'follow' })
   const afterFollow = await rebooted.handler('subagent-route', {})
   assert.equal(afterFollow.value.mode, 'follow')
-  assert.equal(afterFollow.value.reasoningEffort, undefined)
+  assert.equal(afterFollow.value.reasoningEffort, 'low')
 
-  // inherit 落盘干净。
+  // inherit 同样保留完整草稿（provider/model/reasoningEffort）。
   await rebooted.handler('subagent-route-save', { mode: 'inherit' })
   const raw = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
-  assert.deepEqual(raw, { version: 1, mode: 'inherit' })
+  assert.deepEqual(raw, { version: 1, mode: 'inherit', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'low' })
 })
 
 test('subagent-route：Custom 把 reasoningEffort 注入首个 agent/request，已建立值/显式路由/功能关闭不覆盖', async (t) => {

@@ -161,7 +161,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.edge.reason.noTracker': '无追踪',
       'conversation.jump.previousReply': '上一条用户回复',
       'subagent.title': '子代理模型',
-      'subagent.hint': '控制未显式指定模型的子代理所用模型；显式指定的不受影响。',
+      'subagent.hint': '控制未显式指定模型的子代理所用模型；显式指定的不受影响。切换模式不会清除已保存的自定义模型与回退列表，切回「自定义」即恢复。',
       'subagent.mode.label': '模式',
       'subagent.mode.inherit': '初始（不干预）',
       'subagent.mode.inherit.desc': '不注入任何路由，保持宿主原生继承行为：子代理使用会话创建时烘焙的默认模型。',
@@ -932,7 +932,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.edge.reason.noTracker': 'no tracker',
       'conversation.jump.previousReply': 'Previous user message',
       'subagent.title': 'Subagent model',
-      'subagent.hint': 'Controls the model used by subagents without an explicit model; explicitly specified ones are unaffected.',
+      'subagent.hint': 'Controls the model used by subagents without an explicit model; explicitly specified ones are unaffected. Switching modes keeps the saved custom model and fallback list; switch back to "Custom" to reuse them.',
       'subagent.mode.label': 'Mode',
       'subagent.mode.inherit': 'Default (no override)',
       'subagent.mode.inherit.desc': 'Injects nothing and keeps the native inheritance: subagents use the model baked in when the session was created.',
@@ -3780,13 +3780,11 @@ window.__ModuleLoader__.load({
               setSnapshot(res.value)
               setMode(res.value.mode)
               setFallbacks(Array.isArray(res.value.fallbacks) ? res.value.fallbacks : [])
-              if (res.value.mode === 'custom') {
-                setProvider(typeof res.value.provider === 'string' ? res.value.provider : '')
-                setModel(typeof res.value.model === 'string' ? res.value.model : '')
-                setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
-              } else {
-                setReasoningEffort('')
-              }
+              // 自定义路由草稿三模式统一回填（宿主 v1.4.12 起草稿保留）：切换模式保存后
+              // provider/model/reasoningEffort 仍随快照下发，切回「自定义」无需重新选择。
+              if (typeof res.value.provider === 'string') setProvider(res.value.provider)
+              if (typeof res.value.model === 'string') setModel(res.value.model)
+              setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
               setError('')
             } else {
               setError(res.error || 'unknown')
@@ -3823,22 +3821,17 @@ window.__ModuleLoader__.load({
           }
           return options
         }
-        const providerModels = modelsFor(provider)
-        // 当前精确模型及其 adapter 声明的可选思考等级（host 已裁剪；此处再做防御性过滤/去重）。
-        const selectedModel = providerModels.find((item) => item.id === model) ?? null
-        const effortOptions = effortsFor(selectedModel)
-        // 换供应商/模型后，若已选等级不再被新模型支持，立即重置为空，避免把旧等级发给新模型。
-        useEffect(() => {
-          if (reasoningEffort !== '' && !effortOptions.some((option) => option.id === reasoningEffort)) setReasoningEffort('')
-        }, [provider, model])
-        // 换供应商时若当前模型不属于它，回落到该供应商首个模型。
-        useEffect(() => {
-          if (provider !== '' && !providerModels.some((item) => item.id === model)) {
-            setModel(providerModels[0]?.id ?? '')
-          }
-        }, [provider])
+        // 派生选择（derive, don't synchronize）：provider/model/reasoningEffort state 只存用户意图，
+        // 展示与保存一律用派生值——供应商不在清单回落首项、模型不属于当前供应商回落其首项、
+        // 等级不被当前模型支持回落「使用默认」。不把派生值写回 state：快照异步回填（切换模式后
+        // 草稿恢复）与用户中途改选都不会被过期归一化效果覆盖。
         const effectiveProvider = providers.includes(provider) ? provider : providers[0] ?? ''
-        useEffect(() => { if (provider !== effectiveProvider) setProvider(effectiveProvider) }, [effectiveProvider, provider])
+        const providerModels = modelsFor(effectiveProvider)
+        // 当前精确模型及其 adapter 声明的可选思考等级（host 已裁剪；此处再做防御性过滤/去重）。
+        const effectiveModel = providerModels.some((item) => item.id === model) ? model : providerModels[0]?.id ?? ''
+        const selectedModel = providerModels.find((item) => item.id === effectiveModel) ?? null
+        const effortOptions = effortsFor(selectedModel)
+        const effectiveReasoningEffort = effortOptions.some((option) => option.id === reasoningEffort) ? reasoningEffort : ''
 
         // 回退模型（v1.1）：有序候选列表，custom/follow 共用；上限与宿主常量一致。
         const FALLBACK_MAX = 10
@@ -3876,7 +3869,7 @@ window.__ModuleLoader__.load({
           try {
             const withFallbacks = (nextMode === 'custom' || nextMode === 'follow') && fallbacks.length > 0 ? { fallbacks } : {}
             const payload = nextMode === 'custom'
-              ? { mode: 'custom', provider: effectiveProvider, model, ...(reasoningEffort !== '' ? { reasoningEffort } : {}), ...withFallbacks }
+              ? { mode: 'custom', provider: effectiveProvider, model: effectiveModel, ...(effectiveReasoningEffort !== '' ? { reasoningEffort: effectiveReasoningEffort } : {}), ...withFallbacks }
               : { mode: nextMode, ...withFallbacks }
             const res = await rpcCall('subagent-route-save', payload)
             if (res.ok) {
@@ -3972,12 +3965,12 @@ window.__ModuleLoader__.load({
             // 模型行
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
               React.createElement('span', { style: fieldLabelStyle }, translate('subagent.model')),
-              React.createElement('select', { 'data-testid': 'subagent-model', value: model, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
+              React.createElement('select', { 'data-testid': 'subagent-model', value: effectiveModel, disabled: providerModels.length === 0 || saving, onChange: (event) => setModel(event.target.value), style: selectStyle },
                 providerModels.map((item) => React.createElement('option', { key: item.id, value: item.id }, item.name ?? item.id)))),
             // 思考等级行：选模型后出现；无等级信息时给提示。
-            model !== '' ? React.createElement('div', { 'data-testid': 'subagent-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' } },
+            effectiveModel !== '' ? React.createElement('div', { 'data-testid': 'subagent-reasoning-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px', flexWrap: 'wrap' } },
               React.createElement('span', { style: fieldLabelStyle }, translate('subagent.reasoningEffort')),
-              React.createElement('select', { 'data-testid': 'subagent-reasoning-effort', value: reasoningEffort, disabled: saving || effortOptions.length === 0, onChange: (event) => setReasoningEffort(event.target.value), style: selectStyle },
+              React.createElement('select', { 'data-testid': 'subagent-reasoning-effort', value: effectiveReasoningEffort, disabled: saving || effortOptions.length === 0, onChange: (event) => setReasoningEffort(event.target.value), style: selectStyle },
                 React.createElement('option', { value: '' }, translate('subagent.reasoningEffort.default')),
                 ...effortOptions.map((option) => React.createElement('option', { key: option.id, value: option.id, ...(option.description !== undefined ? { title: option.description } : {}) }, option.name))),
               effortOptions.length === 0 ? React.createElement('span', { 'data-testid': 'subagent-reasoning-effort-unavailable', style: { fontSize: '12px', color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.reasoningEffort.unavailable')) : null) : null) : null,
@@ -4029,7 +4022,7 @@ window.__ModuleLoader__.load({
           error !== '' ? React.createElement('p', { 'data-testid': 'subagent-error', style: { ...hintStyle, color: 'var(--dsw-alias-state-error-primary)' } }, mapSubagentError(translate, error)) : null,
           savedTick > 0 && error === '' ? React.createElement('p', { 'data-testid': 'subagent-saved', style: { ...hintStyle, color: 'var(--dsw-alias-state-success-primary)' } }, '✓ ' + translate('subagent.saved')) : null,
           React.createElement('div', { style: { display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' } },
-            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')), onClick: () => void save(mode), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || model === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
+            React.createElement('button', { type: 'button', 'data-testid': 'subagent-save', disabled: saving || loading || (mode === 'custom' && (effectiveProvider === '' || effectiveModel === '')), onClick: () => void save(mode), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading || (mode === 'custom' && (effectiveProvider === '' || effectiveModel === '')) ? 0.55 : 1 } }, saving ? translate('subagent.saving') : translate('subagent.save')),
             mode !== 'inherit' ? React.createElement('button', { type: 'button', 'data-testid': 'subagent-reset', disabled: saving || loading, onClick: () => { setMode('inherit'); void save('inherit') }, style: { fontSize: '12px', padding: '6px 14px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: saving ? 'default' : 'pointer', opacity: saving || loading ? 0.55 : 1 } }, translate('subagent.reset')) : null))
       }
 
