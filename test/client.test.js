@@ -5506,6 +5506,42 @@ test('subagent tab restores the saved custom route after switching modes (draft 
   assert.deepEqual(state.saves[0], { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol' })
 })
 
+test('subagent tab preserves the reasoning effort across mode switches', async () => {
+  const models = [
+    { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } },
+    { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+    { provider: 'cpa', providerName: 'CPA', id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol' },
+  ]
+  // 场景：custom + 思考等级 high 已保存 → 切 follow 保存 → 切回 custom：等级原样恢复并可一键保存。
+  const { renderer, state } = createSubagentRenderer({ models, route: { available: true, mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' } })
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-reasoning-effort').props.value, 'high')
+
+  renderer.findByTestId('subagent-mode-follow').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'follow' })
+
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-provider').props.value, 'deepseek-official')
+  assert.equal(renderer.findByTestId('subagent-model').props.value, 'deepseek-v4-flash')
+  assert.equal(renderer.findByTestId('subagent-reasoning-effort').props.value, 'high')
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+})
+
 test('subagent fallback list: load/add/move/remove rows and save ordered fallbacks with follow and custom modes', async () => {
   const { renderer, state } = createSubagentRenderer()
   await renderer.load()
