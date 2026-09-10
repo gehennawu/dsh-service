@@ -520,7 +520,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
-      'version.dsh.supportBound': '已适配至 DSH 0.1.5；≥ {limit} 尚未验证支持',
+      'version.dsh.supportBound': '（已适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.1）',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -1285,7 +1285,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
-      'version.dsh.supportBound': 'Adapted through DSH 0.1.5; ≥ {limit} is not verified yet',
+      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.5-rc.1)',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -7192,7 +7192,7 @@ window.__ModuleLoader__.load({
         // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换展开/收起。
         const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
           React.createElement('path', { d: 'M9 6l6 6-6 6' }))
-        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder) => {
+        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder, extra) => {
           const statusText = !state
             ? (updateError || translate('update.checking'))
             : state.status === 'unpublished' ? translate('update.unpublished')
@@ -7207,11 +7207,12 @@ window.__ModuleLoader__.load({
                 React.createElement('span', null, statusText))
             : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
           return React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
-            React.createElement('div', { style: { whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px' } },
-              React.createElement('span', { style: { fontSize: '13px', fontWeight: 650 } }, `${label} `),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+              React.createElement('span', { style: { fontSize: '13px', fontWeight: 650, whiteSpace: 'nowrap' } }, `${label} `),
               state?.url
                 ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
-                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px' } }, state?.current || fallbackVersion || translate('version.loading'))),
+                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading')),
+              extra || null),
             action || null,
             React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } }, rightSide))
         }
@@ -7224,16 +7225,30 @@ window.__ModuleLoader__.load({
         const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
+        // 支持上限声明常驻在 dsh-service 版本号之后（v1.4.10+）：运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
+        // 仅在宿主服务本身正常并提供可解析版本时判为越界；无法解析的版本串中性展示。
+        const pluginSupportBound = React.createElement('span', {
+          key: 'dsh-support-bound',
+          'data-testid': 'version-dsh-support-bound',
+          style: {
+            fontSize: '12px',
+            lineHeight: 1.4,
+            marginLeft: '2px',
+            padding: dshUnsupported ? '1px 6px' : 0,
+            borderRadius: '4px',
+            color: dshUnsupported ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
+            background: dshUnsupported ? 'rgba(211,51,51,0.08)' : 'transparent',
+            border: dshUnsupported ? '1px solid rgba(211,51,51,0.3)' : 0,
+            fontWeight: dshUnsupported ? 650 : 400,
+            whiteSpace: 'nowrap',
+          },
+        }, translate('version.dsh.supportBound', { limit: DSH_NOT_SUPPORTED_FROM }))
         // 版本卡只放版本与升级：运行环境信息在健康诊断检查项与重启确认提示中呈现（用户复核口径）。
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false),
+            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false, pluginSupportBound),
             versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
-            // 支持上限声明常驻（v1.4.10）：运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
-            // 仅在宿主服务本身正常并提供可解析版本时判为越界；无法解析的版本串中性展示。
-            React.createElement('div', { key: 'dsh-support-bound', 'data-testid': 'version-dsh-support-bound', style: { marginTop: '6px', padding: dshUnsupported ? '7px 10px' : '2px 0', borderRadius: '6px', fontSize: '12px', lineHeight: 1.5, color: dshUnsupported ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)', background: dshUnsupported ? 'rgba(211,51,51,0.08)' : 'transparent', border: dshUnsupported ? '1px solid rgba(211,51,51,0.3)' : 0, fontWeight: dshUnsupported ? 650 : 400 } },
-              React.createElement('span', null, translate('version.dsh.supportBound', { limit: DSH_NOT_SUPPORTED_FROM }))),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),

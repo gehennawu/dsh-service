@@ -1343,9 +1343,9 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻支持边界声明（v1.4.12 适配后钉 0.1.6-alpha.0：≤0.1.5.x 已适配）；支持范围内的运行版本为中性色
+  // 版本卡常驻支持边界声明（已适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.1；越界钉 0.1.6-alpha.0）；支持范围内的运行版本为中性色
   const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.6-alpha\.0/, 'support-bound declaration is always present')
+  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
 
@@ -1390,7 +1390,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
     })
     await renderer.load()
     const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.6-alpha\.0/, `bound note present on ${item.current}`)
+    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1/, `bound note present on ${item.current}`)
     if (item.red) {
       assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
       assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
