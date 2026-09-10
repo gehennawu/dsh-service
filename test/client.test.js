@@ -577,6 +577,18 @@ function createRenderer(rpcCall, options = {}) {
       })
       return matches
     },
+    // 带父指针的结构查找：断言 DOM 归属（如某节点挂在哪个容器里、紧跟谁）时用。
+    findNode(predicate) {
+      let match
+      const walk = (node, parent) => {
+        if (Array.isArray(node)) { for (const child of node) walk(child, parent); return }
+        if (node === null || node === undefined || typeof node !== 'object') return
+        if (match === undefined && predicate(node)) { match = { node, parent }; return }
+        for (const child of node.children || []) walk(child, node)
+      }
+      for (const tree of roots.values()) walk(tree, undefined)
+      return match
+    },
     text(slot) {
       if (slot !== undefined) return textOf(roots.get(slot))
       return [...roots.values()].map(textOf).join('')
@@ -1348,6 +1360,9 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
+  // v1.5.1 用户点名：适配声明内联紧跟版本号（不排到状态之后）——扁平文本顺序=版本号→声明→状态。
+  assert.match(text, /0\.9\.0（已适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1）已是最新版本/,
+    'support bound reads directly after the version number and before the status')
 
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
   await renderer.findButton('有新版本：0.2.0').props.onClick()
@@ -1398,6 +1413,61 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
       assert.equal(bound.props.style.color, 'var(--dsw-alias-label-secondary)', `${item.current} stays neutral`)
       assert.equal(bound.props.style.background, 'transparent', `${item.current} has no danger background`)
     }
+  }
+})
+
+test('version card keeps the support bound inline after the version number, three lines on narrow containers', async () => {
+  // 注入样式捕获：主渲染器环境没有 document，这里挂最小桩接住 svcStyle 文本；
+  // 同时补齐 nav 标记效果依赖的 MutationObserver/querySelector 面（有桩即走真实分支）。
+  const injectedStyles = []
+  class FakeMutationObserver { observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    head: { appendChild(el) { injectedStyles.push(el.textContent) } },
+    createElement() { return { remove() {} } },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.5-rc.1', pluginVersion: '1.5.0', instanceId: 'x' } }
+      if (endpoint === 'check-update') return { ok: true, value: { plugin: { current: '1.5.0', latest: '1.5.0', tags: { latest: '1.5.0', next: '1.5.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' } } }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    }, { initiallyUnmounted: ['settings.section'] })
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+
+    // 宽容器：声明排在 identity（label+版本号）内部、紧跟版本号元素；不自带整行 basis。
+    const noteWrap = renderer.findNode((node) => node.props?.className === 'dshsvc-version-note')
+    assert.ok(noteWrap, 'support bound wrapper rendered')
+    assert.equal(noteWrap.parent.props.className, 'dshsvc-version-identity', 'support bound lives inside the identity cluster (right after the version number)')
+    const identityChildren = noteWrap.parent.children
+    const linkIndex = identityChildren.findIndex((child) => child.props?.['data-testid'] === 'version-plugin-link')
+    assert.ok(linkIndex >= 0, 'identity contains the plugin version link')
+    assert.equal(identityChildren[linkIndex + 1], noteWrap.node, 'support bound directly follows the version number element')
+    assert.equal(noteWrap.node.props.style.flexBasis, undefined, 'wide containers keep the note inline, never forced onto its own line')
+    assert.match(renderer.text('settings.section'), /1\.5\.0（已适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1）/)
+
+    // 窄容器（≤480px）三行契约由容器查询负责：note 在 identity 内压成独立行（版本号/声明/状态）。
+    const css = injectedStyles.join('')
+    const narrowStart = css.indexOf('@container dshsvc-version (max-width:480px){')
+    assert.ok(narrowStart >= 0, 'narrow container query present')
+    const noteRuleStart = css.indexOf('.dshsvc-version-note{flex-basis:100%;margin-top:2px}', narrowStart)
+    assert.ok(noteRuleStart > narrowStart,
+      'narrow containers force the note onto its own line inside the identity (mobile keeps three lines)')
+    const identityRuleStart = css.indexOf('.dshsvc-version-identity{flex-basis:100%;gap:8px !important}', narrowStart)
+    const statusRuleStart = css.indexOf('.dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}', narrowStart)
+    assert.ok(identityRuleStart > narrowStart && identityRuleStart < noteRuleStart, 'identity takes a full line on narrow containers')
+    assert.ok(statusRuleStart > narrowStart && statusRuleStart < noteRuleStart, 'status takes a full line on narrow containers')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
   }
 })
 
