@@ -338,6 +338,10 @@ export async function collectPluginCompat(ctx, options = {}) {
     const moduleName = entry?.options?.name
     if (typeof entry?.id !== 'string' || typeof moduleName !== 'string') continue
     if (entry.disabled === true) continue
+    // 官方内置插件跳过且不计 scanned：@deepseek-ai/* 随 DSH 发行版统一构建分发，
+    // 内部版本天生自洽，不是第三方扩展；且部分大体积内置组件（如 documentpreview 6.5MB）
+    // 会误触发单文件扫描上限。
+    if (options.includeOfficial !== true && moduleName.startsWith('@deepseek-ai/')) continue
     // 无法形成合法包名的条目跳过且不计 scanned：`cordis:include` 这类 Cordis 内建声明名、
     // 相对路径/`file:` 形态不是可扫描的 npm 插件（没有清单可查），不该渲染「未能扫描」提示。
     if (packageNameOf(moduleName) === null) continue

@@ -243,11 +243,13 @@ test('collectPluginCompat scans enabled entries only, caches, and degrades witho
         // Cordis 内建声明名/相对路径不是可扫描的 npm 插件：跳过且不计 scanned（用户实测噪音回归）
         mkEntry('e4', 'cordis:include'),
         mkEntry('e5', './plugins/local.js'),
+        // 官方 @deepseek-ai/* 插件：随宿主发行版自洽分发，跳过且不计 scanned（不触发 4 MiB 假报警）
+        mkEntry('e6', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview'),
       ],
     }
     const first = await collectPluginCompat(createFakeCtx(loader), { requireFn })
     assert.equal(first.available, true)
-    assert.equal(first.scanned, 2, 'group, disabled, cordis: and relative-path entries are all skipped')
+    assert.equal(first.scanned, 2, 'group, disabled, cordis:, relative-path, and official @deepseek-ai entries are all skipped')
     assert.deepEqual(first.issues, [{ moduleName: 'good-pkg', breaks: ['chat-hash'] }])
     assert.deepEqual(first.declaredOnly, [{ moduleName: 'good-pkg', breaks: ['client-runtime'] }])
     assert.deepEqual(first.unknown, [{ moduleName: 'nope-pkg', reason: 'unresolved' }])
