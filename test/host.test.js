@@ -189,12 +189,15 @@ function createHost(overrides = {}) {
     get subagents() {
       return services.get('subagents')
     },
-    connection: {
-      rpc: { handle(channel, handler, options) {
-          handlers.push({ channel, handler, options })
-          return () => {}
+    get connection() {
+      return services.get('connection') ?? {
+        rpc: {
+          handle(channel, handler, options) {
+            handlers.push({ channel, handler, options })
+            return () => {}
+          },
         },
-      },
+      }
     },
     get(service) {
       return services.get(service)
@@ -231,7 +234,9 @@ function createHost(overrides = {}) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  assert.equal(handlers.length, 1)
+  if (!services.has('connection')) {
+    assert.equal(handlers.length, 1)
+  }
   const provideSettings = () => {
     if (settingsService === undefined) throw new Error('featureSettings fixture is required')
     services.set('settings', settingsService)
@@ -257,15 +262,16 @@ function createHost(overrides = {}) {
     }
     return next()
   }
+  const activeHandler = handlers[0] ?? { handler: async () => ({ ok: true }) }
   const publicHandler = async (...args) => {
-    const result = await handlers[0].handler(...args)
+    const result = await activeHandler.handler(...args)
     if (result?.ok === false && typeof result.error === 'object') {
       const detail = typeof result.error.details?.detail === 'string' ? result.error.details.detail : result.detail
       return { ...result, error: result.error.message, ...(detail !== undefined ? { detail } : {}) }
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: handlers[0].handler, rpcRegistration: handlers[0], logs, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -1055,6 +1061,72 @@ test('RPC dispatcher registers one loopback channel and normalizes every wire fa
     assert.deepEqual(raw.error, { code: 'internal', message, details: {} }, endpoint)
     assert.equal((await host.handler(endpoint, payload)).error, message, endpoint)
   }
+})
+
+test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection webServer inject bug, and falls back to webServer directly if handle throws', async () => {
+  const routes = []
+  const webServer = {
+    register(route) {
+      routes.push(route)
+      return () => {
+        const idx = routes.indexOf(route)
+        if (idx >= 0) routes.splice(idx, 1)
+      }
+    },
+  }
+
+  // 模拟真实 rc.1 的 HostConnectionService：其原型有 register 方法，且直接访问 owner.webServer 时因缺少 inject 守卫抛出
+  class MockHostConnectionService {
+    constructor() {
+      this.registered = []
+      this.rpc = {
+        handle: (channel, handler, options) => {
+          return this.register({
+            get webServer() { throw new Error('cannot get property "webServer" without inject') },
+            get(name) { return name === 'webServer' ? webServer : undefined },
+            effect(fn) { return fn() },
+          }, channel, handler)
+        },
+      }
+    }
+    register(owner, channel, handler) {
+      // 真实 rc.1 rpc-host.ts 的 588 行
+      return owner.effect(() => owner.webServer.register({ kind: 'prefix', path: channel, handler }))
+    }
+  }
+
+  const mockConnection = new MockHostConnectionService()
+  const host = createHost({
+    services: {
+      connection: mockConnection,
+      webServer,
+    },
+  })
+  assert.ok(routes.some((r) => r.path === '/dsh-service'), 'the seam transparently proxies owner.webServer to resolve from get()')
+
+  // 进一步测试极端回退分支：当 connection.rpc.handle 完全拒绝时，直接兜底 webServer.register
+  const fallbackRoutes = []
+  const fallbackWebServer = {
+    register(route) {
+      fallbackRoutes.push(route)
+      return () => {
+        const idx = fallbackRoutes.indexOf(route)
+        if (idx >= 0) fallbackRoutes.splice(idx, 1)
+      }
+    },
+  }
+  const brokenConnection = {
+    rpc: {
+      handle() { throw new Error('completely-broken-transport') },
+    },
+  }
+  const fallbackHost = createHost({
+    services: {
+      connection: brokenConnection,
+      webServer: fallbackWebServer,
+    },
+  })
+  assert.ok(fallbackRoutes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the direct webServer fallback registers the prefix route')
 })
 
 test('RPC dispatcher records unexpected handler failures as technical errors', async () => {

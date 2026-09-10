@@ -4039,6 +4039,81 @@ async function quotaCredentialEndpoint(ctx, refreshQuotaConfig, throttle, payloa
   }
 }
 
+// 0.1.5-rc.1 上游 bug 防御：HostConnectionService.prototype.register 内部执行
+// owner.effect(() => owner.webServer.register(route))，其中 owner 虽为读取者上下文，
+// 但在 Cordis createShadowMethod 下其 [symbols.shadow] 仍回溯到 connection 服务的
+// 构造 context；而 0.1.5-rc.1 的 connection 声明 inject = ['credentials']，未声明
+// webServer（改为内部局域动态注入），导致访问 owner.webServer 时因缺少 inject 守卫失败，
+// 抛出：cannot get property "webServer" without inject。
+// 防御：在调用前对 connection 的原型 register 打补丁，将传入的 owner 代理一层，
+// 拦截 owner.webServer 属性访问并平滑回退到 target.get('webServer') ?? ctx.get('webServer')，
+// 绕开 Cordis 的属性守卫。
+function ensureConnectionRpcWebServerSeam(ctx) {
+  const connection = ctx.get('connection') || ctx.connection
+  if (!connection) return
+  const proto = Object.getPrototypeOf(connection)
+  if (!proto || typeof proto.register !== 'function' || proto.__dshServiceRpcWebServerPatched) return
+  proto.__dshServiceRpcWebServerPatched = true
+  const originalRegister = proto.register
+  proto.register = function (owner, channel, handler) {
+    const safeOwner = owner && typeof owner === 'object'
+      ? new Proxy(owner, {
+        get(target, prop, receiver) {
+          if (prop === 'webServer') {
+            return target.get?.('webServer') ?? ctx.get?.('webServer')
+          }
+          return Reflect.get(target, prop, receiver)
+        },
+      })
+      : owner
+    return originalRegister.call(this, safeOwner, channel, handler)
+  }
+}
+
+function registerDirectRpcWebRoute(ctx, webServer, channel, dispatchRpc) {
+  const prefix = channel.endsWith('/') ? channel : `${channel}/`
+  const route = {
+    kind: 'prefix',
+    path: channel,
+    handler: async (req, res) => {
+      const host = String(req.headers.host || '').split(':')[0]
+      const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
+      if (!isLoopback) {
+        res.writeHead(403)
+        res.end('forbidden')
+        return
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405)
+        res.end()
+        return
+      }
+      const url = new URL(req.url, 'http://localhost')
+      if (!url.pathname.startsWith(prefix)) {
+        res.writeHead(404)
+        res.end()
+        return
+      }
+      const endpoint = url.pathname.slice(prefix.length)
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', async () => {
+        try {
+          const json = JSON.parse(body || '{}')
+          const rpcId = json.rpcId || 'direct-rpc'
+          const result = await dispatchRpc(endpoint, json.payload)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ type: 'server-response', rpcId, result }))
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ type: 'server-response', rpcId: 'direct-rpc', result: { ok: false, error: { code: 'internal', message: String(err) } } }))
+        }
+      })
+    },
+  }
+  ctx.effect(() => webServer.register(route), `dsh-service: ${channel} direct rpc route`)
+}
+
 function apply(ctx) {
   const dshHome = resolveDshHome()
   let featureSettings = DEFAULT_FEATURE_SETTINGS
@@ -5531,7 +5606,16 @@ function apply(ctx) {
     } },
   }
   const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
-  ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
+  try {
+    ensureConnectionRpcWebServerSeam(ctx)
+    ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
+  } catch (error) {
+    ctx.logger?.error?.(`dsh-service: connection rpc handle failed (${error?.message || error}), falling back to direct webServer route`)
+    const webServer = ctx.get('webServer')
+    if (webServer !== undefined) {
+      registerDirectRpcWebRoute(ctx, webServer, '/dsh-service', dispatchRpc)
+    }
+  }
 }
 
 export {
