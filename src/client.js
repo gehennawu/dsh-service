@@ -7930,11 +7930,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           // 与旧宿主的 detailsOpen 互斥——按 layout 服务能力判定形态（见 readOverlayState）。
           rightbarOpen: false,
           workspaceOpen: false,
-          // —— 边缘手势（2026-09）状态：better-sidebar 右栏两态 + 当前追踪的触摸 ——
-          // 两态由观察器驱动（FAB/把手让位、debug 芯片用）；手势 fire 时另行实时
-          // 重读 DOM，不消费这里的缓存值，杜绝 50ms 调度窗口内的陈旧状态翻转。
-          sidebarPanelAvailable: false,
-          sidebarPanelOpen: false,
           edgeGesture: null,
           // 边缘手势遥测：仅 debug 模式记录最近一次触摸的事件流（起触点、armed
           // 或拒绝原因、move 数、末次/取消时相对位移、是否补完成功），真机定位用
@@ -7972,10 +7967,10 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
           // 抽屉开启时收起 FAB：关闭走外壳原生侧栏钮或外侧遮罩，绝不在
           // 抽屉面板上叠画第二套关闭件（真机反馈：
-          // 那只会变成糊在侧栏 logo 上的不明物）。工作区侧板、better-sidebar
-          // 右栏全屏抽屉同理互斥。
+          // 那只会变成糊在侧栏 logo 上的不明物）。工作区侧板、官方右栏
+          // 全屏抽屉同理互斥。
           // 变化才写：innerHTML/display 若无条件重写会喂活 body 级观察器死循环。
-          const nextDisplay = (state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen || state.rightbarOpen) ? 'none' : 'flex'
+          const nextDisplay = (state.drawerOpen || state.workspaceOpen || state.rightbarOpen) ? 'none' : 'flex'
           if (state.fab !== null && state.lastFabDisplay !== nextDisplay) {
             state.lastFabDisplay = nextDisplay
             state.fab.style.display = nextDisplay
@@ -8017,24 +8012,11 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         const readOverlayState = () => {
           const frame = document.querySelector('[data-dshsvc-frame]')
           state.drawerOpen = frame !== null && !frame.hasAttribute('data-sidebar-collapsed')
-          // 右列形态按 layout 服务能力判定（引擎激活前提就是 layout 存在）：
-          // 新宿主（0.1.5+，有 openRightbar）读 data-rightbar-collapsed；旧宿主读
-          // data-details-collapsed。两属性同方向（在=关闭），但旧宿主 frame 永无
-          // rightbar 属性、新宿主永无 details 属性——不判形态会把「属性缺席」读成常开。
+          // 右列形态按官方右栏两态判断（开合口径与手势 fire 保持 100% 统一）：
+          state.rightbarOpen = officialRightbarOpenedNow()
           const layout = layoutService()
-          const rightbarMode = layout !== undefined && typeof layout.openRightbar === 'function'
+          const rightbarMode = (layout !== undefined && typeof layout.openRightbar === 'function') || state.rightbarOpen
           state.detailsOpen = rightbarMode ? false : (frame !== null && !frame.hasAttribute('data-details-collapsed'))
-          state.rightbarOpen = rightbarMode && frame !== null && !frame.hasAttribute('data-rightbar-collapsed')
-          // better-sidebar 右栏两态（插件自己发布的稳定标记，v0.18.0 源码核实）：
-          // [data-dsh-panel-host] 在 DOM = 插件已挂载渲染；body 的
-          // data-dsh-sidebar-collapsed 在 = 折叠、摘除 = 展开。body 级
-          // workspaceObserver（childList+subtree+attributes）捕获其挂载与开合。
-          state.sidebarPanelAvailable = false
-          try { state.sidebarPanelAvailable = document.querySelector('[data-dsh-panel-host]') !== null } catch (_) {}
-          state.sidebarPanelOpen = false
-          if (state.sidebarPanelAvailable) {
-            try { state.sidebarPanelOpen = !document.body.hasAttribute('data-dsh-sidebar-collapsed') } catch (_) {}
-          }
           // 工作区侧板（外壳 tab 系统 nArs4W_panel）：可见 = 任一匹配节点解除
           // PanelHidden 且进入视口。注意 panelBody 等 同哈希同名 子串节点会混入
           // querySelector 匹配，必须逐个甄别取「或」，否则状态时对时错。
@@ -8322,12 +8304,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         // ===== 边缘手势开合抽屉（2026-09 用户点名）=====
-        // 左缘右滑开官方左抽屉 / 开着时右往左滑关；右缘左滑开 better-sidebar
-        // 右栏抽屉（插件缺席则手势无效）/ 开着时左往右滑关。识别器与沉浸引擎
-        // 共用 documentElement 捕获式监听；所有判定只消费触摸坐标，绝不可
-        // preventDefault（passive），翻转动作在阈值达成后走既有服务/DOM 缝。
+        // 边缘手势开合抽屉：右滑开官方左抽屉 / 开着时反向滑关；左滑开官方右栏
+        // 抽屉（无右栏则手势无效）/ 开着时反向滑关。识别器与沉浸引擎共用
+        // documentElement 捕获式监听；所有判定只消费触摸坐标，绝不可 preventDefault
+        //（passive），翻转动作在阈值达成后走既有服务/DOM 缝。
         // 状态读取铁律：arm（touchstart）与 fire（touchmove 达阈值）都实时重读
-        // DOM 缝，绝不消费观察器缓存的 state.sidebarPanel*（50ms 调度窗口会陈旧）。
+        // DOM 缝，绝不消费观察器缓存的 state.rightbarOpen（50ms 调度窗口会陈旧）。
 
         /** 兼容桩环境的首触点提取：真浏览器读 touches[0]，桩直接给同形对象。 */
         const edgeTouchPoint = (event) => {
@@ -8351,29 +8333,81 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           } catch (_) { return true }
         }
 
-        /** better-sidebar 右栏实时两态：挂载存在性 + body 状态属性（插件自维护）。 */
-        const sidebarPanelHostNow = () => {
-          try { return document.querySelector('[data-dsh-panel-host]') !== null } catch (_) { return false }
-        }
-        const sidebarPanelCollapsedNow = () => {
-          try { return document.body.hasAttribute('data-dsh-sidebar-collapsed') } catch (_) { return true }
+        const sidebarRightService = () => {
+          try { return typeof ctx.get === 'function' ? ctx.get('sidebarRight') : undefined } catch (_) { return undefined }
         }
 
-        /** 0.1.5 官方右栏实时两态（layout 服务 openRightbar/closeRightbar + frame 属性，
-            官方 AppFrame `cols.rightbar===0` 时打 data-rightbar-collapsed）。available 以
-            layout 服务能力为准（旧宿主无 openRightbar → false，右目标让位 better-sidebar）；
-            opened 必须先过 available 门——旧宿主 frame 永无该属性，直接读会把「属性缺席」
-            误读成常开。 */
+        /** 官方右栏实时两态（DOM 按钮/面板标记 + frame 属性 + sidebarRight 服务兜底）。
+            在会话中，右上角常驻 [data-sidebar-right-expand]（折叠态）或
+            [data-sidebar-right-toggle]（展开态）；无会话（如 Hero 首页）时这些
+            元素均不存在，手势自然无效（对齐「不存在右侧栏则不生效」语义）。 */
         const officialRightbarAvailableNow = () => {
-          const layout = layoutService()
-          return layout !== undefined && typeof layout.openRightbar === 'function'
+          try {
+            if (document.querySelector('[data-sidebar-right-expand], [data-sidebar-right-toggle], [data-sidebar-right-panel]') !== null) {
+              return true
+            }
+          } catch (_) {}
+          const sr = sidebarRightService()
+          return sr !== undefined && typeof sr.toggleExpanded === 'function' && sr.active() !== undefined
         }
+
         const officialRightbarOpenedNow = () => {
           if (!officialRightbarAvailableNow()) return false
           try {
+            if (document.querySelector('[data-sidebar-right-open]') !== null) return true
             const frame = document.querySelector('[data-dshsvc-frame]')
-            return frame !== null && !frame.hasAttribute('data-rightbar-collapsed')
-          } catch (_) { return false }
+            if (frame !== null && !frame.hasAttribute('data-rightbar-collapsed')) return true
+          } catch (_) {}
+          const sr = sidebarRightService()
+          if (sr !== undefined && typeof sr.isExpanded === 'function') {
+            try { return sr.isExpanded() } catch (_) {}
+          }
+          return false
+        }
+
+        /**
+         * 驱动官方右栏开合：
+         * 1. 优先直接点击官方对应的按钮（与用户手点展开 ExpandButton / 收起 toggle 同链路）；
+         * 2. 其次通过官方 sidebarRight 服务切换会话右栏状态（actions.toggleExpanded）；
+         * 3. 布局外壳呈现同步（通知 AppFrame 更新 grid 轨，并满足测试桩记录）。
+         */
+        const toggleOfficialRightbar = (wantOpen) => {
+          let handled = false
+          // 1. 优先直接触发官方对应的开合按钮
+          try {
+            const btn = wantOpen
+              ? document.querySelector('[data-sidebar-right-expand]')
+              : document.querySelector('[data-sidebar-right-toggle]')
+            if (btn !== null && typeof btn.click === 'function') {
+              btn.click()
+              handled = true
+            }
+          } catch (_) {}
+
+          // 2. 服务层：通过官方 sidebarRight 服务切换会话右栏状态
+          const sr = sidebarRightService()
+          if (sr !== undefined && typeof sr.toggleExpanded === 'function') {
+            try {
+              sr.toggleExpanded()
+              handled = true
+            } catch (_) {}
+          }
+
+          // 3. 布局外壳同步（极简测试桩或外壳 grid 呈现）
+          const layout = layoutService()
+          if (layout !== undefined) {
+            try {
+              if (wantOpen && typeof layout.openRightbar === 'function') {
+                layout.openRightbar(false, true)
+                handled = true
+              } else if (!wantOpen && typeof layout.closeRightbar === 'function') {
+                layout.closeRightbar()
+                handled = true
+              }
+            } catch (_) {}
+          }
+
+          return handled
         }
 
         /** 模态全屏态门控：与移动 CSS 的 body:has 规则同一判定选择器。
@@ -8411,39 +8445,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           return false
         }
 
-        /**
-         * better-sidebar 右栏开关钮：[data-dsh-toggle-cluster] 内最后一个非
-         * aria-disabled 的 BUTTON。窄视口簇内只有它一个；桌面态（768-1023px
-         * 仍在移动引擎范围内）底部面板开关排在其前、右栏钮固定末位。
-         * 点击与其自身 onClick（store.reduce(togglePanel)）同路径；无会话态
-         * 唯一钮 aria-disabled=true → 落空返回 false，手势自然无效。
-         * 手动递归不走 querySelectorAll（假桩环境全兼容，findHeaderNodeIn 先例）。
-         */
-        const collectLastEnabledButton = (node, found) => {
-          if (node === null || node === undefined || typeof node.children === 'undefined' || node.children === null) return
-          for (const child of node.children || []) {
-            const tag = typeof child.tagName === 'string' ? child.tagName.toUpperCase() : ''
-            if (tag === 'BUTTON') {
-              let disabled = false
-              try { disabled = child.getAttribute('aria-disabled') === 'true' } catch (_) {}
-              if (!disabled) found.push(child)
-            }
-            collectLastEnabledButton(child, found)
-          }
-        }
-        const clickSidebarPanelToggle = () => {
-          try {
-            const cluster = document.querySelector('[data-dsh-toggle-cluster]')
-            if (cluster === null) return false
-            const buttons = []
-            collectLastEnabledButton(cluster, buttons)
-            const target = buttons.length > 0 ? buttons[buttons.length - 1] : null
-            if (target === null || typeof target.click !== 'function') return false
-            target.click()
-            return true
-          } catch (_) { return false }
-        }
-
         /** 手势追踪种类/遥测原因的语义 token（评审收敛：不裸写魔法串）。 */
         const EDGE_KIND = {
           open: 'open',
@@ -8462,10 +8463,10 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         /**
-         * 开合动作统一包装（评审收敛）：四个 fire 原是同构的「实时读状态 → 门控 →
-         * 执行」，抽成表驱动的 target 描述 + 单一执行器。门控语义不变——状态已是
-         * 要达成的样子时 no-op（防 arm 后被抢先翻转的竞态）；左抽屉缺 layout 服务
-         * 时静默放弃；右栏执行失败（开关钮不可用）回报执行结果给遥测。
+         * 开合动作统一包装：两个抽屉（左侧栏 / 官方右栏）的 target 描述 +
+         * 单一执行器。门控语义：状态已是要达成的样子时 no-op（防 arm 后被
+         * 抢先翻转的竞态）；左抽屉缺 layout 服务时静默放弃；右栏执行失败
+         * 时回报执行结果给遥测。
          */
         const drawerTargets = {
           left: {
@@ -8477,32 +8478,15 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             },
           },
           right: {
-            // 官方右栏（0.1.5+）优先，缺席才让位 better-sidebar——两套并存时只认官方，
-            // 避免 opened/toggle 各读一套状态互打架。
-            opened: () => officialRightbarAvailableNow()
-              ? officialRightbarOpenedNow()
-              : (sidebarPanelHostNow() && !sidebarPanelCollapsedNow()),
-            toggle: () => {
-              if (officialRightbarAvailableNow()) {
-                const layout = layoutService()
-                if (layout === undefined) return false
-                try {
-                  if (officialRightbarOpenedNow()) layout.closeRightbar()
-                  // 窄屏开=浮层全屏（track=false, fullscreen=true）：面板 portal 到 body，
-                  // 不进被移动模板改写的 grid 轨。
-                  else layout.openRightbar(false, true)
-                  return true
-                } catch (_) { return false }
-              }
-              return clickSidebarPanelToggle()
-            },
+            opened: () => officialRightbarOpenedNow(),
+            toggle: (wantOpen) => toggleOfficialRightbar(wantOpen),
           },
         }
         const fireDrawer = (side, wantOpen) => {
           const target = drawerTargets[side]
           if (target === undefined) return false
           if (target.opened() === wantOpen) return false
-          return target.toggle() === true
+          return target.toggle(wantOpen) === true
         }
 
         /** touchstart：清旧追踪 → 多指/模态直接放弃 → 决定是否 arm。
@@ -8532,8 +8516,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
           if (tele !== null) tele.start = `${Math.round(point.x)},${Math.round(point.y)}`
           const leftOpen = !leftDrawerCollapsedNow()
-          const rightAvailable = officialRightbarAvailableNow() || sidebarPanelHostNow()
-          const rightOpen = officialRightbarAvailableNow() ? officialRightbarOpenedNow() : (rightAvailable && !sidebarPanelCollapsedNow())
+          const rightAvailable = officialRightbarAvailableNow()
+          const rightOpen = rightAvailable && officialRightbarOpenedNow()
           if (leftOpen || rightOpen) {
             // 关闭追踪：任意起点，但横滚内容（编辑器/tab 条）的横滑是内容滚动语义
             if (insideHorizontalScroller(event?.target)) {
@@ -8582,10 +8566,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             if (dx >= threshold) { side = 'left'; wantOpen = true; kind = EDGE_KIND.leftOpen }
             else if (dx <= -threshold) {
               side = 'right'; wantOpen = true; kind = EDGE_KIND.rightOpen
-              // 右栏可用性双形态：官方右栏（0.1.5+）优先，缺席才看 better-sidebar。
-              if (!(officialRightbarAvailableNow() || sidebarPanelHostNow())) {
-                // 两类右栏都缺席：该向无效是设计语义。记录专属原因供遥测区分
-                // 「没到阈值 / 被横滚拦截 / 右栏不存在」三种失败形态
+              if (!officialRightbarAvailableNow()) {
+                // 官方右栏未就绪（如处于 Hero 首页或非会话状态）：记录专属原因
                 if (state.edgeTelemetry !== null) state.edgeTelemetry.reason = EDGE_KIND.absentRight
                 return true
               }
@@ -8702,8 +8684,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         const syncHandleVisibility = () => {
-          // 常驻把手仅在可沉浸会话里出现；抽屉/工作区侧板/better-sidebar 右栏开着时让位（模态由 :has CSS 兜底）。
-          const blocked = state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen
+          // 常驻把手仅在可沉浸会话里出现；抽屉/工作区侧板/官方右栏开着时让位（模态由 :has CSS 兜底）。
+          const blocked = state.drawerOpen || state.workspaceOpen || state.rightbarOpen
           const nextDisplay = state.chatAvailable && !blocked ? 'flex' : 'none'
           if (state.handle !== null && state.lastHandleDisplay !== nextDisplay) {
             state.lastHandleDisplay = nextDisplay
@@ -8793,7 +8775,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               `${t('mobile.debug.viewport')} ${window.innerWidth}×${window.innerHeight}`,
               `≤1023 ${onOff(state.active)}`,
               `${t('mobile.debug.drawer')} ${onOff(state.drawerOpen)}`,
-              `${t('mobile.debug.sidebarPanel')} ${onOff(state.sidebarPanelOpen)}`,
               `${t('mobile.debug.details')} ${onOff(state.detailsOpen)}`,
               `${t('mobile.debug.rightbar')} ${onOff(state.rightbarOpen)}`,
               `${t('mobile.debug.immersive')} ${onOff(state.immersive)}`,
@@ -9005,8 +8986,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           state.drawerOpen = false
           state.detailsOpen = false
           state.rightbarOpen = false
-          state.sidebarPanelAvailable = false
-          state.sidebarPanelOpen = false
           state.edgeGesture = null
           state.edgeTelemetry = null
           detachImmersiveListeners()

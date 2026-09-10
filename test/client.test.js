@@ -6217,6 +6217,14 @@ test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right 
   for (const el of [sidebarCol, centerCol, rightbarCol, overlayLayer]) frame.appendChild(el)
   bodyEl.appendChild(frame)
 
+  // 官方右栏展开与收起组件夹具：折叠时挂载 expand 钮，展开时挂载 panel 与 toggle 钮
+  const expandBtn = new FakeElement('button'); expandBtn.setAttribute('data-sidebar-right-expand', '')
+  const toggleBtn = new FakeElement('button'); toggleBtn.setAttribute('data-sidebar-right-toggle', '')
+  const rightbarPanel = new FakeElement('div'); rightbarPanel.setAttribute('data-sidebar-right-panel', 'fullscreen')
+  rightbarPanel.setAttribute('data-sidebar-right-open', '')
+  rightbarPanel.appendChild(toggleBtn)
+  bodyEl.appendChild(expandBtn)
+
   const observerCallbacks = []
   const observeCalls = []
   class FakeMutationObserver {
@@ -6294,6 +6302,8 @@ test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right 
     htmlEl.dispatch('touchmove', touchAt(326, 298))
     assert.deepEqual(layoutCalls.openRightbar, [[false, true]], 'right-edge leftward swipe opens the official rightbar in fullscreen-float mode')
     assert.match(chipText(), /右开/)
+    expandBtn.remove()
+    bodyEl.appendChild(rightbarPanel)
     frame.removeAttribute('data-rightbar-collapsed')
     sync()
     assert.equal(fab.style.display, 'none', 'official rightbar open must hide the fab')
@@ -6303,6 +6313,8 @@ test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right 
     htmlEl.dispatch('touchstart', touchAt(120, 300))
     htmlEl.dispatch('touchmove', touchAt(185, 300))
     assert.equal(layoutCalls.closeRightbar, 1, 'rightward swipe anywhere closes the open official rightbar')
+    rightbarPanel.remove()
+    bodyEl.appendChild(expandBtn)
     frame.setAttribute('data-rightbar-collapsed', '')
     sync()
     assert.equal(fab.style.display, 'flex')
@@ -7170,13 +7182,13 @@ test('user reply jump: mounts the up-arrow above the to-bottom button, steps up 
   }
 })
 
-test('mobile adaptation edge gestures drive the left drawer and a better-sidebar right drawer, and stay inert when unavailable', async () => {
+test('mobile adaptation edge gestures drive the left drawer and the official rightbar drawer, and stay inert when unavailable', async () => {
   // 边缘手势四向开合（2026-09 用户点名）：
   //   左缘右滑开官方左抽屉 / 开着时任意起点右往左滑关；
-  //   右缘左滑开 better-sidebar 右栏 / 开着时任意起点左往右滑关；插件缺席手势无效。
-  // better-sidebar 控制缝（其 v0.18.0 发布源码核实）：
-  //   [data-dsh-panel-host]=挂载存在性、body[data-dsh-sidebar-collapsed]=折叠态
-  //   （插件自维护）、开关钮=[data-dsh-toggle-cluster] 内最后一个非 aria-disabled BUTTON。
+  //   右缘左滑开官方右栏 / 开着时任意起点左往右滑关；官方右栏未就绪手势无效。
+  // 官方右侧栏控制缝（DSH 0.1.5-rc.1 核实）：
+  //   [data-sidebar-right-expand]=折叠态展开钮、[data-sidebar-right-toggle]=展开态收起钮、
+  //   [data-sidebar-right-open]=展开态面板标记、frame[data-rightbar-collapsed]=外壳轨折叠态。
   class FakeElement {
     constructor(tag) {
       this.tagName = tag
@@ -7235,29 +7247,26 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
   const head = new FakeElement('head'); root.appendChild(head)
   const bodyEl = new FakeElement('body'); root.appendChild(bodyEl)
   const htmlEl = new FakeElement('html'); root.appendChild(htmlEl)
-  // better-sidebar 初始折叠态（该属性由插件自维护，这里预置折叠）
-  bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
-
-  // 外壳骨架：折叠态 frame + 三栏 + overlay 子层
+  // 外壳骨架：折叠态 frame + rightbarCol 三栏 + overlay 子层
   const frame = new FakeElement('div')
   frame.className = 'pI_x6G_frame'
   frame.setAttribute('data-sidebar-collapsed', '')
   frame.setAttribute('data-details-collapsed', '')
+  frame.setAttribute('data-rightbar-collapsed', '')
   const sidebarCol = new FakeElement('div'); sidebarCol.className = 'pI_x6G_sidebarCol'
   const centerCol = new FakeElement('div'); centerCol.className = 'pI_x6G_centerCol'
   const detailsCol = new FakeElement('div'); detailsCol.className = 'pI_x6G_detailsCol'
+  const rightbarCol = new FakeElement('div'); rightbarCol.className = 'pI_x6G_rightbarCol'; rightbarCol.setAttribute('data-rightbar-col', '')
   const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', '')
-  for (const el of [sidebarCol, centerCol, detailsCol, overlayLayer]) frame.appendChild(el)
+  for (const el of [sidebarCol, centerCol, detailsCol, rightbarCol, overlayLayer]) frame.appendChild(el)
   bodyEl.appendChild(frame)
 
-  // better-sidebar 右栏夹具：挂载前右缘手势必须无效
-  const decoy = new FakeElement('button'); decoy.setAttribute('aria-disabled', 'true')
-  const rightToggle = new FakeElement('button')
-  const toggleCluster = new FakeElement('div'); toggleCluster.setAttribute('data-dsh-toggle-cluster', '')
-  toggleCluster.appendChild(decoy)
-  toggleCluster.appendChild(rightToggle)
-  const panelHost = new FakeElement('div'); panelHost.setAttribute('data-dsh-panel-host', '')
-  panelHost.appendChild(toggleCluster)
+  // 官方右栏展开与收起按钮夹具：未挂载前右缘手势必须无效
+  const expandBtn = new FakeElement('button'); expandBtn.setAttribute('data-sidebar-right-expand', '')
+  const toggleBtn = new FakeElement('button'); toggleBtn.setAttribute('data-sidebar-right-toggle', '')
+  const rightbarPanel = new FakeElement('div'); rightbarPanel.setAttribute('data-sidebar-right-panel', 'fullscreen')
+  rightbarPanel.setAttribute('data-sidebar-right-open', '')
+  rightbarPanel.appendChild(toggleBtn)
   // 横滚内容夹具（CodeMirror 式）：scrollWidth > clientWidth
   const hScroller = new FakeElement('div'); hScroller.scrollWidth = 800; hScroller.clientWidth = 300
   // 裁剪型溢出夹具：横向溢出被 overflow-x:hidden 裁掉（会话滚动体带宽代码块的
@@ -7302,6 +7311,8 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: {
       toggleSidebar() { layoutCalls.toggleSidebar += 1 },
       closeDetails() { layoutCalls.closeDetails += 1 },
+      openRightbar() {},
+      closeRightbar() {},
     } } })
     globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
     globalThis.window.innerWidth = 390
@@ -7329,11 +7340,11 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     const sync = () => observerCallbacks[observerCallbacks.length - 1]([], () => {})
     const touchAt = (x, y, extra) => ({ touches: [{ clientX: x, clientY: y }], target: extra?.target ?? null })
 
-    // —— 1. better-sidebar 缺席：右缘手势无效；左缘右滑开官方左抽屉 ——
+    // —— 1. 官方右栏未就绪：右缘手势无效；左缘右滑开官方左抽屉 ——
     htmlEl.dispatch('touchstart', touchAt(388, 300))
     htmlEl.dispatch('touchmove', touchAt(360, 300))
     htmlEl.dispatch('touchmove', touchAt(326, 300))
-    assert.equal(rightToggle.clickCalls, 0, 'right-edge gesture must be inert while no right-sidebar plugin is mounted')
+    assert.equal(expandBtn.clickCalls, 0, 'right-edge gesture must be inert while no rightbar is mounted')
 
     htmlEl.dispatch('touchstart', touchAt(6, 300))
     htmlEl.dispatch('touchmove', touchAt(30, 302))
@@ -7388,32 +7399,36 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     htmlEl.dispatch('touchstart', touchAt(150, 300))
     htmlEl.dispatch('touchmove', touchAt(80, 300))
     assert.equal(layoutCalls.toggleSidebar, 3)
-    assert.equal(rightToggle.clickCalls, 0, 'leftward swipe stays inert while no right-sidebar plugin is mounted')
+    assert.equal(expandBtn.clickCalls, 0, 'leftward swipe stays inert while no right-sidebar is mounted')
     // 遥测区分失败形态：左滑方向无效必须记录「右栏缺席」，而非笼统未触发
     assert.match(chipText(), /右栏缺席/)
 
-    // —— 3. better-sidebar 上线：右缘左滑开右栏（簇内最后可用钮，decoy 跳过）——
-    bodyEl.appendChild(panelHost)
+    // —— 3. 官方右栏上线：进入会话挂载展开钮，右缘左滑开右栏 ——
+    bodyEl.appendChild(expandBtn)
     sync()
     htmlEl.dispatch('touchstart', touchAt(388, 300))
     htmlEl.dispatch('touchmove', touchAt(360, 298))
     htmlEl.dispatch('touchmove', touchAt(330, 298))
-    assert.equal(rightToggle.clickCalls, 1, 'leftward swipe from the right edge opens the better-sidebar drawer')
-    assert.equal(decoy.clickCalls, 0, 'aria-disabled decoy must never be clicked')
-    bodyEl.removeAttribute('data-dsh-sidebar-collapsed')
+    assert.equal(expandBtn.clickCalls, 1, 'leftward swipe from the right edge opens the official rightbar')
+    // 展开态模拟：移除 expand 钮，挂载展开面板（带 toggleBtn），摘除 frame 折叠标记
+    expandBtn.remove()
+    bodyEl.appendChild(rightbarPanel)
+    frame.removeAttribute('data-rightbar-collapsed')
     sync()
     assert.equal(fab.style.display, 'none', 'right drawer open must hide the fab')
 
-    // —— 4. 右栏开着：横滚内容内起点不关（CodeMirror 横滚语义），其余起点左往右滑关 ——
+    // —— 4. 官方右栏开着：横滚内容内起点不关，其余起点左往右滑关 ——
     bodyEl.appendChild(hScroller)
     htmlEl.dispatch('touchstart', touchAt(120, 300, { target: hScroller }))
     htmlEl.dispatch('touchmove', touchAt(190, 300))
-    assert.equal(rightToggle.clickCalls, 1, 'horizontal scrolling content keeps its own swipe semantics')
+    assert.equal(toggleBtn.clickCalls, 0, 'horizontal scrolling content keeps its own swipe semantics')
     hScroller.remove()
     htmlEl.dispatch('touchstart', touchAt(120, 300))
     htmlEl.dispatch('touchmove', touchAt(185, 300))
-    assert.equal(rightToggle.clickCalls, 2, 'rightward swipe anywhere closes the open right drawer')
-    bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
+    assert.equal(toggleBtn.clickCalls, 1, 'rightward swipe anywhere closes the open right drawer')
+    rightbarPanel.remove()
+    bodyEl.appendChild(expandBtn)
+    frame.setAttribute('data-rightbar-collapsed', '')
     sync()
     assert.equal(fab.style.display, 'flex', 'right drawer closed restores the fab')
 
@@ -7427,7 +7442,7 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     assert.equal(layoutCalls.toggleSidebar, 3)
     htmlEl.dispatch('touchstart', touchAt(388, 300))
     htmlEl.dispatch('touchmove', touchAt(320, 300))
-    assert.equal(rightToggle.clickCalls, 2)
+    assert.equal(expandBtn.clickCalls, 1)
     modal.remove()
 
     // —— 6. touchend 清追踪器：抬手后迟到的 move 不再翻转 ——
@@ -7478,23 +7493,22 @@ test('mobile adaptation edge gestures drive the left drawer and a better-sidebar
     frame.setAttribute('data-sidebar-collapsed', '')
     sync()
 
-    // —— 6c. 右栏同样受益：右缘起滑被系统接管 → 取消补完开右栏 ——
+    // —— 6c. 官方右栏同样受益：右缘起滑被系统接管 → 取消补完开右栏 ——
     htmlEl.dispatch('touchstart', touchAt(386, 300))
     htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 350, clientY: 298 }], target: null })
-    assert.equal(rightToggle.clickCalls, 3, 'stolen right-edge swipe opens the better-sidebar drawer on touchcancel')
-    bodyEl.setAttribute('data-dsh-sidebar-collapsed', '')
+    assert.equal(expandBtn.clickCalls, 2, 'stolen right-edge swipe opens the official rightbar on touchcancel')
     sync()
 
     // —— 6c2. 非贴边起滑不享受放宽补完：cancel 达阈也不补（系统竞争只在边缘）——
     htmlEl.dispatch('touchstart', touchAt(150, 300))
     htmlEl.dispatch('touchcancel', { changedTouches: [{ clientX: 158, clientY: 300 }], target: null })
     assert.equal(layoutCalls.toggleSidebar, 5)
-    assert.equal(rightToggle.clickCalls, 3, 'non-edge origins complete only via the full threshold')
+    assert.equal(expandBtn.clickCalls, 2, 'non-edge origins complete only via the full threshold')
 
     // —— 6c3. 非贴边左滑 + 右栏在场：完整触发阈开右栏（方向任意起点结算）——
     htmlEl.dispatch('touchstart', touchAt(200, 300))
     htmlEl.dispatch('touchmove', touchAt(140, 300))
-    assert.equal(rightToggle.clickCalls, 4, 'interior leftward swipe opens the right sidebar')
+    assert.equal(expandBtn.clickCalls, 3, 'interior leftward swipe opens the official rightbar')
     assert.equal(layoutCalls.toggleSidebar, 5)
 
     // —— 6d. 贴边起滑但落在【真横滚】内容内：开启追踪不起 ——
