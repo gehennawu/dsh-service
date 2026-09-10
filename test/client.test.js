@@ -7268,7 +7268,6 @@ test('mobile adaptation edge gestures drive the left drawer and the official rig
   const expandBtn = new FakeElement('button'); expandBtn.setAttribute('data-sidebar-right-expand', '')
   const toggleBtn = new FakeElement('button'); toggleBtn.setAttribute('data-sidebar-right-toggle', '')
   const rightbarPanel = new FakeElement('div'); rightbarPanel.setAttribute('data-sidebar-right-panel', 'fullscreen')
-  rightbarPanel.setAttribute('data-sidebar-right-open', '')
   rightbarPanel.appendChild(toggleBtn)
   // 横滚内容夹具（CodeMirror 式）：scrollWidth > clientWidth
   const hScroller = new FakeElement('div'); hScroller.scrollWidth = 800; hScroller.clientWidth = 300
@@ -7407,16 +7406,33 @@ test('mobile adaptation edge gestures drive the left drawer and the official rig
     assert.match(chipText(), /右栏缺席/)
 
     // —— 3. 官方右栏上线：进入会话挂载展开钮，右缘左滑开右栏 ——
+    // 真实宿主下，SidebarPanel 连同其中的收起按钮 [data-sidebar-right-toggle] 在折叠态下
+    // 依然常驻 DOM（仅未打 data-sidebar-right-open、带 aria-hidden="true"）。
+    // 此时折叠态绝不可误报为展开态，左抽屉 FAB 必须保持可见，且向右滑必须开左抽屉。
+    rightbarPanel.setAttribute('aria-hidden', 'true')
+    bodyEl.appendChild(rightbarPanel)
     bodyEl.appendChild(expandBtn)
     sync()
+    assert.equal(fab.style.display, 'flex', 'left drawer fab must stay visible when rightbar is mounted but collapsed')
+
+    // 在右栏折叠态下，向右滑必须打开左抽屉，绝不可误判为「关闭右栏」
+    const currentToggleSidebar = layoutCalls.toggleSidebar
+    htmlEl.dispatch('touchstart', touchAt(100, 300))
+    htmlEl.dispatch('touchmove', touchAt(180, 300))
+    assert.equal(layoutCalls.toggleSidebar, currentToggleSidebar + 1, 'rightward swipe opens left drawer when rightbar is collapsed')
+    assert.equal(toggleBtn.clickCalls, 0, 'opening the left drawer must not toggle the collapsed rightbar')
+    layoutCalls.toggleSidebar = currentToggleSidebar // 下文的既有累计断言保持独立
+    frame.setAttribute('data-sidebar-collapsed', '')
+    sync()
+
     htmlEl.dispatch('touchstart', touchAt(388, 300))
     htmlEl.dispatch('touchmove', touchAt(360, 298))
     htmlEl.dispatch('touchmove', touchAt(330, 298))
     assert.equal(expandBtn.clickCalls, 1, 'leftward swipe from the right edge opens the official rightbar')
-    // 展开态模拟：移除 expand 钮，挂载展开面板（带 toggleBtn），摘除 frame 折叠标记
+    // 手机全屏态：同一面板始终挂载，frame 的零宽轨折叠标记始终保留。
     expandBtn.remove()
-    bodyEl.appendChild(rightbarPanel)
-    frame.removeAttribute('data-rightbar-collapsed')
+    rightbarPanel.setAttribute('data-sidebar-right-open', '')
+    rightbarPanel.removeAttribute('aria-hidden')
     sync()
     assert.equal(fab.style.display, 'none', 'right drawer open must hide the fab')
 
@@ -7429,7 +7445,8 @@ test('mobile adaptation edge gestures drive the left drawer and the official rig
     htmlEl.dispatch('touchstart', touchAt(120, 300))
     htmlEl.dispatch('touchmove', touchAt(185, 300))
     assert.equal(toggleBtn.clickCalls, 1, 'rightward swipe anywhere closes the open right drawer')
-    rightbarPanel.remove()
+    rightbarPanel.removeAttribute('data-sidebar-right-open')
+    rightbarPanel.setAttribute('aria-hidden', 'true')
     bodyEl.appendChild(expandBtn)
     frame.setAttribute('data-rightbar-collapsed', '')
     sync()

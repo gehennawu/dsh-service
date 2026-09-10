@@ -1979,6 +1979,15 @@ window.__ModuleLoader__.load({
           '[data-dshsvc-root] .dshsvc-tab{padding:9px 13px;min-height:36px;box-sizing:border-box;font-size:13px;white-space:nowrap;flex:none}',
           '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
+          // 版本卡自身作为查询容器：窄设置面板与手机都按可用宽度排版，不依赖移动手势开关。
+          '[data-dshsvc-root] [data-testid="version-card"]{container-type:inline-size;container-name:dshsvc-version}',
+          '@container dshsvc-version (max-width:480px){',
+          '[data-dshsvc-root] .dshsvc-version-row{gap:6px !important;padding:12px 2px !important}',
+          '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;gap:8px !important}',
+          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere}',
+          '[data-dshsvc-root] .dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}',
+          '[data-dshsvc-root] .dshsvc-version-note{margin-top:2px}',
+          '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
           // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类，锚在 data-dshsvc-root 不外溢 ──
@@ -7206,15 +7215,14 @@ window.__ModuleLoader__.load({
                 chevronIcon(channelOpen),
                 React.createElement('span', null, statusText))
             : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
-          return React.createElement('div', { key: id, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+          return React.createElement('div', { key: id, className: 'dshsvc-version-row', style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px 16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
+            React.createElement('div', { className: 'dshsvc-version-identity', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 } },
               React.createElement('span', { style: { fontSize: '13px', fontWeight: 650, whiteSpace: 'nowrap' } }, `${label} `),
               state?.url
                 ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
-                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading')),
-              extra || null),
-            action || null,
-            React.createElement('div', { style: { textAlign: 'right', fontSize: '12px' } }, rightSide))
+                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading'))),
+            React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, action || null),
+            extra ? React.createElement('div', { className: 'dshsvc-version-note', style: { flexBasis: '100%', minWidth: 0, lineHeight: 1.5, overflowWrap: 'anywhere' } }, extra) : null)
         }
         // 版本信息区块：DSH 行在有更新时状态文本（小三角 + 有新版本）整体可点击，行内下拉展开
         const dshUpdate = updateInfo?.dsh
@@ -7240,7 +7248,7 @@ window.__ModuleLoader__.load({
             background: dshUnsupported ? 'rgba(211,51,51,0.08)' : 'transparent',
             border: dshUnsupported ? '1px solid rgba(211,51,51,0.3)' : 0,
             fontWeight: dshUnsupported ? 650 : 400,
-            whiteSpace: 'nowrap',
+            whiteSpace: 'normal',
           },
         }, translate('version.dsh.supportBound', { limit: DSH_NOT_SUPPORTED_FROM }))
         // 版本卡只放版本与升级：运行环境信息在健康诊断检查项与重启确认提示中呈现（用户复核口径）。
@@ -8337,10 +8345,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           try { return typeof ctx.get === 'function' ? ctx.get('sidebarRight') : undefined } catch (_) { return undefined }
         }
 
-        /** 官方右栏实时两态（DOM 按钮/面板标记 + frame 属性 + sidebarRight 服务兜底）。
-            在会话中，右上角常驻 [data-sidebar-right-expand]（折叠态）或
-            [data-sidebar-right-toggle]（展开态）；无会话（如 Hero 首页）时这些
-            元素均不存在，手势自然无效（对齐「不存在右侧栏则不生效」语义）。 */
+        /** 官方右栏存在性与展开态分别判断。面板和内部 toggle 在收起时仍挂载，
+            不能拿 toggle 的存在性判断展开；展开按钮只在折叠时出现。
+            无挂载面板及活跃服务时手势无效。 */
         const officialRightbarAvailableNow = () => {
           try {
             if (document.querySelector('[data-sidebar-right-expand], [data-sidebar-right-toggle], [data-sidebar-right-panel]') !== null) {
@@ -8353,16 +8360,27 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
         const officialRightbarOpenedNow = () => {
           if (!officialRightbarAvailableNow()) return false
+          // 1. 服务层权威判断（读当前会话的 layout.expanded）
+          const sr = sidebarRightService()
+          if (sr !== undefined && typeof sr.isExpanded === 'function') {
+            try {
+              const exp = sr.isExpanded()
+              if (typeof exp === 'boolean') return exp
+            } catch (_) {}
+          }
+          // 2. DOM 展开标记：面板展开时带有 [data-sidebar-right-open] 属性
           try {
             if (document.querySelector('[data-sidebar-right-open]') !== null) return true
-            if (document.querySelector('[data-sidebar-right-toggle]') !== null) return true
+          } catch (_) {}
+          // 3. 常驻展开钮存在时必为折叠态（避免将常驻 DOM 内的折叠收起按钮误读为展开态）
+          try {
+            if (document.querySelector('[data-sidebar-right-expand]') !== null) return false
+          } catch (_) {}
+          // 4. 外壳 frame 兜底（桌面/平板非全屏 track 模式）：cols.rightbar > 0 时无 data-rightbar-collapsed
+          try {
             const frame = document.querySelector('[data-dshsvc-frame]')
             if (frame !== null && !frame.hasAttribute('data-rightbar-collapsed')) return true
           } catch (_) {}
-          const sr = sidebarRightService()
-          if (sr !== undefined && typeof sr.isExpanded === 'function') {
-            try { return sr.isExpanded() } catch (_) {}
-          }
           return false
         }
 
@@ -8378,7 +8396,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           try {
             const btn = wantOpen
               ? document.querySelector('[data-sidebar-right-expand]')
-              : document.querySelector('[data-sidebar-right-toggle]')
+              : (document.querySelector('[data-sidebar-right-open] [data-sidebar-right-toggle]') || (officialRightbarOpenedNow() ? document.querySelector('[data-sidebar-right-toggle]') : null))
             if (btn !== null && typeof btn.click === 'function') {
               btn.click()
               return true
