@@ -53,13 +53,11 @@ import {
 
 const require = createRequire(import.meta.url)
 const name = 'dsh-service'
-// 0.1.5 起 connection 通道注册按「读取者 fiber」作用域挂载 web 路由
-// （rpc-host.ts: owner.effect(() => owner.webServer.register(route))），注册 RPC 通道
-// 的插件必须自己持有 webServer，否则 guard 抛 cannot get property "webServer" without
-// inject。0.1.2 上 connection 自带 webServer inject（传递性满足），故本声明对新旧宿主
-// 等价：web profile 正常加载；无 webServer 的 headless profile 本就不可用（connection
-// 旧版传递依赖 webServer，行为一致）。
-const inject = ['connection', 'webServer']
+// 插件硬依赖仅 connection。0.1.5-rc.1 官方在 connection.rpc.handle 中误加了
+// owner.webServer 直接访问（见 ensureConnectionRpcWebServerSeam 防御补丁）；
+// 补丁已通过 target.get('webServer') 消除属性守卫拦截，故无需将 webServer 提升为硬依赖，
+// 保持其为纯可选服务（仅用于 /healthz、备份下载及 RPC 路由承载）。
+const inject = ['connection']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
 const SETTINGS_NAMESPACE = 'dsh-service'
