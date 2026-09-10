@@ -6181,6 +6181,7 @@ test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right 
     removeAttribute(name) { this.attributes.delete(name) }
     addEventListener(type, handler) { (this.listeners.get(type) || this.listeners.set(type, new Set()).get(type)).add(handler) }
     dispatch(type, event) { for (const handler of this.listeners.get(type) || []) handler(event || {}) }
+    click() { this.dispatch('click', {}) }
   }
   const matchesSelector = (el, selector) => {
     for (const part of selector.split(',')) {
@@ -6224,6 +6225,8 @@ test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right 
   rightbarPanel.setAttribute('data-sidebar-right-open', '')
   rightbarPanel.appendChild(toggleBtn)
   bodyEl.appendChild(expandBtn)
+  expandBtn.addEventListener('click', () => { layoutCalls.openRightbar.push([false, true]) })
+  toggleBtn.addEventListener('click', () => { layoutCalls.closeRightbar += 1 })
 
   const observerCallbacks = []
   const observeCalls = []

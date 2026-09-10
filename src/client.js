@@ -8355,6 +8355,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (!officialRightbarAvailableNow()) return false
           try {
             if (document.querySelector('[data-sidebar-right-open]') !== null) return true
+            if (document.querySelector('[data-sidebar-right-toggle]') !== null) return true
             const frame = document.querySelector('[data-dshsvc-frame]')
             if (frame !== null && !frame.hasAttribute('data-rightbar-collapsed')) return true
           } catch (_) {}
@@ -8367,12 +8368,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
 
         /**
          * 驱动官方右栏开合：
-         * 1. 优先直接点击官方对应的按钮（与用户手点展开 ExpandButton / 收起 toggle 同链路）；
-         * 2. 其次通过官方 sidebarRight 服务切换会话右栏状态（actions.toggleExpanded）；
-         * 3. 布局外壳呈现同步（通知 AppFrame 更新 grid 轨，并满足测试桩记录）。
+         * 1. 优先直接点击官方对应的按钮（与用户手点展开 ExpandButton / 收起 toggle 同链路，
+         *    成功立即返回，绝不穿透调用服务层导致同一手势下重复翻转/开了又关）；
+         * 2. 其次通过官方 sidebarRight 服务切换会话右栏状态（方向复核，防误反转）；
+         * 3. 极简布局外壳降级（测试桩未挂载组件但提供了 layout 服务时）。
          */
         const toggleOfficialRightbar = (wantOpen) => {
-          let handled = false
           // 1. 优先直接触发官方对应的开合按钮
           try {
             const btn = wantOpen
@@ -8380,34 +8381,36 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               : document.querySelector('[data-sidebar-right-toggle]')
             if (btn !== null && typeof btn.click === 'function') {
               btn.click()
-              handled = true
+              return true
             }
           } catch (_) {}
 
-          // 2. 服务层：通过官方 sidebarRight 服务切换会话右栏状态
+          // 2. 服务层：通过官方 sidebarRight 服务切换会话右栏状态（方向复核）
           const sr = sidebarRightService()
           if (sr !== undefined && typeof sr.toggleExpanded === 'function') {
             try {
-              sr.toggleExpanded()
-              handled = true
+              if (typeof sr.isExpanded !== 'function' || sr.isExpanded() !== wantOpen) {
+                sr.toggleExpanded()
+                return true
+              }
             } catch (_) {}
           }
 
-          // 3. 布局外壳同步（极简测试桩或外壳 grid 呈现）
+          // 3. 布局外壳呈现同步（极简测试桩或外壳 grid 呈现）
           const layout = layoutService()
           if (layout !== undefined) {
             try {
               if (wantOpen && typeof layout.openRightbar === 'function') {
                 layout.openRightbar(false, true)
-                handled = true
+                return true
               } else if (!wantOpen && typeof layout.closeRightbar === 'function') {
                 layout.closeRightbar()
-                handled = true
+                return true
               }
             } catch (_) {}
           }
 
-          return handled
+          return false
         }
 
         /** 模态全屏态门控：与移动 CSS 的 body:has 规则同一判定选择器。
