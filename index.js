@@ -53,7 +53,13 @@ import {
 
 const require = createRequire(import.meta.url)
 const name = 'dsh-service'
-const inject = ['connection']
+// 0.1.5 起 connection 通道注册按「读取者 fiber」作用域挂载 web 路由
+// （rpc-host.ts: owner.effect(() => owner.webServer.register(route))），注册 RPC 通道
+// 的插件必须自己持有 webServer，否则 guard 抛 cannot get property "webServer" without
+// inject。0.1.2 上 connection 自带 webServer inject（传递性满足），故本声明对新旧宿主
+// 等价：web profile 正常加载；无 webServer 的 headless profile 本就不可用（connection
+// 旧版传递依赖 webServer，行为一致）。
+const inject = ['connection', 'webServer']
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const PLUGIN_PACKAGE = '@gehennawu/dsh-service'
 const SETTINGS_NAMESPACE = 'dsh-service'
@@ -148,6 +154,9 @@ const SESSIONS_TITLE_COLD_TTL_MS = 5 * 60 * 1000
 const SESSION_NOISE_TYPES = new Set([
   'turn/start', 'step/start', 'step/end', 'assistant/chunk', 'request/header',
   'token/meter', 'compaction', 'session/created', 'goal/status',
+  // 0.1.5 会话格式 V3：系统提示词入史为 system/message 事件——内容在 data.message.content
+  // 里、sessionEventText 白名单外（渲染为空文本），详情页会出空白卡，归入噪声直接隐藏。
+  'system/message',
 ])
 
 // 远端额度（v0.18）：Adapter seam——每个具体渠道只通过统一 interface 被调用：
@@ -1755,6 +1764,30 @@ function validSessionOffset(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0) ? value : undefined
 }
 
+// —— 0.1.5 会话持久化双形态 seam（0.1.3-alpha.1 起公共面只剩 create/open/flush/stat/list，
+// handle.read 返回 {eventState, events} 信封、inheritedEventCount 在 handle 上；旧
+// listSnapshots/readFrom/readRaw 已移除）。以下两个函数是全插件唯一的 persistence 形状
+// 收口：消费方只面对 {header, revision} 快照数组与 {events, inheritedEventCount} 读片，
+// 不感知运行时差异。backup 的 readRaw 物理字节 seam 新公共面不再提供（物理整树 tar 回退
+// 即 0.1.5 语义），不做双形态。
+function persistenceListSnapshots(persistence) {
+  if (typeof persistence.list === 'function') return persistence.list()
+  return persistence.listSnapshots()
+}
+
+async function persistenceReadSlice(persistence, header, fromSeq) {
+  if (typeof persistence.open === 'function') {
+    const handle = await persistence.open(header.id, 'read')
+    try {
+      const read = await handle.read(fromSeq)
+      return { events: Array.isArray(read?.events) ? read.events : [], inheritedEventCount: handle.inheritedEventCount }
+    } finally {
+      try { await handle.close() } catch (_) {}
+    }
+  }
+  return persistence.readFrom(header.id, fromSeq)
+}
+
 // alpha.4 moves the fork cut out of SessionHeader and into body-bearing reads;
 // older DSH releases expose it as header/meta.seedLength. Keep this normalization
 // at the persistence seam so the usage fold never has to know which runtime spoke.
@@ -1869,7 +1902,7 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
 async function refreshUsageIndex(ctx, dshHome, index) {
   const persistence = ctx.get('sessionPersistence')
   if (persistence === undefined) throw new Error('session-persistence-unavailable')
-  const snapshots = await persistence.listSnapshots()
+  const snapshots = await persistenceListSnapshots(persistence)
   const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
   for (const id of Object.keys(index.sessions)) if (!liveIds.has(id)) delete index.sessions[id]
   const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
@@ -1880,7 +1913,7 @@ async function refreshUsageIndex(ctx, dshHome, index) {
     const previous = index.sessions[id]
     if (previous?.revision === revision) continue
     const fromSeq = usageReadStart(previous)
-    const read = await persistence.readFrom(record.header.id, fromSeq)
+    const read = await persistenceReadSlice(persistence, record.header, fromSeq)
     const inheritedEventCount = inheritedEventCountFor(record, read)
     const next = foldUsageEvents(ctx, record, previous, usageReadEvents(read), inheritedEventCount)
     next.revision = revision
@@ -2250,7 +2283,7 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   const persistence = ctx.get('sessionPersistence')
   if (persistence === undefined) add('session-storage', 'error', 'unavailable')
   else {
-    try { add('session-storage', 'ok', (await persistence.listSnapshots()).length) } catch (error) { add('session-storage', 'error', error?.message || error) }
+    try { add('session-storage', 'ok', (await persistenceListSnapshots(persistence)).length) } catch (error) { add('session-storage', 'error', error?.message || error) }
   }
 
   const registry = ctx.get('workspaceRegistry')
@@ -3487,8 +3520,8 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = n
   // revision 源：缓存启用时尽早并行拉取（一次 header-only 目录遍历 + 每会话一次 stat，
   // 与 listSessions 内部同量级）；不可用/失败回落 null → TTL 兜底。
   const sessionPersistence = titleCache !== null ? ctx.get('sessionPersistence') : undefined
-  const revisionsPromise = sessionPersistence !== undefined && typeof sessionPersistence.listSnapshots === 'function'
-    ? sessionPersistence.listSnapshots().then((snapshots) => {
+  const revisionsPromise = sessionPersistence !== undefined && (typeof sessionPersistence.listSnapshots === 'function' || typeof sessionPersistence.list === 'function')
+    ? persistenceListSnapshots(sessionPersistence).then((snapshots) => {
       const revisions = new Map()
       for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
         if (typeof snapshot?.header?.id === 'string' && typeof snapshot.revision === 'string') revisions.set(snapshot.header.id, snapshot.revision)

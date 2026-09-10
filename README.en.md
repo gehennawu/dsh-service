@@ -11,7 +11,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.4.11-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.1.2--rc.1-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.1.5--rc.1-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -304,7 +304,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-**DSH compatibility statement**: adapted to DSH `0.1.2-alpha.2` conversation UI changes (chat view split into its own package, draggable conversation pane width, turn navigation rail), and to the `0.1.2-alpha.4` / `0.1.2-rc.1` session-reading API changes; the mobile immersive swipe and up-arrow reply jump work fully on alpha.2, while alpha.4/rc.1 seeded/fork usage indexing and subagent turn-record paths are supported. Older DSH releases (`>=0.1.1-rc.2`) remain supported: the plugin installs and runs normally, and only a few alpha.2-specific mobile style tweaks are inert there (purely cosmetic, no functional loss). **DSH `0.1.3-alpha.1` and newer are not supported yet** — the official release drops the legacy sessionPersistence seam that this plugin's usage refresh, archived-session deletion, title cache, and backup fast paths rely on; the compatibility adaptation is in progress, the version card shows a standing notice and turns red when the running version crosses the bound. Do not upgrade to that version or above until the adaptation lands.
+**DSH compatibility statement**: adapted to DSH `0.1.5-rc.1` — session format V3 (`system/message` events in history, renamed PTC vocabulary; the detail view automatically archives system events), the handle-based sessionPersistence (usage refresh, title cache, and diagnostics counts all ride the new public surface `list`/`open`/`read`/`close`), the official right sidebar replacing the Detail column (the mobile right-edge gesture drives `ctx.layout.openRightbar/closeRightbar` directly), and the object-shaped official turn-process (subagent turn claiming supports both shapes). Older DSH releases (`>=0.1.1-rc.2`) remain supported: persistence and layout seams run in dual shapes detected from runtime capabilities, and adaptation items that target the 0.1.5 structure are naturally inert on older hosts (cosmetic only, no functional loss). Note: sessions written in the V3 format after upgrading cannot be read by older DSH releases — **backups do not restore across a version downgrade**. **DSH `0.1.6-alpha.0` and newer are not verified yet** — the version card shows a standing support-bound notice and turns red when the running version crosses the bound.
 
 ## 🔒 Security design
 

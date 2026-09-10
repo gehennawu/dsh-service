@@ -1343,9 +1343,9 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻「暂不支持 ≥ 0.1.3-alpha.1」声明；支持范围内的运行版本为中性色（v1.4.10）
+  // 版本卡常驻支持边界声明（v1.4.12 适配后钉 0.1.6-alpha.0：≤0.1.5.x 已适配）；支持范围内的运行版本为中性色
   const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.3-alpha\.1/, 'support-bound declaration is always present')
+  assert.match(renderer.text('settings.section'), /0\.1\.6-alpha\.0/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
 
@@ -1370,12 +1370,13 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
 })
 
-test('version card flags the DSH support bound red when running ≥ 0.1.3-alpha.1', async () => {
+test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.0 (≤0.1.5.x stays supported)', async () => {
   const cases = [
     { current: '0.1.2-rc.1', red: false },
-    { current: '0.1.3-alpha.0', red: false },
-    { current: '0.1.3-alpha.1', red: true },
-    { current: '0.1.3', red: true },
+    { current: '0.1.3-alpha.1', red: false },
+    { current: '0.1.5-rc.1', red: false },
+    { current: '0.1.6-alpha.0', red: true },
+    { current: '0.1.6', red: true },
   ]
   for (const item of cases) {
     const renderer = createRenderer(async (channel, endpoint) => {
@@ -1389,7 +1390,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.3-alpha.
     })
     await renderer.load()
     const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.3-alpha\.1/, `bound note present on ${item.current}`)
+    assert.match(renderer.text('settings.section'), /0\.1\.6-alpha\.0/, `bound note present on ${item.current}`)
     if (item.red) {
       assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
       assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
@@ -5737,6 +5738,13 @@ test('subagent turn-tail row: registered under the subagentRoute feature, select
   assert.equal(entry.select({ turn: { turn: 3, data: { get: () => '|1|2|4|5|0|2|2|2' } } }), null)
   assert.equal(entry.select({ turn: {} }), null)
   assert.equal(entry.select(null), null)
+  // 0.1.3-alpha.2 起官方 turn-process 为对象直存（0.1.5 影响报告）：字段缺失/非有限数/
+  // 零计数一律拒绝认领，与旧串形态同口径。
+  assert.deepEqual(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 5, subagentCount: 3 }) } } }), { turn: 5, subagentCount: 3 })
+  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 5, subagentCount: 0 }) } } }), null)
+  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ subagentCount: 3 }) } } }), null)
+  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 'x', subagentCount: 3 }) } } }), null)
+  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => 42 } } }), null)
   // 功能关闭：条目注销；开启：重新注册（hasSlot 在替身里不回落，按注册表断言）。
   await renderer.setFeature('subagentRoute', false)
   assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models').length, 0)
@@ -6134,6 +6142,189 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     Date.now = realDateNow
     delete globalThis.document
     delete globalThis.MutationObserver
+  }
+})
+
+test('mobile adaptation 0.1.5 rightbar mode: official rightbar drives the right drawer while legacy details stays retired', async () => {
+  // 0.1.5 影响报告 §4：官方 layout 移除 Details 列（openDetails/closeDetails、
+  // data-details-collapsed、detailsCol 全部消失），改为 rightbarCol + data-rightbar-*。
+  // 引擎按 layout 服务能力判形态：新宿主右缘手势驱动 ctx.layout.openRightbar/closeRightbar，
+  // FAB 随 rightbarOpen 让位；旧宿主 data-details-collapsed 语义原样保留（双形态）。
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = tag
+      this.children = []
+      this.attributes = new Map()
+      this.style = {}
+      this.dataset = {}
+      this.parentNode = null
+      this.className = ''
+      this.listeners = new Map()
+      this.scrollWidth = 0
+      this.clientWidth = 0
+    }
+    get isConnected() {
+      let node = this
+      while (node.parentNode !== null) node = node.parentNode
+      return node === root
+    }
+    appendChild(child) { child.parentNode = this; this.children.push(child); return child }
+    remove() {
+      if (this.parentNode === null) return
+      const index = this.parentNode.children.indexOf(this)
+      if (index >= 0) this.parentNode.children.splice(index, 1)
+      this.parentNode = null
+    }
+    setAttribute(name, value) { this.attributes.set(name, String(value)) }
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null }
+    hasAttribute(name) { return this.attributes.has(name) }
+    removeAttribute(name) { this.attributes.delete(name) }
+    addEventListener(type, handler) { (this.listeners.get(type) || this.listeners.set(type, new Set()).get(type)).add(handler) }
+    dispatch(type, event) { for (const handler of this.listeners.get(type) || []) handler(event || {}) }
+  }
+  const matchesSelector = (el, selector) => {
+    for (const part of selector.split(',')) {
+      const pairs = part.trim().match(/\[([a-z-]+)(?:="([^"]*)")?\]/gi)
+      if (pairs === null) continue
+      if (pairs.join('') !== part.trim()) continue
+      const ok = pairs.every((pair) => {
+        const m = /^\[([a-z-]+)(?:="([^"]*)")?\]$/i.exec(pair)
+        if (m === null) return false
+        if (m[2] === undefined) return el.attributes.has(m[1])
+        return el.attributes.get(m[1]) === m[2]
+      })
+      if (ok) return true
+    }
+    return false
+  }
+  const walk = (node, visit_) => { visit_(node); for (const child of node.children) walk(child, visit_) }
+
+  const root = new FakeElement('#root')
+  const head = new FakeElement('head'); root.appendChild(head)
+  const bodyEl = new FakeElement('body'); root.appendChild(bodyEl)
+  const htmlEl = new FakeElement('html'); root.appendChild(htmlEl)
+
+  // 0.1.5 外壳骨架：frame（侧栏/右栏均折叠态）+ rightbarCol 三栏 + overlay 子层。
+  // 刻意不带 data-details-collapsed 与 detailsCol——旧代码在此会读出 detailsOpen 恒真。
+  const frame = new FakeElement('div')
+  frame.className = 'f_frame'
+  frame.setAttribute('data-sidebar-collapsed', '')
+  frame.setAttribute('data-rightbar-collapsed', '')
+  const sidebarCol = new FakeElement('div'); sidebarCol.className = 'f_sidebarCol'
+  const centerCol = new FakeElement('div'); centerCol.className = 'f_centerCol'
+  const rightbarCol = new FakeElement('div'); rightbarCol.className = 'f_rightbarCol'; rightbarCol.setAttribute('data-rightbar-col', '')
+  const overlayLayer = new FakeElement('div'); overlayLayer.setAttribute('data-shell-overlay', '')
+  for (const el of [sidebarCol, centerCol, rightbarCol, overlayLayer]) frame.appendChild(el)
+  bodyEl.appendChild(frame)
+
+  const observerCallbacks = []
+  const observeCalls = []
+  class FakeMutationObserver {
+    constructor(callback) { observerCallbacks.push(callback) }
+    observe(target, options) { observeCalls.push({ target, options }) }
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    documentElement: htmlEl,
+    head,
+    body: bodyEl,
+    createElement: (tag) => new FakeElement(tag),
+    querySelector(selector) {
+      let found = null
+      walk(root, (el) => { if (found === null && matchesSelector(el, selector)) found = el })
+      return found
+    },
+    querySelectorAll(selector) {
+      const found = []
+      walk(root, (el) => { if (matchesSelector(el, selector)) found.push(el) })
+      return found
+    },
+  }
+
+  const layoutCalls = { toggleSidebar: 0, openRightbar: [], closeRightbar: 0 }
+  const rpc = async (_channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.5-rc.1', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true, upstreamManaged: false } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }
+
+  try {
+    const renderer = createRenderer(rpc, { featureSettings: { mobileAdaptation: true }, services: { layout: {
+      toggleSidebar() { layoutCalls.toggleSidebar += 1 },
+      openRightbar(track, fullscreen) { layoutCalls.openRightbar.push([track, fullscreen]) },
+      closeRightbar() { layoutCalls.closeRightbar += 1 },
+    } } })
+    globalThis.window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} })
+    globalThis.window.innerWidth = 390
+    globalThis.window.location = { search: '?dshsvc-mobile-debug=1', reload() {} }
+    const windowListeners = new Map()
+    globalThis.window.addEventListener = (type, handler) => {
+      ;(windowListeners.get(type) || windowListeners.set(type, new Set()).get(type)).add(handler)
+    }
+    globalThis.window.removeEventListener = (type, handler) => { windowListeners.get(type)?.delete(handler) }
+    globalThis.getComputedStyle = () => ({ overflowX: 'hidden' })
+    await renderer.load()
+
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), true)
+    const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
+    assert.notEqual(fab, undefined)
+    const chipText = () => {
+      const chip = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-debug'))
+      return chip !== undefined && chip.textContent !== undefined ? chip.textContent : ''
+    }
+    const sync = () => observerCallbacks[observerCallbacks.length - 1]([], () => {})
+    const touchAt = (x, y) => ({ touches: [{ clientX: x, clientY: y }], target: null })
+
+    // frame 观察者订阅 data-rightbar-collapsed（右栏开合主驱动）
+    const frameObserve = observeCalls.map((entry) => entry.options).find((options) => Array.isArray(options?.attributeFilter) && options.attributeFilter.includes('data-rightbar-collapsed'))
+    assert.notEqual(frameObserve, undefined, 'the frame observer must track data-rightbar-collapsed')
+
+    // 双关闭态：FAB 可见；新形态下 detailsOpen 恒关（frame 无 data-details-collapsed 不再误报常开）
+    assert.equal(fab.style.display, 'flex')
+    assert.match(chipText(), /预览列 关/)
+    assert.match(chipText(), /右栏 关/)
+
+    // —— 1. 右缘左滑开官方右栏：openRightbar(false, true)（窄屏浮层全屏语义）——
+    htmlEl.dispatch('touchstart', touchAt(388, 300))
+    htmlEl.dispatch('touchmove', touchAt(360, 298))
+    htmlEl.dispatch('touchmove', touchAt(326, 298))
+    assert.deepEqual(layoutCalls.openRightbar, [[false, true]], 'right-edge leftward swipe opens the official rightbar in fullscreen-float mode')
+    assert.match(chipText(), /右开/)
+    frame.removeAttribute('data-rightbar-collapsed')
+    sync()
+    assert.equal(fab.style.display, 'none', 'official rightbar open must hide the fab')
+    assert.match(chipText(), /右栏 开/)
+
+    // —— 2. 右栏开着：任意起点右往左滑关闭 closeRightbar ——
+    htmlEl.dispatch('touchstart', touchAt(120, 300))
+    htmlEl.dispatch('touchmove', touchAt(185, 300))
+    assert.equal(layoutCalls.closeRightbar, 1, 'rightward swipe anywhere closes the open official rightbar')
+    frame.setAttribute('data-rightbar-collapsed', '')
+    sync()
+    assert.equal(fab.style.display, 'flex')
+
+    // —— 3. 左抽屉语义不受影响 ——
+    htmlEl.dispatch('touchstart', touchAt(6, 300))
+    htmlEl.dispatch('touchmove', touchAt(64, 302))
+    assert.equal(layoutCalls.toggleSidebar, 1, 'left drawer gestures are untouched in rightbar mode')
+
+    // —— 4. 卸载对称：data-dshsvc-rightbar 标记随手势件一起摘除 ——
+    await renderer.setFeature('mobileAdaptation', false)
+    assert.equal(frame.attributes.has('data-dshsvc-rightbar'), false, 'rightbar markers are removed on teardown')
+    assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
+  } finally {
+    delete globalThis.MutationObserver
+    delete globalThis.document
+    delete globalThis.window.matchMedia
+    delete globalThis.window.innerWidth
+    delete globalThis.window.location
+    delete globalThis.window.addEventListener
+    delete globalThis.window.removeEventListener
+    delete globalThis.getComputedStyle
   }
 })
 

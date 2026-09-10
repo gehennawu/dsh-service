@@ -135,6 +135,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.drawer': '抽屉',
       'mobile.debug.sidebarPanel': '右栏',
       'mobile.debug.details': '预览列',
+      'mobile.debug.rightbar': '右栏',
       'mobile.debug.errors': 'JS 错误',
       'mobile.debug.stateOn': '开',
       'mobile.debug.stateOff': '关',
@@ -519,7 +520,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
-      'version.dsh.supportBound': '本插件暂不支持 DSH ≥ {limit}（兼容适配进行中）',
+      'version.dsh.supportBound': '已适配至 DSH 0.1.5；≥ {limit} 尚未验证支持',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -906,6 +907,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.drawer': 'Drawer',
       'mobile.debug.sidebarPanel': 'Side panel',
       'mobile.debug.details': 'Details',
+      'mobile.debug.rightbar': 'Rightbar',
       'mobile.debug.errors': 'JS errors',
       'mobile.debug.stateOn': 'on',
       'mobile.debug.stateOff': 'off',
@@ -1283,7 +1285,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
-      'version.dsh.supportBound': 'This plugin does not support DSH ≥ {limit} yet (compatibility adaptation in progress)',
+      'version.dsh.supportBound': 'Adapted through DSH 0.1.5; ≥ {limit} is not verified yet',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -1676,13 +1678,21 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
 
     // ── v1.2 子代理模型可见性：回合尾行的纯逻辑（模块级便于单测）──────────────
-    // selector 只读官方 turn-process 数据（编码签名串 `turn|…|subagentCount`，第 9 段是
-    // subagentCount、第 1 段是 turn），subagentCount>0 才认领回合——避免在无子代理的回合
-    // 抢占链槽（better-sidebar 的 produced-files 行 priority -1 先到先得，本条目让位）。
+    // selector 只读官方 turn-process 数据，subagentCount>0 才认领回合——避免在无子代理
+    // 的回合抢占链槽（better-sidebar 的 produced-files 行 priority -1 先到先得，本条目让位）。
+    // 双形态（0.1.5 影响报告）：0.1.3-alpha.2 起官方为对象直存
+    // {turn,…,subagentCount}；更早版本是编码签名串 `turn|…|subagentCount`（第 9 段
+    // subagentCount、第 1 段 turn）。对象分支缺失字段/非有限数一律拒绝认领。
     function selectSubagentModelsTurnTail(owner) {
-      const signature = owner?.turn?.data?.get?.('turn-process')
-      if (typeof signature !== 'string') return null
-      const parts = signature.split('|')
+      const data = owner?.turn?.data?.get?.('turn-process')
+      if (data !== null && typeof data === 'object') {
+        const turn = Number(data.turn)
+        const subagentCount = Number(data.subagentCount)
+        if (!Number.isFinite(turn) || !Number.isFinite(subagentCount) || subagentCount <= 0) return null
+        return { turn, subagentCount }
+      }
+      if (typeof data !== 'string') return null
+      const parts = data.split('|')
       // 空首段（畸形签名）视为不可信：Number('')===0 会误认领 turn 0。
       if (parts[0] === '') return null
       const turn = Number(parts[0])
@@ -2661,11 +2671,12 @@ window.__ModuleLoader__.load({
         channelLine(translate, 'next', tags && tags.next),
          ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
 
-      // 版本支持上限声明（v1.4.10，用户点名）：0.1.3-alpha.1 起官方移除旧 sessionPersistence
-      // seam（listSnapshots/readFrom/locate/readRaw），兼容适配推迟到官方下一 rc（TODO.md
-      // 「DSH 0.1.3-alpha.1 兼容适配」节）。该版本及更高一律判「暂不支持」；运行版本越界时
-      // 版本卡声明行转红警示。无法解析的版本串（如 unknown）按不支持判空、中性展示。
-      const DSH_NOT_SUPPORTED_FROM = '0.1.3-alpha.1'
+      // 版本支持边界（v1.4.12 适配轮）：0.1.3-alpha.1 起旧 sessionPersistence seam 移除、
+      // 0.1.5 起 layout Details 列移除 + 会话格式 V3——本版已双形态适配（docs/research/
+      // dsh-v0.1.5-alpha.1-plugin-impact.md），支持 ≤0.1.5.x 全系。边界钉在 0.1.6-alpha.0：
+      // 其后的 alpha 尚未验证，运行版本越界时版本卡声明行转红警示；无法解析的版本串
+      // （如 unknown）按不支持判空、中性展示。
+      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.0'
       const parseSemver = (value) => {
         if (typeof value !== 'string') return null
         const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
@@ -7646,9 +7657,14 @@ window.__ModuleLoader__.load({
 /* 侧栏/详情列改 absolute 后会退出 grid 排版流，中列会被自动放置进第 1 轨
    （0px）而整屏变黑 —— 三列必须用 grid-column 显式钉位，绝不依赖子元素顺序。 */
 html[data-dshsvc-mobile] [data-dshsvc-frame] { grid-template-columns: 0px minmax(0, 1fr) 0px !important; }
+/* 0.1.5+ 右栏列（rightbarCol）：官方右栏自有窄屏语义（<768 开=浮层全屏 portal 到
+   body，闭=0 轨），第三轨改 auto 让官方宽度生效——钉 0px 会把 push 态面板挤没。
+   :has 特异性高于上一条，天然覆盖；旧宿主无 rightbar 标记时仍走 0px 模板。 */
+html[data-dshsvc-mobile] [data-dshsvc-frame]:has([data-dshsvc-rightbar]) { grid-template-columns: 0px minmax(0, 1fr) auto !important; }
 html[data-dshsvc-mobile] [data-dshsvc-sidebar] { grid-column: 1 !important; grid-row: 1 !important; }
 html[data-dshsvc-mobile] [data-dshsvc-center] { grid-column: 2 !important; grid-row: 1 !important; }
 html[data-dshsvc-mobile] [data-dshsvc-details] { grid-column: 3 !important; grid-row: 1 !important; }
+html[data-dshsvc-mobile] [data-dshsvc-rightbar] { grid-column: 3 !important; grid-row: 1 !important; }
 /* 侧栏/详情列 → overlay 抽屉。两条铁律：
    ① 隐藏禁用 transform —— 设置模态（未 portal）长在本列子树里，
       transform 会成为其 fixed 定位的包含块；
@@ -7895,6 +7911,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           errorCount: 0,
           drawerOpen: false,
           detailsOpen: false,
+          // 0.1.5 官方右栏（rightbarCol）开合态：右缘手势/FAB 让位/debug 芯片用；
+          // 与旧宿主的 detailsOpen 互斥——按 layout 服务能力判定形态（见 readOverlayState）。
+          rightbarOpen: false,
           workspaceOpen: false,
           // —— 边缘手势（2026-09）状态：better-sidebar 右栏两态 + 当前追踪的触摸 ——
           // 两态由观察器驱动（FAB/把手让位、debug 芯片用）；手势 fire 时另行实时
@@ -7941,7 +7960,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           // 那只会变成糊在侧栏 logo 上的不明物）。工作区侧板、better-sidebar
           // 右栏全屏抽屉同理互斥。
           // 变化才写：innerHTML/display 若无条件重写会喂活 body 级观察器死循环。
-          const nextDisplay = (state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen) ? 'none' : 'flex'
+          const nextDisplay = (state.drawerOpen || state.workspaceOpen || state.sidebarPanelOpen || state.rightbarOpen) ? 'none' : 'flex'
           if (state.fab !== null && state.lastFabDisplay !== nextDisplay) {
             state.lastFabDisplay = nextDisplay
             state.fab.style.display = nextDisplay
@@ -7983,7 +8002,14 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         const readOverlayState = () => {
           const frame = document.querySelector('[data-dshsvc-frame]')
           state.drawerOpen = frame !== null && !frame.hasAttribute('data-sidebar-collapsed')
-          state.detailsOpen = frame !== null && !frame.hasAttribute('data-details-collapsed')
+          // 右列形态按 layout 服务能力判定（引擎激活前提就是 layout 存在）：
+          // 新宿主（0.1.5+，有 openRightbar）读 data-rightbar-collapsed；旧宿主读
+          // data-details-collapsed。两属性同方向（在=关闭），但旧宿主 frame 永无
+          // rightbar 属性、新宿主永无 details 属性——不判形态会把「属性缺席」读成常开。
+          const layout = layoutService()
+          const rightbarMode = layout !== undefined && typeof layout.openRightbar === 'function'
+          state.detailsOpen = rightbarMode ? false : (frame !== null && !frame.hasAttribute('data-details-collapsed'))
+          state.rightbarOpen = rightbarMode && frame !== null && !frame.hasAttribute('data-rightbar-collapsed')
           // better-sidebar 右栏两态（插件自己发布的稳定标记，v0.18.0 源码核实）：
           // [data-dsh-panel-host] 在 DOM = 插件已挂载渲染；body 的
           // data-dsh-sidebar-collapsed 在 = 折叠、摘除 = 展开。body 级
@@ -8318,6 +8344,23 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           try { return document.body.hasAttribute('data-dsh-sidebar-collapsed') } catch (_) { return true }
         }
 
+        /** 0.1.5 官方右栏实时两态（layout 服务 openRightbar/closeRightbar + frame 属性，
+            官方 AppFrame `cols.rightbar===0` 时打 data-rightbar-collapsed）。available 以
+            layout 服务能力为准（旧宿主无 openRightbar → false，右目标让位 better-sidebar）；
+            opened 必须先过 available 门——旧宿主 frame 永无该属性，直接读会把「属性缺席」
+            误读成常开。 */
+        const officialRightbarAvailableNow = () => {
+          const layout = layoutService()
+          return layout !== undefined && typeof layout.openRightbar === 'function'
+        }
+        const officialRightbarOpenedNow = () => {
+          if (!officialRightbarAvailableNow()) return false
+          try {
+            const frame = document.querySelector('[data-dshsvc-frame]')
+            return frame !== null && !frame.hasAttribute('data-rightbar-collapsed')
+          } catch (_) { return false }
+        }
+
         /** 模态全屏态门控：与移动 CSS 的 body:has 规则同一判定选择器。
             桩环境的 matchesSelector 不支持带值选择器时恒回 null → 视为无模态。 */
         const modalOpenNow = () => {
@@ -8419,8 +8462,25 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             },
           },
           right: {
-            opened: () => sidebarPanelHostNow() && !sidebarPanelCollapsedNow(),
-            toggle: () => clickSidebarPanelToggle(),
+            // 官方右栏（0.1.5+）优先，缺席才让位 better-sidebar——两套并存时只认官方，
+            // 避免 opened/toggle 各读一套状态互打架。
+            opened: () => officialRightbarAvailableNow()
+              ? officialRightbarOpenedNow()
+              : (sidebarPanelHostNow() && !sidebarPanelCollapsedNow()),
+            toggle: () => {
+              if (officialRightbarAvailableNow()) {
+                const layout = layoutService()
+                if (layout === undefined) return false
+                try {
+                  if (officialRightbarOpenedNow()) layout.closeRightbar()
+                  // 窄屏开=浮层全屏（track=false, fullscreen=true）：面板 portal 到 body，
+                  // 不进被移动模板改写的 grid 轨。
+                  else layout.openRightbar(false, true)
+                  return true
+                } catch (_) { return false }
+              }
+              return clickSidebarPanelToggle()
+            },
           },
         }
         const fireDrawer = (side, wantOpen) => {
@@ -8457,8 +8517,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           }
           if (tele !== null) tele.start = `${Math.round(point.x)},${Math.round(point.y)}`
           const leftOpen = !leftDrawerCollapsedNow()
-          const rightAvailable = sidebarPanelHostNow()
-          const rightOpen = rightAvailable && !sidebarPanelCollapsedNow()
+          const rightAvailable = officialRightbarAvailableNow() || sidebarPanelHostNow()
+          const rightOpen = officialRightbarAvailableNow() ? officialRightbarOpenedNow() : (rightAvailable && !sidebarPanelCollapsedNow())
           if (leftOpen || rightOpen) {
             // 关闭追踪：任意起点，但横滚内容（编辑器/tab 条）的横滑是内容滚动语义
             if (insideHorizontalScroller(event?.target)) {
@@ -8507,8 +8567,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             if (dx >= threshold) { side = 'left'; wantOpen = true; kind = EDGE_KIND.leftOpen }
             else if (dx <= -threshold) {
               side = 'right'; wantOpen = true; kind = EDGE_KIND.rightOpen
-              if (!sidebarPanelHostNow()) {
-                // 右栏插件缺席：该向无效是设计语义。记录专属原因供遥测区分
+              // 右栏可用性双形态：官方右栏（0.1.5+）优先，缺席才看 better-sidebar。
+              if (!(officialRightbarAvailableNow() || sidebarPanelHostNow())) {
+                // 两类右栏都缺席：该向无效是设计语义。记录专属原因供遥测区分
                 // 「没到阈值 / 被横滚拦截 / 右栏不存在」三种失败形态
                 if (state.edgeTelemetry !== null) state.edgeTelemetry.reason = EDGE_KIND.absentRight
                 return true
@@ -8719,6 +8780,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
               `${t('mobile.debug.drawer')} ${onOff(state.drawerOpen)}`,
               `${t('mobile.debug.sidebarPanel')} ${onOff(state.sidebarPanelOpen)}`,
               `${t('mobile.debug.details')} ${onOff(state.detailsOpen)}`,
+              `${t('mobile.debug.rightbar')} ${onOff(state.rightbarOpen)}`,
               `${t('mobile.debug.immersive')} ${onOff(state.immersive)}`,
               `${t('mobile.debug.errors')} ${state.errorCount}`,
             ].join(' · '),
@@ -8762,6 +8824,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           let sawSidebar = false
           let sawCenter = false
           let sawDetails = false
+          let sawRightbar = false
           for (const child of frame.children) {
             const className = typeof child.className === 'string' ? child.className : ''
             if (!sawSidebar && /sidebarCol/.test(className)) {
@@ -8773,6 +8836,9 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             } else if (!sawDetails && /detailsCol/.test(className)) {
               child.setAttribute('data-dshsvc-details', '')
               sawDetails = true
+            } else if (!sawRightbar && /rightbarCol/.test(className)) {
+              child.setAttribute('data-dshsvc-rightbar', '')
+              sawRightbar = true
             }
           }
           return true
@@ -8849,7 +8915,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             syncSurfaces()
           })
           const frame = document.querySelector('[data-dshsvc-frame]')
-          if (frame !== null) state.frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed', 'data-details-collapsed'] })
+          if (frame !== null) state.frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed', 'data-details-collapsed', 'data-rightbar-collapsed'] })
 
           if (state.mountObserver !== null) { state.mountObserver.disconnect(); state.mountObserver = null }
           syncSurfaces()
@@ -8923,6 +8989,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           state.active = false
           state.drawerOpen = false
           state.detailsOpen = false
+          state.rightbarOpen = false
           state.sidebarPanelAvailable = false
           state.sidebarPanelOpen = false
           state.edgeGesture = null
@@ -8945,11 +9012,12 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           for (const el of [state.styleTag, state.backdrop, state.fab, state.handle, state.debugChip]) {
             if (el !== null && el.isConnected) el.remove()
           }
-          for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-center],[data-dshsvc-details],[data-dshsvc-chat-header]')) {
+          for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-center],[data-dshsvc-details],[data-dshsvc-rightbar],[data-dshsvc-chat-header]')) {
             el.removeAttribute('data-dshsvc-frame')
             el.removeAttribute('data-dshsvc-sidebar')
             el.removeAttribute('data-dshsvc-center')
             el.removeAttribute('data-dshsvc-details')
+            el.removeAttribute('data-dshsvc-rightbar')
             el.removeAttribute('data-dshsvc-chat-header')
           }
           const headerStyle = (() => { try { return document.documentElement.style } catch (_) { return null } })()

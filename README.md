@@ -11,7 +11,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.4.11-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.1.2--rc.1-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.1.5--rc.1-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -306,7 +306,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 适配口径**：已针对 DSH `0.1.2-alpha.2` 的会话界面调整（聊天视图拆包、对话主框手动调宽、回合导航条）完成适配，并兼容 `0.1.2-alpha.4` 与 `0.1.2-rc.1` 的会话读取 API 变化；移动端滑动沉浸、上箭头跳转在 alpha.2 上全部生效，alpha.4/rc.1 的 seeded/fork 用量与子代理回合记录路径已适配。旧版 DSH（`>=0.1.1-rc.2`）保持兼容，可正常安装运行，个别针对 alpha.2 结构的移动端样式微调在旧版上不生效（纯展示，无功能损失）。**暂不支持 `0.1.3-alpha.1` 及更高版本**——官方自该版本起移除旧 sessionPersistence seam（本插件的用量刷新、已归档删除、标题缓存与备份优化路径依赖它），兼容适配进行中，版本卡会常驻提示并将越界运行版本标红；适配完成前请勿升级到该版本及以上。
+**DSH 适配口径**：已适配 DSH `0.1.5-rc.1`——会话格式 V3（`system/message` 入史、旧 PTC 词汇更名，详情视图自动归档系统事件）、sessionPersistence handle 化（用量增量、标题缓存、诊断计数全部按新公共面 `list`/`open`/`read`/`close` 走）、官方右栏替代详情列（移动端右缘手势直接驱动 `ctx.layout.openRightbar/closeRightbar`）、官方 turn-process 对象化（子代理回合认领双形态兼容）。旧版 DSH（`>=0.1.1-rc.2`）保持兼容：新旧两套 persistence/布局 seam 按运行时能力探测双形态走，旧宿主上针对 0.1.5 结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后以 V3 格式写入的会话日志无法被旧版 DSH 读取——**备份不可跨版本降级恢复**。**`0.1.6-alpha.0` 及更高版本尚未验证支持**——版本卡常驻支持边界提示，越界运行版本标红。
 
 ## 🔒 安全设计
 

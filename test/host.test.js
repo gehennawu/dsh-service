@@ -5912,6 +5912,134 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   assert.deepEqual(Object.keys(mixed.value.bytes), ['session-beta'])
 })
 
+test('usage refresh rides the 0.1.5 handle-shaped persistence: open/read/close, inherited cut, and error-safe close', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-handle-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const day = new Date(now).toLocaleDateString('en-CA')
+  let revision = 'rev-1'
+  let opens = 0
+  let closes = 0
+  let lastOffset
+  let failReads = false
+  let events = [
+    { type: 'request/header', seq: 0, time: now - 2000, data: { header: { config: { provider: 'deepseek', model: 'deepseek-chat' } }, reason: 'initial' } },
+    // 0.1.5 V3：系统提示词入史为 system/message——不进用量/错误折算。
+    { type: 'system/message', seq: 1, time: now - 1900, data: { turn: 0, step: 0, message: { role: 'system', content: [{ type: 'text', text: 'be helpful' }] } } },
+    { type: 'assistant/message', seq: 2, time: now - 1000, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10 } } },
+  ]
+  const persistence = {
+    list: async () => [{ header: { id: 'session-v3', version: 3, createdAt: now, cwd: '/workspace/project/src' }, revision }],
+    async open(id, access) {
+      assert.equal(id, 'session-v3')
+      assert.equal(access, 'read')
+      opens += 1
+      return {
+        inheritedEventCount: 0,
+        async read(offset) {
+          if (failReads) throw new Error('log-busy')
+          lastOffset = offset
+          return { eventState: 'shared-frozen', events: events.filter((event) => event.seq >= (offset ?? 0)) }
+        },
+        async close() { closes += 1 },
+      }
+    },
+  }
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: persistence,
+      workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }] },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const first = await handler('usage-refresh', {})
+  assert.equal(first.ok, true)
+  assert.equal(first.value.indexedSessions, 1)
+  assert.equal(opens, 1)
+  assert.equal(closes, 1, 'the read handle is closed on the happy path')
+  assert.equal(lastOffset, 0)
+  assert.deepEqual(first.value.days[day].totals, {
+    steps: 1,
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 300,
+    cacheWriteTokens: 10,
+    cacheHitRate: 300 / 410,
+  })
+
+  const unchanged = await handler('usage-refresh', {})
+  assert.equal(unchanged.ok, true)
+  assert.equal(opens, 1, 'unchanged revisions skip the handle entirely')
+
+  revision = 'rev-2'
+  events = events.concat([
+    { type: 'assistant/message', seq: 3, time: now + 1, data: { turn: 1, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ])
+  const resumed = await handler('usage-refresh', {})
+  assert.equal(resumed.ok, true)
+  assert.equal(opens, 2)
+  assert.equal(lastOffset, 3, 'the incremental read resumes from lastSeq + 1')
+  assert.deepEqual(resumed.value.days[day].totals.inputTokens, 110)
+
+  // read 抛错：错误照常上抛，但 close 必须已执行（finally 兜底），不泄漏 handle。
+  failReads = true
+  revision = 'rev-3'
+  const failed = await handler('usage-refresh', {})
+  assert.equal(failed.ok, false)
+  assert.equal(closes, 3, 'the read handle is closed even when the read rejects')
+  failReads = false
+  const recovered = await handler('usage-refresh', {})
+  assert.equal(recovered.ok, true)
+  assert.equal(recovered.value.indexedSessions, 1)
+
+  // 诊断计数走 list()。
+  const diagnostics = await handler('diagnostics', {})
+  assert.equal(diagnostics.ok, true)
+  assert.deepEqual(diagnostics.value.checks.find((check) => check.id === 'session-storage'), { id: 'session-storage', status: 'ok', detail: '1' })
+})
+
+test('session list titles ride the 0.1.5 list()-shaped persistence and stay revision-cached', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-titles-list-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const revisions = new Map([['session-alpha', 'rev-a'], ['session-beta', 'rev-b']])
+  let titleCalls = 0
+  let titleIds = []
+  const sessionQuery = {
+    async listSessions() {
+      return [...revisions.keys()].map((id) => ({ header: { id, createdAt: 1000, cwd: '/workspace/projects' }, live: false, persisted: true }))
+    },
+    async readTitleSnapshots(ids) {
+      titleCalls += 1
+      titleIds = [...ids]
+      return ids.map((sessionId) => ({ sessionId, status: 'fulfilled', value: { title: { title: `标题-${sessionId}` } } }))
+    },
+  }
+  const sessionPersistence = {
+    list: async () => [...revisions].map(([id, revision]) => ({ header: { id }, revision })),
+  }
+  const hostOptions = () => ({
+    services: { sessionQuery, sessionPersistence, workspaceRegistry: { archivedSessionIds: [] }, sessions: { get: () => undefined } },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const first = createHost(hostOptions())
+  const firstList = await first.handler('sessions-list', {})
+  assert.equal(firstList.ok, true)
+  assert.equal(titleCalls, 1)
+  assert.deepEqual([...titleIds].sort(), ['session-alpha', 'session-beta'])
+
+  const secondList = await first.handler('sessions-list', {})
+  assert.equal(secondList.ok, true)
+  assert.equal(titleCalls, 1, 'list() 提供的 revision 维持标题缓存命中')
+
+  revisions.set('session-alpha', 'rev-a2')
+  const thirdList = await first.handler('sessions-list', {})
+  assert.equal(thirdList.ok, true)
+  assert.equal(titleCalls, 2)
+  assert.deepEqual(titleIds, ['session-alpha'])
+})
+
 test('session list titles are revision-cached, only refetched on change, and survive host restarts', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-titles-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
