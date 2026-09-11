@@ -97,16 +97,28 @@ function defineQuotaAdapter(definition, metadata = {}) {
     configuration: metadata.configuration ?? 'fixed',
     endpoints: Object.freeze([...(metadata.endpoints ?? [])]),
     hosts: Object.freeze([...(metadata.hosts ?? [])]),
+    routeIds: Object.freeze([...(metadata.routeIds ?? [])]),
+    defaultBaseURL: typeof metadata.defaultBaseURL === 'string' && metadata.defaultBaseURL !== '' ? metadata.defaultBaseURL : undefined,
     usageUrl: metadata.usageUrl,
   }))
   return adapter
 }
 
-function adapterRecognizesProfile(kind, hosts, runtimeChannels, profile) {
+/** 未声明端点的 profile 是否就是本 Adapter 的自有渠道：名字即身份（settings 路由键 / 运行时渠道 id）。
+ * DSH 内置渠道（pi-ai 注册表渠道）被官方「模型」页启用时只写 apiKeyEnv——上游 baseUrl 只在注册表里，
+ * settings 不写（`llm-pi-ai` schema 甚至拒绝空串 baseURL，「没写」才是唯一形态）→ 宿主读到的 profile
+ * baseURL 为空，只能靠路由 id 认领。声明了端点却不在白名单的 profile 一律不认领（凭据不得改道）。 */
+function adapterOwnsUndeclaredRoute(routeIds, profile) {
+  return String(profile?.baseURL ?? '').trim() === '' && routeIds.includes(profile?.name)
+}
+
+function adapterRecognizesProfile(kind, hosts, runtimeChannels, routeIds, profile) {
   if (profile?.runtimeKind === kind) return true
   if (typeof profile?.runtimeChannel === 'string' && runtimeChannels.includes(profile.runtimeChannel)) return true
+  const declared = String(profile?.baseURL ?? '').trim()
+  if (declared === '') return adapterOwnsUndeclaredRoute(routeIds, profile)
   let parsed
-  try { parsed = new URL(String(profile?.baseURL ?? '').trim()) } catch (_) { return false }
+  try { parsed = new URL(declared) } catch (_) { return false }
   if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return false
   if (parsed.port !== '' && parsed.port !== '443') return false
   return hosts.some((host) => quotaHostnameMatches(parsed.hostname, host))
@@ -116,7 +128,12 @@ function adapterEndpoints(adapter, profile) {
   const metadata = ADAPTER_METADATA.get(adapter)
   if (metadata === undefined) return []
   if (metadata.endpoints.length > 0) return [...metadata.endpoints]
-  const base = safeBaseUrl(profile?.baseURL, metadata.hosts)
+  const declared = String(profile?.baseURL ?? '').trim()
+  // 内置渠道的 profile 不带端点 → 用 Adapter 自带的注册表默认端点；两路都经 safeBaseUrl 过
+  // https/主机白名单，默认端点不是绕过校验的后门。
+  const base = declared === ''
+    ? (adapterOwnsUndeclaredRoute(metadata.routeIds, profile) ? safeBaseUrl(metadata.defaultBaseURL, metadata.hosts) : undefined)
+    : safeBaseUrl(declared, metadata.hosts)
   if (base === undefined) return []
   base.pathname = `${base.pathname}/usage`.replace(/\/{2,}/g, '/')
   return [base.toString()]
@@ -131,7 +148,7 @@ function createEndpointAdapter(options) {
   adapter = defineQuotaAdapter({
     kind: options.kind,
     recognize(profile) {
-      return adapterRecognizesProfile(options.kind, options.hosts ?? [], options.runtimeChannels ?? [], profile)
+      return adapterRecognizesProfile(options.kind, options.hosts ?? [], options.runtimeChannels ?? [], options.routeIds ?? [], profile)
     },
     credentialPolicy(profile) {
       return credentialPolicy(options, profile)
@@ -179,6 +196,8 @@ function createEndpointAdapter(options) {
     configuration: options.endpoints === undefined ? 'recognized' : 'fixed',
     endpoints: options.endpoints,
     hosts: options.hosts,
+    routeIds: options.routeIds,
+    defaultBaseURL: options.defaultBaseURL,
     usageUrl: options.usageUrl,
   })
   return adapter
@@ -188,7 +207,7 @@ function createComposedAdapter(options) {
   return defineQuotaAdapter({
     kind: options.kind,
     recognize(profile) {
-      return adapterRecognizesProfile(options.kind, options.hosts ?? [], options.runtimeChannels ?? [], profile)
+      return adapterRecognizesProfile(options.kind, options.hosts ?? [], options.runtimeChannels ?? [], options.routeIds ?? [], profile)
     },
     credentialPolicy(profile) {
       return credentialPolicy(options, profile)
@@ -213,6 +232,8 @@ function createComposedAdapter(options) {
   }, {
     configuration: options.configuration ?? 'fixed',
     hosts: options.hosts,
+    routeIds: options.routeIds,
+    defaultBaseURL: options.defaultBaseURL,
     usageUrl: options.usageUrl,
   })
 }
@@ -923,6 +944,12 @@ function createQuotaAdapterCatalog() {
       normalize: normalizeOpencodeUsage,
       keyHints: ['OPENCODE_GO_API_KEY', 'OPENCODE_API_KEY'],
       hosts: ['opencode.ai'],
+      // DSH 内置渠道（pi-ai 注册表渠道 opencode-go）的 profile 常常只有 apiKeyEnv：端点派生走这里的默认。
+      // 注册表数据里 opencode-go 按协议分两组 baseUrl（anthropic-messages `…/zen/go`、
+      // openai-completions/responses `…/zen/go/v1`），且 provider 级无 baseUrl——用量端点实测只在
+      // `…/zen/go/v1/usage`（真 key 200；`…/zen/go/usage` 404），故不能取「第一条」。
+      routeIds: ['opencode-go'],
+      defaultBaseURL: 'https://opencode.ai/zen/go/v1',
       usageUrl: 'https://opencode.ai/',
     }),
     createEndpointAdapter({
@@ -934,6 +961,7 @@ function createQuotaAdapterCatalog() {
       ],
       keyHints: ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'BIGMODEL_API_KEY'],
       hosts: ['open.bigmodel.cn', 'bigmodel.cn'],
+      routeIds: ['zai-coding-cn'],
       usageUrl: 'https://open.bigmodel.cn/coding-plan/personal/usage',
     }),
     createEndpointAdapter({
@@ -942,6 +970,7 @@ function createQuotaAdapterCatalog() {
       endpoints: ['https://openrouter.ai/api/v1/credits'],
       keyHints: ['OPENROUTER_API_KEY'],
       hosts: ['openrouter.ai'],
+      routeIds: ['openrouter'],
     }),
     createEndpointAdapter({
       kind: 'kimi',
@@ -964,6 +993,8 @@ function createQuotaAdapterCatalog() {
       keyHints: ['DEEPSEEK_API_KEY'],
       hosts: ['api.deepseek.com', 'deepseek.com'],
       runtimeChannels: ['deepseek-official'],
+      // pi-ai 另有同名内置渠道 deepseek（DSH 自己的通道是 runtimeChannels 里的 deepseek-official）。
+      routeIds: ['deepseek'],
       autoVisibility: 'credential-gated',
       usageUrl: 'https://platform.deepseek.com/usage',
     }),
@@ -984,6 +1015,9 @@ function createQuotaAdapterCatalog() {
       format: 'raw',
       entryKey: 'editCookie',
       hosts: ['token-plan-cn.xiaomimimo.com'],
+      // pi-ai 内置渠道同名（xiaomi-token-plan-cn/-sgp/-ams）；只有本 kind 固定走控制台同源端点，
+      // 故仅认领 -cn 渠道 id。
+      routeIds: ['xiaomi-token-plan-cn'],
       usageUrl: 'https://platform.xiaomimimo.com/console/usage',
     }),
     createEndpointAdapter({

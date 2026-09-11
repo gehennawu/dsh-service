@@ -117,7 +117,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 | --- | --- |
 | DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown |
 | Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows + peak/off-peak ribbon and countdown (peak = Mon–Fri 14:00–18:00 UTC+8) |
-| OpenCode Go | `{baseURL}/usage` |
+| OpenCode Go | `{baseURL}/usage` (built-in channel without an explicit baseURL uses the registry default `https://opencode.ai/zen/go/v1`) |
 | OpenRouter | Credits used % |
 | Kimi / SiliconFlow | CNY balance |
 | StepFun Balance | Official `GET /v1/accounts` (API key, com/ai dual domains) |

@@ -119,7 +119,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 | --- | --- |
 | DeepSeek 开放平台 | 官方余额 + 峰谷时段提示（忙/闲色带、换挡倒计时） |
 | 智谱 GLM Coding Plan | 官方端点：5 小时滚动 / 每周 / MCP 月度三窗口 + 峰谷时段提示（忙/闲色带、换挡倒计时；高峰=周一至周五 14:00–18:00 UTC+8） |
-| OpenCode Go | `{baseURL}/usage` |
+| OpenCode Go | `{baseURL}/usage`（内置渠道未写 baseURL 时用注册表默认端点 `https://opencode.ai/zen/go/v1`） |
 | OpenRouter | credits 已用百分比 |
 | Kimi / 硅基流动 | 人民币余额 |
 | StepFun 余额 | 官方 `GET /v1/accounts`（API key，com/ai 双域） |

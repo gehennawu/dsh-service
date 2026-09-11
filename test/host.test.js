@@ -2487,7 +2487,8 @@ function quotaHostOverrides(dshHome, providers, credentialValue) {
 const QUOTA_PROVIDERS = {
   'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
   'zai-coding-cn': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
-  openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+  // 名字不归任何 Adapter 且没写 baseURL → 永远灰行（既无宿主可推断的端点，也无路由 id 可认领）。
+  'relay-unknown': { apiKeyEnv: 'OPENROUTER_API_KEY' },
 }
 
 async function waitFor(predicate, label = 'condition') {
@@ -2530,7 +2531,7 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   assert.equal(first.ok, true)
   const rows = first.value.providers
   assert.equal(rows.length, 3)
-  assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
+  assert.equal(rows.find((row) => row.provider === 'relay-unknown').adapted, false)
   const adapted = rows.find((row) => row.provider === 'opencode-go')
   assert.equal(adapted.adapted, true)
   assert.equal(adapted.kind, 'opencode-go')
@@ -2633,28 +2634,28 @@ test('quota-config validates provider and kind against host-side whitelists befo
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
   assert.deepEqual(await host.handler('quota-config', { provider: 'nope', kind: 'opencode-go' }), { ok: false, error: 'unknown-provider' })
-  assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'mystery' }), { ok: false, error: 'unknown-kind' })
+  assert.deepEqual(await host.handler('quota-config', { provider: 'relay-unknown', kind: 'mystery' }), { ok: false, error: 'unknown-kind' })
   assert.deepEqual(await host.handler('quota-config', { provider: '', kind: null }), { ok: false, error: 'unknown-provider' })
-  // 动态端点 kind 只能绑定到该 kind 注册 host；openrouter 没有 opencode host，拒绝凭据外发组合。
-  assert.deepEqual(await host.handler('quota-config', { provider: 'openrouter', kind: 'opencode-go' }), { ok: false, error: 'unsafe-provider-endpoint' })
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'openrouter' })).ok, true)
+  // 动态端点 kind 只能绑定到该 kind 注册 host；未认领的空端点路由没有 opencode host，拒绝凭据外发组合。
+  assert.deepEqual(await host.handler('quota-config', { provider: 'relay-unknown', kind: 'opencode-go' }), { ok: false, error: 'unsafe-provider-endpoint' })
+  assert.equal((await host.handler('quota-config', { provider: 'relay-unknown', kind: 'openrouter' })).ok, true)
   const storedPath = join(dshHome, 'dsh-service-quota.json')
-  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, 'openrouter')
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds['relay-unknown'], 'openrouter')
   // quota-config 保存不得丢掉手录重置卡。
   await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }] }))
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: 'openrouter' })).ok, true)
+  assert.equal((await host.handler('quota-config', { provider: 'relay-unknown', kind: 'openrouter' })).ok, true)
   assert.deepEqual(parseQuotaConfigText(await readFile(storedPath, 'utf8')).resetCards, [{ id: 'keep-1', provider: 'zai-coding-cn', label: '老卡', expiresAt: '2099-01-01' }])
   // kind:null 现在存「显式停用」（baseURL 可推断也不外呼）；clear:true 才删键回退自动推断。
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', kind: null })).ok, true)
-  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, null)
+  assert.equal((await host.handler('quota-config', { provider: 'relay-unknown', kind: null })).ok, true)
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds['relay-unknown'], null)
   // 显式停用后，即使 baseURL 命中推断白名单也保持未适配灰行。
   const disabledView = await host.handler('quota', {})
   assert.equal(disabledView.ok, true)
-  const disabledRow = disabledView.value.providers.find((row) => row.provider === 'openrouter')
+  const disabledRow = disabledView.value.providers.find((row) => row.provider === 'relay-unknown')
   assert.equal(disabledRow.adapted, false)
   assert.equal(disabledRow.kindSource, undefined)
-  assert.equal((await host.handler('quota-config', { provider: 'openrouter', clear: true })).ok, true)
-  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds.openrouter, undefined)
+  assert.equal((await host.handler('quota-config', { provider: 'relay-unknown', clear: true })).ok, true)
+  assert.equal(parseQuotaConfigText(await readFile(storedPath, 'utf8')).kinds['relay-unknown'], undefined)
 })
 
 // ── v0.19 zai-coding-cn（智谱 GLM Coding Plan）────────────────────────────────
@@ -2740,7 +2741,7 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   const host = createHost({
     env: { DSH_HOME: dshHome },
     services: {
-      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' } } } : undefined) },
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { 'relay-unknown': { apiKeyEnv: 'OPENROUTER_API_KEY' } } } : undefined) },
       // 真实契约：listProviders() 下发 [{id,name}] 对象数组（dsh-llm 源码核实）；字符串条目兼容容忍。
       llm: { listProviders: () => [{ id: 'pi-catalog-noise', name: 'Noise' }, { id: 'deepseek-official', name: 'DeepSeek' }, 'legacy-string'] },
       // 最小凭据服务：resolve 走环境变量，describe 只回「未配置」——供凭据填写窗口的数据源断言。
@@ -2756,7 +2757,7 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   assert.equal(first.ok, true)
   const byProvider = new Map(first.value.providers.map((row) => [row.provider, row]))
   assert.equal(byProvider.has('deepseek-official'), false, 'unconfigured auto deepseek must be hidden')
-  assert.equal(byProvider.get('openrouter').usageUrl, undefined)
+  assert.equal(byProvider.get('relay-unknown').usageUrl, undefined)
   assert.equal(byProvider.has('pi-catalog-noise'), false)
   assert.equal(byProvider.has('legacy-string'), false)
 
@@ -2808,7 +2809,7 @@ test('quota merges runtime llm channels via the alias table (deepseek-official) 
   assert.equal((await host.handler('quota-reset-card', { provider: 'no-such-provider' })).error, 'unknown-provider')
 
   await new Promise((resolve) => setImmediate(resolve))
-  // 除假上游中转的 deepseek 域以外无任何出网请求（openrouter 未适配，绝不发起）。
+  // 除假上游中转的 deepseek 域以外无任何出网请求（未认领的空端点路由绝不发起）。
   assert.equal(requests.some((url) => !url.includes('api.deepseek.com')), false)
 })
 
@@ -2840,13 +2841,13 @@ test('inferQuotaKind matches an exact registered hostname or subdomain and refus
 test('quota RPC auto-infers the kind from baseURL and honors explicit null as disabled', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-auto-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  // 配置为空：bigmodel 命中推断 → 自动适配；openrouter 不命中 → 灰行；
+  // 配置为空：bigmodel 命中推断 → 自动适配；relay-unknown 既无宿主可推断、名字也不归任何 Adapter → 灰行；
   // zai-coding-cn 显式 null → 手动停用，即使可推断也不外呼。
   await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'zai-disabled': null } }))
   const providers = {
     'zai-bigmodel': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
     'zai-disabled': { baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
-    openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+    'relay-unknown': { apiKeyEnv: 'OPENROUTER_API_KEY' },
   }
   const originalGet = https.get
   const requests = []
@@ -2882,7 +2883,7 @@ test('quota RPC auto-infers the kind from baseURL and honors explicit null as di
   assert.equal(autoRow.windows.length, 3)
   const disabledRow = rows.find((row) => row.provider === 'zai-disabled')
   assert.equal(disabledRow.adapted, false)
-  assert.equal(rows.find((row) => row.provider === 'openrouter').adapted, false)
+  assert.equal(rows.find((row) => row.provider === 'relay-unknown').adapted, false)
   assert.equal(rows.find((row) => row.provider === 'zai-bigmodel').usageUrl, 'https://open.bigmodel.cn/coding-plan/personal/usage')
   // 只有自动适配的那一行打了上游。
   assert.deepEqual(requests, ['https://open.bigmodel.cn/api/monitor/usage/quota/limit'])
@@ -3130,6 +3131,78 @@ test('quota RPC reports no-base-url and credentials-unavailable as stable codes'
   assert.equal(upstreamCalls, 0) // 两个稳定码都在外呼之前短路
 })
 
+test('quota RPC auto-adapts built-in channels that only carry an API key', async (t) => {
+  // 官方「模型」页给内置渠道（pi-ai 注册表渠道）启用时只写 apiKeyEnv：上游 baseUrl 只在注册表数据里，
+  // settings 不写。旧实现按 baseURL 宿主识别 → 这类行永远灰着；用户手填过 baseURL 或手写 kind 时
+  // 则报 no-base-url。内置渠道必须自动适配，opencode-go 走 Adapter 自带的注册表默认端点。
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-builtin-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: {}, resetCards: [], allowedHosts: {} }))
+  const requests = []
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      const body = String(url).includes('bigmodel.cn')
+        ? JSON.stringify(ZAI_FIXTURE)
+        : String(url).includes('openrouter.ai') ? JSON.stringify({ data: { total_credits: 200, total_usage: 50 } }) : JSON.stringify(OPENCODE_FIXTURE)
+      response.emit('data', body)
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const providers = {
+    'opencode-go': { apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+    'zai-coding-cn': { apiKeyEnv: 'ZAI_CODING_CN_API_KEY' },
+    openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+    // 名字不归任何 Adapter 的空端点路由：仍必须灰着，绝不能借默认端点把凭据发去 opencode.ai。
+    'opencode-no-base': { apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+    // 同名路由却显式声明了外域端点：不认领、不外呼（手写 kind 时稳定报 no-base-url，凭据不得改道）。
+    'opencode-relay': { baseURL: 'https://relay.example/v1', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
+  }
+  const host = createHost(quotaHostOverrides(dshHome, providers, 'k-123'))
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 3, 'every built-in row hit its own endpoint')
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const rows = (await host.handler('quota', {})).value.providers
+  const opencodeRow = rows.find((entry) => entry.provider === 'opencode-go')
+  const zaiRow = rows.find((entry) => entry.provider === 'zai-coding-cn')
+  assert.equal(opencodeRow.adapted, true)
+  assert.equal(opencodeRow.kindSource, 'auto')
+  assert.equal(opencodeRow.status, 'ok')
+  assert.deepEqual(opencodeRow.windows.map((window) => window.id), ['rolling', 'weekly', 'monthly'])
+  assert.equal(zaiRow.adapted, true)
+  assert.equal(zaiRow.kindSource, 'auto')
+  assert.equal(zaiRow.errorCode, undefined)
+  const openrouterRow = rows.find((entry) => entry.provider === 'openrouter')
+  assert.equal(openrouterRow.adapted, true)
+  assert.equal(openrouterRow.kindSource, 'auto')
+  assert.deepEqual(openrouterRow.windows, [{ id: 'credits', percent: 25 }])
+  assert.equal(rows.find((entry) => entry.provider === 'opencode-no-base').adapted, false)
+  assert.equal(rows.find((entry) => entry.provider === 'opencode-relay').adapted, false)
+
+  // 试图把手写 kind 绑到「同名但声明了外域端点」的路由：端点不在白名单 → 认领失败 → 绑定被拒，
+  // 绝不能让默认端点把凭据送去 opencode.ai。
+  const refused = await host.handler('quota-config', { provider: 'opencode-relay', kind: 'opencode-go' })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error, 'unsafe-provider-endpoint')
+  const relayRow = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'opencode-relay')
+  assert.equal(relayRow.adapted, false)
+  assert.deepEqual([...new Set(requests)].sort(), [
+    'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    'https://opencode.ai/zen/go/v1/usage',
+    'https://openrouter.ai/api/v1/credits',
+  ])
+})
+
 test('concurrent quota-config writes are serialized without losing updates', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-race-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -3182,7 +3255,7 @@ test('quota-refresh bypasses success TTL once but retains a hard manual cooldown
   // 只让 opencode-go 可适配（zai 的 bigmodel baseURL 会被自动推断接入，干扰请求数断言）。
   const refreshProviders = {
     'opencode-go': { baseURL: 'https://opencode.ai/zen/go/v1/', apiKeyEnv: 'OPENCODE_GO_API_KEY' },
-    openrouter: { apiKeyEnv: 'OPENROUTER_API_KEY' },
+    'relay-unknown': { apiKeyEnv: 'OPENROUTER_API_KEY' },
   }
   await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'opencode-go': 'opencode-go' }, resetCards: [] }))
   const originalGet = https.get
@@ -3206,7 +3279,7 @@ test('quota-refresh bypasses success TTL once but retains a hard manual cooldown
 
   // 双白名单：未登记 provider 与未适配 provider 都拒绝。
   assert.deepEqual(await host.handler('quota-refresh', { provider: 'nope' }), { ok: false, error: 'unknown-provider' })
-  assert.deepEqual(await host.handler('quota-refresh', { provider: 'openrouter' }), { ok: false, error: 'not-adapted' })
+  assert.deepEqual(await host.handler('quota-refresh', { provider: 'relay-unknown' }), { ok: false, error: 'not-adapted' })
 
   // 首次快照触发常规拉取；随后立即手动刷新——虽在成功 TTL/最小间隔内，也必须再打一次上游。
   assert.equal((await host.handler('quota', {})).ok, true)
