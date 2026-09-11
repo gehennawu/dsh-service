@@ -1355,13 +1355,13 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻支持边界声明（已适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.1；越界钉 0.1.6-alpha.0）；支持范围内的运行版本为中性色
+  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.2；越界钉 0.1.6-alpha.0）；支持范围内的运行版本为中性色
   const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1/, 'support-bound declaration is always present')
+  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
   // v1.5.1 用户点名：适配声明内联紧跟版本号（不排到状态之后）——扁平文本顺序=版本号→声明→状态。
-  assert.match(text, /0\.9\.0（已适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1）已是最新版本/,
+  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2）已是最新版本/,
     'support bound reads directly after the version number and before the status')
 
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
@@ -1390,6 +1390,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
     { current: '0.1.2-rc.1', red: false },
     { current: '0.1.3-alpha.1', red: false },
     { current: '0.1.5-rc.1', red: false },
+    { current: '0.1.5-rc.2', red: false },
     { current: '0.1.6-alpha.0', red: true },
     { current: '0.1.6', red: true },
   ]
@@ -1405,7 +1406,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
     })
     await renderer.load()
     const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1/, `bound note present on ${item.current}`)
+    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2/, `bound note present on ${item.current}`)
     if (item.red) {
       assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
       assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
@@ -1416,7 +1417,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
   }
 })
 
-test('version card keeps the support bound inline after the version number, three lines on narrow containers', async () => {
+test('version card keeps the support bound inline after the version number, two rows on narrow containers', async () => {
   // 注入样式捕获：主渲染器环境没有 document，这里挂最小桩接住 svcStyle 文本；
   // 同时补齐 nav 标记效果依赖的 MutationObserver/querySelector 面（有桩即走真实分支）。
   const injectedStyles = []
@@ -1452,19 +1453,21 @@ test('version card keeps the support bound inline after the version number, thre
     assert.ok(linkIndex >= 0, 'identity contains the plugin version link')
     assert.equal(identityChildren[linkIndex + 1], noteWrap.node, 'support bound directly follows the version number element')
     assert.equal(noteWrap.node.props.style.flexBasis, undefined, 'wide containers keep the note inline, never forced onto its own line')
-    assert.match(renderer.text('settings.section'), /1\.5\.0（已适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.1）/)
+    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2）/)
 
-    // 窄容器（≤480px）三行契约由容器查询负责：note 在 identity 内压成独立行（版本号/声明/状态）。
+    // 窄容器（≤480px）两行契约由容器查询负责：identity 转 block 让 版本号+声明 连排一块（行内文本
+    // 自然换行，声明永不独占行），status 独立整行——移动端两行：版本号+声明 / 状态。
     const css = injectedStyles.join('')
     const narrowStart = css.indexOf('@container dshsvc-version (max-width:480px){')
     assert.ok(narrowStart >= 0, 'narrow container query present')
-    const noteRuleStart = css.indexOf('.dshsvc-version-note{flex-basis:100%;margin-top:2px}', narrowStart)
-    assert.ok(noteRuleStart > narrowStart,
-      'narrow containers force the note onto its own line inside the identity (mobile keeps three lines)')
-    const identityRuleStart = css.indexOf('.dshsvc-version-identity{flex-basis:100%;gap:8px !important}', narrowStart)
+    const identityRuleStart = css.indexOf('.dshsvc-version-identity{flex-basis:100%;display:block}', narrowStart)
+    const noteInlineStart = css.indexOf('.dshsvc-version-note{display:inline}', narrowStart)
     const statusRuleStart = css.indexOf('.dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}', narrowStart)
-    assert.ok(identityRuleStart > narrowStart && identityRuleStart < noteRuleStart, 'identity takes a full line on narrow containers')
-    assert.ok(statusRuleStart > narrowStart && statusRuleStart < noteRuleStart, 'status takes a full line on narrow containers')
+    assert.ok(identityRuleStart > narrowStart, 'identity takes the full first row and switches to inline text flow on narrow containers')
+    assert.ok(noteInlineStart > narrowStart, 'note flows inline with the version number on narrow containers (never its own row)')
+    assert.ok(statusRuleStart > narrowStart, 'status takes the second row on narrow containers')
+    assert.equal(css.indexOf('.dshsvc-version-note{flex-basis:100%', narrowStart), -1,
+      'narrow containers must not force the note onto its own row (two-row layout, not three)')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

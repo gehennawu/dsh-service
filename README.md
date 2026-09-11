@@ -306,7 +306,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 适配口径**：已适配 DSH `0.1.5-rc.1`——会话格式 V3（`system/message` 入史、旧 PTC 词汇更名，详情视图自动归档系统事件）、sessionPersistence handle 化（用量增量、标题缓存、诊断计数全部按新公共面 `list`/`open`/`read`/`close` 走）、官方右栏替代详情列（移动端右缘手势直接驱动 `ctx.layout.openRightbar/closeRightbar`）、官方 turn-process 对象化（子代理回合认领双形态兼容）。旧版 DSH（`>=0.1.1-rc.2`）保持兼容：新旧两套 persistence/布局 seam 按运行时能力探测双形态走，旧宿主上针对 0.1.5 结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后以 V3 格式写入的会话日志无法被旧版 DSH 读取——**备份不可跨版本降级恢复**。版本卡常驻显示「已适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.1」，越界运行版本（`≥0.1.6-alpha.0`）标红警示。
+**DSH 适配口径**：已适配 DSH `0.1.5-rc.1`——会话格式 V3（`system/message` 入史、旧 PTC 词汇更名，详情视图自动归档系统事件）、sessionPersistence handle 化（用量增量、标题缓存、诊断计数全部按新公共面 `list`/`open`/`read`/`close` 走）、官方右栏替代详情列（移动端右缘手势直接驱动 `ctx.layout.openRightbar/closeRightbar`）、官方 turn-process 对象化（子代理回合认领双形态兼容）。旧版 DSH（`>=0.1.1-rc.2`）保持兼容：新旧两套 persistence/布局 seam 按运行时能力探测双形态走，旧宿主上针对 0.1.5 结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后以 V3 格式写入的会话日志无法被旧版 DSH 读取——**备份不可跨版本降级恢复**。版本卡常驻显示「适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.2」，越界运行版本（`≥0.1.6-alpha.0`）标红警示。
 
 ## 🔒 安全设计
 

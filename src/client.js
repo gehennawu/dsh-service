@@ -520,7 +520,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
-      'version.dsh.supportBound': '（已适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.1）',
+      'version.dsh.supportBound': '（适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.2）',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -1285,7 +1285,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
-      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.5-rc.1)',
+      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.5-rc.2)',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -1980,15 +1980,15 @@ window.__ModuleLoader__.load({
           '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
           // 版本卡自身作为查询容器：窄设置面板与手机都按可用宽度排版，不依赖移动手势开关。
-          // 窄容器三行（v1.5.1 用户点名）：版本号行（identity）/ 适配声明（note）/ 状态行（status）——
-          // note 挂在 identity 内部跟随版本号，靠 flex-basis:100% 压成独立行；宽容器内联紧跟版本号。
+          // 窄容器两行（v1.5.1 用户复核定稿）：版本号+适配声明连排一块（identity 转 block 让
+          // label/版本号/声明按行内文本自然连排换行，声明 display:inline 跟随版本号）/ 状态行（status）。
           '[data-dshsvc-root] [data-testid="version-card"]{container-type:inline-size;container-name:dshsvc-version}',
           '@container dshsvc-version (max-width:480px){',
           '[data-dshsvc-root] .dshsvc-version-row{gap:6px !important;padding:12px 2px !important}',
-          '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;gap:8px !important}',
+          '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;display:block}',
           '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere}',
+          '[data-dshsvc-root] .dshsvc-version-note{display:inline}',
           '[data-dshsvc-root] .dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}',
-          '[data-dshsvc-root] .dshsvc-version-note{flex-basis:100%;margin-top:2px}',
           '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
@@ -7223,8 +7223,8 @@ window.__ModuleLoader__.load({
               state?.url
                 ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
                 : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading')),
-              // 适配声明跟随版本号（v1.5.1 用户点名）：宽容器内联排在版本号之后，
-              // 窄容器（≤480px）由容器查询把它压成独立行，移动端保持三行 版本/声明/状态。
+              // 适配声明跟随版本号（v1.5.1 用户点名）：宽容器内联排在版本号之后；
+              // 窄容器（≤480px）由容器查询转行内文本连排，移动端两行：版本号+声明 / 状态。
               extra ? React.createElement('div', { className: 'dshsvc-version-note', style: { minWidth: 0, lineHeight: 1.5, overflowWrap: 'anywhere' } }, extra) : null),
             React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, action || null))
         }
@@ -7238,7 +7238,7 @@ window.__ModuleLoader__.load({
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
         // 支持上限声明常驻在 dsh-service 版本号之后（v1.4.10+；v1.5.1 点名维持内联跟随版本号，
-        // 窄容器由容器查询换行为独立行——移动端三行：版本号/声明/状态）。
+        // 窄容器由容器查询转行内连排——移动端两行：版本号+声明 / 状态）。
         // 运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
         // 仅在宿主服务本身正常并提供可解析版本时判为越界；无法解析的版本串中性展示。
         const pluginSupportBound = React.createElement('span', {
