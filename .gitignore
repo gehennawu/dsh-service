@@ -18,5 +18,14 @@ AGENTS.md
 TODO.md
 KNOWLEDGE.md
 
+# Local investigation material — 调研文档与本机事实缓存，视为本机资产，不进版本库
+# （host-facts.md 内容同样来自翻源码调研；AGENTS.md 路由表与 plugin-compat.js 对它们的引用
+#   仅在本地成立，协作者读到的是空指针）
+docs/research/
+docs/internals/
+
+# 注意：docs/agents/（Issue/分诊/领域流程）与 docs/releases/（发版说明，面向用户）**照常入库**，
+# 勿把整个 docs/ 一并忽略。
+
 # Project-local skills (not shared)
 .agents/skills/
