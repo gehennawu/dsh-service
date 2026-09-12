@@ -74,6 +74,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Shows the current DSH and plugin versions, linking to GitHub Releases
 - Automatically checks npm **stable + preview** (latest / next dist-tags); when a new version exists, an inline expandable compares them, each with npmjs and npmmirror links
 - One-click upgrade with automatic restart; when no process manager is detected, it confirms the consequences first, keeps running, and shows manual-restart instructions
+- Between the upgrade landing and the process restart (common in a manual-launch environment) the version row reads "Installed X — restart to take effect" and the upgrade button is withdrawn; reopening the panel or refreshing the page keeps that state until the process is restarted
 
 ### Safe restart
 

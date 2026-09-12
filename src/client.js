@@ -525,6 +525,7 @@ window.__ModuleLoader__.load({
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
       'update.available': '有新版本：{version}',
+      'update.installedPendingRestart': '已安装 {version}，重启后生效',
       'update.detailsButton': '查看详情',
       'update.detailsHide': '收起',
       'update.unavailable': '暂时无法检查最新版本',
@@ -1290,6 +1291,7 @@ window.__ModuleLoader__.load({
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
       'update.available': 'New version: {version}',
+      'update.installedPendingRestart': 'Installed {version} — restart to take effect',
       'update.detailsButton': 'View details',
       'update.detailsHide': 'Collapse',
       'update.unavailable': 'Latest version is temporarily unavailable',
@@ -2552,6 +2554,31 @@ window.__ModuleLoader__.load({
         if (env.supervisorKind !== undefined && env.supervisorKind !== null && typeof env.supervisorKind !== 'string') return
         setRuntimeEnvState({ platform: typeof env.platform === 'string' ? env.platform : '', supervisorKind: env.supervisorKind === undefined || env.supervisorKind === null ? null : env.supervisorKind, manualStartLikely: env.manualStartLikely })
       }
+      // 磁盘已安装版本（与 runtimeEnv 同随 version RPC 返回）：运行中的 pluginVersion 要等进程
+      // 重启才变，磁盘版本升级落地即变——两者不一致 = 「已装好、待重启生效」。null = 旧宿主
+      // 未返回该字段或尚未拉取，一律静默退回现状。
+      const installedVersionListeners = new Set()
+      let installedVersionState = null
+      const setInstalledVersionState = (next) => {
+        installedVersionState = next
+        for (const listener of installedVersionListeners) listener(next)
+      }
+      const useInstalledVersion = () => {
+        const [snapshot, setSnapshot] = useState(installedVersionState)
+        useEffect(() => {
+          installedVersionListeners.add(setSnapshot)
+          setSnapshot(installedVersionState)
+          return () => installedVersionListeners.delete(setSnapshot)
+        }, [])
+        return snapshot
+      }
+      // 形状校验后才入库（非空字符串、无空白、长度上限）：坏值视同旧宿主，
+      // 绝不让坏值把界面误判成「已装好待重启」而收起升级按钮。
+      const applyInstalledVersion = (value) => {
+        const raw = value ? value.installedVersion : undefined
+        const next = typeof raw === 'string' && raw.length > 0 && raw.length <= 64 && !/\s/.test(raw) ? raw : null
+        if (next !== installedVersionState) setInstalledVersionState(next)
+      }
       // version 快照全插件只取一次：ServicePanel 与左列入口无论谁先挂载都共享同一请求，
       // 升级前取 instanceId/运行环境也复用它。失败清缓存，下一个消费者重试。
       let versionSnapshotPromise = null
@@ -2559,7 +2586,10 @@ window.__ModuleLoader__.load({
         if (versionSnapshotPromise === null) {
           versionSnapshotPromise = rpcCall('version', {})
             .then((res) => {
-              if (res && res.ok) applyVersionRuntimeEnv(res.value)
+              if (res && res.ok) {
+                applyVersionRuntimeEnv(res.value)
+                applyInstalledVersion(res.value)
+              }
               return res
             })
             .catch(() => {
@@ -2568,6 +2598,12 @@ window.__ModuleLoader__.load({
             })
         }
         return versionSnapshotPromise
+      }
+      // 升级落地后必须重取：缓存快照里的 installedVersion 还是升级前那份，不刷新就还会
+      // 显示升级按钮（用户报的「以为没升级成功」，2026-09-12）。
+      const refreshVersionSnapshot = () => {
+        versionSnapshotPromise = null
+        return fetchVersionSnapshot()
       }
       // 升级执行中标志放在 factory 作用域：闭包状态挡不住同一 tick 的重入，跨渲染的新闭包
       // 也各自持有独立的 false，只有插件级可变标志能同时覆盖两种情况。
@@ -6206,6 +6242,7 @@ window.__ModuleLoader__.load({
         // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
         const restartFlowState = useRestartFlow()
         const runtimeEnv = useRuntimeEnv()
+        const installedVersion = useInstalledVersion()
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
@@ -6218,15 +6255,26 @@ window.__ModuleLoader__.load({
             }
           })
         }, [])
+        // 更新快照的统一落库口径：失败只置错误文案，成功同时清掉旧的错误态。
+        const applyUpdateResult = (res) => {
+          if (!res || res.ok === false) { setUpdateError(translate('update.unavailable')); return }
+          setUpdateInfo(res.value)
+          setUpdateError(null)
+        }
         useEffect(() => {
           let active = true
           rpcCall('check-update', {}).then((res) => {
-            if (!active || !res || res.ok === false) { if (active) setUpdateError(translate('update.unavailable')); return }
-            setUpdateInfo(res.value)
-            setUpdateError(null)
+            if (!active) return
+            applyUpdateResult(res)
           }).catch(() => { if (active) setUpdateError(translate('update.unavailable')) })
           return () => { active = false }
         }, [])
+        // 升级落地后宿主已作废其更新缓存，这里再取一次：让「已安装 X，重启后生效」立刻
+        // 取代升级按钮，且概览不再误报「检测到新版本可用」。
+        const refreshUpdate = async () => {
+          const res = await rpcCall('check-update', {}).catch(() => null)
+          if (res) applyUpdateResult(res)
+        }
         useEffect(() => {
           // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
           if (!featureEnabled('healthDiagnostics')) return () => {}
@@ -6596,11 +6644,13 @@ window.__ModuleLoader__.load({
             if (res.value && res.value.requiresManualRestart === true) {
               // 宿主保持运行（没有 exit，就不会有新实例）：不启动恢复轮询，改示手动重启指引。
               setUpgradeManualPending(true)
-              return
-            }
-            if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
+            } else if (typeof previousInstanceId === 'string' && previousInstanceId.length > 0) {
               startRecovery(previousInstanceId).catch(() => {})
             }
+            // 升级已落地：重取版本与更新快照，让「已安装 X，重启后生效」立刻取代升级按钮。
+            // 组件重挂载或刷新页面后同样由这两个事实推导出来，不依赖本次点击留下的状态。
+            refreshVersionSnapshot().catch(() => {})
+            refreshUpdate().catch(() => {})
           } catch (err) {
             const detail = err instanceof Error && typeof err.message === 'string' && err.message !== 'upgrade failed' ? err.message.trim() : ''
             console.error('dsh-service: upgrade failed', detail || err)
@@ -7206,11 +7256,12 @@ window.__ModuleLoader__.load({
         const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder, extra) => {
           const statusText = !state
             ? (updateError || translate('update.checking'))
-            : state.status === 'unpublished' ? translate('update.unpublished')
-              : state.status === 'unavailable' ? translate('update.unavailable')
-                : state.upToDate ? translate('update.current')
-                  : translate('update.available', { version: state.latest })
-          const statusColor = !state ? 'var(--dsw-alias-label-secondary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)'
+            : state.restartPending ? translate('update.installedPendingRestart', { version: state.current || fallbackVersion || '' })
+              : state.status === 'unpublished' ? translate('update.unpublished')
+                : state.status === 'unavailable' ? translate('update.unavailable')
+                  : state.upToDate ? translate('update.current')
+                    : translate('update.available', { version: state.latest })
+          const statusColor = !state ? 'var(--dsw-alias-label-secondary)' : state.restartPending ? 'var(--dsw-alias-state-warn-primary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)'
           const clickable = expandable && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
           const rightSide = clickable
             ? React.createElement('button', { type: 'button', title: translate(channelOpen ? 'update.detailsHide' : 'update.detailsButton'), style: { background: 'transparent', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: statusColor }, onClick: () => setChannelOpen((value) => !value) },
@@ -7233,10 +7284,22 @@ window.__ModuleLoader__.load({
         const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
         const dshUnsupported = isDshUnsupported(version)
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
-        // 确认后果或已装好待手动重启期间收起升级按钮，避免重复触发或撞 no-newer-version 守卫。
-        const pluginAction = pluginUpdate && !upgradeManualConfirm && !upgradeManualPending
+        // 磁盘已装版本比运行进程新 = 升级已落地、只差重启（手动启动环境尤其常见）：这是宿主事实，
+        // 不是本次点击的临时状态——重挂载、刷新页面后依然成立，升级按钮不再冒出来骗人
+        // （用户点名，2026-09-12）。旧宿主无 installedVersion 时 compareSemver 得 null，退回现状。
+        const runningPluginVersion = pluginVersion || updateInfo?.plugin?.current || null
+        const installedAhead = compareSemver(installedVersion, runningPluginVersion) === 1
+        const pluginRestartPending = upgradeManualPending || installedAhead
+        const pluginState = pluginRestartPending && installedVersion !== null
+          ? Object.assign({}, updateInfo?.plugin, { current: installedVersion, restartPending: true })
+          : updateInfo?.plugin
+        // 确认后果或已装好待重启期间收起升级按钮，避免重复触发或撞 no-newer-version 守卫。
+        const pluginAction = pluginUpdate && !pluginRestartPending && !upgradeManualConfirm
           ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
           : null
+        // 手动重启指引：本次点击刚装好，或（事实层面）已装好待重启且当前是手动启动环境。
+        // 托管环境由恢复轮询接管，不重复提示。
+        const manualRestartHint = upgradeManualPending || (installedAhead && runtimeEnv !== null && runtimeEnv.manualStartLikely === true)
         // 支持上限声明常驻在 dsh-service 版本号之后（v1.4.10+；v1.5.1 点名维持内联跟随版本号，
         // 窄容器由容器查询转行内连排——移动端两行：版本号+声明 / 状态）。
         // 运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
@@ -7261,7 +7324,7 @@ window.__ModuleLoader__.load({
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('plugin', 'dsh-service', pluginVersion, updateInfo?.plugin, pluginAction, false, false, pluginSupportBound),
+            versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, false, false, pluginSupportBound),
             versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
@@ -7277,7 +7340,7 @@ window.__ModuleLoader__.load({
                     React.createElement('button', { style: dangerGhost, 'data-variant': 'dangerGhost', disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.manualProceed')),
                     React.createElement('button', { style: ghost, disabled: upgradeBusy, onClick: () => setUpgradeManualConfirm(false) }, translate('restart.cancel'))))
               : null,
-            upgradeManualPending
+            manualRestartHint
               ? React.createElement('div', { 'data-testid': 'upgrade-manual-pending', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg)' } },
                   React.createElement('p', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '13px', fontWeight: 650 } }, translate('update.manualRestartTitle')),
                   React.createElement('p', { style: Object.assign({}, hint, { margin: 0 }) }, translate('update.manualRestartBody')))

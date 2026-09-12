@@ -2821,6 +2821,91 @@ test('manual-launch environment confirms before upgrade and shows hand-restart g
   assert.match(renderer.text('settings.section'), /服务不会自动拉起/)
 })
 
+// 已装好待重启（installedVersion 领先运行版本）是宿主事实而不是点击残留：重挂载/刷新页面后
+// 依然收起升级按钮并改示「已安装 X，重启后生效」（用户报「以为没升级成功」，2026-09-12）。
+const installedAheadRpc = ({ installed = '1.5.2', running = '1.5.1', manual = true } = {}) => async (channel, endpoint) => {
+  assert.equal(channel, '/dsh-service')
+  if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: running, installedVersion: installed, instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: manual ? null : 'pm2', manualStartLikely: manual } } }
+  if (endpoint === 'check-update') return { ok: true, value: {
+    dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', tags: { latest: '0.1.0-rc.7', next: null }, upToDate: true, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+    plugin: { current: running, installed, latest: '1.5.2', tags: { latest: '1.5.2', next: null }, upToDate: installed === '1.5.2', status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+  } }
+  if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+  if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+  if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+  if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+  throw new Error(`unexpected endpoint ${endpoint}`)
+}
+
+test('an installed-but-not-restarted upgrade hides the upgrade button on a fresh mount', async () => {
+  const renderer = createRenderer(installedAheadRpc())
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /已安装 1\.5\.2，重启后生效/)
+  assert.doesNotMatch(renderer.text('settings.section'), /升级插件/)
+  assert.equal(renderer.hasTest('upgrade-manual-pending'), true, 'manual environment keeps the hand-restart guidance')
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'no bogus update item while restart is pending')
+})
+
+test('after the process finally restarts the card returns to the ordinary up-to-date state', async () => {
+  const renderer = createRenderer(installedAheadRpc({ running: '1.5.2', installed: '1.5.2' }))
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /已是最新版本/)
+  assert.doesNotMatch(renderer.text('settings.section'), /重启后生效/)
+  assert.doesNotMatch(renderer.text('settings.section'), /升级插件/)
+  assert.equal(renderer.hasTest('upgrade-manual-pending'), false)
+})
+
+test('a managed environment with a pending restart drops the button without the manual guidance', async () => {
+  const renderer = createRenderer(installedAheadRpc({ manual: false }))
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /已安装 1\.5\.2，重启后生效/)
+  assert.doesNotMatch(renderer.text('settings.section'), /升级插件/)
+  assert.equal(renderer.hasTest('upgrade-manual-pending'), false, 'recovery polling owns the managed case')
+})
+
+test('a legacy host without an installed version keeps the upgrade button and the old flow', async () => {
+  const renderer = createRenderer(stubPanelRpc({ version: { pluginVersion: '1.5.1' } }))
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /有新版本：0\.10\.0/)
+  await renderer.findButton('升级插件')
+})
+
+test('an upgrade that lands without a restart switches the card to the restart-pending state', async () => {
+  let installed = '1.5.1'
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.5.1', installedVersion: installed, instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: true } } }
+    if (endpoint === 'check-update') {
+      const landed = installed !== '1.5.1'
+      return { ok: true, value: {
+        dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', tags: { latest: '0.1.0-rc.7', next: null }, upToDate: true, status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        plugin: { current: '1.5.1', installed, latest: '1.5.2', tags: { latest: '1.5.2', next: null }, upToDate: landed, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+      } }
+    }
+    if (endpoint === 'upgrade') {
+      installed = '1.5.2'
+      return { ok: true, value: { result: 'upgraded', profile: 'web', previous: '1.5.1', installed: '1.5.2', requiresManualRestart: true } }
+    }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /有新版本：1\.5\.2/)
+  await renderer.findButton('升级插件').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('仍要升级').props.onClick()
+  await renderer.flush()
+  // 升级落地后凭刷新到的 installedVersion 立刻切换：按钮消失、状态改示重启后生效、指引同现。
+  assert.doesNotMatch(renderer.text('settings.section'), /升级插件/)
+  assert.match(renderer.text('settings.section'), /已安装 1\.5\.2，重启后生效/)
+  assert.equal(renderer.hasTest('upgrade-manual-pending'), true)
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, 'no recovery polling while the process keeps running')
+})
+
 test('managed environment upgrades immediately, keeps recovery polling, and labels the supervisor', async () => {
   let upgradeCalls = 0
   const renderer = createRenderer(stubPanelRpc({

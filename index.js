@@ -2015,6 +2015,18 @@ async function readInstalledPluginVersion(profile) {
   }
 }
 
+// 磁盘上「DSH 实际加载那一份」插件版本（profile node_modules 的 package.json）。
+// 升级落地后它立刻变新，而内存里的 pluginVersion 要等进程重启才变——两者不一致即
+// 「已装好、待重启生效」，客户端据此收起升级按钮并改示重启指引（用户点名，2026-09-12）。
+// 任何解析失败（无 profile / 多义 / 文件读不到）一律返回 null，客户端按旧宿主降级。
+async function installedPluginVersionOrNull(dshHome) {
+  try {
+    return await readInstalledPluginVersion(await resolveUpgradeProfile(dshHome))
+  } catch (_) {
+    return null
+  }
+}
+
 // pnpm 失败分类：dsh plugin 转发 pnpm 时只报「pnpm failed in profile directory」，不报原因；
 // 必须按输出特征识别真实失败（踩坑见 KNOWLEDGE.md「pnpm 失败模式识别与自动恢复」）。
 function classifyUpgradeFailure(output) {
@@ -4628,7 +4640,9 @@ function apply(ctx) {
     'version': { handle: async (payload, rpcEndpoint) => {
       // runtimeEnv 随进程身份（instanceId）一起返回：概览展示、升级前置确认与重启警告共用，
       // 客户端对缺字段的老宿主静默降级。
-      return { ok: true, value: { current: dshVersion, pluginVersion, instanceId, runtimeEnv } }
+      // installedVersion = 磁盘上已安装的版本（升级后立刻变新）：与 pluginVersion（运行中进程
+      // 的版本）不一致即「已装好、待重启生效」，供客户端收起升级按钮并改示重启指引。
+      return { ok: true, value: { current: dshVersion, pluginVersion, installedVersion: await installedPluginVersionOrNull(dshHome), instanceId, runtimeEnv } }
 
     } },
     'check-update': { handle: async (payload, rpcEndpoint) => {
@@ -4650,9 +4664,14 @@ function apply(ctx) {
           ? { current: dshVersion, latest: dshResult.value.latest, tags: dshResult.value.tags, upToDate: atLeastSemver(dshVersion, dshResult.value.latest), status: 'available', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
           : { current: dshVersion, latest: null, tags: { latest: null, next: null, alpha: null }, upToDate: null, status: 'unavailable', url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' }
         const pluginError = pluginResult.status === 'rejected' ? String(pluginResult.reason?.message || pluginResult.reason) : ''
+        // upToDate 按「磁盘已安装版本」判定：升级落地但进程还没重启时运行版本旧、磁盘已是新版，
+        // 再报「有新版本」会把用户引回已经做过的升级（用户点名，2026-09-12）。installed 随行返回，
+        // 客户端用它 + version 的运行版本判定「已装好、待重启生效」。
+        const installedVersion = await installedPluginVersionOrNull(dshHome)
+        const pluginBaseline = installedVersion === null ? pluginVersion : installedVersion
         const plugin = pluginResult.status === 'fulfilled'
-          ? { current: pluginVersion, latest: pluginResult.value.latest, tags: pluginResult.value.tags, upToDate: atLeastSemver(pluginVersion, pluginResult.value.latest), status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
-          : { current: pluginVersion, latest: null, tags: { latest: null, next: null, alpha: null }, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          ? { current: pluginVersion, installed: installedVersion, latest: pluginResult.value.latest, tags: pluginResult.value.tags, upToDate: atLeastSemver(pluginBaseline, pluginResult.value.latest), status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' }
+          : { current: pluginVersion, installed: installedVersion, latest: null, tags: { latest: null, next: null, alpha: null }, upToDate: null, status: pluginError.includes('HTTP 404') ? 'unpublished' : 'unavailable', url: 'https://github.com/gehennawu/dsh-service/releases' }
         if (dsh.status === 'unavailable' && plugin.status === 'unavailable') throw dshResult.reason
         const value = { checkedAt: now, cached: false, dsh, plugin }
         updateCache = { ok: true, value, checkedAt: now, ttl: 10 * 60 * 1000 }
@@ -4666,7 +4685,11 @@ function apply(ctx) {
     } },
     'upgrade': { audit: true, handle: async (payload, rpcEndpoint) => {
       try {
-        return { ok: true, value: await upgradePlugin(ctx, dshHome, runtimeEnv) }
+        const value = await upgradePlugin(ctx, dshHome, runtimeEnv)
+        // 升级落地即作废更新缓存：下一次 check-update 要按新的磁盘版本重算「是否有新版本」，
+        // 否则升级后 10 分钟内仍会从缓存里读到旧的 upToDate。
+        updateCache = undefined
+        return { ok: true, value }
       } catch (error) {
         return rpcTechnicalFailure(error)
       }

@@ -1818,6 +1818,54 @@ test('version and restart responses expose one stable process instance id', asyn
   assert.equal(restart.value.instanceId, first.value.instanceId)
 })
 
+test('version reports the on-disk installed version next to the running one', async (t) => {
+  // 升级落地后磁盘是新版、内存里的 pluginVersion 仍是旧版：这一对事实就是「已装好待重启」的判据。
+  const home = await makeHome(t, 'dsh-service-version-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '9.9.9' })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+  const result = await handler('version', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.pluginVersion, pluginVersion)
+  assert.equal(result.value.installedVersion, '9.9.9')
+
+  // 没有可用 profile（或读不到已安装清单）时返回 null：客户端按旧宿主降级，不误判成待重启。
+  const empty = await makeHome(t, 'dsh-service-version-none-')
+  const bare = createHost({ env: { DSH_HOME: empty } })
+  assert.equal((await bare.handler('version', {})).value.installedVersion, null)
+})
+
+test('check-update judges the plugin against the installed version, not the running one', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t, 'dsh-service-update-installed-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '9.9.9' })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.plugin.current, pluginVersion)
+  assert.equal(result.value.plugin.installed, '9.9.9')
+  assert.equal(result.value.plugin.upToDate, true, 'disk already at latest must not report an update')
+})
+
+test('a successful upgrade invalidates the cached update check', async (t) => {
+  mockPluginRegistry(t, '9.9.9')
+  const home = await makeHome(t, 'dsh-service-upgrade-cache-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion })
+  const { service: subprocess } = upgradeSubprocess({ dshHome: home })
+  const { handler } = createHost({ env: { DSH_HOME: home }, services: { subprocess } })
+  const before = await handler('check-update', {})
+  assert.equal(before.value.cached, false)
+  assert.equal(before.value.plugin.installed, pluginVersion)
+
+  const upgraded = await handler('upgrade', {})
+  assert.equal(upgraded.ok, true)
+  assert.equal(upgraded.value.installed, '9.9.9')
+
+  const after = await handler('check-update', {})
+  assert.equal(after.value.cached, false, 'upgrade must invalidate the cached update check')
+  assert.equal(after.value.plugin.installed, '9.9.9')
+  assert.equal(after.value.plugin.upToDate, true)
+})
+
 test('optional commands service registers a guarded /restart command and cleans it up', async () => {
   const host = createHost({ commands: true })
   assert.equal(host.registeredCommands.length, 1)
