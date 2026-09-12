@@ -7326,8 +7326,10 @@ window.__ModuleLoader__.load({
         // ── 概览状态聚合与六段式布局（v0.39 确认规格；v1.4.1 用户点名移除额度提醒）──
         // 状态摘要 → 可行动项（仅在存在时）→ 版本/运行时 → 指标格 → 核心操作 → 近期错误。
         // 严重度 error > warning > info > normal：error=RPC/健康/诊断/备份/统计/额度/重启错误；
-        // warning=权限异常/非 advisory 诊断警告；info=可更新/运行环境提示/无备份。
-        // 额度窗口占用不再聚合进概览状态（额度页内的高占用进度条展示保留）。
+        // warning=权限异常/非 advisory 诊断警告；info=可更新/无备份。
+        // 额度窗口占用不再聚合进概览状态（额度页内的高占用进度条展示保留）；
+        // 运行环境（疑似终端手动启动）是常驻环境事实而非待办，不进概览状态项——
+        // 只在健康诊断检查项与重启/升级两段式确认里呈现（用户点名，2026-09-12）。
         const updateOutdated = updateInfo !== null && updateInfo !== undefined &&
           ((updateInfo.dsh && updateInfo.dsh.upToDate === false) || (updateInfo.plugin && updateInfo.plugin.upToDate === false))
         const backupLoaded = backups !== null && !backupBusy && !backupError
@@ -7343,7 +7345,6 @@ window.__ModuleLoader__.load({
         }
         if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
         if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
-        if (runtimeEnv !== null && runtimeEnv.manualStartLikely === true) statusItems.push({ level: 'info', text: translate('health.detail.runtime-env.manual') })
         if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })
         const statusLevel = statusItems.some((item) => item.level === 'error') ? 'error'
           : statusItems.some((item) => item.level === 'warning') ? 'warning'

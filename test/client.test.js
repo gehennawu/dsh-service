@@ -1244,6 +1244,35 @@ test('overview status is informational when only update or empty-backup hints ex
   assert.match(clean.text('settings.section'), /所有系统运行正常/)
 })
 
+test('a manual-launch runtime environment no longer occupies the overview actionable list', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'linux', supervisorKind: null, manualStartLikely: true } } }
+    if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true } } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true },
+      { id: 'node-version', status: 'ok', detail: 'v22.14.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 概览：手动启动环境是常驻环境事实，不生成状态项/可行动项，状态摘要回到「所有系统运行正常」（用户点名，2026-09-12）。
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'manual-launch runtime env must not create overview attention items')
+  assert.equal(renderer.hasTest('overview-status'), true)
+  assert.match(renderer.text('settings.section'), /所有系统运行正常/)
+  assert.doesNotMatch(renderer.text('settings.section'), /疑似终端手动启动/)
+  // 健康诊断：黄色行内提示与诊断口径照旧（只在诊断页呈现，且不点横幅/标签 ⚠）。
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
+  assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
+  assert.doesNotMatch(renderer.text('settings.section'), /服务控制提醒/)
+  assert.equal(renderer.hasTest('tab-dot-health'), false)
+})
+
 test('quota windows at high usage no longer surface as overview attention items', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const renderer = createRenderer(async (channel, endpoint) => {
