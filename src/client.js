@@ -8,6 +8,107 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
     const NS = 'dsh-service'
+    // ── 右栏文件编辑（v1.6 / v1.6.1）静态面：档位 id、可编辑后缀表、头部入口的纯函数 ──
+    // 官方右栏文档预览把「渲染器」做成公开注册面（ctx.documentPreviews + keyed 正文槽）。
+    // 这里注册一个「编辑」档位：priority 'builtin' 表示**故意不夺默认位**——官方渲染器仍是
+    // 各后缀的默认，编辑器由预览头部的注入按钮或渲染器下拉进入。
+    const FILE_EDITOR_ID = '@gehennawu/dsh-service/editor'
+    // 首版固定表：纯文本/代码类后缀。官方按后缀匹配，故不列 tar.gz 这类复合后缀。
+    const FILE_EDITOR_EXTENSION_TABLE = [
+      'md', 'markdown', 'mdx', 'txt', 'text', 'log', 'ini', 'toml', 'conf', 'cfg', 'env',
+      'json', 'jsonc', 'json5', 'yml', 'yaml', 'xml', 'csv', 'tsv', 'diff', 'patch',
+      'ts', 'mts', 'cts', 'js', 'mjs', 'cjs', 'jsx', 'tsx', 'vue', 'svelte', 'astro',
+      'css', 'scss', 'sass', 'less', 'html', 'htm', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+      'py', 'pyi', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh',
+      'cs', 'php', 'sql', 'swift', 'lua', 'pl', 'pm', 'r', 'dart', 'scala', 'clj', 'ex', 'exs', 'erl',
+      'hs', 'ml', 'nim', 'zig', 'vim', 'el', 'emacs', 'lisp', 'scm', 'gradle', 'properties',
+      'dockerfile', 'makefile', 'gitignore', 'gitattributes', 'gitconfig', 'editorconfig',
+      'npmrc', 'nvmrc', 'eslintignore', 'prettierignore',
+    ]
+    // 头部「编辑」入口只用稳定钩子：官方渲染器下拉钮 + 官方 Menu 渲染的菜单项。
+    const EDITOR_ENTRY_ATTR = 'data-dshsvc-editor-entry'
+    // 本插件在标签 ⋯ 菜单里的条目（官方 sidebar.right.tab.menu.item 座）：官方菜单同样把条目
+    // 渲染成 [role=menuitem]，选档位时必须能把自己排除掉，否则点它会自我递归。
+    const EDITOR_MENU_ITEM_ATTR = 'data-dshsvc-editor-menu-item'
+    const VIEWER_MENU_SELECTOR = '[data-document-viewer-menu]'
+    const VIEWER_ITEM_SELECTOR = '[role="menuitem"], [role="option"]'
+    const docOrNull = () => {
+      try { return typeof document === 'undefined' || document === null ? null : document } catch (_) { return null }
+    }
+    const queryAll = (doc, selector) => {
+      try { return Array.from(doc.querySelectorAll(selector)) } catch (_) { return [] }
+    }
+    const textOfNode = (node) => String(node?.textContent ?? '').trim()
+    /** 节点是否带某属性（替身/极简桩可能没有 getAttribute）。 */
+    const hasAttr = (node, name) => {
+      try { return typeof node?.getAttribute === 'function' && node.getAttribute(name) !== null } catch (_) { return false }
+    }
+    /**
+     * 地址后缀是否落在可编辑表内（与官方按解码后文件名后缀匹配同口径）。
+     * 只用于「⋯ 菜单要不要露出编辑入口」这类显示判定，真正的档位匹配仍由官方注册面负责。
+     * @param address - `dsh-resource://file/…` 地址。
+     * @returns 是否可能有「编辑」档位可选。
+     */
+    const editorExtensionMatches = (address) => {
+      let name = ''
+      try {
+        const cut = address.search(/[?#]/)
+        const raw = (cut === -1 ? address : address.slice(0, cut)).slice(address.lastIndexOf('/') + 1)
+        name = decodeURIComponent(raw)
+      } catch (_) {
+        return false
+      }
+      const lower = name.toLowerCase()
+      return FILE_EDITOR_EXTENSION_TABLE.some((extension) => lower.endsWith('.' + extension) || lower === extension)
+    }
+    /**
+     * 在官方渲染器下拉里选中一个档位。
+     *
+     * 菜单是异步挂载的（官方 Menu 走 portal + 过渡）：点开下拉钮之后同一次同步查找必然落空，
+     * 所以这里做三段——① 菜单已开就地命中；② 否则点开下拉钮，再查一次；③ 仍没有就交给
+     * setTimeout 有界重试（12 × 60ms，只重试「找并点」，不再动下拉钮，避免把菜单来回开合）。
+     * @param doc - 宿主 document（测试可传桩）。
+     * @param match - 菜单项文案判定。
+     * @returns 是否已经点中（重试路径返回 false，由定时器继续）。
+     */
+    const selectViewerItem = (doc, match) => {
+      if (doc === null) return false
+      let button = null
+      try { button = doc.querySelector(VIEWER_MENU_SELECTOR) } catch (_) { return false }
+      if (button === null || button === undefined) return false
+      const pick = () => queryAll(doc, VIEWER_ITEM_SELECTOR).find((item) => {
+        // 官方 ⋯ 菜单的条目同样是 [role=menuitem]：必须跳过本插件自己的项，
+        // 否则「点菜单项 → 找菜单项 → 又点自己」会自我递归。
+        if (hasAttr(item, EDITOR_MENU_ITEM_ATTR)) return false
+        return match(textOfNode(item))
+      })
+      const clickItem = (item) => {
+        try { item.click() } catch (_) { return false }
+        return true
+      }
+      const opened = pick()
+      if (opened !== undefined) return clickItem(opened)
+      try { button.click() } catch (_) { return false }
+      const afterOpen = pick()
+      if (afterOpen !== undefined) return clickItem(afterOpen)
+      let remaining = 12
+      const retry = () => {
+        if (remaining <= 0) return
+        remaining -= 1
+        try {
+          setTimeout(() => {
+            try {
+              const late = pick()
+              if (late !== undefined) { clickItem(late); return }
+            } catch (_) {}
+            retry()
+          }, 60)
+        } catch (_) {}
+      }
+      retry()
+      return false
+    }
+
     const zh = {
       'nav.label': '服务控制',
       'nav.restart': '重启',
@@ -782,6 +883,36 @@ window.__ModuleLoader__.load({
       'quota.peak.tag.idle': '闲时',
       'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
       'quota.peak.caption.zai': '非高峰时段模型调用按基础积分的 50% 抵扣。高峰时段：每周一至周五 14:00–18:00（UTC+8）；其余时间为非高峰时段，周六和周日全天空闲。',
+      // ── 官方右栏文件编辑（v1.6 用户点名）────────────────────────────────
+      'features.fileEditor': '右栏文件编辑',
+      'editor.viewer': '编辑',
+      'editor.loading': '正在读取文件…',
+      'editor.preview': '预览',
+      'editor.save': '保存',
+      'editor.saving': '保存中…',
+      'editor.saved': '已保存',
+      'editor.unsaved': '未保存',
+      'editor.reload': '重新加载',
+      'editor.undo': '撤销保存',
+      'editor.keyHint': 'Ctrl/Cmd + S 保存',
+      'editor.conflict.title': '磁盘内容已变化，保存被拒绝',
+      'editor.conflict.body': '文件在打开后被其他改动覆盖（Agent 或其他窗口写入）。重新加载会丢弃你的修改，覆盖会把当前编辑内容直接写盘。',
+      'editor.conflict.reload': '重新加载（丢弃修改）',
+      'editor.conflict.overwrite': '用我的内容覆盖',
+      'editor.readonlyHint': '只读',
+      'editor.retry': '重试',
+      'editor.error.file-not-found': '文件不存在（可能已被移动或删除）。',
+      'editor.error.not-regular-file': '这不是普通文件，无法编辑。',
+      'editor.error.too-large': '文件超过 {limit}，右栏编辑器只读：请用其他预览器查看。',
+      'editor.error.binary-file': '不是 UTF-8 文本文件，右栏编辑器无法编辑。',
+      'editor.error.session-not-live': '该会话当前未激活，无法编辑（可切换到其他预览器查看）。',
+      'editor.error.file-forbidden': '当前会话的沙箱策略不允许写入这个文件。',
+      'editor.error.unavailable': '宿主文件服务不可用，暂时无法编辑。',
+      'editor.error.invalid-address': '文件地址无法识别，无法编辑。',
+      'editor.error.file-stale': '磁盘内容已变化，请重新加载后再保存。',
+      'editor.error.file-failed': '读写失败，请重试。',
+      'editor.error.feature-disabled': '「右栏文件编辑」已在插件配置里关闭。',
+      'editor.error.internal': '操作失败，请重试。',
     }
     const en = {
       'nav.label': 'Service Control',
@@ -1547,6 +1678,36 @@ window.__ModuleLoader__.load({
       'quota.peak.tag.idle': 'Off-peak',
       'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
       'quota.peak.caption.zai': 'Off-peak calls deduct 50% of the base credits. Peak hours: Mon–Fri 14:00–18:00 (UTC+8). All other times are off-peak, including all day Saturday and Sunday.',
+      // ── Official right-Sidebar file editing (v1.6) ──────────────────────
+      'features.fileEditor': 'Right-Sidebar file editing',
+      'editor.viewer': 'Edit',
+      'editor.loading': 'Reading file…',
+      'editor.preview': 'Preview',
+      'editor.save': 'Save',
+      'editor.saving': 'Saving…',
+      'editor.saved': 'Saved',
+      'editor.unsaved': 'Unsaved',
+      'editor.reload': 'Reload',
+      'editor.undo': 'Undo save',
+      'editor.keyHint': 'Ctrl/Cmd + S to save',
+      'editor.conflict.title': 'The file changed on disk; save rejected',
+      'editor.conflict.body': 'Another change (an Agent or another window) overwrote this file after it was opened. Reload discards your edits; overwrite writes the current editor content to disk.',
+      'editor.conflict.reload': 'Reload (discard edits)',
+      'editor.conflict.overwrite': 'Overwrite with mine',
+      'editor.readonlyHint': 'Read-only',
+      'editor.retry': 'Retry',
+      'editor.error.file-not-found': 'The file does not exist (it may have been moved or deleted).',
+      'editor.error.not-regular-file': 'This is not a regular file and cannot be edited.',
+      'editor.error.too-large': 'The file exceeds {limit}; the right-Sidebar editor is read-only. Use another viewer.',
+      'editor.error.binary-file': 'This is not a UTF-8 text file, so the right-Sidebar editor cannot edit it.',
+      'editor.error.session-not-live': 'This session is not active right now, so it cannot be edited (switch to another viewer to read it).',
+      'editor.error.file-forbidden': 'The sandbox policy of this session does not allow writing this file.',
+      'editor.error.unavailable': 'The host file service is unavailable, so editing is not possible right now.',
+      'editor.error.invalid-address': 'The file address is not recognized, so it cannot be edited.',
+      'editor.error.file-stale': 'The file changed on disk; reload before saving again.',
+      'editor.error.file-failed': 'Read or write failed. Please retry.',
+      'editor.error.feature-disabled': '“Right-Sidebar file editing” is turned off in the plugin configuration.',
+      'editor.error.internal': 'The operation failed. Please retry.',
     }
 
     // 设置页导航自定义图标：settings.section 协议没有 icon 字段，外壳 navIcon(id) 只认
@@ -2033,7 +2194,7 @@ window.__ModuleLoader__.load({
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -3785,7 +3946,7 @@ window.__ModuleLoader__.load({
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
         ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager'], true],
-        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation'], true],
+        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'fileEditor'], true],
         ['features.external', ['healthz'], false],
       ]
       function FeatureGroups() {
@@ -7734,6 +7895,450 @@ window.__ModuleLoader__.load({
         return () => { unsubscribe(); if (dispose !== null) dispose() }
       })
 
+      // ─── 官方右栏文件编辑（v1.6 用户点名）───────────────────────────────
+      // 官方右栏的文档预览（@deepseek-ai/dsh-client-ui-sidebar-documentpreview）把「渲染器」
+      // 做成公开注册面：ctx.documentPreviews.register 声明元数据（extensions/priority/
+      // loading/wrap），同 id 的 keyed body 挂在 session 作用域槽 sidebar.right.tab.document。
+      // 这里注册「编辑」档位——priority 'builtin' 表示**故意不夺默认位**：官方渲染器仍是各
+      // 后缀的默认，编辑器只在下拉里可选，打开文件的行为零变化。正文读写走自有 RPC
+      // （官方 content 是分页累积前缀，不足以编辑），地址逐字回传 tab.contentId，会话与
+      // 工作区根由宿主侧解析（前端不送路径、不送 root）。
+      // 与宿主 FILE_EDITOR_MAX_BYTES 同步（= 2 MiB）：只用于文案，不参与判定。
+      const FILE_EDITOR_LIMIT_LABEL = '2 MiB'
+      const FILE_EDITOR_EXTENSIONS = FILE_EDITOR_EXTENSION_TABLE
+      /** 错误码 → 词典文案；词典缺键（bind 原样返回 key）时退回通用文案，绝不把 key 漏到界面上。 */
+      const fileEditorErrorText = (translate, code) => {
+        const key = 'editor.error.' + (typeof code === 'string' && code !== '' ? code : 'internal')
+        const text = translate(key, { limit: FILE_EDITOR_LIMIT_LABEL })
+        return text === key ? translate('editor.error.internal') : text
+      }
+
+      // ─── 预览头部的「编辑」按钮（v1.6.1 用户点名：右上角一个显式入口）──────
+      // 官方预览没有工具栏扩展座（头部只有渲染器下拉、wrap 开关与重载），所以按钮由本插件
+      // 注入头部控件簇：插在渲染器下拉左边（即右上角），点击 = 在下拉里选中本插件的「编辑」
+      // 档位；已处于编辑档位时按钮收起，由编辑正文自己的「预览」负责返回。
+      // DOM 触点只用稳定钩子：`[data-document-viewer-menu]`（官方下拉钮）与官方 Menu 渲染的
+      // `[role="menuitem"|"option"]`（按文案匹配，文案是本插件自己的档位名）。
+      // 已注入的按钮（多分栏 / 浮动面板各有一份头部，逐个记账以便整体回收）。
+      const editorEntries = []
+      const dropEditorEntry = (index) => {
+        const entry = editorEntries[index]
+        try { entry.button.remove() } catch (_) {}
+        editorEntries.splice(index, 1)
+      }
+      const disposeEditorEntries = () => { while (editorEntries.length > 0) dropEditorEntry(editorEntries.length - 1) }
+      /**
+       * 对齐当前 DOM：需要按钮的预览头补齐，不再需要的（功能关闭 / 档位已是「编辑」/ 标签已切走）收起。
+       */
+      const syncEditorEntries = () => {
+        const doc = docOrNull()
+        if (doc === null) return
+        const label = t('editor.viewer')
+        const enabled = featureEnabled('fileEditor')
+        const menus = enabled ? queryAll(doc, VIEWER_MENU_SELECTOR) : []
+        for (let index = editorEntries.length - 1; index >= 0; index -= 1) {
+          const entry = editorEntries[index]
+          if (!menus.includes(entry.menu) || textOfNode(entry.menu) === label) dropEditorEntry(index)
+        }
+        if (!enabled) return
+        // 语言切换后同步在位的按钮文案。**只在真的变了时才写**：`textContent = 同值` 同样会
+        // 重建文本节点 → 观察者再回调 → 再写，构成无限微任务环，实测把整个右栏饿死（点击全部
+        // 挂起、页面无响应）；`setAttribute` 同值不产生 mutation 记录，顺手也判一下。
+        for (const entry of editorEntries) {
+          if (entry.button.textContent === label) continue
+          entry.button.textContent = label
+          try {
+            entry.button.setAttribute('aria-label', label)
+            entry.button.setAttribute('title', label)
+          } catch (_) {}
+        }
+        for (const menu of menus) {
+          if (textOfNode(menu) === label) continue
+          if (editorEntries.some((entry) => entry.menu === menu)) continue
+          const parent = menu.parentNode
+          if (parent === null || parent === undefined || typeof doc.createElement !== 'function' || typeof parent.insertBefore !== 'function') continue
+          const button = doc.createElement('button')
+          button.type = 'button'
+          button.setAttribute(EDITOR_ENTRY_ATTR, '')
+          button.setAttribute('aria-label', label)
+          button.setAttribute('title', label)
+          button.textContent = label
+          Object.assign(button.style, {
+            minHeight: '22px',
+            marginRight: '4px',
+            padding: '1px 8px',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            borderRadius: 'var(--dsh-svc-radius-control, 6px)',
+            background: 'transparent',
+            color: 'var(--dsw-alias-label-secondary)',
+            font: 'inherit',
+            fontSize: '12px',
+            lineHeight: '18px',
+            cursor: 'pointer',
+            flex: 'none',
+          })
+          button.addEventListener('click', (event) => {
+            try { event?.preventDefault?.() } catch (_) {}
+            try { event?.stopPropagation?.() } catch (_) {}
+            selectViewerItem(doc, (text) => text === label)
+          })
+          parent.insertBefore(button, menu)
+          editorEntries.push({ menu, button })
+        }
+      }
+      /** 起观察：DOM 变化（换标签、切档位、开关功能）后按微任务合并重扫一次。 */
+      const startEditorEntries = () => {
+        syncEditorEntries()
+        // 语言切换不换 DOM 结构，观察者不会响：显式订阅 locale 刷新按钮文案。
+        let disposeLocale = () => {}
+        try {
+          if (typeof ctx.locale?.subscribe === 'function') {
+            const unsubscribe = ctx.locale.subscribe(() => { try { syncEditorEntries() } catch (_) {} })
+            if (typeof unsubscribe === 'function') disposeLocale = unsubscribe
+          }
+        } catch (_) {}
+        const doc = docOrNull()
+        if (doc === null || typeof MutationObserver !== 'function') {
+          return () => { disposeLocale(); disposeEditorEntries() }
+        }
+        let scheduled = false
+        const schedule = () => {
+          if (scheduled) return
+          scheduled = true
+          Promise.resolve().then(() => {
+            scheduled = false
+            try { syncEditorEntries() } catch (_) {}
+          })
+        }
+        let observer = null
+        try {
+          observer = new MutationObserver(schedule)
+          observer.observe(doc.documentElement ?? doc.body ?? doc, { childList: true, subtree: true, characterData: true })
+        } catch (_) { observer = null }
+        return () => {
+          try { observer?.disconnect() } catch (_) {}
+          disposeLocale()
+          disposeEditorEntries()
+        }
+      }
+
+      /**
+       * 标签 ⋯ 菜单里的「编辑」入口（v1.6.2，官方 `sidebar.right.tab.menu.item` 座，零 DOM 注入）。
+       *
+       * 与头部按钮互为冗余：头部按钮靠注入 DOM 实现，万一将来某个壳版本上注入失效，这条官方路径
+       * 仍然可用。只在该标签确实是「官方文档预览能打开、且本插件有对应档位」的文件、并且当前不在
+       * 编辑档位时露出；动作后按契约调用 `dismiss()` 关闭菜单。
+       */
+      function FileEditorMenuItem(props) {
+        const translate = useTranslation()
+        const address = typeof props?.tab?.contentId === 'string' ? props.tab.contentId : ''
+        if (!address.startsWith('dsh-resource://file/') || !editorExtensionMatches(address)) return null
+        const doc = docOrNull()
+        const viewer = doc === null ? null : queryAll(doc, VIEWER_MENU_SELECTOR)[0]
+        if (viewer !== undefined && viewer !== null && textOfNode(viewer) === translate('editor.viewer')) return null
+        return React.createElement('button', {
+          type: 'button',
+          role: 'menuitem',
+          'data-testid': 'file-editor-menu-item',
+          [EDITOR_MENU_ITEM_ATTR]: '',
+          onClick: () => {
+            try { props?.dismiss?.() } catch (_) {}
+            selectViewerItem(docOrNull(), (text) => text === translate('editor.viewer'))
+          },
+          style: {
+            display: 'block',
+            width: '100%',
+            textAlign: 'left',
+            padding: '6px 10px',
+            border: 0,
+            background: 'transparent',
+            color: 'var(--dsw-alias-label-primary)',
+            font: 'inherit',
+            fontSize: '12px',
+            lineHeight: '18px',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+          },
+        }, translate('editor.viewer'))
+      }
+
+      /**
+       * 「编辑」档位的正文：等宽 textarea + 保存/重载/撤销 + 冲突横幅。
+       *
+       * 首版刻意不做语法高亮、多光标与查找替换——插件半没有打包器，借不到编辑器组件；
+       * 官方工具栏的重新加载会换掉 props.content，未脏时静默重读，脏时留给保存时的版本守卫。
+       */
+      function FileEditorBody(props) {
+        const translate = useTranslation()
+        const address = typeof props?.resourceAddress === 'string' ? props.resourceAddress : ''
+        const wrap = props?.wrap !== false
+        const officialContent = props?.content
+        const [doc, setDoc] = React.useState({ phase: 'loading', text: '', version: '', path: '', bytes: 0, error: '' })
+        const [draft, setDraft] = React.useState(null)
+        const [busy, setBusy] = React.useState(false)
+        const [notice, setNotice] = React.useState('')
+        const [conflict, setConflict] = React.useState(null)
+        const [undo, setUndo] = React.useState(null)
+        // 请求代次：切文件 / 重新加载 / 保存都会作废在途响应，避免过期结果覆盖新状态。
+        const requestRef = React.useRef(0)
+        const contentRef = React.useRef(officialContent)
+        const beginRequest = () => { requestRef.current += 1; return requestRef.current }
+        const isCurrent = (id) => requestRef.current === id
+
+        const load = () => {
+          const id = beginRequest()
+          setDoc({ phase: 'loading', text: '', version: '', path: '', bytes: 0, error: '' })
+          setDraft(null)
+          setConflict(null)
+          setUndo(null)
+          setNotice('')
+          setBusy(false)
+          rpcCall('file-read', { address }).then((result) => {
+            if (!isCurrent(id)) return
+            if (!result || result.ok !== true) {
+              setDoc({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: typeof result?.error === 'string' ? result.error : 'internal' })
+              return
+            }
+            const value = result.value || {}
+            setDoc({
+              phase: 'ready',
+              text: typeof value.text === 'string' ? value.text : '',
+              version: typeof value.version === 'string' ? value.version : '',
+              path: typeof value.path === 'string' ? value.path : '',
+              bytes: Number.isFinite(value.bytes) ? value.bytes : 0,
+              error: '',
+            })
+          }).catch(() => {
+            if (!isCurrent(id)) return
+            setDoc({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: 'internal' })
+          })
+        }
+
+        /** 写盘：force=true 是冲突横幅上的「用我的内容覆盖」（不带版本守卫）。 */
+        const write = (text, version, force) => {
+          const id = beginRequest()
+          setBusy(true)
+          setNotice('')
+          rpcCall('file-write', { address, text, version, force: force === true }).then((result) => {
+            if (!isCurrent(id)) return
+            setBusy(false)
+            if (!result || result.ok !== true) {
+              const code = typeof result?.error === 'string' ? result.error : 'internal'
+              // 版本冲突不是错误而是待用户裁决的状态：进横幅，不写顶部错误行。
+              if (code === 'file-stale') {
+                setConflict({ text, version })
+                return
+              }
+              setNotice(code)
+              return
+            }
+            const value = result.value || {}
+            setDoc({
+              phase: 'ready',
+              text,
+              version: typeof value.version === 'string' ? value.version : version,
+              path: typeof value.path === 'string' ? value.path : doc.path,
+              bytes: Number.isFinite(value.bytes) ? value.bytes : doc.bytes,
+              error: '',
+            })
+            // 先记录后变更：宿主回传 before 即回滚状态，「撤销保存」把它写回去。
+            setUndo(typeof value.before === 'string' ? { text: value.before, version: typeof value.version === 'string' ? value.version : version } : null)
+            setDraft(null)
+            setConflict(null)
+            setNotice('saved')
+          }).catch(() => {
+            if (!isCurrent(id)) return
+            setBusy(false)
+            setNotice('internal')
+          })
+        }
+
+        // 挂载 / 换文件：首次读取。地址变化必须重读，否则会拿旧文件的版本去写新文件。
+        React.useEffect(() => {
+          contentRef.current = officialContent
+          load()
+          return () => { requestRef.current += 1 }
+        }, [address])
+
+        // 官方工具栏的「重新加载」会换掉 content 引用：未脏时静默跟随重读，脏时不打扰用户
+        // （此时版本已过期，保存会走 file-stale 冲突横幅，由用户裁决）。
+        React.useEffect(() => {
+          if (contentRef.current === officialContent) return
+          contentRef.current = officialContent
+          if (draft !== null) return
+          load()
+        }, [officialContent])
+
+        const dirty = draft !== null && draft !== doc.text
+        const code = doc.phase === 'error' ? doc.error : ''
+        const statusText = notice === 'saved' ? translate('editor.saved') : dirty ? translate('editor.unsaved') : ''
+        const statusColor = dirty ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
+        const buttonStyle = (variant) => ({
+          minHeight: '26px',
+          padding: '2px 9px',
+          fontSize: '12px',
+          borderRadius: 'var(--dsh-svc-radius-control, 6px)',
+          border: '1px solid ' + (variant === 'primary' ? 'var(--dsh-svc-brand)' : 'var(--dsw-alias-border-l2)'),
+          background: variant === 'primary' ? 'var(--dsh-svc-brand)' : 'transparent',
+          color: variant === 'primary' ? 'var(--dsh-svc-brand-text)' : 'var(--dsw-alias-label-primary)',
+          cursor: 'pointer',
+        })
+        const action = (testid, labelKey, onClick, variant, disabled) => React.createElement('button', {
+          type: 'button',
+          'data-testid': testid,
+          disabled: disabled === true,
+          onClick,
+          style: Object.assign(buttonStyle(variant), disabled === true ? { opacity: 0.5, cursor: 'default' } : {}),
+        }, translate(labelKey))
+
+        const header = React.createElement('div', {
+          style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px' },
+        },
+        React.createElement('span', {
+          'data-testid': 'file-editor-path',
+          title: doc.path !== '' ? doc.path : address,
+          style: { flex: '1 1 90px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--ds-font-family-code, monospace)', color: 'var(--dsw-alias-label-secondary)' },
+        }, doc.path !== '' ? doc.path : address),
+        statusText !== '' ? React.createElement('span', {
+          'data-testid': 'file-editor-status',
+          style: { flex: 'none', fontWeight: 600, color: statusColor },
+        }, statusText) : null,
+        React.createElement('span', { style: { display: 'flex', gap: '6px', marginLeft: 'auto', flex: 'none' } },
+          // 返回官方默认渲染器（下拉里第一个非本插件的档位）：编辑模式不是单向门。
+          action('file-editor-preview', 'editor.preview', () => selectViewerItem(docOrNull(), (text) => text !== translate('editor.viewer')), 'ghost', false),
+          // 「撤销保存」常驻（只要还有回滚状态）：脏时禁用——先决定当前修改，再谈回滚。
+          undo !== null ? action('file-editor-undo', 'editor.undo', () => write(undo.text, undo.version, false), 'ghost', busy || dirty) : null,
+          action('file-editor-reload', 'editor.reload', () => load(), 'ghost', busy),
+          action('file-editor-save', 'editor.save', () => write(draft, doc.version, false), 'primary', busy || !dirty)))
+
+        const conflictBanner = conflict === null ? null : React.createElement('div', {
+          'data-testid': 'file-editor-conflict',
+          style: { margin: '8px 10px 0', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg, transparent)', fontSize: '12px', lineHeight: 1.6 },
+        },
+        React.createElement('div', { style: { fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('editor.conflict.title')),
+        React.createElement('p', { style: { margin: '4px 0 8px', color: 'var(--dsw-alias-label-secondary)' } }, translate('editor.conflict.body')),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          action('file-editor-conflict-reload', 'editor.conflict.reload', () => load(), 'ghost', busy),
+          action('file-editor-conflict-overwrite', 'editor.conflict.overwrite', () => write(conflict.text, doc.version, true), 'primary', busy)))
+
+        const noticeLine = notice === '' || notice === 'saved' ? null : React.createElement('p', {
+          'data-testid': 'file-editor-notice',
+          style: { margin: '8px 10px 0', fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' },
+        }, fileEditorErrorText(translate, notice))
+
+        const body = doc.phase === 'loading'
+          ? React.createElement('p', { 'data-testid': 'file-editor-loading', style: { margin: '12px 10px', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('editor.loading'))
+          : doc.phase === 'error'
+            ? React.createElement('div', { 'data-testid': 'file-editor-error', style: { margin: '12px 10px', fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } },
+              React.createElement('p', { style: { margin: '0 0 8px' } }, fileEditorErrorText(translate, code)),
+              action('file-editor-retry', 'editor.retry', () => load(), 'ghost', false))
+            : React.createElement('textarea', {
+              'data-testid': 'file-editor-textarea',
+              'aria-label': translate('editor.viewer'),
+              value: draft !== null ? draft : doc.text,
+              spellCheck: false,
+              onChange: (event) => setDraft(typeof event?.target?.value === 'string' ? event.target.value : ''),
+              onKeyDown: (event) => {
+                if ((event?.ctrlKey === true || event?.metaKey === true) && (event?.key === 's' || event?.key === 'S')) {
+                  event.preventDefault()
+                  if (!busy && dirty) write(draft, doc.version, false)
+                }
+              },
+              style: {
+                flex: '1 1 auto',
+                minHeight: '160px',
+                margin: 0,
+                padding: '8px 10px',
+                border: 0,
+                outline: 'none',
+                resize: 'none',
+                background: 'transparent',
+                color: 'var(--dsw-alias-label-primary)',
+                fontFamily: 'var(--ds-font-family-code, monospace)',
+                fontSize: '12px',
+                lineHeight: 1.6,
+                tabSize: 2,
+                whiteSpace: wrap ? 'pre-wrap' : 'pre',
+                overflow: 'auto',
+                overflowWrap: wrap ? 'anywhere' : 'normal',
+              },
+            })
+
+        return React.createElement('div', {
+          'data-dshsvc-editor': '',
+          style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)' },
+        },
+        header,
+        conflictBanner,
+        noticeLine,
+        body,
+        React.createElement('div', {
+          style: { flex: 'none', padding: '4px 10px 6px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+        }, translate('editor.keyHint')))
+      }
+
+      // 注册 = 元数据（下拉里的档位）+ keyed body（正文）。两段都属于本 effect，
+      // 开关关闭或插件卸载时一起消失；documentPreviews 服务缺失（旧宿主 / 官方预览未挂载）
+      // 时整块静默跳过，不注册 body、不报错。
+      const setupFileEditor = () => {
+        if (!featureEnabled('fileEditor')) return undefined
+        const disposers = []
+        const previewsOf = (scope) => {
+          if (scope !== undefined && scope !== null && scope.documentPreviews !== undefined) return scope.documentPreviews
+          try { return typeof ctx.get === 'function' ? ctx.get('documentPreviews') : undefined } catch (_) { return undefined }
+        }
+        const registerPreviews = (previews) => {
+          if (previews === undefined || previews === null || typeof previews.register !== 'function') return
+          // 真机实测：ctx.inject(deps, cb) **不接管** cb 的返回值（只有 slots.inject 接管），
+          // 所以元数据 disposer 必须自己记账——否则重建时会撞「duplicate implementation」抛错，
+          // 整块引擎（含头部按钮与正文）从此不再注册。
+          let disposeRegistration = null
+          try {
+            disposeRegistration = previews.register({
+              id: FILE_EDITOR_ID,
+              extensions: FILE_EDITOR_EXTENSIONS,
+              priority: 'builtin',
+              title: () => t('editor.viewer'),
+              loading: 'text-pages',
+              wrap: true,
+            })
+          } catch (_) {
+            return
+          }
+          disposers.push(disposeRegistration)
+          // 档位注册成功才挂 body 与头部按钮：没有档位可选的正文/按钮都是死代码。
+          disposers.push(ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({
+            name: 'sidebar.right.tab.document',
+            key: FILE_EDITOR_ID,
+            locale: NS,
+          }, FileEditorBody)))
+          // 标签 ⋯ 菜单项（官方座，零 DOM）：档位注册成功就一起挂上。
+          disposers.push(ctx.slots.inject('sidebar.right.tab.menu.item', () => ctx.slots.register({
+            name: 'sidebar.right.tab.menu.item',
+            id: 'dsh-service-editor',
+            order: 40,
+          }, (props) => React.createElement(FileEditorMenuItem, props))))
+          disposers.push(startEditorEntries())
+        }
+        if (typeof ctx.inject === 'function') {
+          disposers.push(ctx.inject(['documentPreviews'], (scope) => { registerPreviews(previewsOf(scope)) }))
+        } else {
+          registerPreviews(previewsOf(undefined))
+        }
+        return () => { for (const dispose of disposers) { try { dispose() } catch (_) {} } }
+      }
+      ctx.effect(() => {
+        let teardown = setupFileEditor()
+        const unsubscribe = featureScope.subscribe(() => {
+          if (typeof teardown === 'function') teardown()
+          teardown = setupFileEditor()
+        })
+        return () => {
+          unsubscribe()
+          if (typeof teardown === 'function') teardown()
+        }
+      }, 'dsh-service file editor')
+
       // ─── 移动端适配引擎（v0.30）─────────────────────────────────────────
       // 断点与官方外壳一致取 <1024px（AppFrame 的 SIDEBAR_AUTO_COLLAPSE）。
       // 全部规则作用域于 html[data-dshsvc-mobile] 属性下；抽屉开合走官方
@@ -9528,6 +10133,8 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
     exports.apply = apply
     // v1.2 回合尾模型行的纯逻辑出口：仅供自动化测试直达，运行时无消费者。
     exports.subagentTurnTail = { aggregateSubagentRoutes, selectSubagentModelsTurnTail, subagentRouteListText }
+    // 右栏文件编辑（v1.6/v1.6.1）：档位 id、可编辑后缀表与入口引擎的纯函数面，供测试与排障复用。
+    exports.fileEditor = { id: FILE_EDITOR_ID, extensions: FILE_EDITOR_EXTENSION_TABLE, selectViewerItem, editorExtensionMatches, attr: EDITOR_ENTRY_ATTR, menuItemAttr: EDITOR_MENU_ITEM_ATTR }
     return module.exports
   },
 })

@@ -205,6 +205,12 @@ function createRenderer(rpcCall, options = {}) {
             ? entryOptions.inject(entryOptions.testSessionId === undefined ? 'session-1' : entryOptions.testSessionId)
             : null
         }
+        // 槽主注入的 owner props（如右栏文档槽的 resourceAddress/content/wrap）：
+        // 真实运行由槽主 renderSlot 时给出，测试用 options.slotProps[槽名] 提供同一形态。
+        const ownerProps = (options.slotProps || {})[slot]
+        if (ownerProps !== undefined) {
+          occupantProps = Object.assign({}, occupantProps === null || occupantProps === undefined ? {} : occupantProps, ownerProps)
+        }
         rendered.push(evaluate(React.createElement(component, occupantProps)))
       }
       currentSlot = undefined
@@ -362,21 +368,33 @@ function createRenderer(rpcCall, options = {}) {
         },
         slots: {
           inject(key, callback) {
-            callback()
-            return () => {}
+            // 与 cordis 的 slot 注入同语义：回调返回的 disposer 是这条注入的效应，
+            // 句柄被释放（或槽声明折叠）时执行它。旧替身丢弃返回值，会掩盖
+            // 「开关关闭后条目仍挂着」这类真实缺陷。
+            const disposer = callback()
+            return () => { if (typeof disposer === 'function') disposer() }
           },
           register(slotOptions, component) {
+            // keyed 槽（sidebar.right.tab.document 一类）用 key 标识条目，普通槽用 id。
+            const entryKey = slotOptions.key ?? slotOptions.id ?? 'entry'
             const entries = slotComponents.get(slotOptions.name) || new Map()
-            entries.set(slotOptions.id ?? 'entry', { component, options: slotOptions })
+            entries.set(entryKey, { component, options: slotOptions })
             slotComponents.set(slotOptions.name, entries)
-            if (slotOptions.name !== 'settings.plugin.item' && !(options.initiallyUnmounted || []).includes(slotOptions.name)) mountedSlots.add(slotOptions.name)
+            // 挂载门控：mountOnly 白名单优先（只挂被测槽，其余一律不渲染）；
+            // 否则默认不挂「右栏编辑正文」（它需要槽主注入的 owner props，
+            // 无 props 渲染会发出 file-read 请求，干扰与它无关的用例）。
+            const defaultUnmounted = ['sidebar.right.tab.document']
+            const shouldMount = Array.isArray(options.mountOnly)
+              ? options.mountOnly.includes(slotOptions.name)
+              : slotOptions.name !== 'settings.plugin.item' && !(options.initiallyUnmounted ?? defaultUnmounted).includes(slotOptions.name)
+            if (shouldMount) mountedSlots.add(slotOptions.name)
             return () => {
               // 与真实 cordis 一致：disposer 只摘除本条目，整槽无占用时才取消挂载。
               // 此前误杀整个槽名——「关闭左列入口」会把整个设置面板从渲染树里炸掉。
               const name = slotOptions.name
               const live = slotComponents.get(name)
               if (live) {
-                live.delete(slotOptions.id ?? 'entry')
+                live.delete(entryKey)
                 if (live.size === 0) mountedSlots.delete(name)
               }
               renderAll()
@@ -386,11 +404,18 @@ function createRenderer(rpcCall, options = {}) {
         // 圆环路径专用：提供 modelDirectories 时模拟 cordis 的嵌套 inject 等待语义 +
         // ctx.get 惰性取值（插件 apply 时已挂载则立即注册）；
         // 不提供时两者都不存在，插件应保持无圆环（老版本 DSH 兼容分支）。
-        // options.services：其他可选服务桩（如移动端适配的 layout 服务）走同一惰性 get。
+        // options.services：其他可选服务桩（如移动端适配的 layout 服务、右栏编辑的
+        // documentPreviews）走同一惰性 get / scoped inject。
         ...(options.modelDirectories || options.services ? {
           inject(deps, callback) {
-            callback({ modelDirectories: options.modelDirectories })
-            return () => {}
+            const scope = {}
+            for (const dep of Array.isArray(deps) ? deps : [deps]) {
+              scope[dep] = dep === 'modelDirectories' ? activeModelDirectories : options.services?.[dep]
+            }
+            // 与 cordis 的 scoped inject 同语义：回调返回的 disposer 由返回的句柄负责释放
+            // （服务卸载时 cordis 也会跑它；这里只建模宿主主动 dispose 的一条路）。
+            const disposer = callback(scope)
+            return () => { if (typeof disposer === 'function') disposer() }
           },
           get(service) {
             if (service === 'modelDirectories') return activeModelDirectories
@@ -8817,4 +8842,498 @@ test('session manager detail survives a fenced code block in event text: Markdow
   assert.ok(mdText !== undefined && mdText.type === 'div' && mdText.props['data-testid'] === 'md-markdown', 'MarkdownText rendered the fenced body')
   const copyLabel = mdText.props['data-labels-code-copy']
   assert.ok(typeof copyLabel === 'string' && copyLabel !== '', 'labels.code.copyLabel was passed to MarkdownText')
+})
+
+// ── 官方右栏文件编辑（v1.6 用户点名）：渲染器档位注册 + 编辑正文交互 ──────────────
+// 槽主（官方文档预览）在真实运行里注入 owner props（resourceAddress/content/wrap），
+// 测试用 mountOnly + slotProps 提供同一形态；documentPreviews 走 options.services 的替身。
+function createFileEditorRenderer(rpcCall, options = {}) {
+  const documentRegistrations = []
+  const documentPreviews = {
+    register(definition) {
+      documentRegistrations.push(definition)
+      return () => {
+        const index = documentRegistrations.indexOf(definition)
+        if (index >= 0) documentRegistrations.splice(index, 1)
+      }
+    },
+  }
+  const renderer = createRenderer(rpcCall, Object.assign({
+    services: { documentPreviews },
+    mountOnly: ['sidebar.right.tab.document'],
+  }, options))
+  return { renderer, documentRegistrations }
+}
+
+const FILE_EDITOR_ADDRESS = 'dsh-resource://file/session/session-1/note.md'
+
+test('right-Sidebar editor registers a builtin-band renderer that never claims the default slot', async () => {
+  const { renderer, documentRegistrations } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    assert.deepEqual(payload, { address: FILE_EDITOR_ADDRESS })
+    assert.equal(endpoint, 'file-read')
+    return { ok: true, value: { text: 'hello\n', version: 'v1', path: '/ws/note.md', bytes: 6 } }
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'hello\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+
+  assert.equal(documentRegistrations.length, 1)
+  const definition = documentRegistrations[0]
+  assert.equal(definition.id, '@gehennawu/dsh-service/editor')
+  // builtin 档 = 官方渲染器仍是各后缀默认：编辑器只出现在下拉里，不夺默认位。
+  assert.equal(definition.priority, 'builtin')
+  assert.equal(definition.loading, 'text-pages')
+  assert.equal(definition.wrap, true)
+  assert.ok(Array.isArray(definition.extensions))
+  for (const extension of ['md', 'json', 'ts', 'py', 'sh', 'txt']) assert.ok(definition.extensions.includes(extension), extension)
+  assert.equal(definition.title(), '编辑')
+  // body 与元数据同 id（keyed 槽按 key 取件），槽名是官方文档正文槽。
+  const entries = renderer.registrations()['sidebar.right.tab.document']
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].key, '@gehennawu/dsh-service/editor')
+  assert.equal(entries[0].locale, 'dsh-service')
+
+  renderer.setLocale('en')
+  assert.equal(definition.title(), 'Edit')
+})
+
+test('right-Sidebar editor stays out of the way without the preview service or with the feature off', async () => {
+  // 官方预览未挂载（旧宿主形态）：元数据与 body 都不注册，也不抛错。
+  const withoutService = createRenderer(async () => ({ ok: true, value: {} }), { mountOnly: [] })
+  await withoutService.load()
+  await withoutService.flush()
+  assert.equal(withoutService.registrations()['sidebar.right.tab.document'], undefined)
+
+  // 开关关闭：注册整体卸载；重新打开即恢复（热生效）。
+  const { renderer, documentRegistrations } = createFileEditorRenderer(async () => ({ ok: true, value: {} }), {
+    featureSettings: { fileEditor: false },
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.equal(documentRegistrations.length, 0)
+  assert.equal(renderer.registrations()['sidebar.right.tab.document'], undefined)
+
+  await renderer.setFeature('fileEditor', true)
+  assert.equal(documentRegistrations.length, 1)
+  assert.equal(renderer.registrations()['sidebar.right.tab.document'].length, 1)
+
+  await renderer.setFeature('fileEditor', false)
+  assert.equal(documentRegistrations.length, 0)
+  assert.equal(renderer.registrations()['sidebar.right.tab.document'].length, 0)
+})
+
+test('right-Sidebar editor loads through its own RPC, tracks dirtiness, saves with the read version, and undoes', async () => {
+  const calls = []
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'hello\n', version: 'v1', path: '/ws/note.md', bytes: 6 } }
+    if (endpoint === 'file-write') return { ok: true, value: { version: 'v2', operation: 'update', bytes: 12, before: 'hello\n', path: '/ws/note.md' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'hello\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  assert.deepEqual(calls[0], { endpoint: 'file-read', payload: { address: FILE_EDITOR_ADDRESS } })
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello\n')
+  assert.equal(renderer.findByTestId('file-editor-save').props.disabled, true)
+  assert.equal(renderer.hasTest('file-editor-status'), false)
+  assert.equal(renderer.hasTest('file-editor-undo'), false)
+
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'hello world\n' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello world\n')
+  assert.match(renderer.text('sidebar.right.tab.document'), /未保存/)
+  assert.equal(renderer.findByTestId('file-editor-save').props.disabled, false)
+
+  // Ctrl/Cmd+S 与保存按钮同一条路径。
+  renderer.findByTestId('file-editor-textarea').props.onKeyDown({ key: 's', ctrlKey: true, preventDefault() {} })
+  await renderer.flush()
+  const write = calls.find((call) => call.endpoint === 'file-write')
+  assert.deepEqual(write.payload, { address: FILE_EDITOR_ADDRESS, text: 'hello world\n', version: 'v1', force: false })
+  assert.match(renderer.text('sidebar.right.tab.document'), /已保存/)
+  assert.equal(renderer.findByTestId('file-editor-save').props.disabled, true)
+  // 保存后「撤销保存」可用（未脏），点它把 before 写回去。
+  const undoButton = renderer.findByTestId('file-editor-undo')
+  assert.equal(undoButton.props.disabled, false)
+  undoButton.props.onClick()
+  await renderer.flush()
+  const undoWrite = calls.filter((call) => call.endpoint === 'file-write')[1]
+  assert.deepEqual(undoWrite.payload, { address: FILE_EDITOR_ADDRESS, text: 'hello\n', version: 'v2', force: false })
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello\n')
+})
+
+test('right-Sidebar editor turns a stale save into a conflict banner with reload and overwrite exits', async () => {
+  const calls = []
+  let stale = true
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'hello\n', version: 'v1', path: '/ws/note.md', bytes: 6 } }
+    if (endpoint === 'file-write') {
+      if (stale && payload.force !== true) return { ok: false, error: 'file-stale' }
+      return { ok: true, value: { version: 'v3', operation: 'update', bytes: 6, before: 'reloaded\n', path: '/ws/note.md' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'hello\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'mine\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  await renderer.flush()
+
+  // stale 不进顶部错误行，而是进冲突横幅（待用户裁决的状态）。
+  assert.equal(renderer.hasTest('file-editor-notice'), false)
+  assert.match(renderer.text('sidebar.right.tab.document'), /磁盘内容已变化，保存被拒绝/)
+  assert.match(renderer.text('sidebar.right.tab.document'), /重新加载（丢弃修改）.*用我的内容覆盖/)
+
+  // 覆盖：force=true 无条件写。
+  stale = false
+  renderer.findByTestId('file-editor-conflict-overwrite').props.onClick()
+  await renderer.flush()
+  const overwrite = calls.filter((call) => call.endpoint === 'file-write')[1]
+  assert.equal(overwrite.payload.force, true)
+  assert.equal(overwrite.payload.text, 'mine\n')
+  assert.equal(renderer.hasTest('file-editor-conflict'), false)
+
+  // 重新加载：重新走 file-read 并丢弃草稿。
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'again\n' } })
+  await renderer.flush()
+  stale = true
+  renderer.findByTestId('file-editor-save').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-conflict'), true)
+  const readsBefore = calls.filter((call) => call.endpoint === 'file-read').length
+  renderer.findByTestId('file-editor-conflict-reload').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'file-read').length, readsBefore + 1)
+  assert.equal(renderer.hasTest('file-editor-conflict'), false)
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello\n')
+  assert.equal(renderer.findByTestId('file-editor-save').props.disabled, true)
+})
+
+test('right-Sidebar editor renders each failure code through its dictionary entry and retries', async () => {
+  const calls = []
+  let failure = 'session-not-live'
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') {
+      if (failure !== '') return { ok: false, error: failure }
+      return { ok: true, value: { text: 'ready\n', version: 'v1', path: '/ws/note.md', bytes: 6 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'hello\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  assert.match(renderer.text('sidebar.right.tab.document'), /该会话当前未激活，无法编辑/)
+  assert.equal(renderer.hasTest('file-editor-textarea'), false)
+
+  // 未知错误码走通用文案，绝不把词典 key 漏到界面上。
+  failure = 'weird-code'
+  renderer.findByTestId('file-editor-retry').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('sidebar.right.tab.document'), /操作失败，请重试。/)
+  assert.doesNotMatch(renderer.text('sidebar.right.tab.document'), /editor\.error\./)
+
+  failure = ''
+  renderer.findByTestId('file-editor-retry').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'ready\n')
+
+  // 英文词典同步（标题 + 提示行 + 状态芯片）。
+  renderer.setLocale('en')
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'changed\n' } })
+  await renderer.flush()
+  assert.match(renderer.text('sidebar.right.tab.document'), /Unsaved/)
+  assert.match(renderer.text('sidebar.right.tab.document'), /Ctrl\/Cmd \+ S to save/)
+  assert.equal(renderer.findByTestId('file-editor-save').children[0], 'Save')
+})
+
+test('right-Sidebar editor injects a header entry button that selects its renderer tier, and retracts it in edit mode', async () => {
+  // 官方预览头部 DOM 桩：一个渲染器下拉钮（文案 = 当前档位）+ 四个菜单项（与真机一致）。
+  const makeNode = (text) => ({
+    textContent: text,
+    removed: false,
+    clicks: 0,
+    attrs: {},
+    listeners: {},
+    style: {},
+    setAttribute(name, value) { this.attrs[name] = value },
+    addEventListener(type, listener) { this.listeners[type] = listener },
+    click() { this.clicks += 1 },
+    remove() { this.removed = true },
+  })
+  const items = ['Markdown', '代码', '编辑', '纯文本'].map(makeNode)
+  const menu = makeNode('Markdown')
+  const parent = {
+    injected: [],
+    insertBefore(node, reference) { this.injected.push({ node, reference }); node.parentNode = this; this.reference = reference },
+  }
+  menu.parentNode = parent
+  const injectedButtons = () => parent.injected.map((entry) => entry.node)
+  const doc = {
+    documentElement: {},
+    querySelector(selector) { return selector === '[data-document-viewer-menu]' ? menu : null },
+    querySelectorAll(selector) {
+      if (selector === '[data-document-viewer-menu]') return [menu]
+      if (selector === '[role="menuitem"], [role="option"]') return items
+      if (selector === '[data-dshsvc-editor-entry]') return injectedButtons().filter((node) => node.removed !== true)
+      return []
+    },
+    createElement: () => makeNode(''),
+  }
+  const observers = []
+  class FakeMutationObserver {
+    constructor(callback) { observers.push(callback) }
+    observe() {}
+    disconnect() {}
+  }
+  const previousDocument = globalThis.document
+  const previousObserver = globalThis.MutationObserver
+  globalThis.document = doc
+  globalThis.MutationObserver = FakeMutationObserver
+  try {
+    const { renderer } = createFileEditorRenderer(async () => ({ ok: true, value: {} }), { mountOnly: [] })
+    await renderer.load()
+    await renderer.flush()
+
+    // 1) 头部右上角注入按钮：插在渲染器下拉之前，文案与无障碍名都取当前语言。
+    assert.equal(parent.injected.length, 1)
+    const button = parent.injected[0].node
+    assert.equal(parent.injected[0].reference, menu)
+    assert.equal(button.textContent, '编辑')
+    assert.equal(button.attrs['data-dshsvc-editor-entry'], '')
+    assert.equal(button.attrs['aria-label'], '编辑')
+
+    // 2) 点击 = 在下拉里选中「编辑」档位（菜单已渲染时不再多点一次下拉钮）。
+    button.listeners.click({ preventDefault() {}, stopPropagation() {} })
+    assert.equal(items[2].clicks, 1)
+    assert.equal(menu.clicks, 0)
+
+    // 3) 档位已是「编辑」：按钮收起（返回入口由编辑正文自己的「预览」承担）。
+    menu.textContent = '编辑'
+    // 替身里同时存在多个观察者（设置页导航标记等），逐个触发保证本引擎的那次一定跑到。
+    for (const callback of observers) callback()
+    await renderer.flush()
+    assert.equal(injectedButtons().filter((node) => node.removed !== true).length, 0)
+
+    // 4) 切回官方档位 + DOM 变化（观察者回调）→ 按钮回来一次。
+    menu.textContent = '纯文本'
+    for (const callback of observers) callback()
+    await renderer.flush()
+    assert.equal(injectedButtons().filter((node) => node.removed !== true).length, 1)
+
+    // 5) 功能关闭：整块卸载，按钮一并回收。
+    const live = injectedButtons().find((node) => node.removed !== true)
+    await renderer.setFeature('fileEditor', false)
+    assert.equal(live.removed, true)
+    assert.equal(injectedButtons().filter((node) => node.removed !== true).length, 0)
+
+    // 6) 没有下拉钮（不是官方预览）时选档位是安全的空操作。
+    const { selectViewerItem, id, extensions, attr } = renderer.moduleExports().fileEditor
+    assert.equal(id, '@gehennawu/dsh-service/editor')
+    assert.equal(attr, 'data-dshsvc-editor-entry')
+    assert.ok(extensions.includes('md'))
+    assert.equal(selectViewerItem(doc, () => true), true)
+    assert.equal(selectViewerItem({ querySelector: () => null, querySelectorAll: () => [] }, () => true), false)
+    assert.equal(selectViewerItem(null, () => true), false)
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousObserver === undefined) delete globalThis.MutationObserver
+    else globalThis.MutationObserver = previousObserver
+  }
+})
+
+test('right-Sidebar editor header entry follows the active language', async () => {
+  const makeNode = (text) => ({
+    textContent: text,
+    removed: false,
+    attrs: {},
+    listeners: {},
+    style: {},
+    setAttribute(name, value) { this.attrs[name] = value },
+    addEventListener(type, listener) { this.listeners[type] = listener },
+    click() {},
+    remove() { this.removed = true },
+  })
+  const menu = makeNode('Markdown')
+  const parent = { injected: [], insertBefore(node) { this.injected.push(node) } }
+  menu.parentNode = parent
+  const doc = {
+    documentElement: {},
+    querySelector: () => menu,
+    querySelectorAll: (selector) => (selector === '[data-document-viewer-menu]' ? [menu] : []),
+    createElement: () => makeNode(''),
+  }
+  const previousDocument = globalThis.document
+  const previousObserver = globalThis.MutationObserver
+  globalThis.document = doc
+  globalThis.MutationObserver = class { observe() {} disconnect() {} }
+  try {
+    const { renderer } = createFileEditorRenderer(async () => ({ ok: true, value: {} }), { mountOnly: [] })
+    await renderer.load()
+    await renderer.flush()
+    assert.equal(parent.injected[0].textContent, '编辑')
+    renderer.setLocale('en')
+    assert.equal(parent.injected.filter((node) => node.removed !== true)[0].textContent, 'Edit')
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousObserver === undefined) delete globalThis.MutationObserver
+    else globalThis.MutationObserver = previousObserver
+  }
+})
+
+test('right-Sidebar editor retries an asynchronously mounted viewer menu instead of giving up', async () => {
+  // 官方 Menu 走 portal 异步挂载：点开下拉钮的同一次同步查找必然落空，必须靠有界重试补上
+  // （真机首次实现漏了这一步：点头部「编辑」毫无反应）。
+  const timers = []
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (callback) => { timers.push(callback); return 0 }
+  const menu = { textContent: 'Markdown', parentNode: { insertBefore() {} }, attrs: {}, style: {}, setAttribute() {}, addEventListener() {}, click() {}, remove() {} }
+  const items = []
+  const doc = {
+    documentElement: {},
+    querySelector: (selector) => (selector === '[data-document-viewer-menu]' ? menu : null),
+    querySelectorAll: (selector) => {
+      if (selector === '[role="menuitem"], [role="option"]') return items
+      if (selector === '[data-document-viewer-menu]') return [menu]
+      return []
+    },
+    createElement: () => ({ textContent: '', attrs: {}, style: {}, setAttribute() {}, addEventListener() {}, click() {}, remove() {} }),
+  }
+  const previousDocument = globalThis.document
+  const previousObserver = globalThis.MutationObserver
+  globalThis.document = doc
+  globalThis.MutationObserver = class { observe() {} disconnect() {} }
+  try {
+    const { renderer } = createFileEditorRenderer(async () => ({ ok: true, value: {} }), { mountOnly: [] })
+    await renderer.load()
+    await renderer.flush()
+    const { selectViewerItem } = renderer.moduleExports().fileEditor
+
+    // 菜单还没挂载：同步返回 false，并排下一次重试（不把下拉钮来回开合）。
+    assert.equal(selectViewerItem(doc, (text) => text === '编辑'), false)
+    assert.equal(timers.length, 1)
+    let clicks = 0
+    items.push({ textContent: '编辑', click() { clicks += 1 } })
+    timers.shift()()
+    assert.equal(clicks, 1)
+
+    // 菜单已开时直接就地点中，不再排定时器。
+    const before = timers.length
+    assert.equal(selectViewerItem(doc, (text) => text === '编辑'), true)
+    assert.equal(timers.length, before)
+    assert.equal(clicks, 2)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousObserver === undefined) delete globalThis.MutationObserver
+    else globalThis.MutationObserver = previousObserver
+  }
+})
+
+test('right-Sidebar editor also offers an official tab-menu entry that never matches itself', async () => {
+  // 头部按钮靠注入 DOM；这条是官方 ⋯ 菜单座（零 DOM），互为冗余。官方菜单项同样是
+  // [role=menuitem]，所以「选档位」必须能排除本插件自己的条目（否则自我递归）。
+  const makeNode = (text, attrs = {}) => ({
+    textContent: text,
+    attrs,
+    style: {},
+    removed: false,
+    clicks: 0,
+    setAttribute(name, value) { this.attrs[name] = value },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null },
+    addEventListener() {},
+    click() { this.clicks += 1 },
+    remove() { this.removed = true },
+  })
+  const viewerItem = makeNode('编辑')
+  const ownMenuItem = makeNode('编辑', { 'data-dshsvc-editor-menu-item': '' })
+  const viewerMenu = makeNode('Markdown')
+  viewerMenu.parentNode = { insertBefore() {} }
+  const doc = {
+    documentElement: {},
+    querySelector: (selector) => (selector === '[data-document-viewer-menu]' ? viewerMenu : null),
+    querySelectorAll: (selector) => {
+      if (selector === '[role="menuitem"], [role="option"]') return [ownMenuItem, viewerItem]
+      if (selector === '[data-document-viewer-menu]') return [viewerMenu]
+      return []
+    },
+    createElement: () => makeNode(''),
+  }
+  const previousDocument = globalThis.document
+  const previousObserver = globalThis.MutationObserver
+  globalThis.document = doc
+  globalThis.MutationObserver = class { observe() {} disconnect() {} }
+  try {
+    let dismissed = 0
+    const renderer = createRenderer(async () => ({ ok: true, value: {} }), {
+      services: { documentPreviews: { register: () => () => {} } },
+      mountOnly: ['sidebar.right.tab.menu.item'],
+      slotProps: { 'sidebar.right.tab.menu.item': { tab: { contentId: 'dsh-resource://file/session/s1/note.md' }, dismiss: () => { dismissed += 1 } } },
+    })
+    await renderer.load()
+    await renderer.flush()
+    assert.ok(renderer.registrations()['sidebar.right.tab.menu.item'].some((entry) => entry.id === 'dsh-service-editor'))
+    const item = renderer.findByTestId('file-editor-menu-item')
+    assert.equal(item.children[0], '编辑')
+    assert.equal(item.props.role, 'menuitem')
+
+    // 点击：先关菜单，再选中官方下拉里的「编辑」——命中的必须是官方那一项，
+    // 不能是本插件自己的菜单项（否则无限自我递归）。
+    item.props.onClick()
+    assert.equal(dismissed, 1)
+    assert.equal(viewerItem.clicks, 1)
+    assert.equal(ownMenuItem.clicks, 0)
+
+    // 后缀不在可编辑表内（如 LICENSE）不露出条目。
+    const other = createRenderer(async () => ({ ok: true, value: {} }), {
+      services: { documentPreviews: { register: () => () => {} } },
+      mountOnly: ['sidebar.right.tab.menu.item'],
+      slotProps: { 'sidebar.right.tab.menu.item': { tab: { contentId: 'dsh-resource://file/session/s1/LICENSE' }, dismiss: () => {} } },
+    })
+    await other.load()
+    await other.flush()
+    assert.equal(other.hasTest('file-editor-menu-item'), false)
+
+    // 已在编辑档位（下拉显示本插件档位名）时也不露出。
+    viewerMenu.textContent = '编辑'
+    const editing = createRenderer(async () => ({ ok: true, value: {} }), {
+      services: { documentPreviews: { register: () => () => {} } },
+      mountOnly: ['sidebar.right.tab.menu.item'],
+      slotProps: { 'sidebar.right.tab.menu.item': { tab: { contentId: 'dsh-resource://file/session/s1/note.md' }, dismiss: () => {} } },
+    })
+    await editing.load()
+    await editing.flush()
+    assert.equal(editing.hasTest('file-editor-menu-item'), false)
+
+    // 后缀判定与官方同口径（解码后的文件名，大小写不敏感，无点号的整名也算）。
+    const { editorExtensionMatches } = renderer.moduleExports().fileEditor
+    assert.equal(editorExtensionMatches('dsh-resource://file/session/s1/a%20b/c.ts'), true)
+    assert.equal(editorExtensionMatches('dsh-resource://file/session/s1/Makefile'), true)
+    assert.equal(editorExtensionMatches('dsh-resource://file/session/s1/logo.png'), false)
+    assert.equal(editorExtensionMatches('dsh-resource://file/session/s1/LICENSE'), false)
+    assert.equal(editorExtensionMatches('dsh-resource://file/session/s1/a.md?line=3'), true)
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousObserver === undefined) delete globalThis.MutationObserver
+    else globalThis.MutationObserver = previousObserver
+  }
 })

@@ -42,7 +42,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 - [🚀 Features](#-features)
   - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
   - [Quota lookup](#quota-lookup) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
-  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [External liveness probe](#external-liveness-probe)
+  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
 - [🏗️ Architecture](#-architecture)
 - [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
 - [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
@@ -51,7 +51,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
-Under **Plugins → Plugin configuration**, ten host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
+Under **Plugins → Plugin configuration**, eleven host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
 ![Plugin configuration](./screenshots/plugin-config_en.png)
 
@@ -201,6 +201,16 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Entry: the “Sessions” subpage under “Maintenance” (on by default); the optional settings-sidebar entry is off by default
 - Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
 
+### Right-Sidebar file editing
+
+- The official right-Sidebar preview header gains an **“Edit” button in its top-right corner** (next to the renderer name): one click enters editing — a monospaced editor with a dirty marker, `Ctrl/Cmd + S` saving, “Reload”, “Undo save”, and a one-click “Preview” back to the official renderer
+- Two equivalent extra routes: the original **renderer dropdown**, and **right-click the tab → ⋯ menu → “Edit”** (the latter uses an official menu seat with no DOM injection at all, as the fallback if the header button ever stops working); while the editor tier is active the header button retracts itself
+- **The official renderers keep their default status**: suffixes they own (`.md`, `.js`, …) still open as Markdown / code previews; only suffixes with no official renderer — the ones that used to fall back to plain text, such as `.txt`, `.log`, `.conf` — default to the editor. When the official preview is absent (older DSH), the whole block stays silent
+- **Writes go through the session's own file service and sandbox policy**: the browser only sends a `dsh-resource://file/session/<session>/<path>` resource address, and the host resolves the session and workspace root itself — free-form paths are refused. Saving carries the version read earlier, so **a file changed by an Agent or another window is never overwritten silently**; you choose “Reload (discard edits)” or “Overwrite with mine”. Read-only sandbox sessions stay preview-only
+- One 2 MiB cap per file (larger files are read-only); a session that is not active cannot be edited (preview still works)
+- Not in this first version: syntax highlighting, multi-cursor, find/replace (the plugin half has no bundler to borrow an editor component), and no unsaved-changes prompt when a tab closes
+- The switch lives under Plugins → Plugin configuration → Interaction (on by default, live)
+
 ### External liveness probe
 
 - `GET` / `HEAD /healthz` returns an empty 200; other methods return 405
@@ -312,7 +322,7 @@ Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both
 
 | Area | Boundary |
 | --- | --- |
-| Input | The browser cannot supply URLs, package names, commands, or file paths |
+| Input | The browser cannot supply URLs, package names, commands, or file paths. **One exception**: right-Sidebar file editing accepts only a `dsh-resource://file/session/<session>/<path>` resource address (decoded per segment; every other shape is refused); the session and workspace root are always resolved host-side, and writes are fenced by the session's sandbox policy |
 | Network | Update checks only access fixed npm registry endpoints |
 | RPC | Loopback-only; data never leaves the machine |
 | Data | The usage index stores no messages, prompts, tool arguments, or credentials; API keys are used inside the host process only |

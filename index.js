@@ -77,6 +77,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   mobileAdaptation: false,
   // v0.35：会话管理（查看/导出/归档/搜索/删除）。
   sessionManager: true,
+  // v1.6 用户点名：官方右栏文件预览的「编辑」档位（写盘走会话沙箱 + 版本守卫）。
+  fileEditor: true,
 })
 const FeatureSettingsSchema = z.object({
   healthDiagnostics: z.boolean().default(true),
@@ -90,6 +92,7 @@ const FeatureSettingsSchema = z.object({
   subagentModelsDock: z.boolean().default(true),
   mobileAdaptation: z.boolean().default(false),
   sessionManager: z.boolean().default(true),
+  fileEditor: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -100,6 +103,10 @@ const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 const USAGE_INDEX_VERSION = 5
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+// 官方右栏文件编辑（v1.6 用户点名）：浏览器只送资源地址，宿主解析会话后按 ctx.fs +
+// sandboxPolicy 读写；单文件上限双向生效（读取、保存、撤销通道都受它约束）。
+const FILE_RESOURCE_PREFIX = 'dsh-resource://file/session/'
+const FILE_EDITOR_MAX_BYTES = 2 * 1024 * 1024
 
 // 技能管理（v0.22）：来源 rank 表复制自 @deepseek-ai/dsh-skill-filesystem 0.1.1-rc.2
 // 常量，只用于展示与同名遮蔽判定；官方升级改值时此处同步。
@@ -538,6 +545,94 @@ function createRpcDispatcher({ endpoints, featureEnabled = () => true, logger, n
       return result
     }
   }
+}
+
+// ── 官方右栏文件编辑（v1.6 用户点名）：地址解析与错误码归一（宿主半的纯函数层）──────
+// 地址文法与 @deepseek-ai/dsh-util-workspace-path 的 sessionFileAddress/parseFileAddress
+// 同口径：`dsh-resource://file/session/<encoded id>/<encoded path>`，`?`/`#` 后缀忽略，
+// 路径逐段 decodeURIComponent。插件不 import 官方包（依赖里没有），这里保持最小同口径实现：
+// 任一段解码失败或路径为空即整体拒绝——浏览器送来的地址是「不可信输入」，宁可拒绝不可猜。
+function decodeFileAddressSegment(segment) {
+  try {
+    return decodeURIComponent(segment)
+  } catch (_) {
+    return undefined
+  }
+}
+
+function parseSessionFileAddress(address) {
+  if (typeof address !== 'string' || !address.startsWith(FILE_RESOURCE_PREFIX)) return undefined
+  const end = address.search(/[?#]/)
+  const segments = address.slice(FILE_RESOURCE_PREFIX.length, end === -1 ? undefined : end).split('/')
+  const rawId = segments.shift()
+  if (rawId === undefined || rawId === '') return undefined
+  const sessionId = decodeFileAddressSegment(rawId)
+  if (sessionId === undefined || sessionId === '') return undefined
+  if (segments.length === 0) return undefined
+  const path = []
+  for (const segment of segments) {
+    const decoded = decodeFileAddressSegment(segment)
+    if (decoded === undefined) return undefined
+    path.push(decoded)
+  }
+  const joined = path.join('/')
+  if (joined === '') return undefined
+  return { sessionId, path: joined }
+}
+
+// ctx.fs 的错误码 → 客户端词典码。未列出的码原样透出（客户端兜底 internal），
+// 便于排障时仍能看到真实原因。
+const FILE_EDITOR_ERROR_CODES = Object.freeze({
+  FS_STALE_VERSION: 'file-stale',
+  FS_NOT_FOUND: 'file-not-found',
+  FS_NOT_REGULAR_FILE: 'not-regular-file',
+  FS_NOT_DIRECTORY: 'not-regular-file',
+  FS_TOO_LARGE: 'too-large',
+  FS_NOT_TEXT: 'binary-file',
+  FS_SANDBOX_DENIED: 'file-forbidden',
+  FS_PERMISSION_DENIED: 'file-forbidden',
+})
+
+function fileEditorErrorCode(error, fallback = 'file-failed') {
+  const code = typeof error?.code === 'string' ? error.code : ''
+  return FILE_EDITOR_ERROR_CODES[code] ?? fallback
+}
+
+function fileEditorFailure(code) {
+  const error = new Error(code)
+  error.code = code
+  return rpcFailure(error)
+}
+
+/**
+ * 把浏览器送来的资源地址解析成宿主侧的读写目标。
+ *
+ * 会话必须是**活的**（`ctx.sessions.get` 取得到且 `header.cwd` 非空）：工作区根只能由宿主给，
+ * 冷会话（只剩持久化记录）没有权威根可用，一律拒绝——「不接受浏览器送 root」是安全教义硬约束。
+ * @param ctx - 插件上下文，只读 `sessions`/`fs`/`sandboxPolicy` 三个可选服务。
+ * @param address - `dsh-resource://file/session/<sessionId>/<path>` 资源地址。
+ * @returns 成功时给出 fs、目标与沙箱策略；失败时给出可直接返回的 RPC 失败信封。
+ */
+async function resolveFileEditorTarget(ctx, address) {
+  const parsed = parseSessionFileAddress(address)
+  if (parsed === undefined) return { ok: false, failure: fileEditorFailure('invalid-address') }
+  const sessions = ctx.get('sessions')
+  const session = typeof sessions?.get === 'function' ? sessions.get(parsed.sessionId) : undefined
+  const cwd = typeof session?.header?.cwd === 'string' && session.header.cwd !== '' ? session.header.cwd : undefined
+  if (session === undefined || cwd === undefined) return { ok: false, failure: fileEditorFailure('session-not-live') }
+  const fs = ctx.get('fs')
+  if (fs === undefined || typeof fs.resolve !== 'function' || typeof fs.readText !== 'function' || typeof fs.writeText !== 'function') {
+    return { ok: false, failure: fileEditorFailure('unavailable') }
+  }
+  let target
+  try {
+    target = await fs.resolve(parsed.path, { cwd })
+  } catch (error) {
+    return { ok: false, failure: fileEditorFailure(fileEditorErrorCode(error, 'invalid-address')) }
+  }
+  const sandbox = ctx.get('sandboxPolicy')
+  const policy = typeof sandbox?.resolve === 'function' ? sandbox.resolve({ session }) : undefined
+  return { ok: true, fs, target, policy, sessionId: parsed.sessionId, path: parsed.path }
 }
 
 async function assertSafeBackupTree(path) {
@@ -5697,6 +5792,49 @@ function apply(ctx) {
         return rpcTechnicalFailure(error)
       }
     } },
+    // 官方右栏文件编辑（v1.6 用户点名）：官方预览「编辑」档位的宿主半。
+    // 安全教义对齐：浏览器只送 dsh-resource:// 资源地址（**不接受自由路径、不接受工作区根**），
+    // 会话与 cwd 一律宿主侧解析；写盘走 ctx.fs + ctx.sandboxPolicy，与会话内 Agent 同一套
+    // 原子写与沙箱围栏，并带读取时的版本守卫防覆盖（冲突以 file-stale 回给客户端）。
+    'file-read': { feature: 'fileEditor', handle: async (payload) => {
+      const resolved = await resolveFileEditorTarget(ctx, payload?.address)
+      if (resolved.ok !== true) return resolved.failure
+      const { fs, target } = resolved
+      try {
+        const info = await fs.stat(target)
+        if (info === undefined) return fileEditorFailure('file-not-found')
+        if (info.type !== 'file') return fileEditorFailure('not-regular-file')
+        if (typeof info.size === 'number' && info.size > FILE_EDITOR_MAX_BYTES) return fileEditorFailure('too-large')
+        const text = await fs.readText(target)
+        const bytes = Buffer.byteLength(text, 'utf8')
+        if (bytes > FILE_EDITOR_MAX_BYTES) return fileEditorFailure('too-large')
+        return { ok: true, value: { path: target.displayPath, text, version: info.version, bytes } }
+      } catch (error) {
+        return fileEditorFailure(fileEditorErrorCode(error))
+      }
+    } },
+    'file-write': { feature: 'fileEditor', audit: true, handle: async (payload) => {
+      const text = typeof payload?.text === 'string' ? payload.text : undefined
+      if (text === undefined) return fileEditorFailure('invalid-payload')
+      if (Buffer.byteLength(text, 'utf8') > FILE_EDITOR_MAX_BYTES) return fileEditorFailure('too-large')
+      // force = 用户在冲突横幅上确认「用我的内容覆盖磁盘」；此时不带走版本守卫（无条件写）。
+      const force = payload?.force === true
+      const version = typeof payload?.version === 'string' && payload.version !== '' ? payload.version : undefined
+      if (!force && version === undefined) return fileEditorFailure('invalid-payload')
+      const resolved = await resolveFileEditorTarget(ctx, payload?.address)
+      if (resolved.ok !== true) return resolved.failure
+      const { fs, target, policy } = resolved
+      try {
+        const outcome = await fs.writeText(target, text, force ? undefined : { kind: 'replaceIfVersion', version }, undefined, policy)
+        // 广播观察：官方预览的「文件已变化」提示与文件变动视图都挂在这条链路上；
+        // 监听器抛错只影响它自己，绝不能反过来把已落盘的保存报成失败。
+        try { ctx.emit('fs/observed', target, { kind: 'present', version: outcome.version }, undefined) } catch (_) {}
+        const before = typeof outcome.before === 'string' && Buffer.byteLength(outcome.before, 'utf8') <= FILE_EDITOR_MAX_BYTES ? outcome.before : undefined
+        return { ok: true, value: { path: target.displayPath, version: outcome.version, operation: outcome.operation, bytes: Buffer.byteLength(outcome.after, 'utf8'), ...(before !== undefined ? { before } : {}) } }
+      } catch (error) {
+        return fileEditorFailure(fileEditorErrorCode(error))
+      }
+    } },
   }
   const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
   try {
@@ -5729,6 +5867,7 @@ export {
   fetchProviderUsage,
   fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
+  fileEditorErrorCode,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
@@ -5754,6 +5893,7 @@ export {
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  parseSessionFileAddress,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
   pickCompressionEncoding,
@@ -5765,6 +5905,7 @@ export {
   quotaErrorCode,
   quotaProviderUnusable,
   readLlmProviders,
+  resolveFileEditorTarget,
   resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,
@@ -5798,6 +5939,7 @@ export default {
   fetchProviderUsage,
   fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
+  fileEditorErrorCode,
   fixLegacySkillInvocationKeys,
   inferQuotaKind,
   inject,
@@ -5823,6 +5965,7 @@ export default {
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  parseSessionFileAddress,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
   pickCompressionEncoding,
@@ -5834,6 +5977,7 @@ export default {
   quotaErrorCode,
   quotaProviderUnusable,
   readLlmProviders,
+  resolveFileEditorTarget,
   resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,

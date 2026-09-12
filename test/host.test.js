@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -107,6 +107,7 @@ function localSubprocess() {
 
 function createHost(overrides = {}) {
   const handlers = []
+  const emitted = []
   const scheduled = []
   const disposers = []
   const registeredCommands = []
@@ -217,6 +218,10 @@ function createHost(overrides = {}) {
       if (typeof dispose === 'function') disposers.push(dispose)
       return typeof dispose === 'function' ? dispose : () => {}
     },
+    emit(event, ...args) {
+      emitted.push({ event, args })
+      for (const listener of eventHandlers.get(event) || []) listener(...args)
+    },
     on(event, handler) {
       if (!eventHandlers.has(event)) eventHandlers.set(event, [])
       eventHandlers.get(event).push(handler)
@@ -271,7 +276,7 @@ function createHost(overrides = {}) {
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -1171,7 +1176,7 @@ test('feature settings namespace registers when the settings service appears aft
 test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
   const routes = []
   const { handler, registeredSettings, updateFeatureSettings } = createHost({
-    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false, sessionManager: false },
+    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false, subagentRoute: false, sessionManager: false, fileEditor: false },
     services: {
       webServer: {
         register(route) {
@@ -1196,6 +1201,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,
+    fileEditor: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     healthDiagnostics: true,
@@ -1209,15 +1215,16 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,
+    fileEditor: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete', 'file-read', 'file-write']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
-  await updateFeatureSettings({ healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true })
+  await updateFeatureSettings({ healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, fileEditor: true })
   assert.notDeepEqual(await handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('permissions-plan', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('permissions-deep', {}), { ok: false, error: 'feature-disabled' })
@@ -1225,6 +1232,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.notDeepEqual(await handler('usage', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('quota', {}), { ok: false, error: 'feature-disabled' })
   assert.notDeepEqual(await handler('backup-list', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await handler('file-read', { address: 'dsh-resource://file/session/missing/a.md' }), { ok: false, error: 'feature-disabled' })
 })
 
 test('healthz feature setting unregisters and re-registers the route without restarting the plugin', async () => {
@@ -6848,4 +6856,191 @@ test('session management clear deleted removes tombstones by id or all, and upda
   // 再次全选清除（空记录）：返回 count: 0
   const clearEmpty = await handler('sessions-clear-deleted', { all: true })
   assert.deepEqual(clearEmpty, { ok: true, value: { cleared: true, count: 0, ids: [] } })
+})
+
+// ── 官方右栏文件编辑（v1.6 用户点名）：地址解析 / 读写端点 / 沙箱与版本守卫 ──────────
+// fs 替身语义对齐 @deepseek-ai/dsh-fs-local：resolve 归一化、stat 给 version（size-mtime）、
+// writeText 按 FsWriteIntent 做版本守卫、只读策略拒绝（FS_SANDBOX_DENIED）、非 UTF-8 拒读。
+function createFileEditorFs(workspace, options = {}) {
+  const written = []
+  const versionOf = async (file) => {
+    const info = await stat(file)
+    return `${info.size}-${Math.round(info.mtimeMs)}`
+  }
+  const service = {
+    async resolve(path, opts = {}) {
+      const absolute = path.startsWith('/') ? path : join(opts.cwd ?? workspace, path)
+      return { targetKey: absolute, displayPath: absolute }
+    },
+    async stat(target) {
+      try {
+        const info = await stat(target.displayPath)
+        if (info.isDirectory()) return { version: await versionOf(target.displayPath), type: 'directory' }
+        return { version: await versionOf(target.displayPath), type: 'file', size: info.size }
+      } catch (_) {
+        return undefined
+      }
+    },
+    async readText(target) {
+      const text = (await readFile(target.displayPath)).toString('utf8')
+      if (options.binary === true || text.includes('\u0000')) throw Object.assign(new Error('not text'), { code: 'FS_NOT_TEXT' })
+      return text
+    },
+    async writeText(target, content, expected, signal, policy) {
+      written.push({ path: target.displayPath, content, expected, policy })
+      if (policy !== undefined && policy.mode === 'read-only') throw Object.assign(new Error('sandbox denied'), { code: 'FS_SANDBOX_DENIED' })
+      let before
+      try {
+        before = (await readFile(target.displayPath)).toString('utf8')
+      } catch (_) {
+        throw Object.assign(new Error('missing'), { code: 'FS_NOT_FOUND' })
+      }
+      if (expected !== undefined) {
+        if (expected.version !== await versionOf(target.displayPath)) throw Object.assign(new Error('stale'), { code: 'FS_STALE_VERSION' })
+      }
+      await writeFile(target.displayPath, content)
+      return { operation: 'update', version: await versionOf(target.displayPath), before, after: content }
+    },
+  }
+  if (options.failResolve === true) {
+    service.resolve = async () => { throw Object.assign(new Error('missing'), { code: 'FS_NOT_FOUND' }) }
+  }
+  return { service, written }
+}
+
+function createFileEditorFixture(workspace, options = {}) {
+  const session = { id: 'session-1', header: { cwd: workspace } }
+  const fileEditorFs = createFileEditorFs(workspace, options)
+  const services = { fs: fileEditorFs.service }
+  if (options.sessions !== false) {
+    services.sessions = { get: (id) => (id === 'session-1' ? session : undefined) }
+  }
+  if (options.sandboxPolicy !== false) {
+    services.sandboxPolicy = { resolve: ({ session: target }) => ({ mode: options.mode ?? 'workspace-write', workspaceRoot: target.header.cwd, sessionId: target.id }) }
+  }
+  return { session, fileEditorFs, services }
+}
+
+const fileAddress = (name) => `dsh-resource://file/session/session-1/${name}`
+
+test('session file addresses parse with the official grammar and reject everything else', () => {
+  assert.deepEqual(parseSessionFileAddress('dsh-resource://file/session/session-1/src/a%20b/c.ts'), { sessionId: 'session-1', path: 'src/a b/c.ts' })
+  assert.deepEqual(parseSessionFileAddress('dsh-resource://file/session/s1/note.md?line=3#L3'), { sessionId: 's1', path: 'note.md' })
+  assert.deepEqual(parseSessionFileAddress('dsh-resource://file/session/s%2D1/a.md'), { sessionId: 's-1', path: 'a.md' })
+  // 绝对路径 scope（官方 absoluteFileAddress）不属于会话文件，编辑端点不认。
+  assert.equal(parseSessionFileAddress('dsh-resource://file/absolute/tmp/a.md'), undefined)
+  assert.equal(parseSessionFileAddress('dsh-resource://file/session/s1'), undefined)
+  assert.equal(parseSessionFileAddress('dsh-resource://file/session//a.md'), undefined)
+  assert.equal(parseSessionFileAddress('dsh-resource://file/session/s1/%E0%A4%A'), undefined)
+  assert.equal(parseSessionFileAddress('/workspace/a.md'), undefined)
+  assert.equal(parseSessionFileAddress(undefined), undefined)
+  assert.equal(parseSessionFileAddress(42), undefined)
+})
+
+test('filesystem error codes normalize to the client vocabulary', () => {
+  const code = (value) => fileEditorErrorCode(Object.assign(new Error('x'), { code: value }))
+  assert.equal(code('FS_STALE_VERSION'), 'file-stale')
+  assert.equal(code('FS_NOT_FOUND'), 'file-not-found')
+  assert.equal(code('FS_NOT_REGULAR_FILE'), 'not-regular-file')
+  assert.equal(code('FS_NOT_DIRECTORY'), 'not-regular-file')
+  assert.equal(code('FS_TOO_LARGE'), 'too-large')
+  assert.equal(code('FS_NOT_TEXT'), 'binary-file')
+  assert.equal(code('FS_SANDBOX_DENIED'), 'file-forbidden')
+  assert.equal(code('FS_PERMISSION_DENIED'), 'file-forbidden')
+  assert.equal(code('SOMETHING_ELSE'), 'file-failed')
+  assert.equal(fileEditorErrorCode(new Error('x')), 'file-failed')
+  assert.equal(fileEditorErrorCode(new Error('x'), 'invalid-address'), 'invalid-address')
+})
+
+test('file editor target resolution refuses foreign addresses, dead sessions, and a missing fs service', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-'))
+  const { services } = createFileEditorFixture(workspace)
+  const { handler } = createHost({ services })
+
+  assert.deepEqual(await handler('file-read', { address: 'https://example.com/a.md' }), { ok: false, error: 'invalid-address' })
+  assert.deepEqual(await handler('file-read', { address: fileAddress('a.md') }), { ok: false, error: 'file-not-found' })
+  assert.deepEqual(await handler('file-write', { address: 'dsh-resource://file/absolute/tmp/a.md', text: 'x', version: 'v' }), { ok: false, error: 'invalid-address' })
+  assert.deepEqual(await handler('file-write', { address: fileAddress('a.md'), text: 'x', version: 'v' }), { ok: false, error: 'file-not-found' })
+  assert.deepEqual(await handler('file-read', { address: 'dsh-resource://file/session/other/a.md' }), { ok: false, error: 'session-not-live' })
+  await rm(workspace, { recursive: true, force: true })
+
+  const withoutFs = createHost({ services: { sessions: { get: () => ({ id: 'session-1', header: { cwd: '/tmp' } }) } } })
+  assert.deepEqual(await withoutFs.handler('file-read', { address: fileAddress('a.md') }), { ok: false, error: 'unavailable' })
+})
+
+test('file-read returns text, version and byte size, and reports each failure shape', async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-read-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const { services } = createFileEditorFixture(workspace)
+  const { handler } = createHost({ services })
+
+  await writeFile(join(workspace, 'note.md'), '# hi\n')
+  const read = await handler('file-read', { address: fileAddress('note.md') })
+  assert.equal(read.ok, true)
+  assert.equal(read.value.text, '# hi\n')
+  assert.equal(read.value.bytes, 5)
+  assert.equal(read.value.path, join(workspace, 'note.md'))
+  assert.equal(typeof read.value.version, 'string')
+  assert.notEqual(read.value.version, '')
+
+  await mkdir(join(workspace, 'dir'))
+  assert.deepEqual(await handler('file-read', { address: fileAddress('dir') }), { ok: false, error: 'not-regular-file' })
+  assert.deepEqual(await handler('file-read', { address: fileAddress('missing.md') }), { ok: false, error: 'file-not-found' })
+  await writeFile(join(workspace, 'big.md'), 'x'.repeat(2 * 1024 * 1024 + 1))
+  assert.deepEqual(await handler('file-read', { address: fileAddress('big.md') }), { ok: false, error: 'too-large' })
+
+  const binaryWorkspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-binary-'))
+  t.after(() => rm(binaryWorkspace, { recursive: true, force: true }))
+  await writeFile(join(binaryWorkspace, 'blob.md'), 'anything')
+  const binaryHost = createHost({ services: createFileEditorFixture(binaryWorkspace, { binary: true }).services })
+  assert.deepEqual(await binaryHost.handler('file-read', { address: fileAddress('blob.md') }), { ok: false, error: 'binary-file' })
+})
+
+test('file-write guards the version, fenced by sandbox policy, and broadcasts the observation', async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-write-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const fixture = createFileEditorFixture(workspace)
+  const { handler, emitted } = createHost({ services: fixture.services })
+  const file = join(workspace, 'note.md')
+  await writeFile(file, 'before\n')
+
+  const read = await handler('file-read', { address: fileAddress('note.md') })
+  const written = await handler('file-write', { address: fileAddress('note.md'), text: 'after\n', version: read.value.version })
+  assert.equal(written.ok, true)
+  assert.equal(written.value.operation, 'update')
+  assert.equal(written.value.before, 'before\n')
+  assert.equal(written.value.bytes, 6)
+  assert.equal(await readFile(file, 'utf8'), 'after\n')
+  // 沙箱围栏与会话权威：policy 来自 sandboxPolicy.resolve({ session })，不是浏览器送的。
+  assert.deepEqual(fixture.fileEditorFs.written[0].policy, { mode: 'workspace-write', workspaceRoot: workspace, sessionId: 'session-1' })
+  // fs/observed 广播（官方预览的「文件已变化」链路）带上了新版本号。
+  const observation = emitted.find((entry) => entry.event === 'fs/observed')
+  assert.ok(observation)
+  assert.deepEqual(observation.args[1], { kind: 'present', version: written.value.version })
+
+  // 版本守卫：拿旧版本再写 → file-stale，磁盘不动。
+  const stale = await handler('file-write', { address: fileAddress('note.md'), text: 'stale\n', version: read.value.version })
+  assert.deepEqual(stale, { ok: false, error: 'file-stale' })
+  assert.equal(await readFile(file, 'utf8'), 'after\n')
+
+  // force = 冲突横幅上的「用我的内容覆盖」：不带版本守卫也能落盘。
+  const forced = await handler('file-write', { address: fileAddress('note.md'), text: 'forced\n', version: read.value.version, force: true })
+  assert.equal(forced.ok, true)
+  assert.equal(await readFile(file, 'utf8'), 'forced\n')
+
+  // payload 校验：缺文本 / 缺版本（且没 force）/ 超上限。
+  assert.deepEqual(await handler('file-write', { address: fileAddress('note.md'), version: 'v' }), { ok: false, error: 'invalid-payload' })
+  assert.deepEqual(await handler('file-write', { address: fileAddress('note.md'), text: 'x' }), { ok: false, error: 'invalid-payload' })
+  assert.deepEqual(await handler('file-write', { address: fileAddress('note.md'), text: 'x'.repeat(2 * 1024 * 1024 + 1), version: 'v' }), { ok: false, error: 'too-large' })
+  assert.equal(await readFile(file, 'utf8'), 'forced\n')
+
+  // 只读沙箱策略：写被拒（不落盘），读仍然可用。
+  const readOnlyWorkspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-readonly-'))
+  t.after(() => rm(readOnlyWorkspace, { recursive: true, force: true }))
+  await writeFile(join(readOnlyWorkspace, 'note.md'), 'keep\n')
+  const readOnlyHost = createHost({ services: createFileEditorFixture(readOnlyWorkspace, { mode: 'read-only' }).services })
+  const readOnlyRead = await readOnlyHost.handler('file-read', { address: fileAddress('note.md') })
+  assert.equal(readOnlyRead.ok, true)
+  assert.deepEqual(await readOnlyHost.handler('file-write', { address: fileAddress('note.md'), text: 'nope\n', version: readOnlyRead.value.version }), { ok: false, error: 'file-forbidden' })
+  assert.equal(await readFile(join(readOnlyWorkspace, 'note.md'), 'utf8'), 'keep\n')
 })
