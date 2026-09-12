@@ -8958,14 +8958,19 @@ test('right-Sidebar editor loads through its own RPC, tracks dirtiness, saves wi
   assert.deepEqual(write.payload, { address: FILE_EDITOR_ADDRESS, text: 'hello world\n', version: 'v1', force: false })
   assert.match(renderer.text('sidebar.right.tab.document'), /已保存/)
   assert.equal(renderer.findByTestId('file-editor-save').props.disabled, true)
-  // 保存后「撤销保存」可用（未脏），点它把 before 写回去。
+  // 保存后「撤销保存」可用（未脏）：点它先出确认面板，主操作把 before 写回去。
   const undoButton = renderer.findByTestId('file-editor-undo')
   assert.equal(undoButton.props.disabled, false)
   undoButton.props.onClick()
   await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), true)
+  renderer.findByTestId('file-editor-confirm-save').props.onClick()
+  await renderer.flush()
   const undoWrite = calls.filter((call) => call.endpoint === 'file-write')[1]
   assert.deepEqual(undoWrite.payload, { address: FILE_EDITOR_ADDRESS, text: 'hello\n', version: 'v2', force: false })
   assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello\n')
+  // 撤销不再挂新的撤销项：不做「撤销的撤销」。
+  assert.equal(renderer.hasTest('file-editor-undo'), false)
 })
 
 test('right-Sidebar editor turns a stale save into a conflict banner with reload and overwrite exits', async () => {
@@ -9019,6 +9024,282 @@ test('right-Sidebar editor turns a stale save into a conflict banner with reload
   assert.equal(renderer.hasTest('file-editor-conflict'), false)
   assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'hello\n')
   assert.equal(renderer.findByTestId('file-editor-save').props.disabled, true)
+})
+
+test('right-Sidebar editor keeps newer typing alive while a save is in flight', async () => {
+  const calls = []
+  let releaseWrite
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve })
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'base\n', version: 'v1', path: '/ws/note.md', bytes: 5 } }
+    if (endpoint === 'file-write') {
+      await writeGate
+      return { ok: true, value: { version: 'v2', operation: 'update', bytes: payload.text.length, before: 'base\n', path: '/ws/note.md' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'base\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'base\nA\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  // 保存在途：状态「保存中」，期间继续输入 B。
+  await renderer.flush()
+  assert.match(renderer.text('sidebar.right.tab.document'), /保存中/)
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'base\nA\nB\n' } })
+  await renderer.flush()
+  releaseWrite()
+  await renderer.flush()
+
+  // 响应只确认提交的 A；B 原样保留为未保存，绝不误报「已保存」。
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'base\nA\nB\n')
+  assert.match(renderer.text('sidebar.right.tab.document'), /未保存/)
+  assert.doesNotMatch(renderer.text('sidebar.right.tab.document'), /已保存/)
+  const save = calls.filter((call) => call.endpoint === 'file-write')[0]
+  assert.equal(save.payload.text, 'base\nA\n')
+
+  // 再次保存把最新草稿落盘；在途期间重入被忽略（不产生第二份并发写）。
+  assert.equal(renderer.findByTestId('file-editor-save').props.disabled, false)
+  renderer.findByTestId('file-editor-save').props.onClick()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  const writes = calls.filter((call) => call.endpoint === 'file-write')
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1].payload.text, 'base\nA\nB\n')
+  releaseWrite?.()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'base\nA\nB\n')
+})
+
+test('right-Sidebar editor overwrite after a conflict submits the latest draft, not the rejected snapshot', async () => {
+  const calls = []
+  let stale = true
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'base\n', version: 'v1', path: '/ws/note.md', bytes: 5 } }
+    if (endpoint === 'file-write') {
+      if (stale === true && payload.force !== true) return { ok: false, error: 'file-stale' }
+      return { ok: true, value: { version: 'v9', operation: 'update', bytes: payload.text.length, before: 'disk\n', path: '/ws/note.md' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'base\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'rejected draft\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-conflict'), true)
+
+  // 冲突出现后继续修改：覆盖必须用编辑器当前内容，而不是被拒绝时的快照。
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'rejected draft\n+ later tweak\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-conflict-overwrite').props.onClick()
+  await renderer.flush()
+  const overwrite = calls.filter((call) => call.endpoint === 'file-write')[1]
+  assert.equal(overwrite.payload.force, true)
+  assert.equal(overwrite.payload.text, 'rejected draft\n+ later tweak\n')
+  assert.equal(renderer.hasTest('file-editor-conflict'), false)
+})
+
+test('right-Sidebar editor undo asks for confirmation, can be cancelled, and reports a stale undo without force', async () => {
+  const calls = []
+  let staleNextSave = false
+  let staleNextUndo = false
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'base\n', version: 'v1', path: '/ws/note.md', bytes: 5 } }
+    if (endpoint === 'file-write') {
+      const isUndo = payload.text === 'base\n'
+      if (payload.force !== true && ((isUndo === true && staleNextUndo === true) || (isUndo !== true && staleNextSave === true))) {
+        return { ok: false, error: 'file-stale' }
+      }
+      // 撤销（写回 base）产出 v3；普通保存产出 v2。
+      return { ok: true, value: { version: isUndo === true ? 'v3' : 'v2', operation: 'update', bytes: payload.text.length, before: isUndo === true ? 'edited\n' : 'base\n', path: '/ws/note.md' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'base\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'edited\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('sidebar.right.tab.document'), /已保存/)
+
+  // 确认面板：取消回到编辑（内容不变），也不发任何写请求。
+  renderer.findByTestId('file-editor-undo').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), true)
+  const writesBefore = calls.filter((call) => call.endpoint === 'file-write').length
+  renderer.findByTestId('file-editor-confirm-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), false)
+  assert.equal(calls.filter((call) => call.endpoint === 'file-write').length, writesBefore)
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'edited\n')
+
+  // 确认后撤销：带版本守卫把 before 写回，撤销项消失（不做撤销的撤销）。
+  renderer.findByTestId('file-editor-undo').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-confirm-save').props.onClick()
+  await renderer.flush()
+  const undoWrite = calls.filter((call) => call.endpoint === 'file-write')[1]
+  assert.deepEqual(undoWrite.payload, { address: FILE_EDITOR_ADDRESS, text: 'base\n', version: 'v2', force: false })
+  assert.equal(renderer.hasTest('file-editor-undo'), false)
+
+  // 第二次保存成功后再撤销，且撤销时磁盘已再变化（file-stale）：绝无 force 覆盖出口，
+  // 只给重新加载与关闭——撤销不能把更老的回滚内容无条件压过磁盘新改动。
+  staleNextUndo = true
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'second edit\n' } })
+  await renderer.flush()
+  renderer.findByTestId('file-editor-save').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-conflict'), false)
+  assert.equal(renderer.hasTest('file-editor-undo'), true)
+  renderer.findByTestId('file-editor-undo').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-confirm-save').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-undo-conflict'), true)
+  assert.equal(renderer.hasTest('file-editor-conflict-overwrite'), false)
+  renderer.findByTestId('file-editor-undo-conflict-dismiss').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-undo-conflict'), false)
+})
+
+test('right-Sidebar editor confirms before leaving with unsaved changes and can save-and-back', async () => {
+  const calls = []
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'base\n', version: 'v1', path: '/ws/note.md', bytes: 5 } }
+    return { ok: true, value: { version: 'v2', operation: 'update', bytes: payload.text.length, before: 'base\n', path: '/ws/note.md' } }
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'base\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  // 未保存时点「预览」：先出确认面板，取消后编辑器仍在、草稿保留。
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'draft\n' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('file-editor-preview').props.disabled, false)
+  renderer.findByTestId('file-editor-preview').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), true)
+  renderer.findByTestId('file-editor-confirm-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), false)
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'draft\n')
+
+  // 保存并返回：提交当前草稿（菜单切换在桩环境不可观察，只验证写盘与面板收起）。
+  renderer.findByTestId('file-editor-preview').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), true)
+  renderer.findByTestId('file-editor-confirm-save').props.onClick()
+  await renderer.flush()
+  const save = calls.filter((call) => call.endpoint === 'file-write')[0]
+  assert.equal(save.payload.text, 'draft\n')
+  assert.equal(save.payload.version, 'v1')
+  assert.equal(renderer.hasTest('file-editor-confirm'), false)
+  // 编辑器仍在（桩环境无法切官方档位），内容已保存。
+  assert.match(renderer.text('sidebar.right.tab.document'), /已保存/)
+
+  // 保存完成后再点「预览」：内容与基线一致，直接尝试切换、不弹确认。
+  const confirmsBefore = renderer.hasTest('file-editor-confirm')
+  renderer.findByTestId('file-editor-preview').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-confirm'), confirmsBefore)
+})
+
+test('right-Sidebar editor header entries target their own pane menu and ambiguous menus never fire', async () => {
+  const makeNode = (text) => ({
+    textContent: text,
+    removed: false,
+    clicks: 0,
+    attrs: {},
+    listeners: {},
+    style: {},
+    setAttribute(name, value) { this.attrs[name] = value },
+    addEventListener(type, listener) { this.listeners[type] = listener },
+    click() { this.clicks += 1 },
+    remove() { this.removed = true },
+  })
+  // 双 pane：两个 pane 各有下拉钮与自己的 pane 容器（querySelector 只返回自己的钮）。
+  const itemsPane1 = ['Markdown', '编辑'].map(makeNode)
+  const itemsPane2 = ['Markdown', '编辑'].map(makeNode)
+  const menuPane1 = makeNode('Markdown')
+  const menuPane2 = makeNode('Markdown')
+  const pane1 = { injected: [], insertBefore(node, reference) { this.injected.push(node); node.parentNode = this }, querySelector: (selector) => (selector === '[data-document-viewer-menu]' ? menuPane1 : null) }
+  const pane2 = { injected: [], insertBefore(node, reference) { this.injected.push(node); node.parentNode = this }, querySelector: (selector) => (selector === '[data-document-viewer-menu]' ? menuPane2 : null) }
+  menuPane1.parentNode = pane1
+  menuPane2.parentNode = pane2
+  const doc = {
+    documentElement: {},
+    querySelectorAll(selector) {
+      if (selector === '[data-document-viewer-menu]') return [menuPane1, menuPane2]
+      return []
+    },
+    createElement: () => makeNode(''),
+  }
+  const previousDocument = globalThis.document
+  const previousObserver = globalThis.MutationObserver
+  globalThis.document = doc
+  globalThis.MutationObserver = class { observe() {} disconnect() {} }
+  try {
+    const { renderer } = createFileEditorRenderer(async () => ({ ok: true, value: {} }), { mountOnly: [] })
+    await renderer.load()
+    await renderer.flush()
+    // 每个 pane 头部各注入一个按钮。
+    const buttons = [...pane1.injected, ...pane2.injected]
+    assert.equal(buttons.length, 2)
+
+    // 双 pane 下没有「就地命中」：点 pane2 的按钮只能开 pane2 自己的下拉。
+    void itemsPane1
+    void itemsPane2
+    buttons[1].listeners.click({ preventDefault() {}, stopPropagation() {} })
+    assert.equal(menuPane2.clicks, 1)
+    assert.equal(menuPane1.clicks, 0)
+
+    // 功能关闭卸载按钮，未决重试一并作废（守卫取消）。
+    await renderer.setFeature('fileEditor', false)
+    assert.equal(buttons.every((node) => node.removed === true), true)
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    if (previousObserver === undefined) delete globalThis.MutationObserver
+    else globalThis.MutationObserver = previousObserver
+  }
+})
+
+test('right-Sidebar editor survives unrelated feature toggles without dropping the draft', async () => {
+  const { renderer } = createFileEditorRenderer(async (channel, endpoint) => {
+    if (endpoint === 'file-read') return { ok: true, value: { text: 'base\n', version: 'v1', path: '/ws/note.md', bytes: 5 } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: { 'sidebar.right.tab.document': { resourceAddress: FILE_EDITOR_ADDRESS, content: { kind: 'text', text: 'base\n', pages: [], eof: true }, wrap: true } },
+  })
+
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('file-editor-textarea').props.onChange({ target: { value: 'draft kept\n' } })
+  await renderer.flush()
+  // 无关功能开关更新：编辑器正文不得卸载重挂，草稿原地保留。
+  await renderer.setFeature('mobileAdaptation', true)
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('file-editor-textarea').props.value, 'draft kept\n')
+  // fileEditor 自身关闭才真正卸载。
+  await renderer.setFeature('fileEditor', false)
+  await renderer.flush()
+  assert.equal(renderer.hasTest('file-editor-textarea'), false)
 })
 
 test('right-Sidebar editor renders each failure code through its dictionary entry and retries', async () => {
@@ -9081,6 +9362,8 @@ test('right-Sidebar editor injects a header entry button that selects its render
   const parent = {
     injected: [],
     insertBefore(node, reference) { this.injected.push({ node, reference }); node.parentNode = this; this.reference = reference },
+    // pane 容器：findViewerMenuForNode 沿祖先就近定位自己 pane 的下拉钮。
+    querySelector(selector) { return selector === '[data-document-viewer-menu]' ? menu : null },
   }
   menu.parentNode = parent
   const injectedButtons = () => parent.injected.map((entry) => entry.node)
@@ -9147,9 +9430,10 @@ test('right-Sidebar editor injects a header entry button that selects its render
     assert.equal(id, '@gehennawu/dsh-service/editor')
     assert.equal(attr, 'data-dshsvc-editor-entry')
     assert.ok(extensions.includes('md'))
-    assert.equal(selectViewerItem(doc, () => true), true)
-    assert.equal(selectViewerItem({ querySelector: () => null, querySelectorAll: () => [] }, () => true), false)
-    assert.equal(selectViewerItem(null, () => true), false)
+    // 新契约：menu 必须由调用方显式给出（所属 pane 的下拉钮），缺失一律安全失败。
+    assert.equal(selectViewerItem(doc, () => true, { menu }), true)
+    assert.equal(selectViewerItem(doc, () => true), false)
+    assert.equal(selectViewerItem(null, () => true, { menu }), false)
   } finally {
     if (previousDocument === undefined) delete globalThis.document
     else globalThis.document = previousDocument
@@ -9227,7 +9511,7 @@ test('right-Sidebar editor retries an asynchronously mounted viewer menu instead
     const { selectViewerItem } = renderer.moduleExports().fileEditor
 
     // 菜单还没挂载：同步返回 false，并排下一次重试（不把下拉钮来回开合）。
-    assert.equal(selectViewerItem(doc, (text) => text === '编辑'), false)
+    assert.equal(selectViewerItem(doc, (text) => text === '编辑', { menu }), false)
     assert.equal(timers.length, 1)
     let clicks = 0
     items.push({ textContent: '编辑', click() { clicks += 1 } })
@@ -9236,9 +9520,13 @@ test('right-Sidebar editor retries an asynchronously mounted viewer menu instead
 
     // 菜单已开时直接就地点中，不再排定时器。
     const before = timers.length
-    assert.equal(selectViewerItem(doc, (text) => text === '编辑'), true)
+    assert.equal(selectViewerItem(doc, (text) => text === '编辑', { menu }), true)
     assert.equal(timers.length, before)
     assert.equal(clicks, 2)
+
+    // 活性守卫：入口引擎销毁后，未决的重试定时器不再点击任何菜单项。
+    assert.equal(selectViewerItem(doc, (text) => text === '编辑', { menu, isAlive: () => false }), false)
+    assert.equal(timers.length, before)
   } finally {
     globalThis.setTimeout = realSetTimeout
     if (previousDocument === undefined) delete globalThis.document

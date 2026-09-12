@@ -621,7 +621,7 @@ async function resolveFileEditorTarget(ctx, address) {
   const cwd = typeof session?.header?.cwd === 'string' && session.header.cwd !== '' ? session.header.cwd : undefined
   if (session === undefined || cwd === undefined) return { ok: false, failure: fileEditorFailure('session-not-live') }
   const fs = ctx.get('fs')
-  if (fs === undefined || typeof fs.resolve !== 'function' || typeof fs.readText !== 'function' || typeof fs.writeText !== 'function') {
+  if (fs == null || typeof fs.resolve !== 'function' || typeof fs.stat !== 'function' || typeof fs.readText !== 'function' || typeof fs.writeText !== 'function') {
     return { ok: false, failure: fileEditorFailure('unavailable') }
   }
   let target
@@ -631,8 +631,37 @@ async function resolveFileEditorTarget(ctx, address) {
     return { ok: false, failure: fileEditorFailure(fileEditorErrorCode(error, 'invalid-address')) }
   }
   const sandbox = ctx.get('sandboxPolicy')
-  const policy = typeof sandbox?.resolve === 'function' ? sandbox.resolve({ session }) : undefined
+  // A resource address is not a permission grant. Never fall back to an
+  // unscoped filesystem policy when the session policy service is absent.
+  if (typeof sandbox?.resolve !== 'function') return { ok: false, failure: fileEditorFailure('unavailable') }
+  const policy = sandbox.resolve({ session })
+  if (policy == null || !['read-only', 'workspace-write', 'danger-full-access'].includes(policy.mode)) {
+    return { ok: false, failure: fileEditorFailure('unavailable') }
+  }
   return { ok: true, fs, target, policy, sessionId: parsed.sessionId, path: parsed.path }
+}
+
+// stat 与读取之间文件可能膨胀，而 readText 契约没有 maxBytes——优先走官方 streamText
+// 流式读取，累计字节超过上限立即中止（for-await 抛出会触发迭代器 return，后端负责关流），
+// 不给巨型文件整读进内存的机会；旧后端没有 streamText 时退回整读后校验（原有行为）。
+async function readBoundedFileText(fs, target) {
+  if (typeof fs.streamText !== 'function') {
+    const text = await fs.readText(target)
+    if (Buffer.byteLength(text, 'utf8') > FILE_EDITOR_MAX_BYTES) {
+      throw Object.assign(new Error('file too large'), { code: 'FS_TOO_LARGE' })
+    }
+    return text
+  }
+  let text = ''
+  let bytes = 0
+  for await (const chunk of await fs.streamText(target)) {
+    text += chunk
+    bytes += Buffer.byteLength(chunk, 'utf8')
+    if (bytes > FILE_EDITOR_MAX_BYTES) {
+      throw Object.assign(new Error('file too large'), { code: 'FS_TOO_LARGE' })
+    }
+  }
+  return text
 }
 
 async function assertSafeBackupTree(path) {
@@ -5805,7 +5834,7 @@ function apply(ctx) {
         if (info === undefined) return fileEditorFailure('file-not-found')
         if (info.type !== 'file') return fileEditorFailure('not-regular-file')
         if (typeof info.size === 'number' && info.size > FILE_EDITOR_MAX_BYTES) return fileEditorFailure('too-large')
-        const text = await fs.readText(target)
+        const text = await readBoundedFileText(fs, target)
         const bytes = Buffer.byteLength(text, 'utf8')
         if (bytes > FILE_EDITOR_MAX_BYTES) return fileEditorFailure('too-large')
         return { ok: true, value: { path: target.displayPath, text, version: info.version, bytes } }

@@ -62,20 +62,75 @@ window.__ModuleLoader__.load({
       return FILE_EDITOR_EXTENSION_TABLE.some((extension) => lower.endsWith('.' + extension) || lower === extension)
     }
     /**
+     * 从 pane 内节点（编辑器正文根 / 注入按钮）定位**所属 pane** 的官方下拉钮。
+     *
+     * 官方右栏支持双分栏，每个 pane 各有一份头部与 `[data-document-viewer-menu]`；
+     * 入口必须操作自己 pane 的下拉，「全文档取第一个」就是多 pane 选错文件档位的根因。
+     * 定位失败返回 null，由调用方安全失败（宁可不动作，也不操作别的 pane）。
+     * @param root - pane 内的任意元素节点。
+     * @returns 所属 pane 的下拉钮；无法确定所属时 null。
+     */
+    const findViewerMenuForNode = (root) => {
+      if (root === null || root === undefined) return null
+      try {
+        if (typeof root.closest === 'function') {
+          const pane = root.closest('[data-document-preview]')
+          if (pane !== null && pane !== undefined) {
+            const menu = pane.querySelector(VIEWER_MENU_SELECTOR)
+            if (menu !== null && menu !== undefined) return menu
+          }
+        }
+      } catch (_) {}
+      // 兜底：壳版本没有 data-document-preview 时沿祖先逐层就近找——第一个包含下拉钮
+      // 的祖先就是自己的 pane（分栏 pane 是兄弟节点，不会嵌套）。
+      try {
+        let node = typeof root.closest === 'function' ? root.parentElement : root.parentNode
+        const ownerDoc = docOrNull()
+        while (node !== null && node !== undefined && node !== ownerDoc) {
+          if (typeof node.querySelector !== 'function') break
+          const menu = node.querySelector(VIEWER_MENU_SELECTOR)
+          if (menu !== null && menu !== undefined) return menu
+          node = node.parentNode
+        }
+      } catch (_) {}
+      return null
+    }
+    /** 延迟选档位的活性守卫登记表：入口引擎 teardown 时统一作废未决重试。 */
+    const viewerSelectionGuards = new Set()
+    const createViewerSelectionGuard = () => {
+      const guard = { alive: true }
+      viewerSelectionGuards.add(guard)
+      return {
+        isAlive: () => guard.alive === true,
+        dispose: () => { guard.alive = false; viewerSelectionGuards.delete(guard) },
+      }
+    }
+    // 入口引擎当前守卫；startEditorEntries 装配时替换，销毁时作废。
+    let editorEntriesGuard = { isAlive: () => false, dispose: () => {} }
+    const cancelPendingViewerSelections = () => {
+      for (const guard of viewerSelectionGuards) guard.alive = false
+      viewerSelectionGuards.clear()
+    }
+    /**
      * 在官方渲染器下拉里选中一个档位。
      *
-     * 菜单是异步挂载的（官方 Menu 走 portal + 过渡）：点开下拉钮之后同一次同步查找必然落空，
-     * 所以这里做三段——① 菜单已开就地命中；② 否则点开下拉钮，再查一次；③ 仍没有就交给
-     * setTimeout 有界重试（12 × 60ms，只重试「找并点」，不再动下拉钮，避免把菜单来回开合）。
+     * 与旧版的关键差异：
+     * - `options.menu` 必须是调用方 pane 自己的下拉钮（经 findViewerMenuForNode 取得），
+     *   缺失即安全失败——绝不全局取第一个，杜绝多 pane 操作错面板；
+     * - `options.isAlive` 活性守卫：功能关闭 / 插件卸载后，未决的延迟点击一律作废；
+     * - 菜单条目仍全文档查找（官方 Menu portal 到 body，就近查不到），但打开动作只发生在
+     *   自己 pane 的下拉钮上：先关掉别的 pane 可能开着的菜单，portal 里留下的才是本 pane 条目；
+     *   就地命中仅在「全文档只有这一个下拉」时采用（此时任何已开 portal 都属于它）。
      * @param doc - 宿主 document（测试可传桩）。
      * @param match - 菜单项文案判定。
+     * @param options - `{ menu: 本 pane 下拉钮, isAlive: 活性守卫 }`。
      * @returns 是否已经点中（重试路径返回 false，由定时器继续）。
      */
-    const selectViewerItem = (doc, match) => {
-      if (doc === null) return false
-      let button = null
-      try { button = doc.querySelector(VIEWER_MENU_SELECTOR) } catch (_) { return false }
-      if (button === null || button === undefined) return false
+    const selectViewerItem = (doc, match, options = {}) => {
+      const menu = options?.menu
+      if (doc === null || menu === null || menu === undefined) return false
+      const alive = typeof options?.isAlive === 'function' ? options.isAlive : () => true
+      if (!alive()) return false
       const pick = () => queryAll(doc, VIEWER_ITEM_SELECTOR).find((item) => {
         // 官方 ⋯ 菜单的条目同样是 [role=menuitem]：必须跳过本插件自己的项，
         // 否则「点菜单项 → 找菜单项 → 又点自己」会自我递归。
@@ -86,24 +141,29 @@ window.__ModuleLoader__.load({
         try { item.click() } catch (_) { return false }
         return true
       }
-      const opened = pick()
-      if (opened !== undefined) return clickItem(opened)
-      try { button.click() } catch (_) { return false }
+      let anchorCount = 0
+      try { anchorCount = queryAll(doc, VIEWER_MENU_SELECTOR).length } catch (_) { anchorCount = 0 }
+      if (anchorCount <= 1) {
+        const opened = pick()
+        if (opened !== undefined) return clickItem(opened)
+      }
+      try { menu.click() } catch (_) { return false }
+      if (!alive()) return false
       const afterOpen = pick()
       if (afterOpen !== undefined) return clickItem(afterOpen)
       let remaining = 12
       const retry = () => {
-        if (remaining <= 0) return
+        if (remaining <= 0 || !alive()) return
         remaining -= 1
-        try {
-          setTimeout(() => {
-            try {
-              const late = pick()
-              if (late !== undefined) { clickItem(late); return }
-            } catch (_) {}
-            retry()
-          }, 60)
-        } catch (_) {}
+        if (typeof setTimeout !== 'function') return
+        setTimeout(() => {
+          if (!alive()) return
+          try {
+            const late = pick()
+            if (late !== undefined) { clickItem(late); return }
+          } catch (_) {}
+          retry()
+        }, 60)
       }
       retry()
       return false
@@ -899,6 +959,19 @@ window.__ModuleLoader__.load({
       'editor.conflict.body': '文件在打开后被其他改动覆盖（Agent 或其他窗口写入）。重新加载会丢弃你的修改，覆盖会把当前编辑内容直接写盘。',
       'editor.conflict.reload': '重新加载（丢弃修改）',
       'editor.conflict.overwrite': '用我的内容覆盖',
+      'editor.confirm.previewTitle': '返回预览',
+      'editor.confirm.previewBody': '有未保存的修改，返回官方预览将丢弃这些修改。',
+      'editor.confirm.saveBack': '保存并返回',
+      'editor.confirm.discardBack': '丢弃并返回',
+      'editor.confirm.reloadTitle': '重新加载',
+      'editor.confirm.reloadBody': '有未保存的修改，重新加载将丢弃这些修改并读取磁盘当前内容。',
+      'editor.confirm.reloadGo': '丢弃并重新加载',
+      'editor.confirm.undoTitle': '撤销保存',
+      'editor.confirm.undoBody': '将把文件恢复为本次保存之前的内容；未保存的修改会一并丢弃。',
+      'editor.confirm.cancel': '继续编辑',
+      'editor.undoConflict.title': '无法自动撤销',
+      'editor.undoConflict.body': '磁盘内容在本次保存之后又发生了变化，不能自动恢复为保存前内容；可重新加载查看当前内容。',
+      'editor.undoConflict.dismiss': '关闭',
       'editor.readonlyHint': '只读',
       'editor.retry': '重试',
       'editor.error.file-not-found': '文件不存在（可能已被移动或删除）。',
@@ -1694,6 +1767,19 @@ window.__ModuleLoader__.load({
       'editor.conflict.body': 'Another change (an Agent or another window) overwrote this file after it was opened. Reload discards your edits; overwrite writes the current editor content to disk.',
       'editor.conflict.reload': 'Reload (discard edits)',
       'editor.conflict.overwrite': 'Overwrite with mine',
+      'editor.confirm.previewTitle': 'Back to preview',
+      'editor.confirm.previewBody': 'You have unsaved changes; going back to the preview discards them.',
+      'editor.confirm.saveBack': 'Save & back',
+      'editor.confirm.discardBack': 'Discard & back',
+      'editor.confirm.reloadTitle': 'Reload',
+      'editor.confirm.reloadBody': 'You have unsaved changes; reloading discards them and reads the current disk content.',
+      'editor.confirm.reloadGo': 'Discard & reload',
+      'editor.confirm.undoTitle': 'Undo save',
+      'editor.confirm.undoBody': 'This restores the file to its content before the last save; unsaved changes are discarded as well.',
+      'editor.confirm.cancel': 'Keep editing',
+      'editor.undoConflict.title': 'Cannot undo automatically',
+      'editor.undoConflict.body': 'The file changed on disk again after your save, so the previous content cannot be restored automatically; reload to see the current content.',
+      'editor.undoConflict.dismiss': 'Dismiss',
       'editor.readonlyHint': 'Read-only',
       'editor.retry': 'Retry',
       'editor.error.file-not-found': 'The file does not exist (it may have been moved or deleted).',
@@ -7980,7 +8066,9 @@ window.__ModuleLoader__.load({
           button.addEventListener('click', (event) => {
             try { event?.preventDefault?.() } catch (_) {}
             try { event?.stopPropagation?.() } catch (_) {}
-            selectViewerItem(doc, (text) => text === label)
+            // 只操作自己 pane 的下拉：双分栏下绝不允许全局取第一个（会切错别的文件）。
+            // 守卫随入口引擎销毁——功能关闭/插件卸载后，未决的延迟重试全部作废。
+            selectViewerItem(doc, (text) => text === label, { menu: findViewerMenuForNode(button), isAlive: () => editorEntriesGuard.isAlive() })
           })
           parent.insertBefore(button, menu)
           editorEntries.push({ menu, button })
@@ -7988,6 +8076,7 @@ window.__ModuleLoader__.load({
       }
       /** 起观察：DOM 变化（换标签、切档位、开关功能）后按微任务合并重扫一次。 */
       const startEditorEntries = () => {
+        editorEntriesGuard = createViewerSelectionGuard()
         syncEditorEntries()
         // 语言切换不换 DOM 结构，观察者不会响：显式订阅 locale 刷新按钮文案。
         let disposeLocale = () => {}
@@ -8019,6 +8108,9 @@ window.__ModuleLoader__.load({
           try { observer?.disconnect() } catch (_) {}
           disposeLocale()
           disposeEditorEntries()
+          // 作废未决的选档位重试：功能关闭 / 卸载后，延迟定时器不得再点任何菜单。
+          editorEntriesGuard.dispose()
+          cancelPendingViewerSelections()
         }
       }
 
@@ -8034,8 +8126,9 @@ window.__ModuleLoader__.load({
         const address = typeof props?.tab?.contentId === 'string' ? props.tab.contentId : ''
         if (!address.startsWith('dsh-resource://file/') || !editorExtensionMatches(address)) return null
         const doc = docOrNull()
-        const viewer = doc === null ? null : queryAll(doc, VIEWER_MENU_SELECTOR)[0]
-        if (viewer !== undefined && viewer !== null && textOfNode(viewer) === translate('editor.viewer')) return null
+        const viewers = doc === null ? [] : queryAll(doc, VIEWER_MENU_SELECTOR)
+        // 任一 pane 已在编辑档位就不露出（单 pane 与旧行为一致；多 pane 从保守）。
+        if (viewers.some((viewer) => textOfNode(viewer) === translate('editor.viewer'))) return null
         return React.createElement('button', {
           type: 'button',
           role: 'menuitem',
@@ -8043,7 +8136,12 @@ window.__ModuleLoader__.load({
           [EDITOR_MENU_ITEM_ATTR]: '',
           onClick: () => {
             try { props?.dismiss?.() } catch (_) {}
-            selectViewerItem(docOrNull(), (text) => text === translate('editor.viewer'))
+            // 多 pane 时菜单项无法可靠映射到所属 pane 的下拉（portal 菜单拿不到 tab 的 pane 根），
+            // 唯一锚点才执行，歧义时宁可不动作——这是头部按钮之外的冗余路径，不需要激进兜底。
+            const clickDoc = docOrNull()
+            const anchors = clickDoc === null ? [] : queryAll(clickDoc, VIEWER_MENU_SELECTOR)
+            if (anchors.length !== 1) return
+            selectViewerItem(clickDoc, (text) => text === translate('editor.viewer'), { menu: anchors[0], isAlive: () => editorEntriesGuard.isAlive() })
           },
           style: {
             display: 'block',
@@ -8063,10 +8161,11 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 「编辑」档位的正文：等宽 textarea + 保存/重载/撤销 + 冲突横幅。
+       * 「编辑」档位的正文：等宽 textarea + 保存/重载/撤销 + 冲突横幅与内联确认。
        *
-       * 首版刻意不做语法高亮、多光标与查找替换——插件半没有打包器，借不到编辑器组件；
-       * 官方工具栏的重新加载会换掉 props.content，未脏时静默重读，脏时留给保存时的版本守卫。
+       * 交互基线（v1.6 审查后）：保存期间允许继续输入，响应只确认提交内容；冲突覆盖取
+       * 编辑器当前草稿；离开/重读/撤销遇未保存内容先内联确认。首版刻意不做语法高亮、
+       * 多光标与查找替换——插件半没有打包器，借不到编辑器组件。
        */
       function FileEditorBody(props) {
         const translate = useTranslation()
@@ -8079,28 +8178,43 @@ window.__ModuleLoader__.load({
         const [notice, setNotice] = React.useState('')
         const [conflict, setConflict] = React.useState(null)
         const [undo, setUndo] = React.useState(null)
+        const [confirm, setConfirm] = React.useState(null)
         // 请求代次：切文件 / 重新加载 / 保存都会作废在途响应，避免过期结果覆盖新状态。
         const requestRef = React.useRef(0)
         const contentRef = React.useRef(officialContent)
+        // 延迟 RPC 回调必须对齐「最新本地状态」而不是发起请求时的快照：保存期间允许继续
+        // 输入，响应只能确认提交的内容，绝不能清掉更晚的草稿。以下 ref 经包装 setter 同步。
+        const docRef = React.useRef(doc)
+        const draftRef = React.useRef(null)
+        const busyRef = React.useRef(false)
+        const undoRef = React.useRef(null)
+        const rootRef = React.useRef(null)
+        const textareaRef = React.useRef(null)
+        const setDocValue = (value) => { docRef.current = value; setDoc(value) }
+        const setDraftValue = (value) => { draftRef.current = value; setDraft(value) }
+        const setBusyValue = (value) => { busyRef.current = value; setBusy(value) }
+        const setUndoValue = (value) => { undoRef.current = value; setUndo(value) }
         const beginRequest = () => { requestRef.current += 1; return requestRef.current }
         const isCurrent = (id) => requestRef.current === id
 
         const load = () => {
+          // 写盘在途时禁止重读：重读会作废在途保存回调，磁盘结果与界面从此对不上。
+          if (busyRef.current === true) return
           const id = beginRequest()
-          setDoc({ phase: 'loading', text: '', version: '', path: '', bytes: 0, error: '' })
-          setDraft(null)
+          setDocValue({ phase: 'loading', text: '', version: '', path: '', bytes: 0, error: '' })
+          setDraftValue(null)
           setConflict(null)
-          setUndo(null)
+          setUndoValue(null)
           setNotice('')
-          setBusy(false)
+          setBusyValue(false)
           rpcCall('file-read', { address }).then((result) => {
             if (!isCurrent(id)) return
             if (!result || result.ok !== true) {
-              setDoc({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: typeof result?.error === 'string' ? result.error : 'internal' })
+              setDocValue({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: typeof result?.error === 'string' ? result.error : 'internal' })
               return
             }
             const value = result.value || {}
-            setDoc({
+            setDocValue({
               phase: 'ready',
               text: typeof value.text === 'string' ? value.text : '',
               version: typeof value.version === 'string' ? value.version : '',
@@ -8110,45 +8224,68 @@ window.__ModuleLoader__.load({
             })
           }).catch(() => {
             if (!isCurrent(id)) return
-            setDoc({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: 'internal' })
+            setDocValue({ phase: 'error', text: '', version: '', path: '', bytes: 0, error: 'internal' })
           })
         }
 
-        /** 写盘：force=true 是冲突横幅上的「用我的内容覆盖」（不带版本守卫）。 */
-        const write = (text, version, force) => {
+        /**
+         * 写盘。kind：'save' 用户保存 / 冲突覆盖；'undo' 撤销本次保存（不产生新的撤销项）。
+         *
+         * 响应只确认 submittedText 这份提交内容：发起请求之后用户继续输入的草稿（draftRef）
+         * 与提交内容不同时原样保留为「未保存」，绝不覆盖、不误报已保存。
+         */
+        const write = (submittedText, version, options = {}) => {
+          const kind = options?.kind === 'undo' ? 'undo' : 'save'
+          if (busyRef.current === true) return
+          if (typeof submittedText !== 'string') return
           const id = beginRequest()
-          setBusy(true)
+          setBusyValue(true)
           setNotice('')
-          rpcCall('file-write', { address, text, version, force: force === true }).then((result) => {
+          rpcCall('file-write', { address, text: submittedText, version, force: options?.force === true }).then((result) => {
             if (!isCurrent(id)) return
-            setBusy(false)
+            setBusyValue(false)
             if (!result || result.ok !== true) {
-              const code = typeof result?.error === 'string' ? result.error : 'internal'
+              const errorCode = typeof result?.error === 'string' ? result.error : 'internal'
               // 版本冲突不是错误而是待用户裁决的状态：进横幅，不写顶部错误行。
-              if (code === 'file-stale') {
-                setConflict({ text, version })
+              // 撤销保存遇到冲突绝不提供无条件覆盖——那会把更老的回滚内容压过磁盘新改动。
+              if (errorCode === 'file-stale') {
+                setConflict({ kind })
                 return
               }
-              setNotice(code)
+              setNotice(errorCode)
               return
             }
             const value = result.value || {}
-            setDoc({
+            const newVersion = typeof value.version === 'string' && value.version !== '' ? value.version : (typeof version === 'string' ? version : '')
+            const previous = docRef.current
+            setDocValue({
               phase: 'ready',
-              text,
-              version: typeof value.version === 'string' ? value.version : version,
-              path: typeof value.path === 'string' ? value.path : doc.path,
-              bytes: Number.isFinite(value.bytes) ? value.bytes : doc.bytes,
+              text: submittedText,
+              version: newVersion,
+              path: typeof value.path === 'string' && value.path !== '' ? value.path : previous.path,
+              bytes: Number.isFinite(value.bytes) ? value.bytes : previous.bytes,
               error: '',
             })
-            // 先记录后变更：宿主回传 before 即回滚状态，「撤销保存」把它写回去。
-            setUndo(typeof value.before === 'string' ? { text: value.before, version: typeof value.version === 'string' ? value.version : version } : null)
-            setDraft(null)
+            // 先记录后变更：宿主回传 before 即回滚状态；撤销本身不再挂新的撤销项（不做「撤销的撤销」）。
+            if (kind === 'undo') {
+              setUndoValue(null)
+            } else {
+              setUndoValue(typeof value.before === 'string' ? { text: value.before, version: newVersion } : null)
+            }
+            // 保存期间继续输入：草稿保留为未保存，只有内容与提交一致时才清空并报已保存。
+            const latestDraft = draftRef.current
+            if (latestDraft !== null && latestDraft !== submittedText) {
+              setConflict(null)
+              return
+            }
+            setDraftValue(null)
             setConflict(null)
             setNotice('saved')
+            // 「保存并返回」：本次提交就是用户最终内容时才真正返回；期间又输入了则留在编辑器。
+            if (options?.leaveAfter === 'preview') selectPreview()
           }).catch(() => {
             if (!isCurrent(id)) return
-            setBusy(false)
+            setBusyValue(false)
             setNotice('internal')
           })
         }
@@ -8160,19 +8297,23 @@ window.__ModuleLoader__.load({
           return () => { requestRef.current += 1 }
         }, [address])
 
-        // 官方工具栏的「重新加载」会换掉 content 引用：未脏时静默跟随重读，脏时不打扰用户
-        // （此时版本已过期，保存会走 file-stale 冲突横幅，由用户裁决）。
+        // 官方工具栏的「重新加载」会换掉 content 引用：草稿与磁盘基线一致（或没有草稿）时
+        // 静默跟随重读；有实际差异时不打扰用户（此时版本已过期，保存会走 file-stale 冲突
+        // 横幅，由用户裁决）。写盘在途时同样不跟随，避免作废在途保存。
         React.useEffect(() => {
           if (contentRef.current === officialContent) return
           contentRef.current = officialContent
-          if (draft !== null) return
+          if (busyRef.current === true) return
+          const latestDraft = draftRef.current
+          if (latestDraft !== null && latestDraft !== docRef.current.text) return
           load()
         }, [officialContent])
 
         const dirty = draft !== null && draft !== doc.text
         const code = doc.phase === 'error' ? doc.error : ''
-        const statusText = notice === 'saved' ? translate('editor.saved') : dirty ? translate('editor.unsaved') : ''
-        const statusColor = dirty ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
+        // 状态优先级：保存中 > 有未保存内容 > 刚保存完成。保存期间的新输入永远压过「已保存」。
+        const statusText = busy === true ? translate('editor.saving') : dirty === true ? translate('editor.unsaved') : notice === 'saved' ? translate('editor.saved') : ''
+        const statusColor = busy === true ? 'var(--dsw-alias-label-secondary)' : dirty === true ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
         const buttonStyle = (variant) => ({
           minHeight: '26px',
           padding: '2px 9px',
@@ -8191,6 +8332,39 @@ window.__ModuleLoader__.load({
           style: Object.assign(buttonStyle(variant), disabled === true ? { opacity: 0.5, cursor: 'default' } : {}),
         }, translate(labelKey))
 
+        // ── 离开保护与档位切换：全部经所属 pane 的下拉，定位失败宁可不动作 ─────────
+        const selectPreview = () => {
+          const menu = findViewerMenuForNode(rootRef.current)
+          if (menu === null || menu === undefined) return false
+          return selectViewerItem(docOrNull(), (text) => text !== translate('editor.viewer'), { menu, isAlive: () => editorEntriesGuard.isAlive() })
+        }
+        const cancelConfirm = () => {
+          setConfirm(null)
+          try { textareaRef.current?.focus?.() } catch (_) {}
+        }
+        const requestPreview = () => {
+          if (busyRef.current === true) return
+          if (dirty === true) { setConfirm('preview'); return }
+          selectPreview()
+        }
+        const requestReload = () => {
+          if (busyRef.current === true) return
+          if (dirty === true) { setConfirm('reload'); return }
+          load()
+        }
+        const requestUndo = () => {
+          if (busyRef.current === true || undo === null) return
+          setConfirm('undo')
+        }
+        const confirmUndo = () => {
+          const target = undoRef.current
+          setConfirm(null)
+          if (target === null || target === undefined) return
+          // 撤销会把磁盘恢复为保存前内容，确认面板已说明未保存修改会丢弃。
+          setDraftValue(null)
+          write(target.text, target.version, { kind: 'undo' })
+        }
+
         const header = React.createElement('div', {
           style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px' },
         },
@@ -8201,17 +8375,21 @@ window.__ModuleLoader__.load({
         }, doc.path !== '' ? doc.path : address),
         statusText !== '' ? React.createElement('span', {
           'data-testid': 'file-editor-status',
+          role: 'status',
+          'aria-live': 'polite',
           style: { flex: 'none', fontWeight: 600, color: statusColor },
         }, statusText) : null,
         React.createElement('span', { style: { display: 'flex', gap: '6px', marginLeft: 'auto', flex: 'none' } },
-          // 返回官方默认渲染器（下拉里第一个非本插件的档位）：编辑模式不是单向门。
-          action('file-editor-preview', 'editor.preview', () => selectViewerItem(docOrNull(), (text) => text !== translate('editor.viewer')), 'ghost', false),
-          // 「撤销保存」常驻（只要还有回滚状态）：脏时禁用——先决定当前修改，再谈回滚。
-          undo !== null ? action('file-editor-undo', 'editor.undo', () => write(undo.text, undo.version, false), 'ghost', busy || dirty) : null,
-          action('file-editor-reload', 'editor.reload', () => load(), 'ghost', busy),
-          action('file-editor-save', 'editor.save', () => write(draft, doc.version, false), 'primary', busy || !dirty)))
+          // 返回官方默认渲染器（本 pane 下拉里第一个非本插件的档位）：编辑模式不是单向门。
+          action('file-editor-preview', 'editor.preview', () => requestPreview(), 'ghost', busy),
+          // 「撤销保存」常驻（只要还有回滚状态）：先确认再写，撤销不做二次撤销。
+          undo !== null ? action('file-editor-undo', 'editor.undo', () => requestUndo(), 'ghost', busy) : null,
+          action('file-editor-reload', 'editor.reload', () => requestReload(), 'ghost', busy),
+          action('file-editor-save', 'editor.save', () => write(draftRef.current ?? doc.text, doc.version, { kind: 'save' }), 'primary', busy || !dirty)))
 
-        const conflictBanner = conflict === null ? null : React.createElement('div', {
+        // 保存版本冲突：重新加载（丢弃）或用编辑器**当前**内容覆盖——横幅出现后用户继续
+        // 修改的内容也算数，覆盖永远取最新草稿而不是被拒绝时的快照。
+        const saveConflictBanner = conflict !== null && conflict.kind === 'save' ? React.createElement('div', {
           'data-testid': 'file-editor-conflict',
           style: { margin: '8px 10px 0', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg, transparent)', fontSize: '12px', lineHeight: 1.6 },
         },
@@ -8219,7 +8397,36 @@ window.__ModuleLoader__.load({
         React.createElement('p', { style: { margin: '4px 0 8px', color: 'var(--dsw-alias-label-secondary)' } }, translate('editor.conflict.body')),
         React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           action('file-editor-conflict-reload', 'editor.conflict.reload', () => load(), 'ghost', busy),
-          action('file-editor-conflict-overwrite', 'editor.conflict.overwrite', () => write(conflict.text, doc.version, true), 'primary', busy)))
+          action('file-editor-conflict-overwrite', 'editor.conflict.overwrite', () => write(draftRef.current ?? doc.text, doc.version, { kind: 'save', force: true }), 'primary', busy))) : null
+
+        // 撤销保存遇到冲突：磁盘在保存后又变了，回滚内容不能无条件压上去——只给重载/关闭。
+        const undoConflictBanner = conflict !== null && conflict.kind === 'undo' ? React.createElement('div', {
+          'data-testid': 'file-editor-undo-conflict',
+          style: { margin: '8px 10px 0', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg, transparent)', fontSize: '12px', lineHeight: 1.6 },
+        },
+        React.createElement('div', { style: { fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('editor.undoConflict.title')),
+        React.createElement('p', { style: { margin: '4px 0 8px', color: 'var(--dsw-alias-label-secondary)' } }, translate('editor.undoConflict.body')),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          action('file-editor-undo-conflict-reload', 'editor.conflict.reload', () => load(), 'ghost', busy),
+          action('file-editor-undo-conflict-dismiss', 'editor.undoConflict.dismiss', () => setConflict(null), 'ghost', false))) : null
+
+        // 未保存离开 / 撤销的内联确认面板：取消回到编辑（焦点回 textarea），主操作按意图执行。
+        const confirmTitles = { preview: 'editor.confirm.previewTitle', reload: 'editor.confirm.reloadTitle', undo: 'editor.confirm.undoTitle' }
+        const confirmBodies = { preview: 'editor.confirm.previewBody', reload: 'editor.confirm.reloadBody', undo: 'editor.confirm.undoBody' }
+        const confirmPanel = confirm === null ? null : React.createElement('div', {
+          'data-testid': 'file-editor-confirm',
+          role: 'alertdialog',
+          'aria-label': translate(confirmTitles[confirm] ?? 'editor.confirm.previewTitle'),
+          style: { margin: '8px 10px 0', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsh-svc-raised-bg, transparent)', fontSize: '12px', lineHeight: 1.6 },
+        },
+        React.createElement('div', { style: { fontWeight: 700 } }, translate(confirmTitles[confirm] ?? 'editor.confirm.previewTitle')),
+        React.createElement('p', { style: { margin: '4px 0 8px', color: 'var(--dsw-alias-label-secondary)' } }, translate(confirmBodies[confirm] ?? 'editor.confirm.previewBody')),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          confirm === 'preview' ? action('file-editor-confirm-save', 'editor.confirm.saveBack', () => { setConfirm(null); write(draftRef.current ?? doc.text, doc.version, { kind: 'save', leaveAfter: 'preview' }) }, 'primary', busy) : null,
+          confirm === 'undo' ? action('file-editor-confirm-save', 'editor.undo', () => confirmUndo(), 'primary', busy) : null,
+          confirm === 'reload' ? action('file-editor-confirm-discard', 'editor.confirm.reloadGo', () => { setConfirm(null); load() }, 'primary', busy) : null,
+          confirm === 'preview' ? action('file-editor-confirm-discard', 'editor.confirm.discardBack', () => { setConfirm(null); selectPreview() }, 'ghost', false) : null,
+          action('file-editor-confirm-cancel', 'editor.confirm.cancel', () => cancelConfirm(), 'ghost', false)))
 
         const noticeLine = notice === '' || notice === 'saved' ? null : React.createElement('p', {
           'data-testid': 'file-editor-notice',
@@ -8234,14 +8441,15 @@ window.__ModuleLoader__.load({
               action('file-editor-retry', 'editor.retry', () => load(), 'ghost', false))
             : React.createElement('textarea', {
               'data-testid': 'file-editor-textarea',
+              ref: textareaRef,
               'aria-label': translate('editor.viewer'),
               value: draft !== null ? draft : doc.text,
               spellCheck: false,
-              onChange: (event) => setDraft(typeof event?.target?.value === 'string' ? event.target.value : ''),
+              onChange: (event) => setDraftValue(typeof event?.target?.value === 'string' ? event.target.value : ''),
               onKeyDown: (event) => {
                 if ((event?.ctrlKey === true || event?.metaKey === true) && (event?.key === 's' || event?.key === 'S')) {
                   event.preventDefault()
-                  if (!busy && dirty) write(draft, doc.version, false)
+                  if (busyRef.current !== true && dirty) write(draftRef.current ?? doc.text, doc.version, { kind: 'save' })
                 }
               },
               style: {
@@ -8266,10 +8474,13 @@ window.__ModuleLoader__.load({
 
         return React.createElement('div', {
           'data-dshsvc-editor': '',
+          ref: rootRef,
           style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: 'var(--dsw-alias-label-primary)' },
         },
         header,
-        conflictBanner,
+        confirmPanel,
+        saveConflictBanner,
+        undoConflictBanner,
         noticeLine,
         body,
         React.createElement('div', {
@@ -8328,10 +8539,16 @@ window.__ModuleLoader__.load({
         return () => { for (const dispose of disposers) { try { dispose() } catch (_) {} } }
       }
       ctx.effect(() => {
-        let teardown = setupFileEditor()
+        // 只在 fileEditor 开关值真正变化时才重挂：无关功能开关更新也会触发 featureScope
+        // 订阅，若不判值就整块卸载重挂，会把用户正开着的编辑器（连同未保存草稿）一起掀掉。
+        let lastEnabled = featureEnabled('fileEditor')
+        let teardown = lastEnabled === true ? setupFileEditor() : undefined
         const unsubscribe = featureScope.subscribe(() => {
+          const enabled = featureEnabled('fileEditor')
+          if (enabled === lastEnabled) return
+          lastEnabled = enabled
           if (typeof teardown === 'function') teardown()
-          teardown = setupFileEditor()
+          teardown = enabled === true ? setupFileEditor() : undefined
         })
         return () => {
           unsubscribe()

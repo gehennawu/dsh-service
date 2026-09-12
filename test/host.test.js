@@ -6968,6 +6968,48 @@ test('file editor target resolution refuses foreign addresses, dead sessions, an
   assert.deepEqual(await withoutFs.handler('file-read', { address: fileAddress('a.md') }), { ok: false, error: 'unavailable' })
 })
 
+test('file editor fails closed without a usable session sandbox policy', async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-policy-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const file = join(workspace, 'note.md')
+  await writeFile(file, 'keep\n')
+  for (const sandboxPolicy of [undefined, {}, { resolve: () => undefined }, { resolve: () => ({ mode: 'unknown' }) }]) {
+    const fixture = createFileEditorFixture(workspace, { sandboxPolicy: false })
+    fixture.services.sandboxPolicy = sandboxPolicy
+    const { handler } = createHost({ services: fixture.services })
+    assert.deepEqual(await handler('file-read', { address: fileAddress('note.md') }), { ok: false, error: 'unavailable' })
+    assert.deepEqual(await handler('file-write', { address: fileAddress('note.md'), text: 'replace', force: true }), { ok: false, error: 'unavailable' })
+    assert.equal(fixture.fileEditorFs.written.length, 0)
+    assert.equal(await readFile(file, 'utf8'), 'keep\n')
+  }
+})
+
+test('file-read bounds streaming reads at the 2 MiB cap and falls back to readText', async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-stream-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  await writeFile(join(workspace, 'note.md'), '# hi\n')
+  await writeFile(join(workspace, 'big.md'), 'x'.repeat(3 * 1024 * 1024))
+  const fixture = createFileEditorFixture(workspace)
+  const chunkSize = 1024 * 1024
+  // 流式替身：按官方 streamText 契约把真实文件内容按 1 MiB 分片产出。
+  fixture.services.fs.streamText = async (target) => (async function* generate() {
+    const content = await readFile(target.displayPath, 'utf8')
+    for (let offset = 0; offset < content.length; offset += chunkSize) {
+      yield content.slice(offset, offset + chunkSize)
+    }
+  })()
+  const { handler } = createHost({ services: fixture.services })
+  const read = await handler('file-read', { address: fileAddress('note.md') })
+  assert.equal(read.ok, true)
+  assert.equal(read.value.text, '# hi\n')
+  // stat 谎报小文件（替身 stat 按 size-mtime 报告真实大小），读取途中超过上限也必须中止。
+  assert.deepEqual(await handler('file-read', { address: fileAddress('big.md') }), { ok: false, error: 'too-large' })
+
+  // 无 streamText 的旧后端：整读后校验（原有行为，磁盘上的超大文件仍然拒绝）。
+  delete fixture.services.fs.streamText
+  assert.deepEqual(await handler('file-read', { address: fileAddress('big.md') }), { ok: false, error: 'too-large' })
+})
+
 test('file-read returns text, version and byte size, and reports each failure shape', async (t) => {
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-file-editor-read-'))
   t.after(() => rm(workspace, { recursive: true, force: true }))
