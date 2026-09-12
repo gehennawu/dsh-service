@@ -13,16 +13,81 @@ const MAX_QUOTA_CPA_CALLS = 12
 const QUOTA_CPA_CONCURRENCY = 3
 const MAX_QUOTA_CPA_WINDOWS = 64
 
+// 稳定错误码（客户端词典键）。传输层状态码是「具体原因」本身——401 凭据被拒 / 402 欠费 /
+// 404 路径变更 / 429 限流 / 5xx 上游故障互不相同，故 http-status/upstream-status 保留
+// `:状态码` 后缀原样下发（客户端取首段查词典、后缀单独展示；子代理「不可服务」判定
+// QUOTA_UNUSABLE_STATUS_RE 依赖 4xx 后缀）。其余码的 `:detail` 只是内部说明，仍按首段归一。
 function quotaErrorCode(error) {
   const raw = typeof error?.message === 'string' && error.message.length > 0 ? error.message : String(error ?? '')
   const colon = raw.indexOf(':')
-  return colon === -1 ? raw : raw.slice(0, colon)
+  if (colon === -1) return raw
+  const family = raw.slice(0, colon)
+  return family === 'http-status' || family === 'upstream-status' ? raw : family
 }
 
 function sanitizeQuotaErrorDetail(value) {
   if (typeof value !== 'string') return undefined
   const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
   return cleaned === '' ? undefined : cleaned.slice(0, MAX_QUOTA_ERROR_DETAIL)
+}
+
+// ─── 统一错误详情（errorDetail）─────────────────────────────────────────────
+// 各渠道的上游错误只有「原话」不同，取词规则一致：常见 message 字段优先，非 JSON
+// （CDN/网关 HTML 错误页）去标签退化。宿主绝不在详情里拼用户可见句子——状态码走错误码
+// 后缀、端点/账号走结构化字段，客户端按词典统一渲染。
+const QUOTA_ERROR_MESSAGE_KEYS = ['message', 'msg', 'detail', 'error_description', 'description', 'error']
+
+/** 上游错误载荷（对象或 JSON/纯文本）→ 一句人话；取不到返回 undefined。 */
+function quotaUpstreamErrorMessage(payload, depth = 0) {
+  if (typeof payload === 'string') {
+    const text = payload.trim()
+    if (text === '') return undefined
+    try {
+      const parsed = JSON.parse(text)
+      const fromJson = quotaUpstreamErrorMessage(parsed, depth + 1)
+      if (fromJson !== undefined) return fromJson
+    } catch (_) {}
+    // 非 JSON：去标签去空白，绝不把整页 HTML 塞进提示。
+    const flattened = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    return flattened === '' ? undefined : flattened
+  }
+  if (depth > 3 || payload === null || typeof payload !== 'object') return undefined
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = quotaUpstreamErrorMessage(item, depth + 1)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  for (const key of QUOTA_ERROR_MESSAGE_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+    const found = quotaUpstreamErrorMessage(payload[key], depth + 1)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+/** 详情脱敏：上游可能把请求头原样回显，凭据字面量（整头值与裸值）一律抹成 ***。 */
+function quotaRedactCredentialText(value, secrets) {
+  let redacted = typeof value === 'string' ? value : ''
+  for (const secret of Array.isArray(secrets) ? secrets : []) {
+    if (typeof secret !== 'string') continue
+    const whole = secret.trim()
+    if (whole.length < 8) continue
+    const bare = whole.replace(/^\S+\s+/, '')
+    for (const variant of new Set([whole, bare])) {
+      if (variant.length < 8) continue
+      redacted = redacted.split(variant).join('***')
+    }
+  }
+  return redacted
+}
+
+/** 上游错误正文 → 可直接下发的 errorDetail：归一成人话 + 凭据脱敏 + 长度上限。 */
+function quotaErrorDetailFromText(raw, secrets) {
+  const message = quotaUpstreamErrorMessage(raw)
+  if (message === undefined) return undefined
+  return sanitizeQuotaErrorDetail(quotaRedactCredentialText(message, secrets))
 }
 
 function quotaHostnameMatches(hostname, registeredHost) {
@@ -160,36 +225,63 @@ function createEndpointAdapter(options) {
       if (authorization === undefined) throw new Error('credential-missing')
       let lastError = null
       let parseFailure = null
+      // 多候选链（zai 国内/国际双域、stepfun 双域）才有「哪个域失败了」的歧义；单候选的端点
+      // 恒等于该 kind 唯一端点，附上只是噪音。状态码与上游原话由传输层挂在 error 上。
+      const annotate = (error, endpoint) => {
+        if (candidates.length > 1 && error !== null && typeof error === 'object' && error.endpoint === undefined) {
+          try { error.endpoint = new URL(endpoint).hostname } catch (_) {}
+        }
+        return error
+      }
       for (const endpoint of candidates) {
         let payload
         try {
           payload = await context.fetchJson(endpoint, authorization, { signal: context.signal })
         } catch (error) {
-          lastError = error
-          if ((error?.message === 'http-status:401' || error?.message === 'http-status:403') && candidates.length > 1) continue
-          throw error
+          lastError = annotate(error, endpoint)
+          // 401/403 换下一个候选（智谱双域 Key 不互通）；单候选或已是最后一个候选时不在此抛出，
+          // 一并交给链尾统一归入凭据类（错 key 要能就地重新填写，而不是丢一个状态码让用户猜）。
+          if (error?.status === 401 || error?.status === 403
+            || error?.message === 'http-status:401' || error?.message === 'http-status:403') continue
+          throw lastError
         }
         const normalized = adapter.normalize(payload)
         const windows = payloadWindows(normalized)
         if (windows === undefined) {
-          parseFailure ??= new Error('bad-payload:shape')
+          parseFailure ??= annotate(new Error('bad-payload:shape'), endpoint)
           lastError = parseFailure
           continue
         }
         if (windows.length === 0) {
           const error = new Error('bad-payload')
-          const detail = payload !== null && typeof payload === 'object'
+          const sanitize = context.sanitizeErrorDetail ?? sanitizeQuotaErrorDetail
+          // 业务信封（`{code!==0, msg}`）与 OpenAI 风格错误（`{error:{message}}`）两族；
+          // 只认这两族，成功信封里的 `message:"OK"` 之类不当错误原因透出。
+          const envelopeMessage = payload !== null && typeof payload === 'object'
             && Number(payload.code) !== 0 && typeof payload.msg === 'string'
-            ? (context.sanitizeErrorDetail ?? sanitizeQuotaErrorDetail)(payload.msg)
+            ? payload.msg
             : undefined
+          const upstreamMessage = payload !== null && typeof payload === 'object'
+            ? quotaUpstreamErrorMessage(payload.error)
+            : undefined
+          const detail = sanitize(envelopeMessage ?? upstreamMessage)
           if (detail !== undefined) error.detail = detail
-          parseFailure ??= error
+          parseFailure ??= annotate(error, endpoint)
           lastError = parseFailure
           continue
         }
         return payload
       }
-      throw parseFailure ?? lastError ?? new Error('bad-payload')
+      const failure = parseFailure ?? lastError ?? new Error('bad-payload')
+      // 上游 401/403 = 凭据本身被拒（key 写错/已失效/不属于该账号），与 Cookie 类渠道同一语义：
+      // 归入凭据类，行回 unconfigured 以便就地重新填写；上游原话与失败端点原样保留在详情里。
+      if (failure?.status === 401 || failure?.status === 403) {
+        const rejected = new Error('credential-rejected')
+        if (typeof failure.detail === 'string' && failure.detail !== '') rejected.detail = failure.detail
+        if (typeof failure.endpoint === 'string' && failure.endpoint !== '') rejected.endpoint = failure.endpoint
+        throw rejected
+      }
+      throw failure
     },
     normalize: options.normalize,
   }, {
@@ -861,6 +953,12 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
   const accountResults = new Map()
   const failures = []
   let callBudget = MAX_QUOTA_CPA_CALLS
+  // 失败条目携带「哪个账号 + 具体原因」：CPA 一行多账号，只回一个家族码用户无从下手。
+  const pushFailure = (accountIndex, code, extra) => {
+    const account = accounts[accountIndex]
+    const label = typeof account?.label === 'string' && account.label !== '' ? account.label : undefined
+    failures.push({ index: accountIndex, code, ...(label !== undefined ? { account: label } : {}), ...extra })
+  }
   const runAccount = async (account, accountIndex) => {
     for (const call of account.calls) {
       if (callBudget <= 0 || signal?.aborted === true) return
@@ -874,7 +972,8 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
           body: JSON.stringify({ auth_index: account.authIndex, method: call.method, url: call.url, header: call.header, data: call.data }),
         })
       } catch (error) {
-        failures.push({ index: accountIndex, code: quotaErrorCode(error) })
+        const detail = sanitizeQuotaErrorDetail(error?.detail)
+        pushFailure(accountIndex, quotaErrorCode(error), detail !== undefined ? { detail } : {})
         const fallback = cliproxFallbackWindows(account)
         if (fallback.length > 0) {
           accountResults.set(accountIndex, fallback)
@@ -887,7 +986,11 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         accountResults.set(accountIndex, parsed)
         return
       }
-      failures.push({ index: accountIndex, code: statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}` })
+      // 官方额度接口的错误原话（payload 里的 message/error.message 等）随失败条目带上，
+      // 200 但形状不认识时同样透出，别让用户对着一个状态码猜。
+      const upstreamDetail = quotaErrorDetailFromText(payload)
+      pushFailure(accountIndex, statusCode === 200 ? 'bad-payload:shape' : `upstream-status:${statusCode}`,
+        upstreamDetail !== undefined ? { detail: upstreamDetail } : {})
       if (account.provider !== 'antigravity') {
         const fallback = cliproxFallbackWindows(account)
         if (fallback.length > 0) {
@@ -932,7 +1035,11 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
   }
   if (windows.length === 0 && failures.length > 0) {
     failures.sort((left, right) => left.index - right.index)
-    throw new Error(failures[0].code)
+    const first = failures[0]
+    const error = new Error(first.code)
+    if (typeof first.detail === 'string' && first.detail !== '') error.detail = first.detail
+    if (typeof first.account === 'string' && first.account !== '') error.account = first.account
+    throw error
   }
   return windows
 }
@@ -1097,6 +1204,9 @@ export {
   quotaAdapterEndpoints,
   quotaAdapterUsageUrl,
   quotaErrorCode,
+  quotaErrorDetailFromText,
+  quotaRedactCredentialText,
+  quotaUpstreamErrorMessage,
   recognizeQuotaAdapter,
   safeCliproxyOrigin,
   sanitizeQuotaErrorDetail,

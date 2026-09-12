@@ -131,6 +131,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 - 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie，StepFun Step Plan 填控制台令牌（Oasis-Token，`Oasis-Webid` 由令牌自动派生无需手填）
 - 防风控：结果缓存 60 秒、失败指数退避（30 秒 ×2、封顶 15 分钟）；自动查询可调为仅手动 / 1 / 2 / 5 / 10 分钟
 - CLIProxyAPI 某账号实时查询失败时，回退显示其上次缓存的快照窗口并标注「缓存」徽标；重置时间已过的快照窗口（快照描述的窗口已结束）直接丢弃，避免「额度停在昨天」的错觉
+- 失败原因如实呈现：卡片与圆环显示「错误文案（HTTP 状态 · 失败端点 · 失败账号 · 上游原话）· 下次自动重试时刻」——错 key、欠费、限流、路径变更各有各的上游原话与状态码，不再只有一个笼统提示；上游 401/403 判为「凭据被上游拒绝」，卡片同时保留凭据填写入口
 - API key 只在宿主进程内解析，浏览器仅收到归一化窗口数据；未适配的供应商绝不发起请求
 
 ### 备份管理
@@ -341,7 +342,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 </details>
 
 <details>
-<summary><strong>小米卡片显示「控制台 Cookie 已失效」？</strong></summary>
+<summary><strong>小米卡片显示「凭据被上游拒绝」？</strong></summary>
 
 网页登录态过期了。重新登录 platform.xiaomimimo.com，从任意 `/api/v1/tokenPlan/` 请求复制 `Cookie:` 头，点卡片「填写控制台 Cookie」重新粘贴。
 </details>
@@ -353,7 +354,7 @@ Step Plan 订阅没有 API-key 形态的查询接口，需要网页登录态令�
 </details>
 
 <details>
-<summary><strong>StepFun Step Plan 卡片显示「控制台登录态已失效」？</strong></summary>
+<summary><strong>StepFun Step Plan 卡片显示「凭据被上游拒绝」？</strong></summary>
 
 令牌过期了（官方常见报错 `oasis-token is embezzled` 即令牌与 web_id 不匹配）。重新登录 platform.stepfun.com 后从 Cookies 复制新的 `Oasis-Token` 完整值再粘贴；从控制台复制时若自带 `Oasis-Token=` 或 `Cookie: ` 前缀会被自动剥离，不影响。
 </details>

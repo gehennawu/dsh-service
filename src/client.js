@@ -731,7 +731,7 @@ window.__ModuleLoader__.load({
       'quota.window.topup-credit': '加油包 Credit',
       'quota.window.five-hour': '5 小时额度',
       'quota.error.no-subscription': '当前账号没有生效中的订阅额度',
-      'quota.error.credential-rejected': '控制台登录态已失效，请重新从浏览器复制',
+      'quota.error.credential-rejected': '凭据被上游拒绝，请重新填写（控制台类渠道请重新从浏览器复制登录态）',
       'quota.credential.editCookie': '填写控制台 Cookie（网页登录态）',
       'quota.credential.editToken': '填写控制台令牌（Oasis-Token，浏览器登录态）',
       'quota.kindAuto': '自动识别',
@@ -1496,7 +1496,7 @@ window.__ModuleLoader__.load({
       'quota.window.topup-credit': 'Top-up credit',
       'quota.window.five-hour': '5-hour quota',
       'quota.error.no-subscription': 'No active quota subscription on this account',
-      'quota.error.credential-rejected': 'Console session expired; copy it from the browser again',
+      'quota.error.credential-rejected': 'Credential rejected by upstream; enter it again (for console types, copy the browser session again)',
       'quota.credential.editCookie': 'Set console cookie (web session)',
       'quota.credential.editToken': 'Set console token (Oasis-Token, browser session)',
       'quota.kindAuto': 'Auto-detected',
@@ -3327,6 +3327,28 @@ window.__ModuleLoader__.load({
         const text = translate(key)
         return text === key ? translate('quota.error.unknown') : text
       }
+      /**
+       * 统一错误行（v1.5.2）：稳定错误码查词典取主文案，`http-status:401` 这类后缀状态码、
+       * 宿主下发的渠道事实（多候选链的失败端点 / CPA 的失败账号）与上游原话统一按
+       * 「主文案 (HTTP 401 · api.z.ai · 账号 · 上游原话)」拼装，末尾附自动重试时刻。
+       * 额度卡与圆环面板共用这一处，渠道之间不再各写一套提示。
+       */
+      function quotaErrorLine(row, translate) {
+        const code = typeof row?.errorCode === 'string' ? row.errorCode : ''
+        const colon = code.indexOf(':')
+        const family = colon === -1 ? code : code.slice(0, colon)
+        const status = colon === -1 ? '' : code.slice(colon + 1)
+        const facts = [
+          /^\d{3}$/.test(status) ? `HTTP ${status}` : undefined,
+          typeof row?.errorEndpoint === 'string' && row.errorEndpoint !== '' ? row.errorEndpoint : undefined,
+          typeof row?.errorAccount === 'string' && row.errorAccount !== '' ? row.errorAccount : undefined,
+          typeof row?.errorDetail === 'string' && row.errorDetail !== '' ? row.errorDetail : undefined,
+        ].filter((part) => part !== undefined)
+        const retrySuffix = typeof row?.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
+          ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
+          : ''
+        return `${quotaErrorMessage(family, translate)}${facts.length > 0 ? ` (${facts.join(' · ')})` : ''}${retrySuffix}`
+      }
       /** 弹窗/卡片共用的横向进度条。默认已用口径（≥80% 警黄）；remaining 口径数值即剩余%，≤20% 才警黄。 */
       function quotaBar(testId, percent, height, remainingBasis) {
         const warning = remainingBasis === true ? percent <= 20 : percent >= 80
@@ -3610,12 +3632,9 @@ window.__ModuleLoader__.load({
         const ariaText = hasPercentWindow
           ? `${translate('quota.ring.label')} · ${providerTag} · ${usedWord} ${percent}%`
           : `${translate('quota.ring.label')} · ${providerTag}`
-        const retrySuffix = typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
-          ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
-          : ''
         const errorNode = row.errorCode !== undefined
           ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' } },
-              `${quotaErrorMessage(row.errorCode, translate)}${row.errorDetail !== undefined ? ` (${row.errorDetail})` : ''}${retrySuffix}`)
+              quotaErrorLine(row, translate))
           : null
         const updatedNode = row.refreshing === true || typeof row.fetchedAt === 'number'
           ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
@@ -5953,7 +5972,7 @@ window.__ModuleLoader__.load({
                     body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
                   } else if (row.errorCode !== undefined && windows.length === 0) {
                     body = React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
-                      `${quotaErrorMessage(row.errorCode, translate)}${row.errorDetail !== undefined ? ` (${row.errorDetail})` : ''}${typeof row.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now() ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) }) }` : ''}`)
+                      quotaErrorLine(row, translate))
                   } else if (windows.length > 0) {
                     const cpaGroups = row.kind === 'cliproxy' ? groupWindowsByFamily(windows) : null
                     if (cpaGroups && cpaGroups.length > 0) {

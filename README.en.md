@@ -129,6 +129,7 @@ Under **Plugins → Plugin configuration**, ten host-level switches: **Health di
 - Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry)
 - Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); auto-query can be set to manual-only / 1 / 2 / 5 / 10 minutes
 - CLIProxyAPI: when an account's live query fails, its last cached snapshot windows are shown with a "cached" badge; snapshot windows whose reset time has already passed (the window they described has ended) are dropped, avoiding the illusion of quota stuck on yesterday
+- Failures state their real reason: cards and the ring show "error copy (HTTP status · failing endpoint · failing account · upstream message) · next automatic retry" — a wrong key, an unpaid balance, rate limiting, and a moved endpoint each read differently instead of one generic notice; an upstream 401/403 is classified as "credential rejected by upstream" and the card keeps its credential form available
 - API keys are resolved only inside the host process; the browser receives normalized window data only; unadapted providers are never requested
 
 ### Backup management
@@ -339,7 +340,7 @@ Use the inline form on the card: an API key for regular adaptations, the managem
 </details>
 
 <details>
-<summary><strong>Xiaomi shows "console cookie expired"?</strong></summary>
+<summary><strong>Xiaomi shows "credential rejected by upstream"?</strong></summary>
 
 The web session expired. Log back in at platform.xiaomimimo.com, copy the `Cookie:` header from any `/api/v1/tokenPlan/` request, and paste it again via "Set console cookie".
 </details>
@@ -351,7 +352,7 @@ Step Plan has no API-key query endpoint — it needs a web session token. Log in
 </details>
 
 <details>
-<summary><strong>StepFun Step Plan card shows "console session expired"?</strong></summary>
+<summary><strong>StepFun Step Plan card shows "credential rejected by upstream"?</strong></summary>
 
 The token expired (the official `oasis-token is embezzled` error means the token and web_id no longer match). Log back in at platform.stepfun.com, copy the full new `Oasis-Token` from Cookies and paste it again; if the copied value carries an `Oasis-Token=` or `Cookie: ` prefix it is stripped automatically.
 </details>

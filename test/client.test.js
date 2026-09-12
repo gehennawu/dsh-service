@@ -5358,6 +5358,62 @@ test('cliproxy windows render as「账号 · 本地化窗口名」and management
   assert.equal(renderer.findByTestId('quota-card-family-title-cpa-codex').children.join(''), 'Codex')
 })
 
+test('quota error rows render one unified line: family copy, HTTP status, endpoint, account, upstream reason', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const retryAt = Date.now() + 3600_000
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [
+            // 传输层失败：错误码带状态码后缀 + 多候选链的失败端点 + 上游原话 + 重试时刻。
+            {
+              provider: 'zai-key', displayName: 'Z.ai', adapted: true, kind: 'zai-coding-cn', kindSource: 'config',
+              refreshing: false, status: 'error', errorCode: 'http-status:503', errorEndpoint: 'api.z.ai',
+              errorDetail: 'bad gateway', nextAllowedAt: retryAt,
+            },
+            // CPA 全账号失败：状态码 + 失败账号 + 上游原话（此前只有一个 upstream-status 家族码）。
+            {
+              provider: 'cpa-key', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+              refreshing: false, status: 'error', errorCode: 'upstream-status:401',
+              errorAccount: 'codex-user@example.com', errorDetail: 'token expired', nextAllowedAt: Date.now() - 1,
+            },
+            // 上游拒绝凭据：家族码走词典，详情只带上游原话。
+            {
+              provider: 'ds-key', displayName: 'DeepSeek', adapted: true, kind: 'deepseek', kindSource: 'config',
+              refreshing: false, status: 'unconfigured', errorCode: 'credential-rejected',
+              errorDetail: 'Authentication Fails, Your api key: ****wxyz is invalid', nextAllowedAt: Date.now() - 1,
+              credentialHints: [{ name: 'DEEPSEEK_API_KEY', configured: true }],
+            },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const clock = new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  const zaiLine = renderer.findByTestId('quota-error-zai-key').children.join('')
+  assert.equal(zaiLine, `上游返回错误状态 (HTTP 503 · api.z.ai · bad gateway) · ${clock} 后可重试`)
+  const cpaLine = renderer.findByTestId('quota-error-cpa-key').children.join('')
+  assert.equal(cpaLine, '上游官方接口返回错误状态 (HTTP 401 · codex-user@example.com · token expired)')
+  const dsLine = renderer.findByTestId('quota-error-ds-key').children.join('')
+  assert.equal(dsLine, '凭据被上游拒绝，请重新填写（控制台类渠道请重新从浏览器复制登录态） (Authentication Fails, Your api key: ****wxyz is invalid)')
+  // 带后缀的错误码不得掉进「未知错误」兜底。
+  assert.doesNotMatch(renderer.text(), /未知错误/)
+})
+
 test('stale cliproxy snapshot windows render a cached badge while live windows stay unmarked', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const renderer = createRenderer(async (channel, endpoint) => {

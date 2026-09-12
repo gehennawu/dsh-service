@@ -2477,16 +2477,24 @@ test('fetchProviderUsage GETs the given endpoint with Bearer and reports stable 
     assert.deepEqual(await fetchProviderUsage('https://x.example/v1/usage', 'Bearer k'), { usage: {} })
   }
   {
+    // 非 2xx 也要读完错误正文（真实响应必然 end）：状态码进错误码后缀，上游原话进 error.detail。
     https.get = (url, options, callback) => {
       const response = new EventEmitter()
       response.statusCode = 403
-      response.resume = () => {}
+      response.setEncoding = () => {}
       const request = new EventEmitter()
       request.destroy = () => {}
-      process.nextTick(() => callback(response))
+      process.nextTick(() => {
+        callback(response)
+        response.emit('data', JSON.stringify({ error: { message: 'Authentication Fails, Your api key: ****abcd is invalid' } }))
+        response.emit('end')
+      })
       return request
     }
-    await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) => quotaErrorCode(error) === 'http-status')
+    await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) =>
+      quotaErrorCode(error) === 'http-status:403'
+      && error.status === 403
+      && error.detail === 'Authentication Fails, Your api key: ****abcd is invalid')
   }
   {
     https.get = (url, options, callback) => {
@@ -2520,6 +2528,60 @@ test('fetchProviderUsage GETs the given endpoint with Bearer and reports stable 
     }
     await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) => quotaErrorCode(error) === 'bad-payload')
   }
+})
+
+test('fetchProviderUsage turns the upstream error body into a redacted, bounded reason', async (t) => {
+  const originalGet = https.get
+  t.after(() => { https.get = originalGet })
+  const stub = (status, body) => {
+    https.get = (url, options, callback) => {
+      const response = new EventEmitter()
+      response.statusCode = status
+      response.setEncoding = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => {
+        callback(response)
+        if (body !== undefined) response.emit('data', body)
+        response.emit('end')
+      })
+      return request
+    }
+  }
+
+  // DeepSeek 式 OpenAI 错误信封：状态码随错误码后缀下发，message 进 detail（用户点名的排查线索）。
+  stub(401, JSON.stringify({ error: { message: 'Authentication Fails, Your api key: ****abcd is invalid', type: 'authentication_error' } }))
+  await assert.rejects(fetchProviderUsage('https://x.example/usage', 'Bearer sk-secret-1234567890'), (error) =>
+    quotaErrorCode(error) === 'http-status:401'
+    && error.status === 401
+    && error.detail === 'Authentication Fails, Your api key: ****abcd is invalid')
+
+  // 上游把 Authorization 原样回显（或错误页含 token）时必须脱敏：整头值与裸值都抹成 ***。
+  stub(400, JSON.stringify({ message: 'bad header: Bearer sk-secret-1234567890 / sk-secret-1234567890' }))
+  await assert.rejects(fetchProviderUsage('https://x.example/usage', 'Bearer sk-secret-1234567890'), (error) =>
+    error.detail === 'bad header: *** / ***')
+
+  // 非 JSON（CDN/网关 HTML 错误页）去标签退化成一行，绝不把整页塞进提示。
+  stub(429, '<html><head><title>429</title></head><body><h1>Too Many Requests</h1></body></html>')
+  await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) =>
+    quotaErrorCode(error) === 'http-status:429' && error.detail === '429 Too Many Requests')
+
+  // 只有状态码、没有正文：detail 缺省但状态码仍在，界面照样能显示「HTTP 500」。
+  stub(500, undefined)
+  await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) =>
+    quotaErrorCode(error) === 'http-status:500' && error.detail === undefined)
+
+  // 错误详情只读头部一小段：超大错误页不会把失败拖到超时，也不会整页进内存。
+  stub(502, `<html>${'x'.repeat(64 * 1024)}</html>`)
+  await assert.rejects(fetchProviderUsage('https://x.example/usage', ''), (error) =>
+    quotaErrorCode(error) === 'http-status:502' && typeof error.detail === 'string' && error.detail.length <= 256)
+})
+
+test('quotaErrorCode keeps transport status suffixes and normalizes internal detail tails', () => {
+  assert.equal(quotaErrorCode(new Error('http-status:401')), 'http-status:401')
+  assert.equal(quotaErrorCode(new Error('upstream-status:404')), 'upstream-status:404')
+  assert.equal(quotaErrorCode(new Error('bad-payload:shape')), 'bad-payload')
+  assert.equal(quotaErrorCode(new Error('credential-rejected')), 'credential-rejected')
 })
 
 function quotaHostOverrides(dshHome, providers, credentialValue) {
@@ -2649,10 +2711,15 @@ test('quota RPC reports unconfigured credentials and upstream errors with a retr
   https.get = (url, options, callback) => {
     const response = new EventEmitter()
     response.statusCode = upstreamStatus
+    response.setEncoding = () => {}
     response.resume = () => {}
     const request = new EventEmitter()
     request.destroy = () => {}
-    process.nextTick(() => callback(response))
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify({ message: 'service temporarily unavailable' }))
+      response.emit('end')
+    })
     return request
   }
   t.after(() => { https.get = originalGet })
@@ -2673,8 +2740,57 @@ test('quota RPC reports unconfigured credentials and upstream errors with a retr
   for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
   const errorRow = (await failing.handler('quota', {})).value.providers.find((row) => row.provider === 'opencode-go')
   assert.equal(errorRow.status, 'error')
-  assert.equal(errorRow.errorCode, 'http-status')
+  // 状态码随错误码后缀透出（5xx 也算「具体原因」），上游原话进详情。
+  assert.equal(errorRow.errorCode, 'http-status:503')
+  assert.equal(errorRow.errorDetail, 'service temporarily unavailable')
   assert.ok(errorRow.nextAllowedAt > Date.now() - 1000)
+})
+
+test('a rejected API key surfaces the upstream reason and keeps the credential entry (deepseek)', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-key-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: { 'ds-key': 'deepseek' } }))
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push({ url: String(url), auth: options.headers?.Authorization })
+    const response = new EventEmitter()
+    response.statusCode = 401 // DeepSeek 对错 key 的真实回答：401 + OpenAI 错误信封
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify({
+        error: { message: 'Authentication Fails, Your api key: ****wxyz is invalid', type: 'authentication_error', code: 'invalid_request_error' },
+      }))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { 'ds-key': { baseURL: '', apiKeyEnv: 'DEEPSEEK_API_KEY' } } } : undefined) },
+      credentials: {
+        resolve: async () => ({ value: 'sk-wrong-key' }),
+        describe: async () => ({ configured: true, writable: true }),
+      },
+    },
+  })
+  await host.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'ds-key')
+  // 端点与认证头照旧；错 key 归入凭据类 → 行回 unconfigured，就地出现填写入口（不留死路）。
+  assert.equal(requests[0].url, 'https://api.deepseek.com/user/balance')
+  assert.equal(requests[0].auth, 'Bearer sk-wrong-key')
+  assert.equal(row.status, 'unconfigured')
+  assert.equal(row.errorCode, 'credential-rejected')
+  // 具体原因（上游原话）随行下发——用户此前只能看到「上游返回错误状态 · HH:MM 后可重试」。
+  assert.equal(row.errorDetail, 'Authentication Fails, Your api key: ****wxyz is invalid')
+  assert.ok(Array.isArray(row.credentialHints))
+  assert.ok(row.credentialHints.some((hint) => hint.name === 'DEEPSEEK_API_KEY' && hint.configured === true))
 })
 
 test('quota-config validates provider and kind against host-side whitelists before writing', async (t) => {
@@ -3112,10 +3228,15 @@ test('quota candidate chain switches domains only on 401/403, not on other 4xx',
     requests.push(String(url))
     const response = new EventEmitter()
     response.statusCode = 404 // 端点不存在：不属于 Key 不互通，换域没有意义
+    response.setEncoding = () => {}
     response.resume = () => {}
     const request = new EventEmitter()
     request.destroy = () => {}
-    process.nextTick(() => callback(response))
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', '{"error":{"message":"not found"}}')
+      response.emit('end')
+    })
     return request
   }
   t.after(() => { https.get = originalGet })
@@ -3124,20 +3245,26 @@ test('quota candidate chain switches domains only on 401/403, not on other 4xx',
   await waitFor(() => requests.length >= 1, 'first candidate')
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
   const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
-  // 只有第一个候选被请求过；错误码原样透出 http-status:404。
+  // 只有第一个候选被请求过；错误码原样透出 http-status:404，并带上失败端点（双候选链）。
   assert.equal(requests.length, 1)
   assert.equal(requests[0], 'https://open.bigmodel.cn/api/monitor/usage/quota/limit')
-  assert.equal(row.errorCode, 'http-status')
+  assert.equal(row.errorCode, 'http-status:404')
+  assert.equal(row.errorEndpoint, 'open.bigmodel.cn')
+  assert.equal(row.errorDetail, 'not found')
   // 401/403 才换域：同一链上给 403 应该打到第二个候选。
   requests.length = 0
   https.get = (url, options, callback) => {
     requests.push(String(url))
     const response = new EventEmitter()
     response.statusCode = 403
-    response.resume = () => {}
+    response.setEncoding = () => {}
     const request = new EventEmitter()
     request.destroy = () => {}
-    process.nextTick(() => callback(response))
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', '{"error":{"message":"invalid api key"}}')
+      response.emit('end')
+    })
     return request
   }
   const host2 = createHost(quotaHostOverrides(dshHome, providers, 'k'))
@@ -4307,6 +4434,31 @@ test('cliproxy RPC surfaces mgmt-disabled and host-not-pinned as stable error co
   assert.ok(requests.every((request) => !request.url.includes('moved.example.org'))) // 未钉住的域从未被打
 })
 
+test('cliproxy RPC names the failing account and upstream reason instead of one family code', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-reason-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) {
+      return { payload: { files: [{ auth_index: 'idx-codex', provider: 'codex', email: 'codex-user@example.com' }] } }
+    }
+    // 代调回来的官方响应：401 + 上游原话（此前只回一个 upstream-status 家族码，账号与原话都丢）。
+    return { payload: { status_code: 401, body: JSON.stringify({ error: { message: 'Provided authentication token is expired. Please try signing in again.' } }) } }
+  })
+  const host = createHost(quotaHostOverrides(dshHome, { cpa: { baseURL: 'https://cli.example.org' } }, 'mgmt-secret'))
+  await host.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'error')
+  assert.equal(row.errorCode, 'upstream-status:401')
+  assert.equal(row.errorAccount, 'codex-user@example.com')
+  assert.equal(row.errorDetail, 'Provided authentication token is expired. Please try signing in again.')
+})
+
 test('quota-config pins the cliproxy domain on save and clears it with the kind', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-pin-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -4410,12 +4562,16 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
     })),
   }
 
-  // 全部上游失败：抛首个稳定错误码（upstream-status）。
+  // 全部上游失败：抛首个稳定错误码（upstream-status:状态码）+ 失败账号 + 上游原话（CPA 一行多账号，
+  // 只回一个家族码用户无从下手）。
   stubHttpsRequest(t, (request) => {
     if (request.url.endsWith('/auth-files')) return { payload: manyFiles }
-    return { payload: { status_code: 500, body: 'boom' } }
+    return { payload: { status_code: 500, body: '{"error":{"message":"upstream exploded"}}' } }
   })
-  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) => quotaErrorCode(error) === 'upstream-status')
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'upstream-status:500'
+    && error.account === 'u0@example.com'
+    && error.detail === 'upstream exploded')
 
   // 部分失败：一个账号上游 403，其余成功 → 返回成功账号窗口，不拖垮整行。
   let firstCallSeen = false
@@ -4684,10 +4840,10 @@ test('fetchXiaomiTokenPlanUsage normalizes login failures and missing subscripti
   await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
     (error) => quotaErrorCode(error) === 'no-subscription')
 
-  // 上游 500 维持 http-status 稳定码。
+  // 上游 500 维持 http-status 稳定码（后缀带具体状态码）。
   stubHttpsRequest(t, () => ({ status: 500 }))
   await assert.rejects(fetchXiaomiTokenPlanUsage({ credential: 'sid=abc', signal: undefined }),
-    (error) => quotaErrorCode(error) === 'http-status')
+    (error) => quotaErrorCode(error) === 'http-status:500')
 })
 
 test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps the tp- key off the console plane', async (t) => {
@@ -4930,10 +5086,10 @@ test('fetchStepFunStepPlanUsage normalizes credential/session/business failures 
   await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
     (error) => quotaErrorCode(error) === 'no-subscription')
 
-  // 上游 500 维持 http-status 稳定码。
+  // 上游 500 维持 http-status 稳定码（后缀带具体状态码）。
   stubHttpsRequest(t, () => ({ status: 500 }))
   await assert.rejects(fetchStepFunStepPlanUsage({ credential: jwtWithDeviceId('dev-1'), signal: undefined }),
-    (error) => quotaErrorCode(error) === 'http-status')
+    (error) => quotaErrorCode(error) === 'http-status:500')
 })
 
 test('stepfun auto-infers balance from the API host; step-plan adapts without a baseURL and never probes the API key', async (t) => {

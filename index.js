@@ -43,6 +43,7 @@ import {
   quotaAdapterEndpoints,
   quotaAdapterUsageUrl,
   quotaErrorCode as quotaAdapterErrorCode,
+  quotaErrorDetailFromText as quotaErrorDetailFromTextAdapter,
   recognizeQuotaAdapter,
   safeCliproxyOrigin as safeCliproxyOriginAdapter,
   sanitizeQuotaErrorDetail as sanitizeQuotaErrorDetailAdapter,
@@ -1355,6 +1356,52 @@ function sanitizeQuotaErrorDetail(value) {
   return sanitizeQuotaErrorDetailAdapter(value)
 }
 
+/** 上游错误正文 → 可下发的 errorDetail（归一成人话 + 凭据脱敏 + 长度上限），Adapter 侧同一实现。 */
+function quotaErrorDetailFromText(raw, secrets) {
+  return quotaErrorDetailFromTextAdapter(raw, secrets)
+}
+
+// 非 2xx 响应体只读头部一小段用于拼错误详情：上游原话（「Authentication Fails」「insufficient
+// balance」「rate limit exceeded」）是排查错误原因的唯一线索，此前被 response.resume() 整体丢弃。
+const MAX_QUOTA_ERROR_BODY_BYTES = 8 * 1024
+
+/** 读取非 2xx 响应体（上限 limit）：拿够即停并把剩余交给 socket 排空，绝不把大页面拖进超时。 */
+function collectQuotaErrorBody(response, limit = MAX_QUOTA_ERROR_BODY_BYTES) {
+  return new Promise((resolve) => {
+    let text = ''
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve(text)
+    }
+    const onData = (chunk) => {
+      text += chunk
+      if (Buffer.byteLength(text) < limit) return
+      finish()
+      response.removeListener('data', onData)
+      response.removeListener('end', finish)
+      response.removeListener('error', finish)
+      response.removeListener('aborted', finish)
+      response.resume?.()
+    }
+    response.setEncoding?.('utf8')
+    response.on('data', onData)
+    response.on('end', finish)
+    response.on('error', finish)
+    response.on('aborted', finish)
+  })
+}
+
+/** 失败信封装配：错误码后缀（http-status:401）解析成结构化 status，details 走 error.detail。 */
+function quotaFailure(error, detail) {
+  const match = /^(?:http-status|upstream-status):(\d{3})$/.exec(typeof error?.message === 'string' ? error.message : '')
+  if (match !== null) error.status = Number(match[1])
+  const text = sanitizeQuotaErrorDetail(detail)
+  if (text !== undefined) error.detail = text
+  return error
+}
+
 // 瞬时网络错误码白名单（Cloudflare/CDN 间歇断连等）：值得自动重试。
 const QUOTA_TRANSIENT_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH',
@@ -1367,12 +1414,14 @@ const QUOTA_TRANSIENT_CODES = new Set([
 function fetchProviderUsageOnce(endpoint, authorization, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
-    const fail = (code, transient = false) => {
+    // 脱敏名单：上游可能把 Authorization 原样回显，整头值与裸 token 都要抹掉。
+    const secrets = [authorization]
+    const fail = (code, transient = false, detail) => {
       if (settled) return
       settled = true
       const error = new Error(code)
       error.quotaTransient = transient
-      reject(error)
+      reject(quotaFailure(error, detail))
     }
     if (options.signal?.aborted === true) { fail('cancelled'); return }
     const request = https.get(endpoint, {
@@ -1386,8 +1435,11 @@ function fetchProviderUsageOnce(endpoint, authorization, options = {}) {
     }, (response) => {
       const status = response.statusCode || 0
       if (status < 200 || status >= 300) {
-        response.resume()
-        fail(`http-status:${status}`)
+        // 读一小段错误正文再落定：`{"error":{"message":"Authentication Fails..."}}` 这类原话
+        // 是「错 key / 欠费 / 限流 / 路径变更」的唯一区分依据。
+        collectQuotaErrorBody(response).then((text) => {
+          fail(`http-status:${status}`, false, quotaErrorDetailFromText(text, secrets))
+        })
         return
       }
       let body = ''
@@ -1467,16 +1519,18 @@ async function fetchProviderUsage(endpoint, authorization, options = {}) {
 function requestQuotaJsonOnce(endpoint, options = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
-    const fail = (code, transient = false) => {
+    const fail = (code, transient = false, detail) => {
       if (settled) return
       settled = true
       const error = new Error(code)
       error.quotaTransient = transient
-      reject(error)
+      reject(quotaFailure(error, detail))
     }
     if (options.signal?.aborted === true) { fail('cancelled'); return }
     const body = typeof options.body === 'string' ? options.body : ''
     const extraHeaders = options.headers !== null && typeof options.headers === 'object' ? options.headers : {}
+    // 脱敏名单：Cookie / Oasis-Token 等自定义头可能被上游错误页原样回显。
+    const secrets = [options.authorization, options.cookie, ...Object.values(extraHeaders)]
     const request = https.request(endpoint, {
       method: options.method === 'POST' ? 'POST' : 'GET',
       timeout: QUOTA_UPSTREAM_TIMEOUT_MS,
@@ -1492,8 +1546,9 @@ function requestQuotaJsonOnce(endpoint, options = {}) {
     }, (response) => {
       const status = response.statusCode || 0
       if (status < 200 || status >= 300) {
-        response.resume()
-        fail(`http-status:${status}`)
+        collectQuotaErrorBody(response).then((text) => {
+          fail(`http-status:${status}`, false, quotaErrorDetailFromText(text, secrets))
+        })
         return
       }
       let payload = ''
@@ -1550,7 +1605,7 @@ function createQuotaThrottle(options = {}) {
   const entryOf = (provider) => {
     let entry = entries.get(provider)
     if (entry === undefined) {
-      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, lastManualAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined }
+      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, lastManualAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined, lastErrorEndpoint: undefined, lastErrorAccount: undefined }
       entries.set(provider, entry)
     }
     return entry
@@ -1566,6 +1621,8 @@ function createQuotaThrottle(options = {}) {
         fetchedAt: entry.fetchedAt > 0 ? entry.fetchedAt : undefined,
         lastError: entry.lastError,
         lastErrorDetail: entry.lastErrorDetail,
+        lastErrorEndpoint: entry.lastErrorEndpoint,
+        lastErrorAccount: entry.lastErrorAccount,
       }
     },
     /** 只读快照：缓存窗口、是否刷新中、下次允许发起上游的时间（null=进行中未知）。 */
@@ -1577,6 +1634,8 @@ function createQuotaThrottle(options = {}) {
         fetchedAt: entry.fetchedAt > 0 ? entry.fetchedAt : undefined,
         lastError: entry.lastError,
         lastErrorDetail: entry.lastErrorDetail,
+        lastErrorEndpoint: entry.lastErrorEndpoint,
+        lastErrorAccount: entry.lastErrorAccount,
         nextAllowedAt: entry.inflight
           ? null
           : Math.max(entry.backoffUntil, entry.lastUpstreamAt + minIntervalMs, entry.lastSuccessAt + successTtlMs),
@@ -1609,6 +1668,8 @@ function createQuotaThrottle(options = {}) {
         entry.fetchedAt = now
         entry.lastError = undefined
         entry.lastErrorDetail = undefined
+        entry.lastErrorEndpoint = undefined
+        entry.lastErrorAccount = undefined
         return
       }
       entry.failures += 1
@@ -1616,6 +1677,9 @@ function createQuotaThrottle(options = {}) {
       entry.backoffUntil = now + delay
       entry.lastError = typeof outcome.code === 'string' ? outcome.code : 'unknown'
       entry.lastErrorDetail = typeof outcome.detail === 'string' && outcome.detail !== '' ? outcome.detail : undefined
+      // 渠道特有事实（多候选链的失败端点 / CPA 的失败账号）：只作附注，与错误码、上游原话分开存。
+      entry.lastErrorEndpoint = sanitizeQuotaErrorDetail(outcome.endpoint)
+      entry.lastErrorAccount = sanitizeQuotaErrorDetail(outcome.account)
     },
     /** 手动刷新：允许绕过成功 TTL，但保留失败退避，并有不可绕过的硬冷却；单飞仍优先。 */
     force(provider, now = Date.now()) {
@@ -4523,11 +4587,17 @@ function apply(ctx) {
         if (!quotaDisposed) quotaThrottle.settle(profile.name, { ok: true, windows: normalized.windows })
       } catch (error) {
         if (!quotaDisposed) {
+          // 统一失败信封：稳定错误码（http-status:401 带状态码后缀）+ 上游原话 + 渠道事实
+          // （失败端点 / 失败账号）。三者都由客户端一处渲染，各渠道不再各写一套提示。
           const detail = sanitizeQuotaErrorDetail(error?.detail)
+          const endpoint = sanitizeQuotaErrorDetail(error?.endpoint)
+          const account = sanitizeQuotaErrorDetail(error?.account)
           quotaThrottle.settle(profile.name, {
             ok: false,
             code: quotaErrorCode(error),
             ...(detail !== undefined ? { detail } : {}),
+            ...(endpoint !== undefined ? { endpoint } : {}),
+            ...(account !== undefined ? { account } : {}),
           })
         }
       } finally {
@@ -5161,6 +5231,8 @@ function apply(ctx) {
             ...(windows.length > 0 ? { windows, fetchedAt: view.fetchedAt } : {}),
             ...(view.lastError !== undefined ? { errorCode: view.lastError } : {}),
             ...(view.lastErrorDetail !== undefined ? { errorDetail: view.lastErrorDetail } : {}),
+            ...(view.lastErrorEndpoint !== undefined ? { errorEndpoint: view.lastErrorEndpoint } : {}),
+            ...(view.lastErrorAccount !== undefined ? { errorAccount: view.lastErrorAccount } : {}),
             nextAllowedAt: view.nextAllowedAt,
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
             ...(credentialHints !== undefined ? { credentialHints } : {}),
