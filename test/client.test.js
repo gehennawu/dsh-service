@@ -6966,7 +6966,13 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
 
     // 样式层：composer 滑出裁剪区、头部测高变量回退常量、reduced-motion 关动画
     const styleTag = head.children.find((el) => el.textContent.includes('data-dshsvc-mobile'))
-    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*transform: translateY\(115%\)/s)
+    // 2026-09-15 几何返工：沉浸时把 composer 座移出文档流 + 淡出。不再用 transform ——
+    // 变换后的视觉溢出会被计入滚动容器可滚动区域（实测 +147px），造成「底部空一大段」，
+    // 回显时那截又消失导致「最后一段被输入框压住」。
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*position: absolute !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*opacity: 0 !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*pointer-events: none !important/s)
+    assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*translateY/s)
     assert.match(styleTag.textContent, /margin-top: calc\(0px - var\(--dshsvc-header-h, 76px\)\)/s)
     assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{\s*html\[data-dshsvc-mobile\]\[data-dshsvc-immersive\]/s)
 
@@ -7043,6 +7049,109 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     freshGesture()
     dragTo(1560, 10)
     assert.equal(immersiveOn(), false)
+
+    // 回显贴底补偿（2026-09-15）：沉浸态下停在内容末尾时回显，必须把滚动位置重新对齐到
+    // 末尾 —— 沉浸期移出文档流的坐位收回会让可滚动长度变长，不补偿就把最后一段压到输入框下。
+    gestureNow += 2000                                   // 手势窗口过期 → 下一次程序化滚动免疫
+    scrollToY(600)                                       // 程序化回中部（不翻转沉浸态）
+    freshGesture()
+    dragTo(1100, 8)                                      // delta>0 累加越过 64 → 隐藏
+    assert.equal(immersiveOn(), true, '隐藏手势后应进入沉浸态')
+    gestureNow += 2000
+    scrollToY(1200)                                      // 底部区之外（2000-600-80=1320 为界）
+    assert.equal(immersiveOn(), true, '程序化滚动不应翻转沉浸态')
+    freshGesture()
+    dragTo(1360, 10)                                     // 手势滑入底部区 → 引擎「到底回显」
+    assert.equal(immersiveOn(), false, '到底回显应展开头部与输入框')
+    assert.equal(scroller.scrollTop, 1360, '回显当下不得抢手指位置（贴底补偿要等停稳）')
+    await new Promise((resolve) => setTimeout(resolve, 340))
+    assert.equal(scroller.scrollTop, scroller.scrollHeight - scroller.clientHeight, '停稳后若仍在末尾应补一次贴底（对齐到最大滚动位置）')
+    // 反向负例：重建一次「隐藏 → 往回读 → 回显」，补偿不得把人拽到底
+    gestureNow += 2000
+    scrollToY(600)
+    freshGesture()
+    dragTo(1100, 8)
+    assert.equal(immersiveOn(), true)
+    gestureNow += 2000
+    scrollToY(1200)
+    freshGesture()
+    dragTo(1360, 10)                                     // 到底回显
+    assert.equal(immersiveOn(), false)
+    gestureNow += 2000
+    scroller.scrollTop = 900                             // 回显后用户往回读了 460px（程序化模拟）
+    htmlEl.dispatch('scroll', { target: scroller })
+    await new Promise((resolve) => setTimeout(resolve, 340))
+    assert.equal(scroller.scrollTop, 900, '已往回读时贴底补偿必须放弃，不得把人拽到底')
+
+    // 点官方「回到底部」按钮必须立即回显（2026-09-15 真机反馈：点回底后 composer 不回来，
+    // 要手动上滑一点再下滑、还得试几次）。官方 toBottom 只做一次 `scrollTop = scrollHeight`
+    // 的瞬时赋值 → 引擎免疫层眼里和流式贴底同形，只有点击目标能表达「用户到底了」。
+    gestureNow += 2000
+    scrollToY(600)
+    freshGesture()
+    dragTo(1100, 8)                                      // 手势隐藏
+    assert.equal(immersiveOn(), true)
+    // 否定面：普通点击（closest 不认账）不得掀开沉浸
+    htmlEl.dispatch('click', { target: { closest: () => null } })
+    assert.equal(immersiveOn(), true, '非回底按钮的点击不得回显')
+    htmlEl.dispatch('click', { target: {} })             // 无 closest 的节点也不得抛错/回显
+    assert.equal(immersiveOn(), true)
+    let closestArg = null
+    const toBottomBtn = { closest(sel) { closestArg = sel; return toBottomBtn } }
+    freshGesture()                                       // 真实点按：touchstart 先到（会清方向锁）
+    htmlEl.dispatch('click', { target: toBottomBtn })
+    assert.equal(immersiveOn(), false, '点官方回到底部按钮必须立即回显')
+    assert.match(String(closestArg), /_toBottom/, '按钮识别必须落在官方 _toBottom 词干上')
+    // 同一次点按开出的 800ms 手势窗口里，官方跳转（scrollTop = scrollHeight）会留下同向
+    // 前进位移：跳 64~200px 时正是隐藏阈值区间，方向锁必须吞掉它，不得刚回显又藏回
+    dragTo(1220, 40)
+    assert.equal(immersiveOn(), false, '回底跳转的剩余位移不得把刚回显的界面再藏回去')
+
+    // 点回底后的一次停稳贴底：官方跳转按「点按当下」的滚动高度算目标，而回显刚把坐位
+    // 收回文档流、真实末尾更远 → 不补就停在距底一段（最后一段压在输入框下）。已往回读则放弃。
+    gestureNow += 2000
+    scrollToY(600)
+    freshGesture()
+    dragTo(1100, 8)
+    assert.equal(immersiveOn(), true)
+    freshGesture()
+    htmlEl.dispatch('click', { target: toBottomBtn })
+    assert.equal(immersiveOn(), false)
+    scrollToY(scroller.scrollHeight)                     // 官方 toBottom：scrollTop = scrollHeight
+    await new Promise((resolve) => setTimeout(resolve, 340))
+    assert.equal(scroller.scrollTop, scroller.scrollHeight - scroller.clientHeight, '点回底后必须补一次贴底对齐（官方跳转用的是点击当下的高度）')
+    // 负例：停稳前用户已经往回读 → 对齐必须放弃
+    gestureNow += 2000
+    dragTo(600, 10)
+    freshGesture()
+    dragTo(1100, 8)
+    assert.equal(immersiveOn(), true)
+    freshGesture()
+    htmlEl.dispatch('click', { target: toBottomBtn })
+    scrollToY(1450)                                      // 官方跳到底（假桩不 clamp）
+    gestureNow += 2000
+    scrollToY(1000)                                      // 停稳前用户往回读了 450px
+    await new Promise((resolve) => setTimeout(resolve, 340))
+    assert.equal(scroller.scrollTop, 1000, '已往回读时点回底的贴底对齐必须放弃，不得把人拽到底')
+
+    // 已在内容末尾的沉浸态：往回一点就该回显（末尾之后没有「前进」内容，24px 迟滞带
+    // 在这里只会让人以为失灵）。先在中途隐藏。
+    gestureNow += 2000
+    scrollToY(600)
+    freshGesture()
+    dragTo(1100, 8)
+    assert.equal(immersiveOn(), true)
+    freshGesture()
+    scrollToY(1092)                                      // 中途往回 8px（未到末尾）
+    assert.equal(immersiveOn(), true, '未在末尾时迟滞带照旧：8px 不足以回显（防翻页闪烁）')
+    gestureNow += 2000
+    scrollToY(1340)                                      // 程序化到距末尾 60px（底部区内）
+    freshGesture()
+    dragTo(1480, 12)                                     // 起点已在区内 → 不走到底回显，靠累加隐藏
+    assert.equal(immersiveOn(), true, '末尾处的沉浸态（区内起滑）先要到手')
+    freshGesture()
+    scrollToY(scroller.scrollTop - 8)                    // 单个 −8px 事件
+    assert.equal(immersiveOn(), false, '末尾处往回一点即回显，不再等 24px 迟滞带')
 
     // 开关热关闭：属性/标记/挂件全部对称拆除，二次关闭幂等
     await renderer.setFeature('mobileAdaptation', false)

@@ -303,6 +303,10 @@ window.__ModuleLoader__.load({
       'mobile.debug.stateOn': '开',
       'mobile.debug.stateOff': '关',
       'mobile.debug.immersive': '沉浸',
+      'mobile.debug.immersive.reason.gesture': '滑动回显',
+      'mobile.debug.immersive.reason.arrival': '到底回显',
+      'mobile.debug.immersive.reason.focus': '聚焦回显',
+      'mobile.debug.immersive.reason.button': '回底钮回显',
       'mobile.debug.edge': '边缘',
       'mobile.debug.edge.fieldStart': '起',
       'mobile.debug.edge.fieldMoves': '动',
@@ -1119,6 +1123,10 @@ window.__ModuleLoader__.load({
       'mobile.debug.stateOn': 'on',
       'mobile.debug.stateOff': 'off',
       'mobile.debug.immersive': 'Immersive',
+      'mobile.debug.immersive.reason.gesture': 'swipe',
+      'mobile.debug.immersive.reason.arrival': 'arrival',
+      'mobile.debug.immersive.reason.focus': 'focus',
+      'mobile.debug.immersive.reason.button': 'to-bottom',
       'mobile.debug.edge': 'Edge',
       'mobile.debug.edge.fieldStart': 'start',
       'mobile.debug.edge.fieldMoves': 'moves',
@@ -8854,16 +8862,25 @@ html[data-dshsvc-mobile] textarea { font-size: max(16px, 1em) !important; }
    的类名（活页面命中 0，2026-09-15 死规则审计），两条泛化规则删除；只留仍命中的
    "composer"（composerSeat 等）——min-width:0 + max-width:100% 防子项撑破容器。 */
 html[data-dshsvc-mobile] [class*="composer" i] { min-width: 0 !important; max-width: 100% !important; }
-/* —— 滑动沉浸（v0.36）——
-   composer 座是滚动体内的 sticky 子项：transform 滑出后由滚动体自身 overflow:hidden
-   裁掉，布局零变化、scrollTop 不跳、外壳 ResizeObserver 维护的 --dsh-composer-height
-   与「回到底部」浮钮偏移不受任何影响。容器包含块陷阱不触发：composer 工具行本就带
-   container-type:inline-size（fixed 后代已被圈在里面，圆环才在移动端 portal 出去）。 */
+/* —— 滑动沉浸（v0.36；2026-09-15 几何返工）——
+   原先用 transform: translateY(115%) 把 composer 座滑出视口：**变换后的视觉溢出会被
+   计入滚动容器的可滚动区域**（实测 +147px），于是「沉浸态滑到底」时内容被抬高、底部露出
+   291px 空带（用户反馈「对话框和输出空一大段」）；回显时这 147px 又消失，滚动位置随之
+   错位、最后一段被输入框压住（用户反馈「输出跑到对话框下面去了」）。
+   现改为沉浸时把该座**移出文档流**（让出 128px 占位、内容真正铺满整屏）+ 淡出：既不加
+   可滚动溢出，也不改 --dsh-composer-height（ResizeObserver 仍读到座高，外壳的浮钮偏移
+   与贴底锚定不受影响）。回显侧因占位收回会改变可滚动长度，由 setImmersive 做「贴底补偿」。 */
 html[data-dshsvc-mobile] [data-composer-seat] {
-  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease) !important;
+  transition: opacity var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease) !important;
 }
 html[data-dshsvc-mobile][data-dshsvc-immersive] [data-composer-seat] {
-  transform: translateY(115%) !important;
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 /* 会话头部（面包屑+视图标签）在滚动体外面，藏在根列里：translateY(-100%) 上滑出
    data-phase=active 根的 overflow:hidden 裁剪区，负 margin-top 用引擎测得的高度
@@ -8914,6 +8931,9 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           lastBackdropDisplay: null,
           // —— 滑动沉浸（v0.36）状态 ——
           immersive: false,
+          repinTimer: null,
+          repinAnchor: null,
+          repinToBottom: false,
           chatAvailable: false,
           chatScrollLastY: null,
           gestureAt: 0,
@@ -8921,9 +8941,16 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           immersiveLockDir: null,
           zoneArmed: null,
           arrivalDone: false,
+          // 最近一次回显的来路（gesture 手势 / arrival 到底 / focus 聚焦 / button
+          // 点官方回底按钮）：debug 芯片真机定位「为什么没回显」用。
+          lastRevealReason: null,
           headerEl: null,
           headerRO: null,
         }
+
+        // 会话导航适配层：官方外壳 DOM 结构（含类哈希）只在该层里出现，
+        // 沉浸引擎借它识别「官方回到底部按钮」这一个语义节点。
+        const nav = createConversationNav()
 
         const layoutService = () => {
           try { return typeof ctx.get === 'function' ? ctx.get('layout') : undefined } catch (_) { return undefined }
@@ -9123,15 +9150,88 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           return false
         }
 
-        const setImmersive = (hidden) => {
+        /** 会话滚动体是否停在内容末尾（按当前几何判定；沉浸态下末尾不含 composer 占位）。 */
+        const scrollerAtContentEnd = () => {
+          const ctx = chatContext()
+          if (ctx === null || ctx.scroller === null) return false
+          try {
+            const scrollTop = Number(ctx.scroller.scrollTop)
+            const scrollHeight = Number(ctx.scroller.scrollHeight)
+            const clientHeight = Number(ctx.scroller.clientHeight)
+            if (!Number.isFinite(scrollTop) || !Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) return false
+            return scrollHeight - clientHeight - scrollTop <= IMMERSIVE_BOTTOM_PX
+          } catch (_) { return false }
+        }
+
+        /** 回显贴底补偿：沉浸态让出的 composer 占位随属性移除收回，可滚动长度因此变长 ——
+            回显前若停在内容末尾，不补偿就会把最后一段推到输入框下面（真机反馈「输出跑到对话框
+            下面去了」）。两条纪律：① 等手势停稳（260ms 无新滚动）再对齐，绝不和进行中的手指
+            抢位置；② 对齐前复查「此刻仍在末尾」——占位刚收回，末尾在几何上表现为距底约一个
+            座高 + 原空档，超过这个量说明用户已经往回读了，此时对齐会把人硬拽到底，必须放弃。 */
+        const IMMERSIVE_REPIN_SETTLE_MS = 260
+
+        const revealRepinIfStillAtEnd = () => {
+          state.repinTimer = null
+          // 判据用「回显当下的滚动位置」而不是几何差值：占位收回会让距底从 ~0 变 ~一个座高，
+          // 拿阈值去猜容易差几像素失灵。用户是否往回读，直接看 scrollTop 有没有变小最可靠。
+          const anchor = state.repinAnchor
+          const snapToBottom = state.repinToBottom
+          state.repinAnchor = null
+          state.repinToBottom = false
+          const ctx = chatContext()
+          if (ctx === null || ctx.scroller === null) return
+          try {
+            const scrollTop = Number(ctx.scroller.scrollTop)
+            const scrollHeight = Number(ctx.scroller.scrollHeight)
+            const clientHeight = Number(ctx.scroller.clientHeight)
+            if (!Number.isFinite(scrollTop) || !Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) return
+            // 取「最大滚动位置」而不是 scrollHeight：真实浏览器会自行 clamp，假桩环境需同一语义。
+            const floor = Math.max(0, scrollHeight - clientHeight)
+            if (snapToBottom) {
+              // 「点回底」模式：跳转目标按点击当下的滚动高度算，而回显刚把坐位收回文档流，
+              // 真实末尾还会更远 —— 只要求停稳时仍在末尾一带，已往回读（超过底部区）就放弃。
+              if (floor - scrollTop > IMMERSIVE_BOTTOM_PX) return
+              ctx.scroller.scrollTop = floor
+              return
+            }
+            if (anchor === null) return
+            if (scrollTop < anchor - 4) return   // 回显后用户已往回读 → 放弃，绝不把人拽到底
+            ctx.scroller.scrollTop = floor
+          } catch (_) {}
+        }
+
+        const scheduleImmersiveRepin = (anchor, snapToBottom = false) => {
+          cancelImmersiveRepin()
+          state.repinAnchor = anchor
+          state.repinToBottom = snapToBottom
+          try {
+            state.repinTimer = setTimeout(revealRepinIfStillAtEnd, IMMERSIVE_REPIN_SETTLE_MS)
+          } catch (_) { revealRepinIfStillAtEnd() }
+        }
+
+        const cancelImmersiveRepin = () => {
+          state.repinAnchor = null
+          state.repinToBottom = false
+          if (state.repinTimer === null) return
+          try { clearTimeout(state.repinTimer) } catch (_) {}
+          state.repinTimer = null
+        }
+
+        const setImmersive = (hidden, reason = null) => {
           if (!state.active || !state.chatAvailable) hidden = false
           if (state.immersive === hidden) return
+          // 回显前先按**沉浸几何**判定是否停在内容末尾（属性一去掉几何就变了）。
+          const repinAnchor = !hidden && scrollerAtContentEnd() ? Number((chatContext() || {}).scroller?.scrollTop) : null
+          const repin = repinAnchor !== null && Number.isFinite(repinAnchor)
           state.immersive = hidden
+          if (!hidden && reason !== null) state.lastRevealReason = reason
           const htmlEl = document.documentElement
           try {
             if (hidden) htmlEl.setAttribute('data-dshsvc-immersive', '')
             else htmlEl.removeAttribute('data-dshsvc-immersive')
           } catch (_) {}
+          if (hidden) cancelImmersiveRepin()
+          else if (repin) scheduleImmersiveRepin(repinAnchor)
           if (state.debugEnabled) updateDebugChip()
         }
 
@@ -9200,6 +9300,18 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
             state.immersiveAcc = 0
             return
           }
+          // 已在内容末尾的沉浸态：往回一点点就该回显。末尾之后没有更多「前进」内容，
+          // 任何向后位移只可能是要回看或要操作；再用 24px 迟滞带会让人「点回底后
+          // 上滑一下再下滑、还要试几次」（2026-09-15 真机反馈）。
+          // 判据用**本事件之前**的位置（lastY）：往回的第一个像素就已经让当前 scrollTop
+          // 离开末尾（实测 8px），拿当前值判永远不成立。只有严格停在滚动末端才放宽，
+          // 阅读中途的迟滞带原样保留。
+          if (state.immersive && delta < 0 && lastY + clientHeight >= scrollHeight - 1) {
+            state.immersiveAcc = 0
+            state.immersiveLockDir = -1
+            setImmersive(false, 'gesture')
+            return
+          }
           // 到底回显：仅认「本手势起点在底部区之外、正向下滑跨入边界」的到达；
           // 程序化贴底进不了手势层。起点就在区内的新手势不得触发（否则区内每次
           // 下拉都会被抢着掀开，沉浸根本无法维持）；向上经过底部区也不得进入本分支
@@ -9213,7 +9325,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
             state.arrivalDone = true
             state.immersiveAcc = 0
             state.immersiveLockDir = 1
-            setImmersive(false)
+            setImmersive(false, 'arrival')
             return
           }
           // 同方向手势段内只翻转一次（方向锁）：到底回显后继续滑入底部的剩余动量
@@ -9237,7 +9349,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           } else if (state.immersiveAcc <= -IMMERSIVE_SHOW_PX) {
             state.immersiveAcc = 0
             state.immersiveLockDir = -1
-            setImmersive(false)
+            setImmersive(false, 'gesture')
           }
         }
 
@@ -9270,8 +9382,28 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           // 聚焦硬阻断把「打完字读历史」这一常态场景整个压死，已撤）。
           if (nodeContains(seat, event?.target)) {
             state.immersiveAcc = 0
-            if (state.immersive) setImmersive(false)
+            if (state.immersive) setImmersive(false, 'focus')
           }
+        }
+
+        /** 点官方「回到底部」按钮 → 立即回显（2026-09-15 真机反馈：点回底后
+            composer 不回来，要手动上滑一点再下滑、还得试几次）。
+            官方 toBottom 只是一次 `el.scrollTop = el.scrollHeight` 的瞬时赋值：在引擎
+            的免疫层里和流式贴底同形（无手势窗口/超 200px 跳变一律不翻转），所以「用户
+            到底了」这个事实引擎看不见——只有事件目标能表达它，故按点击目标识别，不猜位移。
+            点完跳转还会在点按自身开出的 800ms 手势窗口里留下同向前进位移（跳 64~200px
+            时足以把刚回显的界面立刻再藏回去），因此顺手落一个方向锁吞掉它；
+            反方向位移照常解锁，后续滑动不受影响。 */
+        const onChatClick = (event) => {
+          if (!state.active || !state.chatAvailable || !state.immersive) return
+          if (!nav.isToBottomButton(event && event.target)) return
+          state.immersiveAcc = 0
+          state.immersiveLockDir = 1
+          setImmersive(false, 'button')
+          // 官方这一跳按「点按当下」的滚动高度算目标，而回显刚把坐位收回文档流、真实末尾
+          // 还会更远；不补一次对齐就只能等外壳自己跟随（实测 0.5s 起步，且不一定发生，
+          // 停在距底 ~76px 处 = 最后一段压在输入框下）。停稳时仍在末尾一带才对，往回读放弃。
+          scheduleImmersiveRepin(null, true)
         }
 
         // ===== 边缘手势开合抽屉（2026-09 用户点名）=====
@@ -9652,6 +9784,10 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           ['touchcancel', onEdgeTouchCancel, { capture: true, passive: true }],
           ['wheel', markGesture, { capture: true, passive: true }],
           ['focusin', onFocusIn, { capture: true }],
+          // 官方「回到底部」按钮：跳转本身是程序化滚动，只有点击目标能表达用户意图。
+          // 捕获阶段挂在 documentElement 上，早于 React 在根容器上的 onClick，
+          // 所以回显先于官方 `scrollTop = scrollHeight` 落地（随之贴到收回坐位后的新末尾）。
+          ['click', onChatClick, { capture: true }],
         ]
         let immersiveBound = false
 
@@ -9680,6 +9816,14 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           const chip = state.debugChip
           if (chip === null) return
           const onOff = (value) => (value ? t('mobile.debug.stateOn') : t('mobile.debug.stateOff'))
+          // 回显来路：真机「为什么没回显 / 是谁把它掀开的」一读即知。
+          const revealReason = (token) => {
+            if (token === 'gesture') return t('mobile.debug.immersive.reason.gesture')
+            if (token === 'arrival') return t('mobile.debug.immersive.reason.arrival')
+            if (token === 'focus') return t('mobile.debug.immersive.reason.focus')
+            if (token === 'button') return t('mobile.debug.immersive.reason.button')
+            return token
+          }
           const lines = [
             [
               `${t('mobile.debug.viewport')} ${window.innerWidth}×${window.innerHeight}`,
@@ -9687,7 +9831,8 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
               `${t('mobile.debug.drawer')} ${onOff(state.drawerOpen)}`,
               `${t('mobile.debug.details')} ${onOff(state.detailsOpen)}`,
               `${t('mobile.debug.rightbar')} ${onOff(state.rightbarOpen)}`,
-              `${t('mobile.debug.immersive')} ${onOff(state.immersive)}`,
+              `${t('mobile.debug.immersive')} ${onOff(state.immersive)}` +
+                (state.lastRevealReason === null ? '' : `(${revealReason(state.lastRevealReason)})`),
               `${t('mobile.debug.errors')} ${state.errorCount}`,
             ].join(' · '),
           ]
@@ -9930,6 +10075,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           state.styleTag = null
           state.backdrop = null
           state.fab = null
+          cancelImmersiveRepin()
           state.debugChip = null
           state.debugEnabled = false
           resetImmersive()
@@ -9995,6 +10141,17 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           /** 官方回到底部按钮本体（:not 排除命名含 Slot 的槽层）。 */
           toBottomButton: (slot) => {
             try { return slot.querySelector('[class*="_toBottom"]:not([class*="Slot"])') } catch (_) { return null }
+          },
+          /** 事件目标是否就是官方「回到底部」按钮（含内部 svg）。
+           *  沉浸引擎需要它：官方 toBottom 只做一次 `el.scrollTop = el.scrollHeight`，
+           *  在引擎眼里与流式贴底同形（免疫层不翻转），点它到底因此不会回显
+           *  （2026-09-15 真机反馈）。「用户点了回底按钮」这个意图只有事件目标能表达。
+           *  词干后缀 _toBottom 跨版本稳定（rc.2 Md3f7G_ → 0.1.2-alpha.2 EvIC1a_）。 */
+          isToBottomButton: (target) => {
+            try {
+              if (target === null || target === undefined || typeof target.closest !== 'function') return false
+              return target.closest('[class*="_toBottom"]:not([class*="Slot"])') !== null
+            } catch (_) { return false }
           },
           /** 从槽位向上找会话滚动容器（官方 [data-conversation-scroll]）；走不通时回退槽位父节点。 */
           scrollportOf: (slot) => {
