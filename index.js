@@ -5841,6 +5841,19 @@ function apply(ctx) {
         }
         sessionBytesCache.delete(plan.id)
         if (sessionViewCache.id === plan.id) sessionViewCache.id = null
+        // 同步官方侧（不然要刷新浏览器才正确）：官方客户端会话列表只吃 session/disposed
+        // 派生的 api-session/removed（该事件在官方远程事件 allowlist 内），而插件是在官方
+        // API 之外 rm 日志目录——不补发这条事件，官方侧栏与「已归档会话」页会一直留着幽灵行。
+        // 旧版宿主没有对应监听器时纯等于空操作；监听器抛错也不能反过来把已落盘的删除报成失败
+        // （与 file-write 的 fs/observed 广播同口径）。
+        try { ctx.emit('api-session/removed', plan.id) } catch (_) {}
+        // 归档集合里的死 id 一并清掉：官方归档页把「集合里有、会话已不在」的条目渲染成
+        // 「这里没有可恢复的已归档会话」，死 id 留着会让该页永远停在不可恢复态。官方自己的
+        // 「取消归档」对死 id 也是移除（幂等、无存在性校验），语义一致；删不掉不影响删除结果。
+        const registry = ctx.get('workspaceRegistry')
+        if (registry !== undefined && typeof registry.unarchiveSession === 'function') {
+          try { await registry.unarchiveSession(plan.id) } catch (_) {}
+        }
         return { ok: true, value: { deleted: true, id: plan.id } }
       } catch (error) {
         return rpcTechnicalFailure(error)

@@ -6868,6 +6868,67 @@ test('session management delete is two-phase: plan lists consequences, live reje
   assert.equal(afterList.value.deleted.some((item) => item.id === 'session-beta'), true)
 })
 
+test('session management delete syncs official session list and archive set instead of waiting for a browser reload', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-delete-sync-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  const betaDir = join(dshHome, 'cold-root', 'session-beta')
+  await mkdir(betaDir, { recursive: true })
+  await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n')
+  const unarchived = []
+  services.workspaceRegistry.unarchiveSession = async function (id) {
+    unarchived.push(id)
+    this.archivedSessionIds = this.archivedSessionIds.filter((item) => item !== id)
+  }
+  const persistence = {
+    locate(meta) {
+      if (meta.id === 'session-beta') return { kind: 'jsonl', path: join(betaDir, 'session.jsonl') }
+      return { kind: 'jsonl', path: `/sessions-root/${meta.id}/session.jsonl` }
+    },
+  }
+  const { handler, emitted } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions, sessionPersistence: persistence },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const plan = await handler('sessions-delete-plan', { id: 'session-beta' })
+  const confirmed = await handler('sessions-delete', { planId: plan.value.planId })
+  assert.equal(confirmed.ok, true)
+  // 官方客户端的会话列表只吃 session/disposed 派生的 api-session/removed；
+  // 插件在官方 API 之外 rm 日志目录，必须自己补发，否则官方侧栏与归档页留幽灵行到刷新为止。
+  assert.deepEqual(
+    emitted.filter((entry) => entry.event === 'api-session/removed').map((entry) => entry.args[0]),
+    ['session-beta'],
+  )
+  // 归档集合里的死 id 同样要清掉：官方归档页对「集合里有、会话已不在」的条目显示为不可恢复。
+  assert.deepEqual(unarchived, ['session-beta'])
+  assert.deepEqual(services.workspaceRegistry.archivedSessionIds, [])
+})
+
+test('session management delete still succeeds and notifies clients when the host cannot unarchive', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-delete-legacy-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  const betaDir = join(dshHome, 'cold-root', 'session-beta')
+  await mkdir(betaDir, { recursive: true })
+  await writeFile(join(betaDir, 'session.jsonl'), '{"seq":0}\n')
+  const persistence = {
+    locate(meta) {
+      if (meta.id === 'session-beta') return { kind: 'jsonl', path: join(betaDir, 'session.jsonl') }
+      return { kind: 'jsonl', path: `/sessions-root/${meta.id}/session.jsonl` }
+    },
+  }
+  const { handler, emitted } = createHost({
+    services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions, sessionPersistence: persistence },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const plan = await handler('sessions-delete-plan', { id: 'session-beta' })
+  const confirmed = await handler('sessions-delete', { planId: plan.value.planId })
+  assert.equal(confirmed.ok, true)
+  assert.deepEqual(emitted.filter((entry) => entry.event === 'api-session/removed').map((entry) => entry.args[0]), ['session-beta'])
+})
+
 test('session management clear deleted removes tombstones by id or all, and updates deleted list', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-clear-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
