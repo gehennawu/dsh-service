@@ -67,6 +67,21 @@ export const COMPAT_BREAKS = Object.freeze([
     match: '@deepseek-ai/dsh-session-persistence-sqlite',
   },
   {
+    id: 'code-runtime',
+    layer: 'manifest',
+    match: '@deepseek-ai/dsh-code-runtime',
+  },
+  {
+    id: 'e2b-runtime',
+    layer: 'manifest',
+    match: '@deepseek-ai/dsh-e2b',
+  },
+  {
+    id: 'session-start-event',
+    layer: 'code',
+    match: 'agent/session-start',
+  },
+  {
     id: 'chat-hash',
     layer: 'code',
     match: 'Md3f7G_',

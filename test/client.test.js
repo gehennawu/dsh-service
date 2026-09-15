@@ -1409,13 +1409,13 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.2；越界钉 0.1.6-alpha.0）；支持范围内的运行版本为中性色
+  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1；越界钉 0.1.6-alpha.2）；支持范围内的运行版本为中性色
   const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2/, 'support-bound declaration is always present')
+  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
   // v1.5.1 用户点名：适配声明内联紧跟版本号（不排到状态之后）——扁平文本顺序=版本号→声明→状态。
-  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2）已是最新版本/,
+  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1）已是最新版本/,
     'support bound reads directly after the version number and before the status')
 
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
@@ -1439,13 +1439,14 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
 })
 
-test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.0 (≤0.1.5.x stays supported)', async () => {
+test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.2 (≤0.1.6-alpha.1 stays supported)', async () => {
   const cases = [
     { current: '0.1.2-rc.1', red: false },
     { current: '0.1.3-alpha.1', red: false },
     { current: '0.1.5-rc.1', red: false },
     { current: '0.1.5-rc.2', red: false },
-    { current: '0.1.6-alpha.0', red: true },
+    { current: '0.1.6-alpha.1', red: false },
+    { current: '0.1.6-alpha.2', red: true },
     { current: '0.1.6', red: true },
   ]
   for (const item of cases) {
@@ -1460,7 +1461,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
     })
     await renderer.load()
     const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2/, `bound note present on ${item.current}`)
+    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1/, `bound note present on ${item.current}`)
     if (item.red) {
       assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
       assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
@@ -1507,7 +1508,7 @@ test('version card keeps the support bound inline after the version number, two 
     assert.ok(linkIndex >= 0, 'identity contains the plugin version link')
     assert.equal(identityChildren[linkIndex + 1], noteWrap.node, 'support bound directly follows the version number element')
     assert.equal(noteWrap.node.props.style.flexBasis, undefined, 'wide containers keep the note inline, never forced onto its own line')
-    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.5-rc\.2）/)
+    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1）/)
 
     // 窄容器（≤480px）两行契约由容器查询负责：identity 转 block 让 版本号+声明 连排一块（行内文本
     // 自然换行，声明永不独占行），status 独立整行——移动端两行：版本号+声明 / 状态。
@@ -6338,6 +6339,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
+    assert.match(styleTag.textContent, /\[class\*="Sh0Q9G_trigger"\],\s*html\[data-dshsvc-mobile\] \[class\*="JObwrW_trigger"\] \{ max-width: 38vw !important; \}/)
     // 真机第八轮：设置关闭钮圆形底衬随钮置顶；工作区侧板开关浮在面板上方。
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*border-radius: 999px !important/s)
     assert.match(styleTag.textContent, /\[class\*="nArs4W_toggleButton"\] \{[^}]*z-index: 45 !important/s)
@@ -6866,6 +6868,7 @@ function createSessionRpcMock({ onCall, ...overrides } = {}) {
       const ids = payload?.ids || []
       return { ok: true, value: { cleared: true, count: ids.length, ids } }
     },
+    'sessions-unarchive': (payload) => ({ ok: true, value: { archived: false, id: payload.id, archivedSessionIds: [] } }),
   }
   return async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
@@ -7973,8 +7976,9 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   assert.equal(renderer.hasTest('sessions-row-session-cold'), false, 'default archived view hides cold sessions')
   assert.equal(renderer.hasTest('sessions-row-session-archived'), true)
   assert.equal(renderer.hasTest('sessions-tag-archived-session-archived'), true, 'archived session shows archived tag')
-  // 归档行不再显示归档按钮；删除入口保留并在全部视图继续验证。
+  // 归档行不再显示归档按钮，但支持恢复时显示恢复按钮；删除入口保留并在全部视图继续验证。
   assert.equal(renderer.hasTest('sessions-row-archive-session-archived'), false, 'archived session has no archive button')
+  assert.equal(renderer.hasTest('sessions-row-unarchive-session-archived'), true, 'archived session has unarchive button')
   // v0.36：体积懒加载——打开即请求可见行体积；行内显示大小、无「—」占位。
   assert.ok(calls.includes('sessions-bytes'), 'lazy bytes RPC fires for visible rows')
   const archivedMeta = renderer.findByTestId('sessions-meta-session-archived')
@@ -8003,6 +8007,54 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   assert.equal(renderer.hasTest('sessions-row-delete-session-gone'), false, 'deleted record is read-only')
 })
 
+test('session manager row unarchive restores archived session and updates list', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-unarchive': (payload) => ({ ok: true, value: { archived: false, id: payload.id } }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('sessions-row-unarchive-session-archived'), true)
+  await renderer.findByTestId('sessions-row-unarchive-session-archived').props.onClick()
+  await renderer.flush()
+
+  assert.deepEqual(calls.filter((c) => c.endpoint === 'sessions-unarchive').map((c) => c.payload.id), ['session-archived'])
+  assert.equal(renderer.hasTest('sessions-row-session-archived'), false, 'unarchived session is pruned from archived view')
+})
+
+test('session manager row unarchive is hidden on legacy host lacking unarchive capability', async () => {
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': () => ({
+      ok: true,
+      value: {
+        available: true,
+        canUnarchive: false,
+        items: SESSION_LIST_VALUE.items.filter((item) => item.archived),
+        archivedIds: SESSION_LIST_VALUE.archivedIds,
+        deleted: [],
+      },
+    }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('sessions-row-unarchive-session-archived'), false, 'legacy host hides unarchive button')
+})
+
 test('session manager list supports project (cwd) sorting rendered as grouped sections', async () => {
   const renderer = sessionManagerRenderer(createSessionRpcMock())
   await renderer.load()
@@ -8014,7 +8066,7 @@ test('session manager list supports project (cwd) sorting rendered as grouped se
   await renderer.flush()
   await renderer.findByTestId('sessions-filter-all').props.onClick()
   await renderer.flush()
-  const rowIds = () => renderer.findAllByTestIdPrefix('sessions-row-').filter((node) => !/^sessions-row-(view|export|archive|delete)-/.test(node.props['data-testid'])).map((node) => node.props['data-testid'])
+  const rowIds = () => renderer.findAllByTestIdPrefix('sessions-row-').filter((node) => !/^sessions-row-(view|export|archive|unarchive|delete)-/.test(node.props['data-testid'])).map((node) => node.props['data-testid'])
   // 默认排序：创建时间倒序（live 3000 → cold 2000 → archived 1000）
   assert.deepEqual(rowIds(), ['sessions-row-session-live', 'sessions-row-session-cold', 'sessions-row-session-archived'])
   // 排序下拉包含「按项目」选项（zh/en 词典平衡由词典用例覆盖）
@@ -8118,6 +8170,7 @@ test('session manager batch mode supports multi-select, actions, select all, cle
     assert.match(selectedRow.props.style.boxShadow, /brand-primary/, 'selection uses a narrow accent marker instead')
     assert.equal(renderer.findByTestId('sessions-batch-export').props.disabled, false)
     assert.equal(renderer.findByTestId('sessions-batch-archive').props.disabled, true, 'already archived rows are not archive candidates')
+    assert.equal(renderer.findByTestId('sessions-batch-unarchive').props.disabled, false, 'already archived rows are unarchive candidates')
     assert.equal(renderer.findByTestId('sessions-batch-delete').props.disabled, false)
     assert.equal(renderer.findByTestId('sessions-select-all').children[0], '取消全选', 'single visible row means manual selection reaches all-selected state')
 

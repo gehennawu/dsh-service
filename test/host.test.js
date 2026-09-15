@@ -1220,7 +1220,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-delete-plan', 'sessions-delete', 'file-read', 'file-write']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-unarchive', 'sessions-delete-plan', 'sessions-delete', 'file-read', 'file-write']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -6735,6 +6735,28 @@ test('session management archive calls workspace registry and maps unknown sessi
 
   const missing = await handler('sessions-archive', { id: 'session-missing' })
   assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
+})
+
+test('session management unarchive calls workspace registry unarchiveSession and handles legacy host', async () => {
+  const services = sessionManagerServices()
+  services.workspaceRegistry.unarchiveSession = async function (id) {
+    this.archivedSessionIds = this.archivedSessionIds.filter((item) => item !== id)
+  }
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry } })
+
+  const ok = await handler('sessions-unarchive', { id: 'session-beta' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.value.archived, false)
+  assert.deepEqual(ok.value.archivedSessionIds, [])
+
+  const invalid = await handler('sessions-unarchive', { id: '' })
+  assert.deepEqual(invalid, { ok: false, error: 'invalid-session-id' })
+
+  // 模拟旧版 DSH（< 0.1.6 无 unarchiveSession 方法）：平滑返回 unarchive-unsupported
+  const legacyServices = sessionManagerServices()
+  const { handler: legacyHandler } = createHost({ services: { sessionQuery: legacyServices.sessionQuery, workspaceRegistry: legacyServices.workspaceRegistry } })
+  const unsupported = await legacyHandler('sessions-unarchive', { id: 'session-beta' })
+  assert.deepEqual(unsupported, { ok: false, error: 'unarchive-unsupported' })
 })
 
 test('session management delete keeps the archive when recording the deletion fails', async (t) => {

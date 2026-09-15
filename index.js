@@ -3749,12 +3749,13 @@ function sessionTitleFresh(entry, record, revisions, now) {
 async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = null) {
   const sessionQuery = ctx.get('sessionQuery')
   const workspaceRegistry = ctx.get('workspaceRegistry')
+  const canUnarchive = workspaceRegistry !== undefined && typeof workspaceRegistry.unarchiveSession === 'function'
   const available = sessionQuery !== undefined && typeof sessionQuery.listSessions === 'function'
   if (!available) {
-    return { available: false, items: [], archivedIds: [], deleted: [] }
+    return { available: false, items: [], archivedIds: [], deleted: [], canUnarchive: false }
   }
   if (scope === 'deleted') {
-    return { available: true, items: [], archivedIds: [], deleted: (await loadDeletedSessions(dshHome)).items }
+    return { available: true, items: [], archivedIds: [], deleted: (await loadDeletedSessions(dshHome)).items, canUnarchive }
   }
   const now = Date.now()
   // revision 源：缓存启用时尽早并行拉取（一次 header-only 目录遍历 + 每会话一次 stat，
@@ -3838,7 +3839,7 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = n
     })
   }
   items.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-  return { available: true, items, archivedIds, deleted }
+  return { available: true, items, archivedIds, deleted, canUnarchive }
 }
 
 // 批量取会话体积（sessions-bytes 用）：命中缓存秒回、不碰磁盘；未命中再做一次
@@ -4594,7 +4595,9 @@ function apply(ctx) {
       const { request: decorated, dispatch } = applyInjection(spec.request)
       return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
     }
-    // agent/created（同步派发在创建栈内）：记录派发路由 + 绑定等级（仅当确有非空等级）。
+    // agent/created（0.1.6 起由 announce await ctx.serial 异步串行派发；0.1.5 及之前同步派发在创建栈内）：
+    // 记录派发路由 + 绑定等级（仅当确有非空等级）。监听器内部全 try/catch 严格保证绝不抛错，
+    // 避免 0.1.6 serial 派发失败时 reject 整个 Agent 创建。
     // agent/request：最终 proposal 阶段补入 reasoningEffort；已建立的值（提案自带/其他插件）永不覆盖。
     // 补标前按 proposal 实际 provider/model 复审等级仍受支持（适配器元数据漂移即丢弃并告警），
     // 与 isRoutable 的「实时判定、不让派生失败」契约同 philosophy。绑定无论结果如何都消费一次。
@@ -4618,6 +4621,8 @@ function apply(ctx) {
         } catch (error) {
           ctx.logger?.warn?.(`dsh-service: subagent dispatch record failed: ${error?.message ?? String(error)}`)
         }
+      } else if (agent?.session?.header?.parentSession && subagentRouteConfig.mode !== 'inherit') {
+        ctx.logger?.warn?.(`dsh-service: subagent "${agent?.id}" created without ALS dispatch context, subagent route skipped`)
       }
       const effort = dispatch?.reasoningEffort
       if (typeof effort === 'string' && effort !== '' && agent !== null && typeof agent === 'object') managedEfforts.set(agent, effort)
@@ -5750,6 +5755,26 @@ function apply(ctx) {
         }
       } catch (error) {
         if (error?.name === 'WorkspaceUnknownSessionError') return { ok: false, error: 'session-not-found' }
+        return rpcTechnicalFailure(error)
+      }
+
+    } },
+    'sessions-unarchive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
+      const id = typeof payload?.id === 'string' ? payload.id : ''
+      if (id === '') return { ok: false, error: 'invalid-session-id' }
+      const workspaceRegistry = ctx.get('workspaceRegistry')
+      if (workspaceRegistry === undefined) return { ok: false, error: 'workspace-unavailable' }
+      if (typeof workspaceRegistry.unarchiveSession !== 'function') return { ok: false, error: 'unarchive-unsupported' }
+      try {
+        await workspaceRegistry.unarchiveSession(id)
+        return {
+          ok: true,
+          value: {
+            archived: false,
+            archivedSessionIds: Array.isArray(workspaceRegistry.archivedSessionIds) ? [...workspaceRegistry.archivedSessionIds] : [],
+          },
+        }
+      } catch (error) {
         return rpcTechnicalFailure(error)
       }
 

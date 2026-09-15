@@ -37,6 +37,9 @@ test('COMPAT_BREAKS lists only verified alpha breakage with unique ids', () => {
   assert.ok(ids.has('client-runtime'))
   assert.ok(ids.has('sqlite-persistence'))
   assert.ok(ids.has('chat-hash'))
+  assert.ok(ids.has('code-runtime'))
+  assert.ok(ids.has('e2b-runtime'))
+  assert.ok(ids.has('session-start-event'))
 })
 
 const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
@@ -46,6 +49,7 @@ test('scanCodeHits finds references in code and string literals but ignores comm
   assert.deepEqual([...scanCodeHits("const cls = 'Md3f7G_toBottom'", codeBreaks)], ['chat-hash'])
   assert.deepEqual([...scanCodeHits('querySelector("FJxK0a_root")', codeBreaks)], ['stats-hash'])
   assert.deepEqual([...scanCodeHits('document.querySelector(`[data-time-hover-root]`)', codeBreaks)], ['time-hover-root'])
+  assert.deepEqual([...scanCodeHits("ctx.on('agent/session-start', () => {})", codeBreaks)], ['session-start-event'])
   // normal 态直接引用
   assert.deepEqual([...scanCodeHits("console.log('x') // Md3f7G_ comment", codeBreaks)], [])
   // 行注释/块注释内的提及不算引用
@@ -83,6 +87,8 @@ test('manifestCallRefs only matches real require/import calls, not stringified e
   assert.deepEqual(manifestCallRefs("const r = require('@deepseek-ai/dsh-client-runtime')", manifestBreaks), ['client-runtime'])
   assert.deepEqual(manifestCallRefs('import "@deepseek-ai/dsh-session-persistence-sqlite"', manifestBreaks), ['sqlite-persistence'])
   assert.deepEqual(manifestCallRefs("import '@deepseek-ai/dsh-client-runtime'", manifestBreaks), ['client-runtime'])
+  assert.deepEqual(manifestCallRefs("require('@deepseek-ai/dsh-code-runtime')", manifestBreaks), ['code-runtime'])
+  assert.deepEqual(manifestCallRefs("require('@deepseek-ai/dsh-e2b')", manifestBreaks), ['e2b-runtime'])
   // 字符串化的迁移示例（引号带 \\ 转义，dsh-dream-skin 实证）与 markdown 提及 → 不算调用
   assert.deepEqual(manifestCallRefs('"_x = require(\\"@deepseek-ai/dsh-client-runtime/client\\");"', manifestBreaks), [])
   assert.deepEqual(manifestCallRefs('// `@deepseek-ai/dsh-client-runtime/client` (issue #41)', manifestBreaks), [])

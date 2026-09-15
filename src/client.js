@@ -203,6 +203,7 @@ window.__ModuleLoader__.load({
       'sessions.batch.selectRow': '选择会话：{title}',
       'sessions.batch.export': '导出 ({count})',
       'sessions.batch.archive': '归档 ({count})',
+      'sessions.batch.unarchive': '恢复 ({count})',
       'sessions.batch.delete': '删除 ({count})',
       'sessions.batch.clear': '清除 ({count})',
       'sessions.batch.completed': '已完成{action}：{count} 项',
@@ -235,6 +236,7 @@ window.__ModuleLoader__.load({
       'sessions.action.view': '查看',
       'sessions.action.export': '导出',
       'sessions.action.archive': '归档',
+      'sessions.action.unarchive': '恢复',
       'sessions.action.delete': '删除',
       'sessions.action.clear': '清除',
       'sessions.empty.all': '没有会话',
@@ -249,6 +251,7 @@ window.__ModuleLoader__.load({
       'sessions.error.session-not-archived': '仅已归档会话可以删除',
       'sessions.error.unknown-delete-plan': '删除请求已失效，请重新发起',
       'sessions.error.invalid-session-ids': '无效的会话标识',
+      'sessions.error.unarchive-unsupported': '当前宿主不支持恢复归档（需要 DSH ≥ 0.1.6）',
       'sessions.error.export-failed': '导出失败：{error}',
       'sessions.detail.back': '返回列表',
       'sessions.detail.open': '在官方会话中打开',
@@ -565,6 +568,9 @@ window.__ModuleLoader__.load({
       'plugin.compat.declared': '声明了已移除的接口但代码未引用——官方加载器对缺失供应商静默跳过，当前无害，可提示作者清理',
       'plugin.compat.break.client-runtime': '声明了已移除的客户端供应商 @deepseek-ai/dsh-client-runtime（0.1.2-alpha.2 起官方 roster 移除，浏览器半可能无法挂载）',
       'plugin.compat.break.sqlite-persistence': '依赖已移除的会话持久化后端 @deepseek-ai/dsh-session-persistence-sqlite（0.1.2-alpha.3 起官方仅交付 JSONL）',
+      'plugin.compat.break.code-runtime': '依赖已移除的代码执行后端 @deepseek-ai/dsh-code-runtime（0.1.6-alpha.1 起由 ptc-runtime 取代）',
+      'plugin.compat.break.e2b-runtime': '依赖已移除的沙箱执行器 @deepseek-ai/dsh-e2b（0.1.6-alpha.1 起官方移除内置 E2B）',
+      'plugin.compat.break.session-start-event': '监听已移除的会话生命周期事件 agent/session-start（0.1.6-alpha.1 起由 agent/created 携带 source 统一取代）',
       'plugin.compat.break.chat-hash': '引用已迁移的聊天界面旧样式前缀（Md3f7G_，0.1.2-alpha.2 起漂移至 EvIC1a_）',
       'plugin.compat.break.stats-hash': '引用已迁移的统计条旧样式前缀（FJxK0a_，0.1.2-alpha.2 起漂移至 -NDN2W_）',
       'plugin.compat.break.time-hover-root': '使用已移除的元素属性 data-time-hover-root（0.1.2-alpha.2 起由 data-turn-tail 取代）',
@@ -685,7 +691,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
-      'version.dsh.supportBound': '（适配 DSH 0.1.1-rc.2 ~ 0.1.5-rc.2）',
+      'version.dsh.supportBound': '（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1）',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -1025,6 +1031,7 @@ window.__ModuleLoader__.load({
       'sessions.batch.selectRow': 'Select session: {title}',
       'sessions.batch.export': 'Export ({count})',
       'sessions.batch.archive': 'Archive ({count})',
+      'sessions.batch.unarchive': 'Unarchive ({count})',
       'sessions.batch.delete': 'Delete ({count})',
       'sessions.batch.clear': 'Clear ({count})',
       'sessions.batch.completed': '{action} completed for {count}',
@@ -1057,6 +1064,7 @@ window.__ModuleLoader__.load({
       'sessions.action.view': 'View',
       'sessions.action.export': 'Export',
       'sessions.action.archive': 'Archive',
+      'sessions.action.unarchive': 'Unarchive',
       'sessions.action.delete': 'Delete',
       'sessions.action.clear': 'Clear',
       'sessions.empty.all': 'No sessions',
@@ -1071,6 +1079,7 @@ window.__ModuleLoader__.load({
       'sessions.error.session-not-archived': 'Only archived sessions can be deleted',
       'sessions.error.unknown-delete-plan': 'Delete request expired, please retry',
       'sessions.error.invalid-session-ids': 'Invalid session IDs',
+      'sessions.error.unarchive-unsupported': 'Unarchiving is not supported by current host (requires DSH ≥ 0.1.6)',
       'sessions.error.export-failed': 'Export failed: {error}',
       'sessions.detail.back': 'Back to list',
       'sessions.detail.open': 'Open in official view',
@@ -1382,6 +1391,9 @@ window.__ModuleLoader__.load({
       'plugin.compat.declared': 'Declares a removed interface but never references it in code — the official loader silently skips missing suppliers, so this is harmless today and only signals the author to clean up',
       'plugin.compat.break.client-runtime': 'Declares the removed client supplier @deepseek-ai/dsh-client-runtime (dropped from the official roster in 0.1.2-alpha.2; the browser half may fail to mount)',
       'plugin.compat.break.sqlite-persistence': 'Depends on the removed session persistence backend @deepseek-ai/dsh-session-persistence-sqlite (JSONL is the only official provider since 0.1.2-alpha.3)',
+      'plugin.compat.break.code-runtime': 'Depends on the removed code runtime backend @deepseek-ai/dsh-code-runtime (replaced by ptc-runtime in 0.1.6-alpha.1)',
+      'plugin.compat.break.e2b-runtime': 'Depends on the removed sandbox backend @deepseek-ai/dsh-e2b (built-in E2B removed in 0.1.6-alpha.1)',
+      'plugin.compat.break.session-start-event': 'Listens to the removed lifecycle event agent/session-start (replaced by agent/created with source in 0.1.6-alpha.1)',
       'plugin.compat.break.chat-hash': 'References the old chat UI style prefix (Md3f7G_, migrated to EvIC1a_ since 0.1.2-alpha.2)',
       'plugin.compat.break.stats-hash': 'References the old status-line style prefix (FJxK0a_, migrated to -NDN2W_ since 0.1.2-alpha.2)',
       'plugin.compat.break.time-hover-root': 'Uses the removed attribute data-time-hover-root (replaced by data-turn-tail in 0.1.2-alpha.2)',
@@ -1498,7 +1510,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
-      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.5-rc.2)',
+      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1)',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -2973,12 +2985,12 @@ window.__ModuleLoader__.load({
         channelLine(translate, 'next', tags && tags.next),
          ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
 
-      // 版本支持边界（v1.4.12 适配轮）：0.1.3-alpha.1 起旧 sessionPersistence seam 移除、
-      // 0.1.5 起 layout Details 列移除 + 会话格式 V3——本版已双形态适配（docs/research/
-      // dsh-v0.1.5-alpha.1-plugin-impact.md），支持 ≤0.1.5.x 全系。边界钉在 0.1.6-alpha.0：
-      // 其后的 alpha 尚未验证，运行版本越界时版本卡声明行转红警示；无法解析的版本串
-      // （如 unknown）按不支持判空、中性展示。
-      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.0'
+      // 版本支持边界（v1.4.12/0.1.6 适配轮）：0.1.3-alpha.1 起旧 sessionPersistence seam 移除、
+      // 0.1.5 起 layout Details 列移除 + 会话格式 V3、0.1.6-alpha.1 起 announce 改异步串行
+      // 与 Sh0Q9G_ 类哈希漂移——本版已全部完成适配（docs/research/dsh-v0.1.6-alpha.1-plugin-impact.md）。
+      // 边界钉在 0.1.6-alpha.2：其后的版本尚未验证，运行版本越界时版本卡声明行转红警示；
+      // 无法解析的版本串（如 unknown）按不支持判空、中性展示。
+      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.2'
       const parseSemver = (value) => {
         if (typeof value !== 'string') return null
         const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
@@ -4865,6 +4877,7 @@ window.__ModuleLoader__.load({
         if (code === 'session-not-archived') return translate('sessions.error.session-not-archived')
         if (code === 'unknown-delete-plan') return translate('sessions.error.unknown-delete-plan')
         if (code === 'invalid-session-ids') return translate('sessions.error.invalid-session-ids')
+        if (code === 'unarchive-unsupported') return translate('sessions.error.unarchive-unsupported')
         if (code === 'network') return translate('sessions.error.network')
         return code
       }
@@ -5087,8 +5100,9 @@ window.__ModuleLoader__.load({
         const [clearPlan, setClearPlan] = useState(null)
         const [clearing, setClearing] = useState(false)
         const [clearError, setClearError] = useState('')
-        // 归档状态
+        // 归档/恢复状态
         const [archivingId, setArchivingId] = useState('')
+        const [unarchivingId, setUnarchivingId] = useState('')
         const [archiveError, setArchiveError] = useState('')
 
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
@@ -5383,6 +5397,44 @@ window.__ModuleLoader__.load({
           return result
         }
 
+        const applyUnarchivedSession = (sessionId) => {
+          // 本地同步模块级缓存（不重拉）：all 缓存里该行改标 archived: false，
+          // archived 缓存移除该行（切「仅归档」不再显示）。
+          const currentAll = sessionPanelListCache.all
+          if (currentAll !== undefined && Array.isArray(currentAll.items)) {
+            sessionPanelListCache.all = { ...currentAll, items: currentAll.items.map((item) => item.id === sessionId ? { ...item, archived: false } : item) }
+          }
+          const archived = sessionPanelListCache.archived
+          if (archived !== undefined && Array.isArray(archived.items)) {
+            sessionPanelListCache.archived = { ...archived, items: archived.items.filter((item) => item.id !== sessionId) }
+          }
+          setList((current) => {
+            if (current === null || !Array.isArray(current.items)) return current
+            if (filter === 'archived') {
+              return { ...current, items: current.items.filter((item) => item.id !== sessionId) }
+            }
+            return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: false } : item) }
+          })
+        }
+        const unarchiveSession = async (sessionId) => {
+          try {
+            const res = await rpcCall('sessions-unarchive', { id: sessionId })
+            if (!res.ok) return { ok: false, error: mapSessionError(translate, res.error || 'unknown') }
+            applyUnarchivedSession(sessionId)
+            return { ok: true }
+          } catch (_) {
+            return { ok: false, error: translate('sessions.error.network') }
+          }
+        }
+        const doUnarchive = async (sessionId) => {
+          setUnarchivingId(sessionId)
+          setArchiveError('')
+          const result = await unarchiveSession(sessionId)
+          if (!result.ok) setArchiveError(result.error)
+          setUnarchivingId('')
+          return result
+        }
+
         const requestDelete = async (sessionId) => {
           // 在途防重：确认模态已开时不重复发起 plan。
           if (deletePlan !== null || deleting) return
@@ -5540,6 +5592,7 @@ window.__ModuleLoader__.load({
         const selectedItems = visibleItems.filter((item) => selectedSet.has(item.id))
         const batchExportItems = selectedItems.filter((item) => item._deleted !== true)
         const batchArchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived !== true)
+        const batchUnarchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
         const batchDeleteItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
         const batchClearItems = selectedItems.filter((item) => item._deleted === true)
         const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedSet.has(id))
@@ -5608,6 +5661,27 @@ window.__ModuleLoader__.load({
           if (completedIds.length > 0) setSelectedIds((current) => current.filter((id) => !completedIds.includes(id)))
           if (failure === '') setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.archive'), count: completed }))
           else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.archive'), done: completed, total: ids.length, error: failure }))
+          setBatchWorking('')
+        }
+        const runBatchUnarchive = async () => {
+          if (batchWorking !== '' || batchUnarchiveItems.length === 0) return
+          setBatchWorking('unarchive')
+          setBatchResult('')
+          setBatchError('')
+          let completed = 0
+          let failure = ''
+          const ids = batchUnarchiveItems.map((item) => item.id)
+          const completedIds = []
+          for (const id of ids) {
+            const result = await unarchiveSession(id)
+            if (result.ok) {
+              completed += 1
+              completedIds.push(id)
+            } else if (failure === '') failure = result.error
+          }
+          if (completedIds.length > 0) setSelectedIds((current) => current.filter((id) => !completedIds.includes(id)))
+          if (failure === '') setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.unarchive'), count: completed }))
+          else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.unarchive'), done: completed, total: ids.length, error: failure }))
           setBatchWorking('')
         }
         const requestBatchDelete = async () => {
@@ -5735,6 +5809,9 @@ window.__ModuleLoader__.load({
               actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
             }
             if (!live && archived) {
+              if (list?.canUnarchive !== false) {
+                actions.push(React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-row-unarchive-' + id, style: chipButton, disabled: unarchivingId === id, onClick: () => void doUnarchive(id) }, unarchivingId === id ? translate('sessions.status.working') : translate('sessions.action.unarchive')))
+              }
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           } else {
@@ -6000,6 +6077,7 @@ window.__ModuleLoader__.load({
               : [
                   React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-batch-export', style: chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
                   React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-batch-archive', style: chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
+                  list?.canUnarchive !== false ? React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-batch-unarchive', style: chipButton, disabled: batchUnarchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchUnarchive() }, batchWorking === 'unarchive' ? translate('sessions.status.working') : translate('sessions.batch.unarchive', { count: batchUnarchiveItems.length })) : null,
                   React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
                 ]) : null,
           detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
@@ -6007,7 +6085,7 @@ window.__ModuleLoader__.load({
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
               translate('sessions.search.archivedOnly'))) : null,
-          archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + ' · ' + translate('sessions.oneWayHint')) : null,
+          archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + (list?.canUnarchive !== false ? '' : (' · ' + translate('sessions.oneWayHint')))) : null,
           exportError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, exportError) : null,
           batchResult !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-result', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, batchResult) : null,
           batchError !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, batchError) : null,
@@ -8738,7 +8816,7 @@ html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshs
 }
 /* composer 底行单行紧凑：外壳原生 flex-wrap:wrap 在窄屏把图标/模型名折成两行。
    收紧间距 + 禁换行 + 最宽触发钮限宽省略。类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自
-   dsh-client-ui-conversation composer（rc.2），升级需复核。 */
+   dsh-client-ui-conversation composer（rc.2，0.1.6-alpha.1 漂移至 JObwrW_ 并存），升级需复核。 */
 html[data-dshsvc-mobile] [class*="uV2eYG_row"] {
   flex-wrap: nowrap !important;
   column-gap: 4px !important;
@@ -8750,7 +8828,8 @@ html[data-dshsvc-mobile] [class*="uV2eYG_tools"],
 html[data-dshsvc-mobile] [class*="uV2eYG_modes"],
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-width: 0 !important; }
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { margin-left: auto !important; }
-html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"] { max-width: 38vw !important; }
+html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"],
+html[data-dshsvc-mobile] [class*="JObwrW_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }
 /* 模型选择按钮收成图标（用户点名，2026-09-15）：官方 ModelSelect 只在容器
    ≤360px 时把 triggerLabel/triggerEffort 换成 triggerIcon，而查询容器正是上面
