@@ -8290,6 +8290,92 @@ test('session manager detail pages events, loads more with seq cursor, and trigg
   assert.equal(renderer.hasTest('sessions-detail-more'), false, 'no load-more when all events loaded')
 })
 
+test('session manager folds tool messages by default and expands them on demand', async () => {
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': () => ({ ok: true, value: SESSION_LIST_VALUE }),
+    // v1.6.x（用户点名「tool 相关的消息也默认折叠」）：宿主给工具消息打 tool 标志——
+    // tool/call、tool/result 与「通篇只有工具调用」的 assistant/message 都归此类。
+    'sessions-view': () => ({ ok: true, value: { session: { id: 'session-cold', title: 'Cold session' }, items: [
+      { seq: 0, type: 'user/message', time: 2000, text: '帮我看看', noise: false, tool: false },
+      { seq: 1, type: 'assistant/message', time: 2001, text: 'edit\n{"file_path":"a.js"}', noise: false, tool: true },
+      { seq: 2, type: 'tool/call', time: 2002, text: 'bash\n{"command":"ls"}', noise: false, tool: true },
+      { seq: 3, type: 'tool/result', time: 2003, text: 'output', noise: false, tool: true },
+      { seq: 4, type: 'step/end', time: 2004, text: '', noise: true, tool: false },
+      { seq: 5, type: 'assistant/message', time: 2005, text: '看完了', noise: false, tool: false },
+    ], nextCursor: undefined, total: 6 } }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+
+  // 普通事件原样渲染，工具消息连续三条合并为一块（默认折叠）。
+  assert.equal(renderer.hasTest('sessions-event-0'), true)
+  assert.equal(renderer.hasTest('sessions-event-1'), false, 'a tool-only assistant message is folded')
+  assert.equal(renderer.hasTest('sessions-event-2'), false, 'tool/call is folded')
+  assert.equal(renderer.hasTest('sessions-event-3'), false, 'tool/result is folded')
+  assert.equal(renderer.hasTest('sessions-toolwall-1'), true, 'consecutive tool messages collapse into one block keyed by the first seq')
+  assert.equal(renderer.findByTestId('sessions-toolwall-toggle-1').children[0], '▸ 3 条工具消息', 'the collapsed line reports the tool-message count')
+  // 系统事件块与工具消息块各自成块、不混排。
+  assert.equal(renderer.hasTest('sessions-noisewall-4'), true, 'the noise run right after the tool run keeps its own block')
+  assert.equal(renderer.hasTest('sessions-event-5'), true, 'the readable assistant message stays inline')
+  // 展开：三条工具消息明细逐条出现（类型沿用原始事件类型，便于看工具流量）。
+  await renderer.findByTestId('sessions-toolwall-toggle-1').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-event-1'), true)
+  assert.equal(renderer.hasTest('sessions-event-2'), true)
+  assert.equal(renderer.hasTest('sessions-event-3'), true)
+  assert.equal(renderer.findByTestId('sessions-event-type-2').children[0], 'tool/call', 'folded tool cards keep their raw event type')
+  assert.equal(renderer.findByTestId('sessions-toolwall-toggle-1').children[0], '▾ 收起', 'the expanded line offers collapse')
+  // 收起后再折叠。
+  await renderer.findByTestId('sessions-toolwall-toggle-1').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-event-2'), false, 'collapsing hides the tool messages again')
+})
+
+test('session manager expands a folded block when a search hit lands inside it', async () => {
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': () => ({ ok: true, value: SESSION_LIST_VALUE }),
+    'sessions-search': () => ({ ok: true, value: { available: true, query: 'bash', scope: 'all', hits: [{ sessionId: 'session-cold', title: 'Cold session', items: [{ seq: 2, type: 'tool/call', snippet: 'bash {"command":"ls"}' }] }] } }),
+    // 命中落在工具消息块内：块默认展开，命中行带 HIT 徽章与 jump 锚点（v0.37 定位前提）。
+    'sessions-view': () => ({ ok: true, value: { session: { id: 'session-cold' }, items: [
+      { seq: 0, type: 'assistant/message', time: 2000, text: '', noise: false, tool: true },
+      { seq: 1, type: 'tool/call', time: 2001, text: 'read\n{"path":"a.js"}', noise: false, tool: true },
+      { seq: 2, type: 'tool/call', time: 2002, text: 'bash\n{"command":"ls"}', noise: false, tool: true },
+      { seq: 3, type: 'tool/result', time: 2003, text: 'output', noise: false, tool: true },
+    ], nextCursor: undefined, total: 60, centerSeq: 2 } }),
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('sessions-search-input').props.onChange({ target: { value: 'bash' } })
+  await renderer.flush()
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  await renderer.findByTestId('sessions-hit-open-session-cold').props.onClick()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('sessions-toolwall-0'), true, 'the tool block is rendered')
+  assert.equal(renderer.hasTest('sessions-event-2'), true, 'a block containing the hit opens by default')
+  assert.equal(renderer.hasTest('sessions-jump-target-2'), true, 'the hit inside the block keeps its jump anchor')
+  assert.equal(renderer.hasTest('sessions-jump-badge-2'), true, 'the hit inside the block shows the HIT badge')
+  // 用户显式收起优先于「命中即展开」：收起后明细（含命中行）隐藏。
+  await renderer.findByTestId('sessions-toolwall-toggle-0').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-event-2'), false, 'an explicit collapse wins over the hit auto-expand')
+})
+
 test('session manager restores the list scroll position after returning from detail', async () => {
   const calls = []
   const renderer = sessionManagerRenderer(createSessionRpcMock({

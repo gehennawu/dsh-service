@@ -156,6 +156,12 @@ const SESSIONS_TITLE_VERSION = 1
 const SESSIONS_TITLE_MAX_ENTRIES = 2000
 const SESSIONS_TITLE_LIVE_TTL_MS = 30 * 1000
 const SESSIONS_TITLE_COLD_TTL_MS = 5 * 60 * 1000
+// 详情里视为「工具消息」的事件类型前缀（官方 0.1.5 装机包 SessionEventMap 核实：tool/call、
+// tool/result、tool/ptc-dispatch、tool/ptc-dispatch-start 全落在 tool/ 命名空间）——按前缀归类，
+// 官方日后新增工具事件类型无需改表。另有「通篇只有工具调用的 assistant/message」同归此类，
+// 判定见 assistantMessageCarriesOnlyToolCalls。
+const SESSION_TOOL_TYPE_PREFIX = 'tool/'
+
 // 详情/检索里视为「机制性噪声」的事件类型：折叠展示计数，用户可展开。
 const SESSION_NOISE_TYPES = new Set([
   'turn/start', 'step/start', 'step/end', 'assistant/chunk', 'request/header',
@@ -3621,7 +3627,41 @@ async function saveSessionTitles(dshHome, cache) {
   }
 }
 
-/** 单个会话的事件文本（与官方 extractSessionEventText 语义一致，不依赖官方内部包）。 */
+/**
+ * assistant/message 是否「通篇只有工具调用」——含 tool-call 块、且没有任何非空文本块。
+ * 官方 agent-loop 把工具调用写进 assistant/message 的 content（append 后才发 tool/call + tool/result），
+ * 真实长会话里这类消息占绝大多数（52k 事件样本：873 条 assistant/message，其中 526 条通篇工具调用），
+ * 详情页逐条铺开就是「工具相关消息」的主噪音源，故与 tool/* 事件同归折叠块。
+ */
+function assistantMessageCarriesOnlyToolCalls(event) {
+  const content = event?.data?.message?.content
+  if (!Array.isArray(content)) return false
+  let hasToolCall = false
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    if (block.type === 'tool-call') { hasToolCall = true; continue }
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '') return false
+  }
+  return hasToolCall
+}
+
+/** 详情列表的事件归类：'noise'（机制性系统事件）/ 'tool'（工具消息）/ undefined（原样渲染）。 */
+function sessionEventCollapseKind(event) {
+  const type = event?.type
+  if (typeof type !== 'string') return undefined
+  if (SESSION_NOISE_TYPES.has(type)) return 'noise'
+  if (type.startsWith(SESSION_TOOL_TYPE_PREFIX)) return 'tool'
+  if (type === 'assistant/message' && assistantMessageCarriesOnlyToolCalls(event)) return 'tool'
+  return undefined
+}
+
+/**
+ * 单个会话的事件文本（官方 extractSessionEventText 语义，不依赖官方内部包）。
+ * **一处有意偏离官方**（v1.6.x 用户点名「tool 相关的消息默认折叠」）：既有文本又有工具调用的
+ * assistant/message，正文只留文本——工具调用的 name/arguments 由紧随其后的 tool/call 事件
+ * （同一份内容）承载，展开工具消息折叠块即可看到，界面整体不丢信息；通篇只有工具调用的
+ * assistant/message 本身就在折叠块里，保留原文，展开后仍见当时的参数。
+ */
 function sessionEventText(event) {
   if (typeof event !== 'object' || event === null) return ''
   const data = event.data
@@ -3642,7 +3682,9 @@ function sessionEventText(event) {
       default: return []
     }
   }
-  const contentText = (content) => joinText(Array.isArray(content) ? content.flatMap(blockText) : [])
+  const contentText = (content, options) => joinText(Array.isArray(content)
+    ? content.flatMap((block) => (options?.skipToolCalls === true && block?.type === 'tool-call' ? [] : blockText(block)))
+    : [])
   const turnEndText = (reason) => {
     switch (reason?.kind) {
       case 'error': return joinText(['error', reason.error?.message])
@@ -3655,7 +3697,7 @@ function sessionEventText(event) {
   }
   switch (event.type) {
     case 'user/message': return contentText(data.content)
-    case 'assistant/message': return contentText(data.message?.content)
+    case 'assistant/message': return contentText(data.message?.content, { skipToolCalls: !assistantMessageCarriesOnlyToolCalls(event) })
     case 'tool/call': return joinText([data.name, data.arguments])
     case 'tool/result': return joinText([contentText(data.message?.content), data.error?.name, data.error?.code])
     case 'todo/write': return joinText(Array.isArray(data.todos) ? data.todos.flatMap((todo) => [todo.status, todo.content]) : [])
@@ -3895,13 +3937,16 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
   const slice = events.slice(start, start + limit)
   const items = slice.map((event) => {
     const seq = Number(event.seq)
-    const isNoise = SESSION_NOISE_TYPES.has(event.type)
+    // v1.6.x（用户点名）：工具消息与系统事件同样默认折叠——客户端按这两个标志各自合并连续
+    // 同类事件成块（noise=机制性系统事件、tool=工具消息），未标记的事件原样渲染。
+    const kind = sessionEventCollapseKind(event)
     return {
       seq,
       type: event.type,
       time: typeof event.time === 'number' ? event.time : undefined,
       text: sessionEventText(event),
-      noise: isNoise,
+      noise: kind === 'noise',
+      tool: kind === 'tool',
     }
   })
   const lastSeq = items.length > 0 ? items[items.length - 1].seq : (cursor ?? -1)
@@ -5882,6 +5927,7 @@ export {
   SKILL_SOURCE_RANK,
   appendVaryToken,
   apply,
+  assistantMessageCarriesOnlyToolCalls,
   buildCliproxyAccountPlan,
   buildSubagentDispatchRecord,
   cliproxyFetchGuard,
@@ -5943,6 +5989,7 @@ export {
   sanitizeSkillDraftText,
   searchSessionsContent,
   selectSkillBatchCandidates,
+  sessionEventCollapseKind,
   sessionEventText,
   setSkillInvocationKey,
   skillIdFor,
@@ -5955,6 +6002,7 @@ export default {
   SKILL_SOURCE_RANK,
   appendVaryToken,
   apply,
+  assistantMessageCarriesOnlyToolCalls,
   buildCliproxyAccountPlan,
   cliproxyFetchGuard,
   cliproxyPinHostFromBaseURL,
@@ -6015,6 +6063,7 @@ export default {
   sanitizeSkillDraftText,
   searchSessionsContent,
   selectSkillBatchCandidates,
+  sessionEventCollapseKind,
   sessionEventText,
   setSkillInvocationKey,
   skillIdFor,

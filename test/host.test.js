@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 
-import { apply, appendVaryToken, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -6472,7 +6472,7 @@ test('session list titles are revision-cached, only refetched on change, and sur
   assert.equal(restartedList.value.items.find((item) => item.id === 'session-beta').title, '标题-session-beta')
 })
 
-test('session event text matches the official semantic extractor contract', () => {
+test('session event text matches the official semantic extractor contract, minus folded tool traffic', () => {
   const cases = [
     { type: 'user/message', data: { content: [{ type: 'text', text: ' first ' }, { type: 'reasoning', text: 'hidden' }, { type: 'text', text: 'second' }] } },
     { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', name: 'bash', arguments: '{"command":"pwd"}' }, { type: 'tool-result', content: [{ type: 'text', text: 'done' }] }] } } },
@@ -6484,6 +6484,11 @@ test('session event text matches the official semantic extractor contract', () =
     { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } },
     { type: 'turn/end', data: { reason: { kind: 'completed' } } },
     { type: 'turn/start', data: {} },
+    // v1.6.x 有意偏离官方：既有文本又有工具调用的 assistant/message 只留文本——工具调用的
+    // name/arguments 由紧随其后的 tool/call 事件（同一份内容）承载，展开工具消息折叠块可见。
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '先看一眼仓库' }, { type: 'tool-call', name: 'bash', arguments: '{"command":"ls"}' }] } } },
+    // 通篇只有工具调用的 assistant/message 本身就在折叠块里：保留原文（展开折叠块仍见参数）。
+    { type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: 'thinking' }, { type: 'tool-call', name: 'edit', arguments: '{"file_path":"a.js"}' }] } } },
   ]
   assert.deepEqual(cases.map(sessionEventText), [
     'first\nsecond',
@@ -6496,7 +6501,45 @@ test('session event text matches the official semantic extractor contract', () =
     'max-tokens',
     '',
     '',
+    '先看一眼仓库',
+    'edit\n{"file_path":"a.js"}',
   ])
+})
+
+test('session event collapse kinds fold tool traffic and keep the noise contract', () => {
+  assert.equal(sessionEventCollapseKind({ type: 'turn/start' }), 'noise', 'mechanism events stay noise')
+  assert.equal(sessionEventCollapseKind({ type: 'session/created' }), 'noise')
+  assert.equal(sessionEventCollapseKind({ type: 'user/message', data: { content: [{ type: 'text', text: 'hi' }] } }), undefined, 'readable events stay inline')
+  assert.equal(sessionEventCollapseKind({ type: 'tool/call', data: { name: 'bash', arguments: '{}' } }), 'tool')
+  assert.equal(sessionEventCollapseKind({ type: 'tool/result', data: {} }), 'tool')
+  // 官方 SessionEventMap 里工具事件全在 tool/ 命名空间（tool/call、tool/result、tool/ptc-dispatch…），
+  // 按前缀归类：日后新增工具事件类型无需改表。
+  assert.equal(sessionEventCollapseKind({ type: 'tool/ptc-dispatch', data: {} }), 'tool')
+  assert.equal(sessionEventCollapseKind({ type: 'tool/ptc-dispatch-start', data: {} }), 'tool')
+  assert.equal(
+    sessionEventCollapseKind({ type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: 'thinking' }, { type: 'tool-call', name: 'bash', arguments: '{}' }] } } }),
+    'tool',
+    'an assistant message carrying nothing but tool calls folds with its tool events',
+  )
+  assert.equal(
+      sessionEventCollapseKind({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }, { type: 'tool-call', name: 'bash', arguments: '{}' }] } } }),
+      undefined,
+      'an assistant message with readable text stays inline',
+  )
+  assert.equal(
+      sessionEventCollapseKind({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '   ' }, { type: 'tool-call', name: 'bash', arguments: '{}' }] } } }),
+      'tool',
+      'whitespace-only text does not keep a tool-carrying message inline',
+  )
+  assert.equal(sessionEventCollapseKind({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'answer' }] } } }), undefined)
+  assert.equal(sessionEventCollapseKind({ type: 'assistant/message', data: {} }), undefined)
+  assert.equal(sessionEventCollapseKind({}), undefined)
+  assert.equal(sessionEventCollapseKind(null), undefined)
+  // 归类谓词直接钉形状边界（非对象块、空文本块、只有 tool-result 的消息）。
+  assert.equal(assistantMessageCarriesOnlyToolCalls({ data: { message: { content: [null, { type: 'tool-call', name: 'x', arguments: '{}' }] } } }), true)
+  assert.equal(assistantMessageCarriesOnlyToolCalls({ data: { message: { content: [{ type: 'text', text: '' }, { type: 'tool-call', name: 'x', arguments: '{}' }] } } }), true, 'empty text blocks do not count as readable text')
+  assert.equal(assistantMessageCarriesOnlyToolCalls({ data: { message: { content: [{ type: 'tool-result', content: [] }] } } }), false, 'no tool-call block means not a tool-carrying message')
+  assert.equal(assistantMessageCarriesOnlyToolCalls({}), false)
 })
 
 test('session management view pages events with seq cursor and marks noise types', async (t) => {
@@ -6519,7 +6562,14 @@ test('session management view pages events with seq cursor and marks noise types
   assert.equal(first.value.items[0].noise, true, 'session/created is a noise type')
   assert.equal(first.value.items[1].text, '你好，帮我查一下')
   assert.equal(first.value.items[2].text, '好的，正在查询')
+  assert.equal(first.value.items[2].tool, false, 'a text-only assistant message stays inline')
+  // v1.6.x（用户点名「tool 相关的消息也默认折叠」）：工具事件带 tool 标志下发，客户端据此折叠。
+  assert.equal(first.value.items[3].type, 'tool/call')
+  assert.equal(first.value.items[3].tool, true, 'tool/call ships the tool flag')
+  assert.equal(first.value.items[3].noise, false, 'tool events are not noise')
   assert.equal(first.value.items[4].type, 'tool/result')
+  assert.equal(first.value.items[4].tool, true, 'tool/result ships the tool flag')
+  assert.equal(first.value.items[5].tool, false, 'the closing assistant message stays inline')
   assert.equal(readSessionCalls, 1, 'first page reads the session once')
 
   // 同一会话再次查看（翻页/重进详情）：缓存命中 → 零重复读取。

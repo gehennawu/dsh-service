@@ -261,6 +261,8 @@ window.__ModuleLoader__.load({
       'sessions.detail.noiseBlock': '{count} 条系统事件',
       'sessions.detail.noiseExpand': '展开全部',
       'sessions.detail.noiseCollapse': '收起',
+      'sessions.detail.toolBlock': '{count} 条工具消息',
+      'sessions.detail.toolCollapse': '收起',
       'sessions.detail.cwd': '{cwd}',
       'sessions.detail.created': '创建于 {time}',
       // v1.4.2 修复：alpha.4 外壳 MarkdownText 的代码块渲染器无条件读 labels.code.copyLabel/
@@ -1079,6 +1081,8 @@ window.__ModuleLoader__.load({
       'sessions.detail.noiseBlock': '{count} system events',
       'sessions.detail.noiseExpand': 'Expand all',
       'sessions.detail.noiseCollapse': 'Collapse',
+      'sessions.detail.toolBlock': '{count} tool messages',
+      'sessions.detail.toolCollapse': 'Collapse',
       'sessions.detail.cwd': '{cwd}',
       'sessions.detail.created': 'Created {time}',
       'sessions.md.copy': 'Copy',
@@ -4861,20 +4865,30 @@ window.__ModuleLoader__.load({
         return code
       }
       // v0.36（用户点名「查看渲染优化」）：连续的系统事件合并为一块（DOM/视觉噪音双降），
-      // 点击展开显示明细。普通事件原样保留。返回 [{_noiseBlock:true, count, firstSeq, lastSeq} | event]
+      // 点击展开显示明细。普通事件原样保留。
+      // v1.6.x（用户点名「tool 相关的消息也默认折叠」）：宿主对工具消息同样打 tool 标志
+      // （tool/* 事件 + 通篇只有工具调用的 assistant/message），此处按**同类的连续事件**合并——
+      // 系统事件与工具消息各自成块、绝不混排（两类事件语义不同，混排后块标题说不清）。
+      // 记 firstIndex/lastIndex（块在 items 里的闭区间下标）：块成员恰好是这段切片，展开时直接
+      // slice，不必按 seq 数值区间回扫全表（也免疫个别事件 seq 缺失）。
+      // 返回 [{_block:'noise'|'tool', count, firstSeq, lastSeq, firstIndex, lastIndex} | event]。
       function collapseEventItems(items) {
         const out = []
-        for (const item of Array.isArray(items) ? items : []) {
-          if (item.noise === true) {
-            const last = out[out.length - 1]
-            if (last !== undefined && last._noiseBlock === true) {
-              last.count += 1
-              last.lastSeq = item.seq
-            } else {
-              out.push({ _noiseBlock: true, count: 1, firstSeq: item.seq, lastSeq: item.seq })
-            }
-          } else {
+        const list = Array.isArray(items) ? items : []
+        for (let index = 0; index < list.length; index += 1) {
+          const item = list[index]
+          const kind = item.noise === true ? 'noise' : item.tool === true ? 'tool' : null
+          if (kind === null) {
             out.push(item)
+            continue
+          }
+          const last = out[out.length - 1]
+          if (last !== undefined && last._block === kind) {
+            last.count += 1
+            last.lastSeq = item.seq
+            last.lastIndex = index
+          } else {
+            out.push({ _block: kind, count: 1, firstSeq: item.seq, lastSeq: item.seq, firstIndex: index, lastIndex: index })
           }
         }
         return out
@@ -5042,9 +5056,11 @@ window.__ModuleLoader__.load({
         const [detail, setDetail] = useState(null)            // {sessionId, title, view: 'events'|'search', cursor, items, total, hitItems}
         const [detailLoading, setDetailLoading] = useState(false)
         const [detailError, setDetailError] = useState('')
-        // v0.36：系统事件块的展开态（key=块首条 seq），默认折叠。
-        const [noiseOpen, setNoiseOpen] = useState({})
-        const toggleNoiseBlock = (firstSeq) => setNoiseOpen((current) => ({ ...current, [firstSeq]: !current[firstSeq] }))
+        // v0.36：系统事件块的展开态（key=块首条 seq），默认折叠；v1.6.x 起工具消息块共用
+        // 这一张表（seq 全局唯一，两类块不会撞 key）。显式记录的是**用户点击后的目标态**——
+        // 传入当前生效态取反，块因命中自动展开时第一次点击就是「收起」（不是又置成展开）。
+        const [eventBlockOpen, setEventBlockOpen] = useState({})
+        const toggleEventBlock = (firstSeq, open) => setEventBlockOpen((current) => ({ ...current, [firstSeq]: !open }))
         // v0.37 详情返回保持列表滚动位置：进详情时保存一次、回列表时恢复一次。记录当下列表
         // 上下文（筛选/排序/搜索），返回时上下文一致才回写 scrollTop——在详情里切了筛选/
         // 搜了新词，列表内容已换，不恢复旧位置（避免冲到别的视图上）。
@@ -5223,7 +5239,7 @@ window.__ModuleLoader__.load({
           if (scrollContainer !== null) {
             savedListScroll.current = { key: listScrollKey(), container: scrollContainer, scrollTop: scrollContainer.scrollTop }
           }
-          setNoiseOpen({})
+          setEventBlockOpen({})
           setDetail({ sessionId, view: view || 'events', cursor: undefined, items: [], total: 0, hitItems: hitItems || null, loadedTitle: '', centerSeq: undefined })
           setDetailError('')
           setDetailLoading(false)
@@ -5836,26 +5852,44 @@ window.__ModuleLoader__.load({
           const jumpPrevSeq = hitIndex > 0 ? hitSeqList[hitIndex - 1] : undefined
           const jumpNextSeq = hitIndex >= 0 && hitIndex < hitSeqList.length - 1 ? hitSeqList[hitIndex + 1] : undefined
           const hitSet = new Set(hitSeqList)
+          // 折叠块的两种形态（v0.36 系统事件 / v1.6.x 工具消息）：testid 前缀与文案键各自一套，
+          // 渲染与开合逻辑完全共用（成员由 collapseEventItems 记的下标区间切出，与形态无关）。
+          // 工具消息块的成员卡沿用原始事件类型（tool/call、tool/result…）——展开就是来看工具
+          // 流量的，原始类型比「工具消息」更有信息量。
+          const EVENT_BLOCK_KINDS = {
+            noise: { testId: 'sessions-noisewall-', countKey: 'sessions.detail.noiseBlock', collapseKey: 'sessions.detail.noiseCollapse' },
+            tool: { testId: 'sessions-toolwall-', countKey: 'sessions.detail.toolBlock', collapseKey: 'sessions.detail.toolCollapse' },
+          }
           // 详情事件列表渲染（v0.36 噪音折叠 + v0.37 命中高亮共用）：命中行套命中徽章/强调框，
-          // 带 sessions-jump-target-<seq> 定位 testid（jumpScrollToHit 按它滚）。
-          const renderEventList = (items, matchSet) => collapseEventItems(items).map((item, index) => {
-            if (item._noiseBlock === true) {
-              const open = noiseOpen[item.firstSeq] === true
-              const blockEvents = open && Array.isArray(items)
-                ? items.filter((event) => event.noise === true && event.seq >= item.firstSeq && event.seq <= item.lastSeq)
-                : []
-              return React.createElement('div', { key: 'noise-' + item.firstSeq, 'data-testid': 'sessions-noisewall-' + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
-                React.createElement('button', { type: 'button', 'data-testid': 'sessions-noisewall-toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleNoiseBlock(item.firstSeq) },
-                  translate(open ? 'sessions.glyph.collapse' : 'sessions.glyph.expand') + ' ' + translate(open ? 'sessions.detail.noiseCollapse' : 'sessions.detail.noiseBlock', { count: item.count })),
-                open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventCard(event, index))) : null)
+          // 带 sessions-jump-target-<seq> 定位 testid（jumpScrollToHit 按它滚）——折叠块内的
+          // 命中行同样要套（否则自动展开后没有锚点、也看不到高亮）。
+          // v1.6.x：命中落在折叠块内时**默认展开**——否则搜索跳转的目标行被折叠藏起来，
+          // jumpScrollToHit 找不到锚点、用户也看不到高亮（v0.37 的命中定位前提）。用户手动
+          // 开合优先于该默认值（显式收起后不再自动弹开）。
+          const renderEventList = (items, matchSet) => {
+            const eventNode = (item, index) => {
+              if (matchSet !== null && matchSet.has(Number(item.seq))) {
+                return React.createElement('div', { key: 'jump-' + item.seq, 'data-testid': 'sessions-jump-target-' + item.seq, style: { borderRadius: '8px', border: '1px solid rgba(198,128,0,0.55)', background: 'rgba(198,128,0,0.10)', padding: '6px 8px', marginBottom: '6px' } },
+                  React.createElement('div', { 'data-testid': 'sessions-jump-badge-' + item.seq, style: { fontSize: '10.5px', fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)', marginBottom: '3px' } }, translate('sessions.hit.badge')),
+                  eventCard(item, index))
+              }
+              return eventCard(item, index)
             }
-            if (matchSet !== null && matchSet.has(Number(item.seq))) {
-              return React.createElement('div', { key: 'jump-' + item.seq, 'data-testid': 'sessions-jump-target-' + item.seq, style: { borderRadius: '8px', border: '1px solid rgba(198,128,0,0.55)', background: 'rgba(198,128,0,0.10)', padding: '6px 8px', marginBottom: '6px' } },
-                React.createElement('div', { 'data-testid': 'sessions-jump-badge-' + item.seq, style: { fontSize: '10.5px', fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)', marginBottom: '3px' } }, translate('sessions.hit.badge')),
-                eventCard(item, index))
-            }
-            return eventCard(item, index)
-          })
+            return collapseEventItems(items).map((item, index) => {
+              if (item._block !== undefined) {
+                const meta = EVENT_BLOCK_KINDS[item._block]
+                const blockEvents = Array.isArray(items) ? items.slice(item.firstIndex, item.lastIndex + 1) : []
+                const chosen = eventBlockOpen[item.firstSeq]
+                const containsHit = matchSet !== null && blockEvents.some((event) => matchSet.has(Number(event.seq)))
+                const open = chosen === undefined ? containsHit : chosen === true
+                return React.createElement('div', { key: item._block + '-' + item.firstSeq, 'data-testid': meta.testId + item.firstSeq, style: { padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', marginBottom: '5px' } },
+                  React.createElement('button', { type: 'button', 'data-testid': meta.testId + 'toggle-' + item.firstSeq, style: { ...chipButton, border: 0, padding: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11px' }, onClick: () => toggleEventBlock(item.firstSeq, open) },
+                    translate(open ? 'sessions.glyph.collapse' : 'sessions.glyph.expand') + ' ' + translate(open ? meta.collapseKey : meta.countKey, { count: item.count })),
+                  open && blockEvents.length > 0 ? React.createElement('div', { style: { marginTop: '6px' } }, blockEvents.map((event) => eventNode(event, index))) : null)
+              }
+              return eventNode(item, index)
+            })
+          }
           return React.createElement('div', { 'data-testid': 'sessions-detail' },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.detail.back')),
