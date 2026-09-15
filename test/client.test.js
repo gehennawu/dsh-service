@@ -6332,7 +6332,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /:not\(\[data-sidebar-collapsed\]\) \[data-dshsvc-sidebar\] \{[^}]*left: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
     // 真机第七轮：模态打开藏抽屉钮、关闭钮钉右上角（导航条让位）、composer 底行禁换行
-    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\],\s*html\[data-dshsvc-mobile\] body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-handle\] \{[^}]*display: none !important/s)
+    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    // 2026-09-15 用户点名：移除底部沉浸把手（常驻小胶囊钮）——DOM/样式/词典全清
+    assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
@@ -6875,7 +6877,7 @@ function createSessionRpcMock({ onCall, ...overrides } = {}) {
 }
 
 
-test('mobile adaptation immersive engine hides chat chrome on downward gesture (cumulative) and restores via upward gesture, bottom arrival, focus reveal, and the resident handle', async () => {
+test('mobile adaptation immersive engine hides chat chrome on downward gesture (cumulative) and restores via upward gesture, bottom arrival, and focus reveal (no resident handle since 2026-09-15)', async () => {
   class FakeElement {
     constructor(tag) {
       this.tagName = tag; this.children = []; this.attributes = new Map()
@@ -6968,12 +6970,9 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     assert.match(styleTag.textContent, /margin-top: calc\(0px - var\(--dshsvc-header-h, 76px\)\)/s)
     assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{\s*html\[data-dshsvc-mobile\]\[data-dshsvc-immersive\]/s)
 
-    // 常驻把手挂载；会话可滚 → 可见；半透明磨砂（真机反馈）
-    const handle = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-handle'))
-    assert.notEqual(handle, undefined, 'resident handle must mount under body')
-    assert.equal(handle.style.display, 'flex')
-    assert.equal(handle.style.opacity, '.72')
-    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-dshsvc-handle\]:hover,\s*html\[data-dshsvc-mobile\] \[data-dshsvc-handle\]:active \{[^}]*opacity: 1 !important/s)
+    // 用户点名移除常驻把手：body 下不得再挂 data-dshsvc-handle，样式表里也不得残留
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false, 'resident handle must no longer mount')
+    assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
 
     // 程序化滚动免疫：无手势窗口时分步位移绝不翻转状态，也绝不残留累加
     scrollToY(60)
@@ -7040,20 +7039,12 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     dragTo(1720, 10)
     assert.equal(immersiveOn(), true, 'directional hiding works again even right after typing context')
 
-    // 上滑回显，把 Chrome 带回展开态后再测把手开关
+    // 上滑回显（把手的替代路径）
     freshGesture()
     dragTo(1560, 10)
     assert.equal(immersiveOn(), false)
 
-    // 把手开关两连击
-    handle.dispatch('click', {})
-    assert.equal(immersiveOn(), true)
-    assert.equal(handle.getAttribute('aria-expanded'), 'false')
-    handle.dispatch('click', {})
-    assert.equal(immersiveOn(), false)
-    assert.equal(handle.getAttribute('aria-expanded'), 'true')
-
-    // 开关热关闭：属性/标记/把手全部对称拆除，二次关闭幂等
+    // 开关热关闭：属性/标记/挂件全部对称拆除，二次关闭幂等
     await renderer.setFeature('mobileAdaptation', false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-immersive'), false)
@@ -7172,26 +7163,20 @@ test('mobile adaptation immersive engine tolerates the 0.1.2-alpha.2 skeleton (b
     globalThis.window.location = { search: '', reload() {} }
     await renderer.load()
 
-    // 相位必须透过 body 包裹层上溯到 root：会话可滚 → 把手可见、头部标记打上
-    const handle = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-handle'))
-    assert.notEqual(handle, undefined, 'resident handle must mount under body')
-    assert.equal(handle.style.display, 'flex', 'wrapper skeleton must still yield chatAvailable')
+    // 相位必须透过 body 包裹层上溯到 root：会话可滚（chatAvailable）→ 滑动沉浸可用、头部标记打上
+    assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false, 'resident handle was removed (2026-09-15)')
     assert.equal(headerEl.attributes.has('data-dshsvc-chat-header'), true, 'header tag must land on the real header through the wrapper')
     assert.equal(headerWrap.attributes.has('data-dshsvc-chat-header'), false, 'display:contents wrapper must stay untagged')
 
-    // 下滑累加 → 隐藏；上滑 → 回显；把手两连击开关
+    // 下滑累加 → 隐藏；上滑 → 回显
     freshGesture()
     dragTo(264, 6)
     assert.equal(immersiveOn(), true)
     freshGesture()
     dragTo(240, 6)
     assert.equal(immersiveOn(), false)
-    handle.dispatch('click', {})
-    assert.equal(immersiveOn(), true)
-    handle.dispatch('click', {})
-    assert.equal(immersiveOn(), false)
 
-    // 开关热关闭：属性/标记/把手全部对称拆除
+    // 开关热关闭：属性/标记/挂件全部对称拆除
     await renderer.setFeature('mobileAdaptation', false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-immersive'), false)

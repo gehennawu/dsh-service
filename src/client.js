@@ -302,8 +302,6 @@ window.__ModuleLoader__.load({
       'mobile.debug.errors': 'JS 错误',
       'mobile.debug.stateOn': '开',
       'mobile.debug.stateOff': '关',
-      'mobile.immersive.hide': '收起头部与输入框',
-      'mobile.immersive.show': '展开头部与输入框',
       'mobile.debug.immersive': '沉浸',
       'mobile.debug.edge': '边缘',
       'mobile.debug.edge.fieldStart': '起',
@@ -1120,8 +1118,6 @@ window.__ModuleLoader__.load({
       'mobile.debug.errors': 'JS errors',
       'mobile.debug.stateOn': 'on',
       'mobile.debug.stateOff': 'off',
-      'mobile.immersive.hide': 'Hide header and composer',
-      'mobile.immersive.show': 'Show header and composer',
       'mobile.debug.immersive': 'Immersive',
       'mobile.debug.edge': 'Edge',
       'mobile.debug.edge.fieldStart': 'start',
@@ -8726,11 +8722,10 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_clos
   border-radius: 999px !important;
   box-shadow: var(--dsw-shadow-lv2, 0 4px 12px rgba(0, 0, 0, .12)) !important;
 }
-/* 设置/任意模态打开时藏抽屉钮与沉浸把手：抽屉列自带 z-index:32 层叠上下文会把模态的
+/* 设置/任意模态打开时藏抽屉钮：抽屉列自带 z-index:32 层叠上下文会把模态的
    z1000 封顶在 32，body 级 z33 的钮反而浮在设置页上（真机实测）。:has 不支持时
    退化为旧行为（钮仍显示），无副作用。 */
-html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab],
-html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-handle] {
+html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab] {
   display: none !important;
 }
 /* composer 底行单行紧凑：外壳原生 flex-wrap:wrap 在窄屏把图标/模型名折成两行。
@@ -8887,15 +8882,6 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header],
   html[data-dshsvc-mobile] [data-dshsvc-chat-header] { transition: none !important; }
 }
-/* 常驻底部小把手：沉浸态点它展开头部与输入框，未沉浸态也可先收起再读。
-   真机反馈改半透明磨砂（悬停/按压复原不透明），触摸目标不打折。
-   z-index 30 低于 backdrop 31——抽屉/设置打开时被自然盖住，无需额外互斥。 */
-html[data-dshsvc-mobile] [data-dshsvc-handle]:hover,
-html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .2)) !important;
-  color: var(--dsw-alias-label-primary) !important;
-  opacity: 1 !important;
-}
 `
 
       function createMobileAdaptation() {
@@ -8928,8 +8914,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           lastBackdropDisplay: null,
           // —— 滑动沉浸（v0.36）状态 ——
           immersive: false,
-          handle: null,
-          lastHandleDisplay: null,
           chatAvailable: false,
           chatScrollLastY: null,
           gestureAt: 0,
@@ -8970,7 +8954,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             state.lastBackdropDisplay = backdropNext
             state.backdrop.style.display = backdropNext
           }
-          syncHandleVisibility()
           if (state.debugEnabled && state.debugChip !== null) updateDebugChip()
         }
 
@@ -9149,7 +9132,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             if (hidden) htmlEl.setAttribute('data-dshsvc-immersive', '')
             else htmlEl.removeAttribute('data-dshsvc-immersive')
           } catch (_) {}
-          syncHandleFace()
           if (state.debugEnabled) updateDebugChip()
         }
 
@@ -9208,7 +9190,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             clientHeight = Number(scroller.clientHeight)
           } catch (_) { return }
           if (!Number.isFinite(scrollTop) || !Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight)) return
-          syncHandleVisibility()
           const lastY = state.chatScrollLastY === null ? scrollTop : state.chatScrollLastY
           const delta = scrollTop - lastY
           state.chatScrollLastY = scrollTop
@@ -9281,7 +9262,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
         }
 
         const onFocusIn = (event) => {
-          if (!state.active || state.handle === null) return
+          if (!state.active) return
           let seat = null
           try { seat = document.querySelector('[data-composer-seat]') } catch (_) { return }
           if (seat === null) return
@@ -9660,80 +9641,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (state.debugEnabled) updateDebugChip()
         }
 
-        /** 把手正反面：向上箭头=点开（当前沉浸），向下箭头=点收（当前展开）。 */
-        const HANDLE_ICON_UP =
-          '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-          '<path d="M3.5 10.5 8 6l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        const HANDLE_ICON_DOWN =
-          '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-          '<path d="M3.5 5.5 8 10l4.5-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-
-        const syncHandleFace = () => {
-          const handle = state.handle
-          if (handle === null) return
-          const face = state.immersive ? HANDLE_ICON_UP : HANDLE_ICON_DOWN
-          if (handle.__face !== face) {
-            handle.__face = face
-            handle.innerHTML = face
-          }
-          const labelKey = state.immersive ? 'mobile.immersive.show' : 'mobile.immersive.hide'
-          const nextLabel = t(labelKey)
-          if (handle.__label !== nextLabel) {
-            handle.__label = nextLabel
-            handle.setAttribute('aria-label', nextLabel)
-            handle.title = nextLabel
-          }
-          try { handle.setAttribute('aria-expanded', String(!state.immersive)) } catch (_) {}
-        }
-
-        const syncHandleVisibility = () => {
-          // 常驻把手仅在可沉浸会话里出现；抽屉/工作区侧板/官方右栏开着时让位（模态由 :has CSS 兜底）。
-          const blocked = state.drawerOpen || state.workspaceOpen || state.rightbarOpen
-          const nextDisplay = state.chatAvailable && !blocked ? 'flex' : 'none'
-          if (state.handle !== null && state.lastHandleDisplay !== nextDisplay) {
-            state.lastHandleDisplay = nextDisplay
-            state.handle.style.display = nextDisplay
-          }
-        }
-
-        const buildHandle = () => {
-          if (state.handle !== null) return
-          const handle = document.createElement('button')
-          handle.type = 'button'
-          handle.setAttribute('data-dshsvc-handle', '')
-          Object.assign(handle.style, {
-            position: 'fixed',
-            left: '50%',
-            marginLeft: '-32px',
-            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)',
-            width: '64px', height: '20px', borderRadius: '11px',
-            zIndex: '30', display: 'none',
-            alignItems: 'center', justifyContent: 'center',
-            background: 'var(--dshsvc-handle-bg, rgba(127, 127, 127, .16))',
-            border: '1px solid var(--dsw-alias-border-l2)',
-            boxShadow: 'var(--dsw-shadow-lv1, 0 1px 4px rgba(0, 0, 0, .18))',
-            backdropFilter: 'blur(6px)',
-            WebkitBackdropFilter: 'blur(6px)',
-            opacity: '.72',
-            transition: 'opacity var(--ds-transition-duration-fast, .15s) ease',
-            color: 'var(--dsw-alias-label-secondary)', padding: '0',
-            cursor: 'pointer', touchAction: 'manipulation',
-          })
-          // 标准 click 是唯一激活路径（v0.30 第九轮教训：一次触屏手势浏览器归一为一个 click）
-          handle.addEventListener('click', () => {
-            if (!state.active || !state.chatAvailable) return
-            markGesture()
-            // 手动翻转后基线与累加器作废，下一次手势重新计量
-            state.chatScrollLastY = null
-            state.immersiveAcc = 0
-            setImmersive(!state.immersive)
-          })
-          document.body.appendChild(handle)
-          state.handle = handle
-          state.lastHandleDisplay = null
-          syncHandleFace()
-        }
-
         const immersiveListeners = [
           ['scroll', onDocumentScroll, { capture: true, passive: true }],
           ['touchstart', markGesture, { capture: true, passive: true }],
@@ -9891,7 +9798,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
             if (layout !== undefined) layout.toggleSidebar()
           })
           document.body.appendChild(state.fab)
-          buildHandle()
           readOverlayState()
 
           // 不在 sidebarCol 上代理关闭：侧栏右上角已有外壳原生 toggle。若祖先再监听
@@ -10006,7 +9912,7 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           if (state.resizeHandler !== null) window.removeEventListener('resize', state.resizeHandler)
           state.errorHandler = null
           state.resizeHandler = null
-          for (const el of [state.styleTag, state.backdrop, state.fab, state.handle, state.debugChip]) {
+          for (const el of [state.styleTag, state.backdrop, state.fab, state.debugChip]) {
             if (el !== null && el.isConnected) el.remove()
           }
           for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-center],[data-dshsvc-details],[data-dshsvc-rightbar],[data-dshsvc-chat-header]')) {
@@ -10024,8 +9930,6 @@ html[data-dshsvc-mobile] [data-dshsvc-handle]:active {
           state.styleTag = null
           state.backdrop = null
           state.fab = null
-          state.handle = null
-          state.lastHandleDisplay = null
           state.debugChip = null
           state.debugEnabled = false
           resetImmersive()
