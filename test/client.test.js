@@ -6339,6 +6339,33 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 真机第八轮：设置关闭钮圆形底衬随钮置顶；工作区侧板开关浮在面板上方。
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*border-radius: 999px !important/s)
     assert.match(styleTag.textContent, /\[class\*="nArs4W_toggleButton"\] \{[^}]*z-index: 45 !important/s)
+    // 用户点名（2026-09-15）：模型选择按钮在手机上收成图标。官方只在容器 ≤360px
+    // 收起，而插件移动端收回官方 56px sidebar rail 把行内容盒顶到 368~378px
+    // （430/440 机型），官方规则永不触发 —— 显式按官方窄容器形态覆盖，
+    // 且整组必须被 ≤480px 媒体查询包裹（481~1023px 的窄窗口/平板保持显示名称）。
+    const modelSelectGroup = styleTag.textContent.match(
+      /@media \(max-width: 480px\) \{\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\] \{ display: block !important; \}[\s\S]*?\n\}/,
+    )
+    assert.notEqual(modelSelectGroup, null, 'model-select icon collapse must be gated by the 480px media query')
+    assert.match(modelSelectGroup[0], /\[class\*="_7KE1Ra_triggerLabel"\],\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerEffort"\] \{ display: none !important; \}/)
+    assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\]/, 'ungated model-select rule would also hit 481~1023px windows')
+    // 死规则审计（2026-09-15）：0.1.5-rc.2 外壳已无含 toolbar/inputTriggers 的类名
+    // （活页面命中 0），两条泛化空转规则清理；"composer" 仍命中（composerSeat）保留。
+    assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="toolbar" i\]/)
+    assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="inputTriggers" i\]/)
+    assert.match(styleTag.textContent, /\[class\*="composer" i\] \{ min-width: 0 !important; max-width: 100% !important; \}/)
+    // 统计条（2026-09-15 用户点名「不要换行、保持一行、空间利用最大化」）：0.1.5-rc.2
+    // 行容器是 bOPqQW_root、截断在每枚 pill 的 bOPqQW_label —— 收紧本行内边距（官方
+    // 左右各 32px→2px）+ 两枚 pill 按需分宽（flex:1 1 auto + min-width:0）共占满整行，
+    // 始终 nowrap；旧宿主 NDN2W_root 横滑规则必须保留。
+    assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: nowrap !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*padding-left: 2px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*column-gap: 3px !important/s)
+    assert.doesNotMatch(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: wrap !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{ flex: 1 1 auto !important; min-width: 0 !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*padding-left: 2px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_label"\] \{[^}]*text-overflow: ellipsis !important/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)

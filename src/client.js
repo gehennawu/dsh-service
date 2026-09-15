@@ -8749,6 +8749,21 @@ html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-w
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { margin-left: auto !important; }
 html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }
+/* 模型选择按钮收成图标（用户点名，2026-09-15）：官方 ModelSelect 只在容器
+   ≤360px 时把 triggerLabel/triggerEffort 换成 triggerIcon，而查询容器正是上面
+   这条底行——本插件移动端把中列拉满、收回官方 56px sidebar rail，428~440px
+   机型的行内容盒达 368~378px，官方规则永不触发，手机上常显模型名。这里显式
+   按官方窄容器形态收成图标（唯一被藏起来的是「名称」这一处视觉信息：官方
+   trigger 自带含模型名的 aria-label，读屏照旧）。
+   媒体查询门是必需的：移动端适配覆盖 ≤1023px，481px 以上行内足够宽，官方
+   语义本就是「放得下就显示名称」；480 = 官方等效临界视口（360 + 56 rail +
+   32 clearance + 16 row padding ≈ 464~474）的安全上界。类哈希 _7KE1Ra_ 取自
+   dsh-client-ui-model-selection ModelSelect.module.css（rc.2），升级需复核。 */
+@media (max-width: 480px) {
+  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerIcon"] { display: block !important; }
+  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerLabel"],
+  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerEffort"] { display: none !important; }
+}
 /* 工作区侧板（fixed z25 层内的 nArs4W_panel z40）开屏后会盖住它自己的外部
    开关钮（tab bar 行 nArs4W_toggleButton）——手机上抽屉一开就再没有任何
    可点的关闭入口（真机反馈「关不上」本体）。把开关钮提到面板之上，
@@ -8757,10 +8772,15 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
   position: relative !important;
   z-index: 45 !important;
 }
-/* 会话底部统计条：外壳原生 white-space:nowrap + ellipsis 截断（StatsLine），
-   改横向滑动查看全文。哈希前缀随包拆分漂移：0.1.1-rc.2 在 dsh-client-ui-conversation
-   （FJxK0a_），0.1.2-alpha.2 迁入 dsh-client-ui-chat（-NDN2W_root，前缀带横线）；按
-   稳定的词干后缀 *_root 无法区分行（同名冲突风险），退化为按当前哈希复核。 */
+/* 会话底部统计条（composer 下方两枚统计：轮/步/tok/s ｜ tok/缓存命中）：
+   官方这条行自带左右各 32px 内边距 + 12px 列间距，手机上先吃掉 76px；两枚 pill
+   完整显示需 ~380px，于是官方让它们各自收缩、把每枚的文字截断（0.1.5-rc.2 的
+   截断落在每枚 pill 自己的 bOPqQW_label 上）。用户点名（2026-09-15）：「不要换行，
+   保持一行、把空间利用最大化」。
+   修法：只收紧这条行自身的内边距/间距，两枚 pill 按需分宽、共占满整行——始终一行，
+   装得下时零截断（≥~420px 视口），装不下时按比例各让一点（比官方的固定截断少一个
+   数量级），不换行、不横向滚动。
+   旧宿主（0.1.2-alpha.2 ~ 0.1.4）的单行横滑规则（NDN2W_root）原样保留。 */
 html[data-dshsvc-mobile] [class*="NDN2W_root"] {
   overflow-x: auto !important;
   overflow-y: hidden !important;
@@ -8769,6 +8789,24 @@ html[data-dshsvc-mobile] [class*="NDN2W_root"] {
   scrollbar-width: none !important;
 }
 html[data-dshsvc-mobile] [class*="NDN2W_root"]::-webkit-scrollbar { display: none !important; }
+html[data-dshsvc-mobile] [class*="bOPqQW_root"] {
+  flex-wrap: nowrap !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+  column-gap: 3px !important;
+}
+html[data-dshsvc-mobile] [class*="bOPqQW_root"] > * { flex: 1 1 auto !important; min-width: 0 !important; }
+html[data-dshsvc-mobile] [class*="bOPqQW_pill"] {
+  min-width: 0 !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+  gap: 2px !important;
+}
+html[data-dshsvc-mobile] [class*="bOPqQW_label"] {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
 /* Assistant 回合尾部的运行元信息行（MessageIconActions）使用官方目录属性
    data-chat-flow-kind="turn-tail" 定位，内层兜底走回合尾节点自带的稳定
    data-turn-tail（0.1.2-alpha.2 起 data-time-hover-root 已删除）：
@@ -8817,11 +8855,10 @@ html[data-dshsvc-mobile] textarea,
 html[data-dshsvc-mobile] select { touch-action: manipulation; }
 html[data-dshsvc-mobile] input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
 html[data-dshsvc-mobile] textarea { font-size: max(16px, 1em) !important; }
-/* composer 防挤压：保守规则，真机反馈后迭代 */
-html[data-dshsvc-mobile] [class*="toolbar" i] { flex-wrap: wrap !important; min-width: 0 !important; max-width: 100% !important; }
+/* composer 防挤压：真机反馈后迭代。0.1.5-rc.2 起外壳已无含 "toolbar"/"inputTriggers"
+   的类名（活页面命中 0，2026-09-15 死规则审计），两条泛化规则删除；只留仍命中的
+   "composer"（composerSeat 等）——min-width:0 + max-width:100% 防子项撑破容器。 */
 html[data-dshsvc-mobile] [class*="composer" i] { min-width: 0 !important; max-width: 100% !important; }
-html[data-dshsvc-mobile] [class*="inputTriggers" i] > *,
-html[data-dshsvc-mobile] [class*="toolbar" i] button { flex: none !important; }
 /* —— 滑动沉浸（v0.36）——
    composer 座是滚动体内的 sticky 子项：transform 滑出后由滚动体自身 overflow:hidden
    裁掉，布局零变化、scrollTop 不跳、外壳 ResizeObserver 维护的 --dsh-composer-height
