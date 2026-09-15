@@ -5410,7 +5410,8 @@ window.__ModuleLoader__.load({
           }
           setList((current) => {
             if (current === null || !Array.isArray(current.items)) return current
-            if (filter === 'archived') {
+            // RPC 在途时可能切换筛选，按响应完成时的当前视图更新。
+            if (filterRef.current === 'archived') {
               return { ...current, items: current.items.filter((item) => item.id !== sessionId) }
             }
             return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: false } : item) }
@@ -5592,7 +5593,7 @@ window.__ModuleLoader__.load({
         const selectedItems = visibleItems.filter((item) => selectedSet.has(item.id))
         const batchExportItems = selectedItems.filter((item) => item._deleted !== true)
         const batchArchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived !== true)
-        const batchUnarchiveItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
+        const batchUnarchiveItems = selectedItems.filter((item) => item._deleted !== true && item.archived === true)
         const batchDeleteItems = selectedItems.filter((item) => item._deleted !== true && item.live !== true && item.archived === true)
         const batchClearItems = selectedItems.filter((item) => item._deleted === true)
         const allVisibleSelected = visibleSelectableIds.length > 0 && visibleSelectableIds.every((id) => selectedSet.has(id))
@@ -5808,10 +5809,10 @@ window.__ModuleLoader__.load({
             if (!live && !archived) {
               actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
             }
+            if (archived && list?.canUnarchive !== false) {
+              actions.push(React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-row-unarchive-' + id, style: chipButton, disabled: unarchivingId === id, onClick: () => void doUnarchive(id) }, unarchivingId === id ? translate('sessions.status.working') : translate('sessions.action.unarchive')))
+            }
             if (!live && archived) {
-              if (list?.canUnarchive !== false) {
-                actions.push(React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-row-unarchive-' + id, style: chipButton, disabled: unarchivingId === id, onClick: () => void doUnarchive(id) }, unarchivingId === id ? translate('sessions.status.working') : translate('sessions.action.unarchive')))
-              }
               actions.push(React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-row-delete-' + id, style: dangerOutlineButton, onClick: () => void requestDelete(id) }, translate('sessions.action.delete')))
             }
           } else {

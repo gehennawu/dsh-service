@@ -8030,6 +8030,72 @@ test('session manager row unarchive restores archived session and updates list',
   assert.equal(renderer.hasTest('sessions-row-session-archived'), false, 'unarchived session is pruned from archived view')
 })
 
+test('session manager unarchive follows the current filter after an in-flight scope switch', async () => {
+  for (const start of ['archived', 'all']) {
+    let resolveUnarchive
+    const renderer = sessionManagerRenderer(createSessionRpcMock({
+      'sessions-unarchive': () => new Promise((resolve) => { resolveUnarchive = resolve }),
+    }))
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('维护').props.onClick()
+    await renderer.flush()
+    await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+    await renderer.flush()
+    if (start === 'all') {
+      await renderer.findByTestId('sessions-filter-all').props.onClick()
+      await renderer.flush()
+    }
+    renderer.findByTestId('sessions-row-unarchive-session-archived').props.onClick()
+    await renderer.flush()
+    const target = start === 'archived' ? 'all' : 'archived'
+    await renderer.findByTestId('sessions-filter-' + target).props.onClick()
+    await renderer.flush()
+    resolveUnarchive({ ok: true, value: { archived: false } })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-row-session-archived'), target === 'all', start + ' → ' + target)
+    assert.equal(renderer.hasTest('sessions-tag-archived-session-archived'), false)
+  }
+})
+
+test('session manager restores live archived sessions individually and in batches without enabling deletion', async () => {
+  for (const batch of [false, true]) {
+    const calls = []
+    const renderer = sessionManagerRenderer(createSessionRpcMock({
+      onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+      'sessions-list': () => ({ ok: true, value: {
+        available: true, canUnarchive: true,
+        items: SESSION_LIST_VALUE.items.filter((item) => item.archived).map((item) => ({ ...item, live: true })),
+        archivedIds: ['session-archived'], deleted: [],
+      } }),
+    }))
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('维护').props.onClick()
+    await renderer.flush()
+    await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('sessions-row-delete-session-archived'), false)
+    if (batch) {
+      await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+      await renderer.flush()
+      await renderer.findByTestId('sessions-select-all').props.onClick()
+      await renderer.flush()
+      assert.equal(renderer.findByTestId('sessions-batch-delete').props.disabled, true)
+      assert.equal(renderer.findByTestId('sessions-batch-unarchive').props.disabled, false)
+      await renderer.findByTestId('sessions-batch-unarchive').props.onClick()
+    } else {
+      assert.equal(renderer.hasTest('sessions-row-unarchive-session-archived'), true)
+      await renderer.findByTestId('sessions-row-unarchive-session-archived').props.onClick()
+    }
+    await renderer.flush()
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-unarchive').map((call) => call.payload.id), ['session-archived'])
+    assert.equal(renderer.hasTest('sessions-row-session-archived'), false)
+  }
+})
+
 test('session manager row unarchive is hidden on legacy host lacking unarchive capability', async () => {
   const renderer = sessionManagerRenderer(createSessionRpcMock({
     'sessions-list': () => ({
