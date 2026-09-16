@@ -194,11 +194,13 @@ window.__ModuleLoader__.load({
       'sessions.filter.all': '全部',
       'sessions.filter.archived': '仅归档',
       'sessions.filter.deleted': '已删除',
+      'sessions.filter.subagent': '仅子代理',
       'sessions.refresh': '刷新',
       'sessions.batch.enter': '批量选择',
       'sessions.batch.exit': '退出批量',
       'sessions.batch.selectAll': '全选',
       'sessions.batch.clearAll': '取消全选',
+      'sessions.batch.selectSubagents': '选中子代理',
       'sessions.batch.selected': '已选择 {count} 项',
       'sessions.batch.selectRow': '选择会话：{title}',
       'sessions.batch.export': '导出 ({count})',
@@ -231,6 +233,8 @@ window.__ModuleLoader__.load({
       'sessions.row.live': '运行中',
       'sessions.row.archived': '已归档',
       'sessions.row.deleted': '已删除',
+      'sessions.row.subagent': '子代理',
+      'sessions.subagent.hostLegacy': '当前插件宿主较旧，列表未携带子代理标志；升级插件并重启 dsh 后「仅子代理」才会生效',
       'sessions.row.events': '{count} 条事件',
       'sessions.row.noTitle': '（无标题）',
       'sessions.action.view': '查看',
@@ -1022,11 +1026,13 @@ window.__ModuleLoader__.load({
       'sessions.filter.all': 'All',
       'sessions.filter.archived': 'Archived',
       'sessions.filter.deleted': 'Deleted',
+      'sessions.filter.subagent': 'Subagents only',
       'sessions.refresh': 'Refresh',
       'sessions.batch.enter': 'Select multiple',
       'sessions.batch.exit': 'Exit selection',
       'sessions.batch.selectAll': 'Select all',
       'sessions.batch.clearAll': 'Clear all',
+      'sessions.batch.selectSubagents': 'Select subagents',
       'sessions.batch.selected': '{count} selected',
       'sessions.batch.selectRow': 'Select session: {title}',
       'sessions.batch.export': 'Export ({count})',
@@ -1059,6 +1065,8 @@ window.__ModuleLoader__.load({
       'sessions.row.live': 'Running',
       'sessions.row.archived': 'Archived',
       'sessions.row.deleted': 'Deleted',
+      'sessions.row.subagent': 'Subagent',
+      'sessions.subagent.hostLegacy': 'The plugin host is outdated and the list carries no subagent flags; upgrade the plugin and restart dsh for “Subagents only” to take effect',
       'sessions.row.events': '{count} events',
       'sessions.row.noTitle': '（No title）',
       'sessions.action.view': 'View',
@@ -5056,6 +5064,9 @@ window.__ModuleLoader__.load({
         const bytesInFlight = useRef(new Set())
         // v0.35 用户反馈：默认停在「仅归档」——不再每次打开都全量拉全部会话（过得快）。
         const [filter, setFilter] = useState('archived')      // all | archived | deleted
+        // 子代理正交筛选（toggle，非第四 scope）：all/archived 下叠加过滤 subagent 行；
+        // deleted 墓碑记录无该标志，chip 在该视图隐藏但状态保留（切回即恢复）。
+        const [subagentOnly, setSubagentOnly] = useState(false)
         const [sort, setSort] = useState('createdDesc')      // createdDesc | createdAsc | title | project
         // v1.4.x：按项目分区默认折叠——展开集合按项目路径记忆于组件 state（切换筛选/排序保留，
         // 面板重开回默认折叠；初始恒空 = 全折叠）。
@@ -5575,6 +5586,8 @@ window.__ModuleLoader__.load({
           }
           // 宿主按 scope 已过滤（archived 只回归档条目、all 全量）；本地只要排序。
           let items = (Array.isArray(list.items) ? list.items : []).slice()
+          // 仅子代理：客户端本地过滤（老宿主无 subagent 字段时无行可命中，视图为空不报错）。
+          if (subagentOnly) items = items.filter((item) => item.subagent === true)
           if (sort === 'createdAsc') items.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
           else if (sort === 'title') items.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')))
           // v1.4.x：按项目排序——项目即会话 cwd（行内展示的工作区路径）；同项目内保持默认
@@ -5604,7 +5617,7 @@ window.__ModuleLoader__.load({
             const next = current.filter((id) => allowed.has(id))
             return next.length === current.length ? current : next
           })
-        }, [list, filter, batchMode])
+        }, [list, filter, batchMode, subagentOnly])
         const enterBatchMode = () => {
           setBatchMode(true)
           setSelectedIds([])
@@ -5626,6 +5639,17 @@ window.__ModuleLoader__.load({
           } else {
             setSelectedIds(visibleSelectableIds.slice())
           }
+        }
+        // 选中子代理（批量态一键勾选）：把当前可见条目中的 subagent 行并入选择集
+        // （追加语义，不清既有选择）；无可见子代理时按钮 disabled 兜底。
+        const visibleSubagentIds = filter === 'deleted'
+          ? []
+          : visibleItems.filter((item) => item.subagent === true).map((item) => item.id)
+        const selectSubagents = () => {
+          setSelectedIds((current) => {
+            const additions = visibleSubagentIds.filter((id) => !current.includes(id))
+            return additions.length === 0 ? current : [...current, ...additions]
+          })
         }
         const runBatchExport = async () => {
           if (batchWorking !== '' || batchExportItems.length === 0) return
@@ -5840,7 +5864,8 @@ window.__ModuleLoader__.load({
                   React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
                   live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: svcBadgeStyle('success') }, translate('sessions.row.live')) : null,
                   archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: svcBadgeStyle('warning') }, translate('sessions.row.archived')) : null,
-                  isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null),
+                  isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null,
+                  !isDeleted && item.subagent === true ? React.createElement('span', { 'data-testid': 'sessions-tag-subagent-' + id, style: svcBadgeStyle('info') }, translate('sessions.row.subagent')) : null),
                 React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · ')))),
             !batchMode ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions) : null)
         }
@@ -6072,6 +6097,8 @@ window.__ModuleLoader__.load({
             }, translate(batchMode ? 'sessions.batch.exit' : 'sessions.batch.enter')) : null),
           detail === null && batchMode ? React.createElement('div', { 'data-testid': 'sessions-batch-bar', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px', padding: '8px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-3)' } },
             React.createElement('button', { type: 'button', 'data-testid': 'sessions-select-all', style: chipButton, disabled: visibleSelectableIds.length === 0 || batchWorking !== '' || deleting || clearing, onClick: toggleSelectAll }, translate(allVisibleSelected ? 'sessions.batch.clearAll' : 'sessions.batch.selectAll')),
+            // 收纳：仅在可见子代理 > 0 时出现（隐藏代替禁用，零子代理视图少一个按钮）。
+            filter !== 'deleted' && visibleSubagentIds.length > 0 ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-select-subagents', style: chipButton, disabled: batchWorking !== '' || deleting || clearing, onClick: selectSubagents }, translate('sessions.batch.selectSubagents')) : null,
             React.createElement('span', { 'data-testid': 'sessions-selected-count', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginRight: 'auto' } }, translate('sessions.batch.selected', { count: selectedIds.length })),
             filter === 'deleted'
               ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-clear', style: dangerOutlineButton, disabled: batchClearItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchClear() }, translate('sessions.batch.clear', { count: batchClearItems.length }))
@@ -6081,15 +6108,27 @@ window.__ModuleLoader__.load({
                   list?.canUnarchive !== false ? React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-batch-unarchive', style: chipButton, disabled: batchUnarchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchUnarchive() }, batchWorking === 'unarchive' ? translate('sessions.status.working') : translate('sessions.batch.unarchive', { count: batchUnarchiveItems.length })) : null,
                   React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
                 ]) : null,
-          detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
+          detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' } },
             React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) }, style: inputStyle }),
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
-              translate('sessions.search.archivedOnly'))) : null,
+              translate('sessions.search.archivedOnly')),
+            // 仅子代理：与「仅搜归档」同款复选框（收纳：两个「仅…」限定条件归一行、同一控件语言）；
+            // 正交于 scope，批量态可用且不退出批量；已删除视图整行隐藏（墓碑记录无该标志）。
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
+              React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-filter-subagent', checked: subagentOnly, onChange: (event) => setSubagentOnly(event.target.checked) }),
+              translate('sessions.filter.subagent'))) : null,
           archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + (list?.canUnarchive !== false ? '' : (' · ' + translate('sessions.oneWayHint')))) : null,
           exportError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, exportError) : null,
           batchResult !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-result', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, batchResult) : null,
           batchError !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, batchError) : null,
+          // 老宿主提示：仅子代理开启但本次列表没有携带任何 subagent 标志 → 不是真的没有
+          // 子代理，而是宿主半未升级；明示原因，避免「开了筛选列表空了」的困惑。
+          (() => {
+            const items = list !== null && Array.isArray(list.items) ? list.items : []
+            const legacyHost = subagentOnly && filter !== 'deleted' && items.length > 0 && items.every((item) => item.subagent === undefined)
+            return legacyHost ? React.createElement('p', { 'data-testid': 'sessions-subagent-legacy-hint', style: { ...hint, color: 'var(--dsh-svc-warning)' } }, translate('sessions.subagent.hostLegacy')) : null
+          })(),
           renderDetail() ?? renderListBody(),
           renderDeleteModal(),
           renderClearModal())

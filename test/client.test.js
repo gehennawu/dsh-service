@@ -8305,6 +8305,136 @@ test('session manager batch mode supports multi-select, actions, select all, cle
   }
 })
 
+test('session manager identifies subagent sessions with a badge, a subagent-only filter, and one-click batch selection', async () => {
+  const subagentList = {
+    available: true,
+    items: [
+      { id: 'session-main', title: 'Main talk', cwd: '/workspace', createdAt: 5000, live: true, persisted: true, archived: false, subagent: false },
+      { id: 'session-sub-one', title: 'Sub one', cwd: '/workspace', createdAt: 4000, live: false, persisted: true, archived: false, subagent: true },
+      { id: 'session-sub-two', title: 'Sub two', cwd: '/workspace', createdAt: 3000, live: false, persisted: true, archived: false, subagent: true },
+      { id: 'session-archived-main', title: 'Archived main', cwd: '/workspace', createdAt: 2000, live: false, persisted: true, archived: true, subagent: false },
+      { id: 'session-forked', title: 'Forked talk', cwd: '/workspace', createdAt: 1000, live: false, persisted: true, archived: false, subagent: false },
+    ],
+    archivedIds: ['session-archived-main'],
+    deleted: [{ id: 'session-gone', title: 'Gone session', cwd: '/tmp', deletedAt: 500 }],
+  }
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': (payload) => {
+      const scope = payload?.scope || 'all'
+      if (scope === 'archived') return { ok: true, value: { available: true, items: subagentList.items.filter((item) => item.archived), archivedIds: subagentList.archivedIds, deleted: [] } }
+      if (scope === 'deleted') return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: subagentList.deleted } }
+      return { ok: true, value: subagentList }
+    },
+  }))
+  const rowIds = () => renderer.findAllByTestIdPrefix('sessions-row-').filter((node) => !/^sessions-row-(view|export|archive|unarchive|delete)-/.test(node.props['data-testid'])).map((node) => node.props['data-testid'])
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+
+  // 默认普通模式：批量条不可见
+  assert.equal(renderer.hasTest('sessions-batch-bar'), false, 'panel opens in normal mode by default')
+
+  // 默认「仅归档」视图：归档的非子代理行无徽标；子代理限定是复选框（收纳后与「仅搜归档」同行）
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-archived-main'), false, 'non-subagent rows carry no subagent badge')
+  const subagentBox = renderer.findByTestId('sessions-filter-subagent')
+  assert.equal(subagentBox.props.type, 'checkbox')
+  assert.equal(subagentBox.props.checked, false)
+
+  // 进入批量：归档视图无子代理行 → 「选中子代理」整键隐藏（隐藏代替禁用）
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-batch-select-subagents'), false, 'the quick select stays hidden when no subagent rows are visible')
+
+  // 切「全部」（切筛选退出批量）：子代理行带徽标，非子代理行（含纯 fork 血统）不带
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-batch-bar'), false, 'changing filters exits batch mode')
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-sub-one'), true)
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-sub-two'), true)
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-main'), false)
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-forked'), false)
+  assert.equal(renderer.hasTest('sessions-tag-subagent-session-archived-main'), false)
+  assert.deepEqual(rowIds().length, 5)
+
+  // 仅子代理复选框：普通态同样可用，勾选后只剩子代理行，取消恢复全量
+  renderer.findByTestId('sessions-filter-subagent').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-filter-subagent').props.checked, true)
+  assert.deepEqual(rowIds(), ['sessions-row-session-sub-one', 'sessions-row-session-sub-two'])
+  renderer.findByTestId('sessions-filter-subagent').props.onChange({ target: { checked: false } })
+  await renderer.flush()
+  assert.deepEqual(rowIds().length, 5)
+
+  // 批量态一键选中子代理：追加语义（不清既有选择）、重复点击不重复计数
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-batch-select-subagents').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 2 项')
+  assert.equal(renderer.findByTestId('sessions-select-session-sub-one').props.checked, true)
+  assert.equal(renderer.findByTestId('sessions-select-session-sub-two').props.checked, true)
+  assert.equal(renderer.findByTestId('sessions-select-session-main').props.checked, false)
+  await renderer.findByTestId('sessions-batch-select-subagents').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 2 项', 'repeated clicks must not duplicate the selection')
+
+  // 全选后勾选仅子代理：隐藏行同步出选择集（计数裁剪），复选框不退出批量态
+  await renderer.findByTestId('sessions-select-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 5 项')
+  renderer.findByTestId('sessions-filter-subagent').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-batch-bar'), true, 'the subagent qualifier stays available inside batch mode')
+  assert.equal(renderer.findByTestId('sessions-selected-count').children[0], '已选择 2 项', 'hidden non-subagent rows are pruned from the selection')
+  assert.deepEqual(rowIds(), ['sessions-row-session-sub-one', 'sessions-row-session-sub-two'])
+
+  // 「已删除」视图：复选框隐藏（墓碑记录无子代理标志）
+  await renderer.findByTestId('sessions-filter-deleted').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-filter-subagent'), false, 'the subagent qualifier stays hidden in the deleted view')
+})
+
+test('session manager shows a legacy-host hint when the subagent filter finds no flags in the list', async () => {
+  const legacyList = {
+    available: true,
+    items: [
+      { id: 'session-old-a', title: 'Old A', cwd: '/workspace', createdAt: 2000, live: false, persisted: true, archived: false },
+      { id: 'session-old-b', title: 'Old B', cwd: '/workspace', createdAt: 1000, live: false, persisted: true, archived: false },
+    ],
+    archivedIds: [],
+    deleted: [],
+  }
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': (payload) => {
+      const scope = payload?.scope || 'all'
+      if (scope === 'archived') return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: [] } }
+      if (scope === 'deleted') return { ok: true, value: { available: true, items: [], archivedIds: [], deleted: [] } }
+      return { ok: true, value: legacyList }
+    },
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 切「全部」让列表带条目
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-subagent-legacy-hint'), false, 'no hint before enabling the qualifier')
+  renderer.findByTestId('sessions-filter-subagent').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-subagent-legacy-hint'), true, 'legacy host (no subagent flags) explains the empty filtered list')
+  assert.equal(renderer.findByTestId('sessions-subagent-legacy-hint').children[0], '当前插件宿主较旧，列表未携带子代理标志；升级插件并重启 dsh 后「仅子代理」才会生效')
+})
+
 test('session manager deleted records support single clear, multi-select clear, and select-all clear with confirmation', async () => {
   const calls = []
   const initialDeleted = [

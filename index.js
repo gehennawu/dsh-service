@@ -3828,6 +3828,11 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = n
   for (const record of recordsInScope) {
     const id = record.header.id
     if (deletedSet.has(id)) continue
+    // 子代理识别（官方 SessionHeader 字段）：origin='subagent' 是官方产品分类
+    // （dsh-subagent 创建时写入，官方自身也按此圈定）；delegationDepth>0 兜底
+    // 老日志缺 origin 的子代理；parentSession 只是 fork 血统（普通 fork 也写），不作判据。
+    const subagent = record.header.origin === 'subagent'
+      || (typeof record.header.delegationDepth === 'number' && record.header.delegationDepth > 0)
     items.push({
       id,
       title: titles.get(id) ?? (titleCache !== null ? titleCache.get(id)?.title : undefined) ?? '',
@@ -3836,6 +3841,7 @@ async function listSessionsForManage(ctx, dshHome, scope = 'all', titleCache = n
       live: record.live === true,
       persisted: record.persisted === true,
       archived: archivedSet.has(id),
+      subagent,
     })
   }
   items.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))

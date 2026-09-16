@@ -6206,6 +6206,35 @@ test('session management list merges live/cold sessions, archive marks, titles, 
   assert.deepEqual(unknownScope.value.items.map((item) => item.id), ['session-beta', 'session-alpha'], 'unknown scope falls back to full list (created desc)')
 })
 
+test('session management list marks subagent sessions via origin with delegationDepth fallback', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-subagent-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 官方 SessionHeader 字段语义（装机包 dsh-session 核实）：origin='subagent' 为产品分类，
+  // delegationDepth>0 为派生深度兜底；parentSession 只是 fork 血统（普通 fork 也写），不算子代理。
+  const sessionQuery = {
+    async listSessions() {
+      return [
+        { header: { id: 'session-origin', createdAt: 4000, cwd: '/workspace', origin: 'subagent', parentSession: 'session-top' }, live: false, persisted: true },
+        { header: { id: 'session-depth', createdAt: 3000, cwd: '/workspace', delegationDepth: 2 }, live: false, persisted: true },
+        { header: { id: 'session-fork', createdAt: 2000, cwd: '/workspace', parentSession: 'session-other' }, live: false, persisted: true },
+        { header: { id: 'session-top', createdAt: 1000, cwd: '/workspace' }, live: true, persisted: true },
+      ]
+    },
+    async readTitleSnapshots(ids) {
+      return ids.map((sessionId) => ({ sessionId, status: 'fulfilled', value: { session: { id: sessionId }, title: { title: `标题-${sessionId}` } } }))
+    },
+  }
+  const { handler } = createHost({ services: { sessionQuery, workspaceRegistry: { archivedSessionIds: [] } }, env: { DSH_HOME: dshHome } })
+  const result = await handler('sessions-list', {})
+  assert.equal(result.ok, true)
+  const byId = new Map(result.value.items.map((item) => [item.id, item]))
+  assert.equal(byId.size, 4)
+  assert.equal(byId.get('session-origin').subagent, true, "origin='subagent' marks a subagent session")
+  assert.equal(byId.get('session-depth').subagent, true, 'delegationDepth>0 alone also marks a subagent session (legacy-log fallback)')
+  assert.equal(byId.get('session-fork').subagent, false, 'fork lineage (parentSession only) is not a subagent')
+  assert.equal(byId.get('session-top').subagent, false, 'top-level sessions are not subagents')
+})
+
 test('session management sizes are lazy-loaded, cached in-process and reusable without restart', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-bytes-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
