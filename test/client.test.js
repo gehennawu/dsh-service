@@ -1199,7 +1199,7 @@ test('disabling the active primary page returns the panel to overview', async ()
   assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'overview')
 })
 
-test('overview six-section layout aggregates status, actionable items, and core actions', async () => {
+test('overview layout aggregates status and actionable items without core action buttons', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.8.0', instanceId: 'old-instance' } }
     if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
@@ -1216,27 +1216,20 @@ test('overview six-section layout aggregates status, actionable items, and core 
   assert.match(orderText, /有 1 项需要处理/)
   assert.equal(renderer.hasTest('overview-actionables'), true)
   assert.match(renderer.text('settings.section'), /备份操作失败/)
-  // 六段顺序：状态摘要 → 版本卡 → 进程与运行环境 → 核心操作。
+  // 顺序：状态摘要 → 版本卡 → 进程与运行环境。
   // 页面头描述也含「版本信息」字样，锚点用版本卡标题+内容连排「版本信息dsh-service」。
   const firstVersion = orderText.indexOf('版本信息dsh-service')
   assert.ok(orderText.indexOf('有 1 项需要处理') < firstVersion, 'status summary precedes version card')
   assert.ok(firstVersion < orderText.indexOf('进程与运行环境'), 'version card precedes runtime metrics')
-  assert.ok(orderText.indexOf('进程与运行环境') < orderText.indexOf('健康检查'), 'metrics precede core actions')
-  // 核心操作导航：额度查询 → 额度页；健康检查 → 诊断页；创建备份 → 维护·备份子页。
-  await renderer.findByTestId('overview-action-quota').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'quota')
-  await renderer.findButton('概览').props.onClick()
-  await renderer.flush()
-  await renderer.findByTestId('overview-action-health').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'diagnostics')
-  await renderer.findButton('概览').props.onClick()
-  await renderer.flush()
-  await renderer.findByTestId('overview-action-backup').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.findByTestId('service-panel-root').props['data-dshsvc-page'], 'maintenance')
-  assert.equal(renderer.findByTestId('maintenance-tab-backup').props['aria-selected'], 'true')
+  // 核心操作按钮已移除：概览不再渲染健康检查/额度查询/创建备份入口。
+  assert.equal(renderer.hasTest('overview-core-actions'), false, 'overview core actions row must be gone')
+  assert.equal(renderer.hasTest('overview-action-health'), false)
+  assert.equal(renderer.hasTest('overview-action-quota'), false)
+  assert.equal(renderer.hasTest('overview-action-backup'), false)
+  assert.doesNotMatch(orderText, /概览.{0,40}创建备份/, 'no create-backup shortcut on the overview panel')
+  // 入口虽移除，顶层导航与各功能页自身不受影响：额度查询页仍可直接到达。
+  const quotaTab = renderer.findButton('额度查询')
+  assert.ok(quotaTab, 'quota tab remains reachable from the top nav')
 })
 
 test('overview status is informational when only update or empty-backup hints exist, and hidden when nothing is wrong beyond that', async () => {

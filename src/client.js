@@ -588,14 +588,13 @@ window.__ModuleLoader__.load({
       'tabs.quota': '额度查询',
       'overview.container': '进程与运行环境',
       'overview.errors': '报错信息',
-      // v0.39 概览六段式：状态摘要/可行动项/核心操作文案。
+      // v0.39 概览分段布局：状态摘要/可行动项文案。
       'overview.status.normal': '所有系统运行正常',
       'overview.status.info': '有 {count} 条提示',
       'overview.status.warning': '有 {count} 项需要注意',
       'overview.status.error': '有 {count} 项需要处理',
       'overview.backupEmpty': '还没有备份，建议创建一份',
       'overview.updateAvailable': '检测到新版本可用',
-      'overview.action.health': '健康检查',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
       // v0.39 六页信息架构：顶层 维护/配置 聚合页 + 配置页两个子页 + 功能分组标题。
@@ -1421,7 +1420,6 @@ window.__ModuleLoader__.load({
       'overview.status.error': 'You have {count} item(s) needing attention',
       'overview.backupEmpty': 'No backups yet — consider creating one',
       'overview.updateAvailable': 'A new version is available',
-      'overview.action.health': 'Health check',
       'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
       'tabs.maintenance': 'Maintenance',
@@ -7808,8 +7806,8 @@ window.__ModuleLoader__.load({
                       notifyRow('notify-row-input', translate('notification.input'), null, notifyInputOn, setNotifyInputOn, !notifyOn),
                       // 铃铛显隐独立于通知总开关：藏掉只是收起输入框旁的快捷入口（v0.31 用户点名）。
                       notifyRow('notify-row-bell', translate('notification.bellShow'), null, notifyBellOn, setNotifyBellOn, false))))
-        // ── 概览状态聚合与六段式布局（v0.39 确认规格；v1.4.1 用户点名移除额度提醒）──
-        // 状态摘要 → 可行动项（仅在存在时）→ 版本/运行时 → 指标格 → 核心操作 → 近期错误。
+        // ── 概览状态聚合与分段布局（v0.39 确认规格；v1.4.1 移除额度提醒）──
+        // 状态摘要 → 可行动项（仅在存在时）→ 版本/运行时 → 指标格 → 近期错误。
         // 严重度 error > warning > info > normal：error=RPC/健康/诊断/备份/统计/额度/重启错误；
         // warning=权限异常/非 advisory 诊断警告；info=可更新/无备份。
         // 额度窗口占用不再聚合进概览状态（额度页内的高占用进度条展示保留）；
@@ -7846,24 +7844,14 @@ window.__ModuleLoader__.load({
               statusItems.map((item, index) => React.createElement('div', { key: `${item.level}-${index}`, style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 2px', fontSize: '12px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
                 React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', background: item.level === 'error' ? 'var(--dsh-svc-danger)' : item.level === 'warning' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' } }),
                 React.createElement('span', { style: { color: 'var(--dsh-svc-text)' } }, item.text))))
-        // 固定核心操作：健康检查 / 额度查询 / 创建备份（导航型快捷入口，非破坏主操作）。
-        // v0.39 用户复核：品牌描边（brandGhost）与中性钮区分，直观可辨为按钮。
-        // 各按钮随对应功能开关门控；全关时整行不渲染。
-        const overviewActions = [
-          features.healthDiagnostics !== false ? React.createElement('button', { key: 'health', type: 'button', 'data-testid': 'overview-action-health', 'data-variant': 'brandGhost', style: secondary, onClick: () => { setActiveTab('diagnostics'); runDiagnostics(false) } }, translate('overview.action.health')) : null,
-          features.quotaLookup !== false ? React.createElement('button', { key: 'quota', type: 'button', 'data-testid': 'overview-action-quota', 'data-variant': 'brandGhost', style: secondary, onClick: () => setActiveTab('quota') }, translate('tabs.quota')) : null,
-          features.backupMaintenance !== false ? React.createElement('button', { key: 'backup', type: 'button', 'data-testid': 'overview-action-backup', 'data-variant': 'brandGhost', style: secondary, onClick: () => { setActiveTab('maintenance'); selectMaintenanceTab('backup') } }, translate('backup.create')) : null,
-        ].filter((node) => node !== null)
-        const overviewActionsBlock = overviewActions.length === 0
-          ? null
-          : React.createElement('div', { 'data-testid': 'overview-core-actions', style: { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '18px' } }, overviewActions)
+        // 概览核心操作按钮（健康检查/额度查询/创建备份）已移除（2026-09-16）：
+        // 三个动作在各自功能页内都有常驻入口，概览里重复摆放没有增量价值。
         // 近期错误只在非空时渲染（模型/工具报错默认折叠）。
         const overviewBlock = React.createElement('div', null,
           overviewStatusBlock,
           overviewActionablesBlock,
           versionBlock,
           containerInfoBlock,
-          overviewActionsBlock,
           modelErrors.length > 0 || toolErrors.length > 0 ? overviewErrorsBlock : null)
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。

@@ -55,9 +55,9 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 
 ![Plugin configuration](./screenshots/plugin-config_en.png)
 
-### Overview (six sections)
+### Overview
 
-- Status summary (error → warning → info → normal aggregation with a status dot) → actionable items (only when present) → version and runtime → metrics grid → fixed core actions (health check / quota lookup / create backup, gated by feature switches) → recent errors (rendered only when non-empty, collapsed by default)
+- Status summary (error → warning → info → normal aggregation with a status dot) → actionable items (only when present) → version and runtime → metrics grid → recent errors (rendered only when non-empty, collapsed by default)
 - Aggregation rules: any health/diagnostics/backup/statistics/quota/restart failure is error; permission issues and non-advisory diagnostic warnings are warning; available updates and no backups yet are info (high quota-window usage only shows as a progress bar on the quota page, and a likely manual terminal launch — a standing environment fact — appears only in the health checks and in the restart/upgrade confirmations; neither surfaces as an overview reminder)
 
 ### Maintenance and Configuration pages
