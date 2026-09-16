@@ -18,6 +18,14 @@ function section(markdown, heading) {
   return markdown.slice(start, next === -1 ? markdown.length : next)
 }
 
+// 路线图正文（TODO.md 与 docs/planning/）按 .gitignore 属本机资产，不入版本库：
+// 克隆、CI 与 npm tarball 里都不存在。缺失文件时返回 null，让路线图断言在无本地
+// 文档的环境下跳过，而不是让整个文档测试必然读取失败。
+function localSection(path, heading) {
+  if (!existsSync(resolve(root, path))) return null
+  return section(read(path), heading)
+}
+
 test('README image references exist and screenshots ship in the npm package', () => {
   for (const path of ['README.md', 'README.en.md', 'screenshots/README.md']) {
     for (const target of imageTargets(read(path))) {
@@ -55,19 +63,21 @@ test('backup integrity and restore preflight are documented in both languages an
 test('session deletion documentation is archived-only in both languages and the roadmap', () => {
   const zh = section(read('README.md'), '### 会话管理')
   const en = section(read('README.en.md'), '### Session manager')
-  const roadmap = section(read('TODO.md'), '## v0.35 会话管理')
   assert.match(zh, /仅已归档会话可删除/)
   assert.doesNotMatch(zh, /非运行中会话可删除/)
   assert.match(en, /Only archived sessions can be deleted/i)
   assert.doesNotMatch(en, /non-running sessions can be deleted/i)
-  assert.match(roadmap, /未归档.*拒绝/)
-  assert.match(roadmap, /live.*拒绝/i)
+  const roadmap = localSection('docs/planning/sessions.md', '## v0.35 会话管理')
+  if (roadmap !== null) {
+    assert.match(roadmap, /未归档.*拒绝/)
+    assert.match(roadmap, /live.*拒绝/i)
+  }
 })
 
 test('plugin health checks are documented in both languages and shipped', () => {
   const zh = section(read('README.md'), '### 健康诊断')
   const en = section(read('README.en.md'), '### Health diagnostics')
-  const roadmap = section(read('TODO.md'), '## v1.3 插件健康检查')
+  const roadmap = localSection('docs/planning/runtime-health.md', '## v1.3 插件健康检查')
   const packageJson = JSON.parse(read('package.json'))
   assert.match(zh, /插件健康检查/)
   assert.match(zh, /重新加载/)
@@ -77,8 +87,10 @@ test('plugin health checks are documented in both languages and shipped', () => 
   assert.match(en, /reload/i)
   assert.match(en, /disposed or unknown/i)
   assert.match(en, /compatib/i)
-  assert.match(roadmap, /plugin-restart/)
-  assert.match(roadmap, /plugin-compat/)
+  if (roadmap !== null) {
+    assert.match(roadmap, /plugin-restart/)
+    assert.match(roadmap, /plugin-compat/)
+  }
   assert.equal(packageJson.files.includes('plugin-health.js'), true)
   assert.equal(packageJson.files.includes('plugin-compat.js'), true)
 })
