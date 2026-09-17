@@ -43,6 +43,28 @@ window.__ModuleLoader__.load({
     const hasAttr = (node, name) => {
       try { return typeof node?.getAttribute === 'function' && node.getAttribute(name) !== null } catch (_) { return false }
     }
+    // 设置栏标签去双语：设置弹窗左列（移动端是顶部横滑条）的标签由各插件自行注册，
+    // 有插件把双语写成一个静态串（实测 dsh-dream-skin 的 `Theme / 外观`），移动端标签条
+    // 被拉长、标签显示不全。读标签时按当前界面语言只取一侧——仅当「以 `/` 恰好分成两段、
+    // 且一段含 CJK、另一段不含」时改写；纯中文/纯英文/同语系/多段一律原样返回。
+    const CJK_CHAR = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/
+    /**
+     * 把「中文 / English」这类双语静态标签折成当前界面语言的单侧文案。
+     * @param label - 原始标签，非字符串原样返回。
+     * @param locale - 当前生效界面语言（'zh' | 其他）。
+     * @returns 单侧文案，或判定不成立时的原标签。
+     */
+    const localizeBilingualLabel = (label, locale) => {
+      if (typeof label !== 'string') return label
+      const parts = label.split(/\s*\/\s*/)
+      if (parts.length !== 2) return label
+      const [first, second] = parts
+      if (first === '' || second === '') return label
+      const firstIsCjk = CJK_CHAR.test(first)
+      if (firstIsCjk === CJK_CHAR.test(second)) return label
+      if (locale === 'zh') return firstIsCjk ? first : second
+      return firstIsCjk ? second : first
+    }
     /**
      * 整圆/胶囊几何：官方 ui-theme 的 corner-shape.css 在 @supports 内用通配选择器给
      * **所有元素**加 corner-shape: superellipse(1.5)（全局圆角平滑，官方既定设计，不是缺陷）。
@@ -2338,6 +2360,26 @@ window.__ModuleLoader__.load({
       // 当前生效界面语言（显式设置 > 浏览器语言 > en 兜底，locale 快照已折算）：'zh' | 'en'。
       // 供 AI 补全等宿主侧语言相关动作取用；宿主只收枚举，不收自由文本。
       const currentUiLocale = () => ((ctx.locale?.getSnapshot?.()?.active) === 'zh' ? 'zh' : 'en')
+      // 账本出口的标签归一：静态双语串包成按当前语言求值的函数（语言切换后外壳按 locale
+      // revision 重读账本即得新值），函数标签也过一层，结果非字符串时原样透传。
+      const localizeSectionEntry = (entry) => {
+        const options = entry?.options
+        if (!options) return entry
+        const label = options.label
+        if (typeof label === 'string') {
+          const localized = localizeBilingualLabel(label, currentUiLocale())
+          if (localized === label) return entry
+          return Object.assign({}, entry, { options: Object.assign({}, options, { label: () => localized }) })
+        }
+        if (typeof label === 'function') {
+          return Object.assign({}, entry, {
+            options: Object.assign({}, options, {
+              label: () => localizeBilingualLabel(label(), currentUiLocale()),
+            }),
+          })
+        }
+        return entry
+      }
       /** 十进制数量缩写共用实现：模型统计沿用 K/M，额度绝对数可额外启用 B；非法值由调用方指定兜底。 */
       const formatCompactCount = (value, options = {}) => {
         const number = Number(value)
@@ -2463,7 +2505,7 @@ window.__ModuleLoader__.load({
             if (id === '__dsh_nav_bump__') return false
             if (id === 'dsh-service') return true
             return !hiddenSet.has(id)
-          })
+          }).map(localizeSectionEntry)
 
           if (!customOrder || customOrder.length === 0) {
             return visibleEntries
@@ -2522,16 +2564,18 @@ window.__ModuleLoader__.load({
         return list.filter((e) => (e.options?.id ?? e.options?.key) !== '__dsh_nav_bump__')
       }
 
+      // 管理页与 DOM 映射共用：读的是原始账本（getRawSettingsSections 走未包装的 entries），
+      // 所以这里也过一遍去双语，保证与管理页列表、外壳导航条三处文案一致。
       const resolveSectionLabel = (options) => {
         if (!options) return ''
         const label = options.label
         if (typeof label === 'function') {
           try {
             const res = label()
-            if (res) return String(res)
+            if (res) return localizeBilingualLabel(String(res), currentUiLocale())
           } catch (_) {}
         } else if (typeof label === 'string' && label) {
-          return label
+          return localizeBilingualLabel(label, currentUiLocale())
         }
         return String(options.id ?? options.key ?? '')
       }
@@ -4589,16 +4633,19 @@ window.__ModuleLoader__.load({
                 userSelect: 'none',
               },
             },
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 } },
+            // 标签与元信息（ID、锁定标注）：窄屏塞不下时让元信息换到第二行，标签不参与收缩
+            // ——移动端实测 390px 下「服务控制」会被 ID 徽标挤成「服…」（标签 clientWidth 22
+            // / 需求 52）。ID 徽标保持 nowrap，避免 agent-presets 这类长 ID 折成两行。
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px', minWidth: 0 } },
               React.createElement('span', {
                 style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', cursor: 'grab', letterSpacing: '-1px' },
                 'aria-hidden': 'true',
               }, '⋮⋮'),
               React.createElement('span', {
-                style: { fontSize: '13px', fontWeight: 550, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+                style: { fontSize: '13px', fontWeight: 550, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0, maxWidth: '100%' },
               }, item.label || item.id),
               React.createElement('span', {
-                style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-tertiary)', fontFamily: 'monospace' },
+                style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-tertiary)', fontFamily: 'monospace', whiteSpace: 'nowrap' },
               }, item.id),
               isLocked ? React.createElement('span', {
                 style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(59,130,246,0.12)', color: 'var(--dsh-svc-brand)', fontWeight: 500 },
@@ -11230,6 +11277,8 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
     exports.apply = apply
     // v1.2 回合尾模型行的纯逻辑出口：仅供自动化测试直达，运行时无消费者。
     exports.subagentTurnTail = { aggregateSubagentRoutes, selectSubagentModelsTurnTail, subagentRouteListText }
+    // 设置栏标签去双语的纯函数面：仅供自动化测试直达，运行时无消费者。
+    exports.settingsNavLabels = { localizeBilingualLabel }
     // 右栏文件编辑（v1.6/v1.6.1）：档位 id、可编辑后缀表与入口引擎的纯函数面，供测试与排障复用。
     exports.fileEditor = { id: FILE_EDITOR_ID, extensions: FILE_EDITOR_EXTENSION_TABLE, selectViewerItem, editorExtensionMatches, attr: EDITOR_ENTRY_ATTR, menuItemAttr: EDITOR_MENU_ITEM_ATTR }
     return module.exports
