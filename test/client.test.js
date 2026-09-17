@@ -10980,7 +10980,7 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.equal(icons.resolve('azure-openai-responses').slug, 'azure')
   assert.equal(icons.resolve('github-copilot').slug, 'github')
   assert.equal(icons.resolve('zai-codeinting-cn'.replace('codeinting', 'coding')).slug, 'zhipu')
-  assert.equal(icons.resolve('xiaomi-token-plan-ams').slug, 'xiaomimimo')
+  assert.equal(icons.resolve('xiaomi-token-plan-ams').slug, 'xiaomi')
   assert.equal(icons.resolve('qwen-token-plan-individual').slug, 'qwen')
   assert.equal(icons.resolve('kimi-coding').slug, 'kimi')
 
@@ -11043,6 +11043,22 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
       assert.ok(gap > 0, `adjacent loops must not overlap (gap ${gap.toFixed(3)})`)
     }
   }
+
+  // 图标库「收录了但在这个尺寸下不可用」的品牌：Xiaomi 用纯 mi 标替换 xiaomimimo 组合标。
+  // 库里那份是「Xiaomi / MIMO」两行文字组合标，15px 下两行各不足 7px 高、糊成一团
+  // （真机 1x 像素对照覆盖率 0.378 vs openai 0.578）。断言它的图形特征，挡住退回组合标：
+  //   - 只有**一条** <path>（mi 的笔画是同一路径的三段 subpath，用 fill）；
+  //   - 绝不含 <text>/<rect>（组合标靠文字排版，正是要避免的形态）。
+  const miSpec = icons.resolve('xiaomi-token-plan-cn').spec
+  assert.equal(icons.resolve('xiaomi').slug, 'xiaomi')
+  assert.equal(icons.resolve('mimo').slug, 'xiaomi')
+  assert.equal(miSpec.c, 0, 'Xiaomi mi mark must be mono (single-colour glyph)')
+  assert.equal((miSpec.m.match(/<path/g) || []).length, 1, 'mi mark must be one filled path (three subpaths)')
+  assert.ok(!miSpec.m.includes('<text'), 'mi mark must not rely on text layout')
+  assert.ok(!miSpec.m.includes('<rect'), 'mi mark must not carry the rounded-square plate (would smudge at 15px)')
+  // mi 的笔画是同一路径里的三段 subpath（左「m」、右「i」竖、i 的点），每段以一次
+  // moveto 起笔——SVG 的相对/绝对 moveto 分别写作 m / M，两者都要数。
+  assert.equal((miSpec.m.match(/[Mm]/g) || []).length, 3, 'mi mark must keep exactly its three subpaths')
 
   // 尺寸对齐额度圆环（用户点名）：15px，且每个图标的 viewBox 必须是**正方形**且
   // **贴合图形**——这是「所有图标看起来一样大」的前提。生成器用画布量「含描边的

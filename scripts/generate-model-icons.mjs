@@ -8,8 +8,8 @@
  * docs/planning/model-icons.md 的来源与许可一节）。版本**钉死**，不用 @latest：
  * 运行期解析到新版本会让 slug 漂移、图标静默变白块。
  *
- * 图标库未收录的品牌写在下方 `CUSTOM_SVG`（本地手绘，键 = slug）；生成时优先于
- * CDN 取用，避免为一个查不到的 slug 去打网络。
+ * 图标库未收录、或收录的图形不适用的品牌写在下方 `CUSTOM_SVG`（本地手绘，键 = slug）；
+ * 生成时优先于 CDN 取用，避免为一个查不到的 slug 去打网络。
  *
  * 产出前统一把每个图标的 viewBox 收紧到真实绘制范围（getBBox），使所有图标等大地
  * 填满各自的框——各品牌在 24 格里的留白差异极大（实测占比 0.55~1.00），不收紧就会
@@ -56,10 +56,10 @@ const ENTRIES = [
   ['minimax-cn', 'minimax'],
   ['zai', 'zhipu'],
   ['zai-coding-cn', 'zhipu'],
-  ['xiaomi', 'xiaomimimo'],
-  ['xiaomi-token-plan-ams', 'xiaomimimo'],
-  ['xiaomi-token-plan-cn', 'xiaomimimo'],
-  ['xiaomi-token-plan-sgp', 'xiaomimimo'],
+  ['xiaomi', 'xiaomi'],
+  ['xiaomi-token-plan-ams', 'xiaomi'],
+  ['xiaomi-token-plan-cn', 'xiaomi'],
+  ['xiaomi-token-plan-sgp', 'xiaomi'],
   ['nvidia', 'nvidia'],
   ['huggingface', 'huggingface'],
   ['qwen-token-plan', 'qwen'],
@@ -143,8 +143,8 @@ const PREFIX_RULES = [
   ['zhipu', 'zhipu'],
   ['zai', 'zhipu'],
   ['glm', 'zhipu'],
-  ['xiaomi', 'xiaomimimo'],
-  ['mimo', 'xiaomimimo'],
+  ['xiaomi', 'xiaomi'],
+  ['mimo', 'xiaomi'],
   ['qwen', 'qwen'],
   ['nvidia', 'nvidia'],
   ['huggingface', 'huggingface'],
@@ -305,11 +305,15 @@ function hardcodedColors(svg) {
 const isCurrentColor = (svg) => /fill="currentColor"/.test(svg)
 
 /**
- * 图标库里没有、但用户点名要的品牌：本地手绘 SVG，键与 ENTRIES 的 slug 对齐。
- * 走 mono 档（无硬编码色 → 自动回落），并在 report 里标 `custom` 以便核对。
- * 已收录：Command Code（commandcode.ai，本机 `command-goat` 渠道）——取其网站
- * favicon 里的 ⌘ 符号线条。**刻意不搬「黑底圆角方块」那层板子**：我们的图标
- * 只有 15px、且要跟随深浅主题文字色，整块板子会糊成一枚纯色色块，⌘ 镂空看不清。
+ * 图标库里没有、或**收录的图形在这个尺寸下不可用**的品牌：本地手绘 SVG，键与
+ * ENTRIES 的 slug 对齐。走 mono 档（无硬编码色 → 自动回落），并在 report 里标
+ * `custom` 以便核对。
+ *
+ * 已收录：
+ *   - Command Code（commandcode.ai，本机 `command-goat` 渠道）——取其网站 favicon 里的
+ *     ⌘ 符号线条。**刻意不搬「黑底圆角方块」那层板子**：我们的图标只有 15px、且要跟随
+ *     深浅主题文字色，整块板子会糊成一枚纯色色块，⌘ 镂空看不清。
+ *   - Xiaomi（`xiaomi-token-plan-*` 渠道）——**换掉图标库的 xiaomimimo**，理由见下方注释。
  */
 const CUSTOM_SVG = {
   // ⌘（U+2318）——按 Unicode 字形比例手工构造，参数经与 DejaVu/Noto 的字体渲染
@@ -335,6 +339,27 @@ const CUSTOM_SVG = {
     '<circle cx="-7.6" cy="7.6" r="3"/>' +
     '<circle cx="7.6" cy="7.6" r="3"/>' +
     '</g></svg>',
+
+  /**
+   * Xiaomi「mi」品牌标——**替换**图标库的 `xiaomimimo`。
+   *
+   * 为什么不直接用库里的：`xiaomimimo.svg` 是「Xiaomi / MIMO」**两行文字组合标**
+   * （第一行完整 Xiaomi 单词 + 第二行 MIMO），在 15px 下两行各自不足 7px 高、糊成
+   * 一团灰（真机 1x 像素对照：覆盖率仅 0.378，在 63 张里排第 50；同尺寸的 openai
+   * 是 0.578）。而它还被 4 个 provider（xiaomi + 三个 token-plan 区域变体）共用，
+   * 影响面最大。
+   *
+   * 图源：simple-icons（CC0-1.0，`icons/xiaomi.svg`）——该库只有**纯 mi 标**，没有
+   * 那层深色圆角底板干扰。这里只取其中 mi 字形的两个子路径（第一段 `M12 0…` 是外层
+   * 圆角方框，**丢掉**：它同 ⌘ 的板子问题一样，会把 15px 糊成实心块）。
+   * 覆盖率为 0.564，与 openai（0.578）同档，属于正常品牌标的重量。
+   *
+   * 注：viewBox 只是初始值，生成期会按真实墨迹重算覆盖（见 tightenViewBoxes）。
+   */
+  xiaomi:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">' +
+    '<path d="M4.906 7.405h5.624c1.47 0 3.007.068 3.764.827.746.746.827 2.233.83 3.676v4.54a.15.15 0 0 1-.152.147h-1.947a.15.15 0 0 1-.152-.148V11.83c-.002-.806-.048-1.634-.464-2.051-.358-.36-1.026-.441-1.72-.458H7.158a.15.15 0 0 0-.151.147v6.98a.15.15 0 0 1-.152.148H4.906a.15.15 0 0 1-.15-.148V7.554a.15.15 0 0 1 .15-.149zm12.131 0h1.949a.15.15 0 0 1 .15.15v8.892a.15.15 0 0 1-.15.148h-1.949a.15.15 0 0 1-.151-.148V7.554a.15.15 0 0 1 .151-.149zM8.92 10.948h2.046c.083 0 .15.066.15.147v5.352a.15.15 0 0 1-.15.148H8.92a.15.15 0 0 1-.152-.148v-5.352a.15.15 0 0 1 .152-.147Z"/>' +
+    '</svg>',
 }
 
 /**
