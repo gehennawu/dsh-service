@@ -627,6 +627,9 @@ function createRenderer(rpcCall, options = {}) {
     get slots() {
       return activeCtx ? activeCtx.slots : null
     },
+    slotSubscriptionCount(key) {
+      return slotSubscribers.get(key)?.size ?? 0
+    },
     reloadCount() {
       return reloads
     },
@@ -5001,8 +5004,17 @@ test('skills list defaults to collapsed entries with a top expand-all toggle', a
   assert.equal(renderer.hasTest('skill-switch-model-alpha'), false)
   assert.equal(renderer.hasTest('skill-describe-alpha'), false)
   assert.equal(renderer.findByTestId('skill-header-alpha').props['aria-expanded'], 'false')
-  // 无效条目的 ⚠ 行即使在折叠态也露出（含一键修复入口）。
+  // 无效条目的 ⚠ 行即使在折叠态也露出（含一键修复入口），并且始终挂在折叠体之外。
   assert.equal(renderer.hasTest('skill-fix-delta'), true)
+  const collapsedInvalid = renderer.findNode((node) => node.props?.['data-testid'] === 'skill-fix-delta')
+  assert.ok(collapsedInvalid)
+  assert.equal(collapsedInvalid.parent?.props?.['data-testid'], undefined)
+  renderer.findByTestId('skill-header-delta').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-delta'), true)
+  const expandedInvalid = renderer.findNode((node) => node.props?.['data-testid'] === 'skill-fix-delta')
+  assert.ok(expandedInvalid)
+  assert.notEqual(expandedInvalid.parent?.props?.['data-testid'], 'skill-body-delta')
 
   // 单条点击独立开合：alpha 展开不牵动 beta。
   renderer.findByTestId('skill-header-alpha').props.onClick()
@@ -10221,6 +10233,28 @@ const testSettingsNavRpc = async (channel, endpoint) => {
   return { ok: true, value: {} }
 }
 
+test('settings nav order: invalid localStorage arrays fall back as a whole', async () => {
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+    ],
+  }
+  const renderer = createRenderer(testSettingsNavRpc, {
+    initialSlots,
+    initialStorage: {
+      'dsh-service-settings-nav-order': JSON.stringify(['plugins', 'bad/id', 'general']),
+      'dsh-service-settings-nav-hidden': JSON.stringify(['models', 42]),
+    },
+  })
+  await renderer.load()
+  const entries = renderer.slots.entries('settings.section')
+  assert.ok(entries.some((entry) => entry.options.id === 'models'), 'one invalid member must discard the whole hidden preference')
+  const sorted = [...entries].sort((a, b) => a.options.order - b.options.order).map((entry) => entry.options.id)
+  assert.deepEqual(sorted.slice(0, 3), ['general', 'models', 'plugins'], 'one invalid member must discard the whole order preference')
+})
+
 test('settings nav order: entries() maps orders from localStorage and filters hidden items', async () => {
   const initialSlots = {
     'settings.section': [
@@ -10251,6 +10285,13 @@ test('settings nav order: entries() maps orders from localStorage and filters hi
   assert.deepEqual(sorted.slice(0, 3), ['plugins', 'dsh-service', 'general'])
   // Unlisted models should be at the end
   assert.equal(sorted[3], 'models')
+
+  // 工厂卸载时必须注销包装期间转发给原生 Slot 的订阅，不能只清插件自己的监听集合。
+  const nativeSubscriptionsBefore = renderer.slotSubscriptionCount('settings.section')
+  renderer.slots.subscribe('settings.section', () => {})
+  assert.equal(renderer.slotSubscriptionCount('settings.section'), nativeSubscriptionsBefore + 1)
+  renderer.disposeFactory()
+  assert.equal(renderer.slotSubscriptionCount('settings.section'), nativeSubscriptionsBefore)
 })
 
 test('settings nav labels: bilingual static labels collapse to the active interface language', async () => {
@@ -10334,6 +10375,8 @@ test('settings nav order: management page allows reordering, toggling visibility
   await renderer.flush()
   assert.equal(renderer.findByTestId('config-tab-navOrder').props['aria-selected'], 'true')
   assert.ok(renderer.hasTest('config-nav-order-page'))
+  assert.equal(renderer.findByTestId('nav-order-title').children[0], '设置栏标签排序与显隐')
+  assert.match(renderer.text('settings.section'), /设置栏标签排序与显隐.*可通过拖拽或点击上下箭头调整标签顺序.*恢复默认排序.*保存排序/)
 
   // All entries present
   assert.ok(renderer.hasTest('nav-order-item-general'))
@@ -10527,4 +10570,71 @@ test('settings nav order: backend sync retries after failure and re-pushes pendi
     order: ['models', 'general', 'dsh-service', 'plugins'],
     hidden: [],
   }, 're-pushed value must match the local display order')
+})
+
+test('settings nav order: ok:false pulls retry and pending local writes win over stale remote data', async () => {
+  const rpcCalls = []
+  let configGetMode = 'error-response'
+  let configSetShouldFail = false
+  let remoteConfig = { order: ['models', 'general', 'dsh-service'], hidden: ['plugins'] }
+  const syncRpc = async (channel, endpoint, payload) => {
+    rpcCalls.push({ endpoint, payload })
+    if (endpoint === 'config-get') {
+      if (configGetMode === 'error-response') return { ok: false, error: 'restarting' }
+      return { ok: true, value: remoteConfig }
+    }
+    if (endpoint === 'config-set') {
+      if (configSetShouldFail) return { ok: false, error: 'restarting' }
+      remoteConfig = payload.value
+      return { ok: true, value: remoteConfig }
+    }
+    return testSettingsNavRpc(channel, endpoint)
+  }
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+    ],
+  }
+  const localOrder = ['plugins', 'dsh-service', 'general', 'models']
+  const renderer = createRenderer(syncRpc, {
+    initialSlots,
+    initialStorage: { 'dsh-service-settings-nav-order': JSON.stringify(localOrder) },
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.equal(rpcCalls.filter((call) => call.endpoint === 'config-get').length, 1)
+
+  // ok:false 不是成功同步：下一次打开必须重试。
+  configGetMode = 'success'
+  renderer.unmount('settings.section')
+  renderer.mount('settings.section')
+  await renderer.flush()
+  assert.equal(rpcCalls.filter((call) => call.endpoint === 'config-get').length, 2)
+
+  // 独立实例制造真实竞态：首次拉取失败（backendSynced=false），随后本地写失败挂 pending；
+  // 下次拉取成功拿到旧远端时，本地 pending 必须优先重推，不能被旧值覆盖。
+  configGetMode = 'error-response'
+  configSetShouldFail = false
+  remoteConfig = { order: ['models', 'general', 'dsh-service'], hidden: [] }
+  const pendingRenderer = createRenderer(syncRpc, { initialSlots })
+  await pendingRenderer.load()
+  await pendingRenderer.flush()
+  await pendingRenderer.findButton('配置').props.onClick()
+  await pendingRenderer.flush()
+  await pendingRenderer.findByTestId('config-tab-navOrder').props.onClick()
+  await pendingRenderer.flush()
+  const pendingLocal = { order: ['general', 'models', 'plugins', 'dsh-service'], hidden: ['plugins'] }
+  configSetShouldFail = true
+  await pendingRenderer.findByTestId('nav-order-toggle-plugins').props.onClick({ stopPropagation() {} })
+  await pendingRenderer.flush()
+  await pendingRenderer.findByTestId('nav-order-save').props.onClick()
+  await pendingRenderer.flush()
+  configSetShouldFail = false
+  configGetMode = 'success'
+  pendingRenderer.unmount('settings.section')
+  pendingRenderer.mount('settings.section')
+  await pendingRenderer.flush()
+  assert.deepEqual(remoteConfig, pendingLocal, 'stale remote data must not overwrite a pending local write')
 })

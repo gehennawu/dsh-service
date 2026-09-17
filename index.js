@@ -3438,7 +3438,11 @@ function updateUnifiedConfigSection(dshHome, section, value) {
     await saveUnifiedConfig(dshHome, updated)
     return updated
   })
-  unifiedConfigWriteChains.set(dshHome, result.then(() => undefined, () => undefined))
+  const tail = result.then(() => undefined, () => undefined)
+  unifiedConfigWriteChains.set(dshHome, tail)
+  void tail.then(() => {
+    if (unifiedConfigWriteChains.get(dshHome) === tail) unifiedConfigWriteChains.delete(dshHome)
+  })
   return result
 }
 

@@ -2413,17 +2413,23 @@ window.__ModuleLoader__.load({
       // ── 设置栏左侧标签手动排序与显隐（动态映射 Slot order 与版本通知）────
       const STORAGE_KEY_NAV_ORDER = 'dsh-service-settings-nav-order'
       const STORAGE_KEY_NAV_HIDDEN = 'dsh-service-settings-nav-hidden'
+      const SETTINGS_NAV_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
+      const SETTINGS_NAV_MAX_ITEMS = 64
 
-      const readSettingsNavOrder = () => {
+      const readSettingsNavIdList = (storageKey, fallback, options = {}) => {
         try {
-          const raw = localStorage.getItem(STORAGE_KEY_NAV_ORDER)
-          if (raw) {
-            const parsed = JSON.parse(raw)
-            if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string')
-          }
-        } catch (_) {}
-        return null
+          const raw = localStorage.getItem(storageKey)
+          if (!raw) return fallback
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed) || parsed.length > SETTINGS_NAV_MAX_ITEMS) return fallback
+          if (!parsed.every((id) => typeof id === 'string' && SETTINGS_NAV_ID_RE.test(id))) return fallback
+          return options.excludeHost === true ? parsed.filter((id) => id !== 'dsh-service') : parsed
+        } catch (_) {
+          return fallback
+        }
       }
+
+      const readSettingsNavOrder = () => readSettingsNavIdList(STORAGE_KEY_NAV_ORDER, null)
 
       const writeSettingsNavOrder = (order) => {
         try {
@@ -2435,16 +2441,7 @@ window.__ModuleLoader__.load({
         } catch (_) {}
       }
 
-      const readSettingsNavHidden = () => {
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY_NAV_HIDDEN)
-          if (raw) {
-            const parsed = JSON.parse(raw)
-            if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string' && id !== 'dsh-service')
-          }
-        } catch (_) {}
-        return []
-      }
+      const readSettingsNavHidden = () => readSettingsNavIdList(STORAGE_KEY_NAV_HIDDEN, [], { excludeHost: true })
 
       const writeSettingsNavHidden = (hidden) => {
         try {
@@ -2464,18 +2461,7 @@ window.__ModuleLoader__.load({
         for (const listener of navOrderListeners) {
           try { listener() } catch (_) {}
         }
-        // 唤醒底层 SlotCore 及其已注册订阅者（如 DSH 外壳 useSections）
-        try {
-          const core = ctx.slots?._core
-          if (core && typeof core.record === 'function') {
-            const r = core.record('settings.section')
-            if (r) {
-              if (typeof core.markDirty === 'function') core.markDirty('settings.section', r)
-              if (typeof core.flush === 'function') core.flush()
-            }
-          }
-        } catch (_) {}
-        // 兜底原生变动触发器
+        // 通过公开 register/dispose 触发原生账本版本与订阅更新；不碰 SlotCore 私有实现。
         try {
           if (typeof ctx.slots?.register === 'function') {
             const dispose = ctx.slots.register({ name: 'settings.section', id: '__dsh_nav_bump__' }, () => null)
@@ -2531,15 +2517,19 @@ window.__ModuleLoader__.load({
           }
         }
 
+        const forwardedSettingsSubscriptions = new Set()
         if (origSubscribe) {
           ctx.slots.subscribe = function (key, fn) {
             if (key === 'settings.section') {
               navOrderListeners.add(fn)
-              const unsub = origSubscribe(key, fn)
-              return () => {
+              const nativeUnsub = origSubscribe(key, fn)
+              const disposeForwarded = () => {
+                if (!forwardedSettingsSubscriptions.delete(disposeForwarded)) return
                 navOrderListeners.delete(fn)
-                if (typeof unsub === 'function') unsub()
+                if (typeof nativeUnsub === 'function') nativeUnsub()
               }
+              forwardedSettingsSubscriptions.add(disposeForwarded)
+              return disposeForwarded
             }
             return origSubscribe(key, fn)
           }
@@ -2549,6 +2539,7 @@ window.__ModuleLoader__.load({
           ctx.slots.entries = origEntries
           if (origGetVersion) ctx.slots.getVersion = origGetVersion
           if (origSubscribe) ctx.slots.subscribe = origSubscribe
+          for (const disposeForwarded of Array.from(forwardedSettingsSubscriptions)) disposeForwarded()
           navOrderListeners.clear()
         }
       }
@@ -2686,19 +2677,27 @@ window.__ModuleLoader__.load({
       const syncSettingsNavFromBackend = async () => {
         try {
           const res = await rpcCall('config-get', { section: 'settingsNav' })
-          if (res && res.ok === true && res.value !== undefined) {
-            const hasRemoteConfig = res.value !== null && typeof res.value === 'object' && (Array.isArray(res.value.order) || Array.isArray(res.value.hidden))
-            if (hasRemoteConfig) {
-              const remoteOrder = Array.isArray(res.value.order) ? res.value.order : null
-              const remoteHidden = Array.isArray(res.value.hidden) ? res.value.hidden : []
-              writeSettingsNavOrder(remoteOrder)
-              writeSettingsNavHidden(remoteHidden)
-              notifyNavOrderChanged()
-              return
-            }
-            // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
-            pushLocalSettingsNavToBackend()
+          if (!res || res.ok !== true || res.value === undefined) {
+            backendSynced = false
+            return
           }
+          // 本地写已生效但后端落盘失败时，本地是待提交的新事实；先重推，不能让旧远端覆盖它。
+          if (backendPushPending) {
+            backendPushPending = false
+            pushLocalSettingsNavToBackend()
+            return
+          }
+          const hasRemoteConfig = res.value !== null && typeof res.value === 'object' && (Array.isArray(res.value.order) || Array.isArray(res.value.hidden))
+          if (hasRemoteConfig) {
+            const remoteOrder = Array.isArray(res.value.order) ? res.value.order : null
+            const remoteHidden = Array.isArray(res.value.hidden) ? res.value.hidden : []
+            writeSettingsNavOrder(remoteOrder)
+            writeSettingsNavHidden(remoteHidden)
+            notifyNavOrderChanged()
+            return
+          }
+          // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
+          pushLocalSettingsNavToBackend()
         } catch (_) {
           // 拉取失败（瞬时网络/宿主重启窗口）：允许同会话内下次打开面板重试。
           backendSynced = false
@@ -4476,7 +4475,22 @@ window.__ModuleLoader__.load({
         const [hiddenIds, setHiddenIds] = useState(readSettingsNavHidden())
         const [savedTip, setSavedTip] = useState(false)
         const [dragIndex, setDragIndex] = useState(null)
+        const savedTipTimerRef = useRef(null)
         const [, setTick] = useState(0)
+
+        const showSavedTip = () => {
+          setSavedTip(true)
+          if (savedTipTimerRef.current !== null) savedTipTimerRef.current()
+          savedTipTimerRef.current = ctx.timer.timeout(() => {
+            savedTipTimerRef.current = null
+            setSavedTip(false)
+          }, 2000)
+        }
+
+        useEffect(() => () => {
+          if (savedTipTimerRef.current !== null) savedTipTimerRef.current()
+          savedTipTimerRef.current = null
+        }, [])
 
         useEffect(() => {
           if (typeof ctx.slots?.subscribe === 'function') {
@@ -4547,8 +4561,7 @@ window.__ModuleLoader__.load({
           writeSettingsNavOrder(null)
           writeSettingsNavHidden(null)
           notifyNavOrderChanged()
-          setSavedTip(true)
-          setTimeout(() => setSavedTip(false), 2000)
+          showSavedTip()
           persistSettingsNavReset()
         }
 
@@ -4558,8 +4571,7 @@ window.__ModuleLoader__.load({
           writeSettingsNavOrder(ids)
           writeSettingsNavHidden(hiddenIds)
           notifyNavOrderChanged()
-          setSavedTip(true)
-          setTimeout(() => setSavedTip(false), 2000)
+          showSavedTip()
           persistSettingsNavToBackend(ids, Array.isArray(hiddenIds) ? hiddenIds : [])
         }
 
@@ -4569,6 +4581,29 @@ window.__ModuleLoader__.load({
           'data-testid': 'config-nav-order-page',
           style: { display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' },
         },
+        React.createElement('div', {
+          style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
+        },
+        React.createElement('div', { style: { minWidth: 0, flex: '1 1 260px' } },
+          React.createElement('div', { 'data-testid': 'nav-order-title', style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('config.navOrder.title')),
+          React.createElement('div', { style: { marginTop: '4px', fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, translate('config.navOrder.dragHint'))),
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+          savedTip ? React.createElement('span', {
+            'data-testid': 'nav-order-saved-tip',
+            style: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' },
+          }, '✓ ' + translate('config.navOrder.saved')) : null,
+          React.createElement('button', {
+            type: 'button',
+            'data-testid': 'nav-order-reset',
+            onClick: resetDefault,
+            style: svcButtonStyle('ghost'),
+          }, translate('config.navOrder.reset')),
+          React.createElement('button', {
+            type: 'button',
+            'data-testid': 'nav-order-save',
+            onClick: handleSave,
+            style: svcButtonStyle('primary'),
+          }, translate('config.navOrder.save')))),
         React.createElement('div', {
           style: {
             padding: '10px 14px',
@@ -4720,28 +4755,7 @@ window.__ModuleLoader__.load({
                 },
               })),
             ))
-          })),
-        React.createElement('div', {
-          style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '6px' },
-        },
-        React.createElement('button', {
-          type: 'button',
-          'data-testid': 'nav-order-reset',
-          onClick: resetDefault,
-          style: svcButtonStyle('ghost'),
-        }, translate('config.navOrder.reset')),
-        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
-          savedTip ? React.createElement('span', {
-            'data-testid': 'nav-order-saved-tip',
-            style: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' },
-          }, '✓ ' + translate('config.navOrder.saved')) : null,
-          React.createElement('button', {
-            type: 'button',
-            'data-testid': 'nav-order-save',
-            onClick: handleSave,
-            style: svcButtonStyle('primary'),
-          }, translate('config.navOrder.save')),
-        )))
+          })))
       }
 
       // ─── 子代理模型（v0.27）：三态路由配置 ────────────────────────────────
@@ -5339,11 +5353,12 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine))
           const body = expanded ? React.createElement('div', { 'data-testid': 'skill-body-' + entry.name, style: { marginTop: '2px' } },
             React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' } },
-              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, descLine, usageLine, invalidLine),
+              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, descLine, usageLine),
               switches),
-            noteLine) : invalidLine
+            noteLine) : null
           return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
             headerRow,
+            invalidLine,
             body)
         }
 
