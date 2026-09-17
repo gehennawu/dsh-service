@@ -718,7 +718,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH：',
       'version.plugin': 'dsh-service：',
       'version.loading': '加载中…',
-      'version.dsh.supportBound': '（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1）',
+      'version.dsh.supportBound': '（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.2）',
       'update.check': '检查更新',
       'update.checking': '检查中…',
       'update.current': '已是最新版本',
@@ -1559,7 +1559,7 @@ window.__ModuleLoader__.load({
       'version.current': 'DSH: ',
       'version.plugin': 'dsh-service: ',
       'version.loading': 'Loading…',
-      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1)',
+      'version.dsh.supportBound': ' (Adapted for DSH 0.1.1-rc.2 ~ 0.1.6-alpha.2)',
       'update.check': 'Check for updates',
       'update.checking': 'Checking…',
       'update.current': 'Up to date',
@@ -2133,14 +2133,19 @@ window.__ModuleLoader__.load({
         }
         return inflight
       }
-      // 对话页回合尾行组件：matched 由链槽裁决注入（{turn, subagentCount}），
+      // 对话页回合尾行组件：
+      // 0.1.6-alpha.1 及之前：chain 槽位，matched 由链槽裁决注入（{turn, subagentCount}）；
+      // 0.1.6-alpha.2 起：list 槽位，props.matched 为空，由组件自身调用 selectSubagentModelsTurnTail(props) 兜底求值。
       // 标准 props 含 sessionId；数据按 (sessionId, turn) 拉取后渲染一行小字。
       function SubagentModelsTurnTail(props) {
         const translate = useTranslation()
         const [text, setText] = useState('')
+        const matched = (props.matched && typeof props.matched.turn === 'number')
+          ? props.matched
+          : selectSubagentModelsTurnTail(props)
+        const turn = matched && typeof matched.turn === 'number' ? matched.turn : undefined
         useEffect(() => {
           let cancelled = false
-          const turn = props.matched && typeof props.matched.turn === 'number' ? props.matched.turn : undefined
           const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
           if (turn === undefined || sessionId === undefined) {
             setText('')
@@ -2161,7 +2166,7 @@ window.__ModuleLoader__.load({
                 setText('')
                 return
               }
-              const count = Number.isFinite(props.matched.subagentCount) && props.matched.subagentCount > 0 ? String(props.matched.subagentCount) : String(turnRecords?.length ?? 1)
+              const count = Number.isFinite(matched?.subagentCount) && matched.subagentCount > 0 ? String(matched.subagentCount) : String(turnRecords?.length ?? 1)
               const countKey = count === '1' ? 'subagent.turnTail.countOne' : 'subagent.turnTail.countMany'
               setText(`${translate(countKey, { count })}${translate('subagent.turnTail.unknown')}`)
               return
@@ -2173,7 +2178,7 @@ window.__ModuleLoader__.load({
           return () => {
             cancelled = true
           }
-        }, [props.matched && props.matched.turn, props.sessionId])
+        }, [turn, props.sessionId])
         if (text === '') return null
         return React.createElement('div', {
           'data-testid': 'subagent-models-turn-tail',
@@ -3380,9 +3385,9 @@ window.__ModuleLoader__.load({
       // 版本支持边界（v1.4.12/0.1.6 适配轮）：0.1.3-alpha.1 起旧 sessionPersistence seam 移除、
       // 0.1.5 起 layout Details 列移除 + 会话格式 V3、0.1.6-alpha.1 起 announce 改异步串行
       // 与 Sh0Q9G_ 类哈希漂移——本版已全部完成适配（docs/research/dsh-v0.1.6-alpha.1-plugin-impact.md）。
-      // 边界钉在 0.1.6-alpha.2：其后的版本尚未验证，运行版本越界时版本卡声明行转红警示；
+      // 边界钉在 0.1.6-alpha.3：其后的版本尚未验证，运行版本越界时版本卡声明行转红警示；
       // 无法解析的版本串（如 unknown）按不支持判空、中性展示。
-      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.2'
+      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.3'
       const parseSemver = (value) => {
         if (typeof value !== 'string') return null
         const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
@@ -6794,7 +6799,7 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.detail.back')),
               React.createElement('span', { style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0 } }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
-              !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { ctx.sessions?.open?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
+              !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { (ctx.get?.('uiWorkspace')?.openSession ?? ctx.sessions?.open)?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
               React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: chipButton, disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
             detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { 'data-testid': 'sessions-jump-view', style: { marginBottom: '10px' } },
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' } },
@@ -8272,7 +8277,7 @@ window.__ModuleLoader__.load({
         const usageBlock = React.createElement('div', { key: 'usage-section', 'data-testid': 'usage-card', style: card },
           React.createElement('div', { style: sectionTitle }, translate('usage.structure')),
           React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('usage.structureHint')),
-          usage && usage.projects.length > 0
+          usage && Array.isArray(usage.projects) && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
                 React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
                 usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject(project.id) }, project.title)))
@@ -8991,6 +8996,10 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
         { name: 'settings.plugin.item', id: 'dsh-service', key: 'dsh-service', order: 40 },
         () => React.createElement(FeatureSettingsCard, null),
+      ))
+      ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
+        { name: 'plugins.bundle.config', key: '@gehennawu/dsh-service' },
+        (props) => props?.view === 'page' ? React.createElement(FeatureSettingsCard, null) : null,
       ))
       ctx.slots.inject('settings.section', () => {
         const disposePanel = ctx.slots.register(

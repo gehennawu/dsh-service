@@ -1451,13 +1451,13 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.1；越界钉 0.1.6-alpha.2）；支持范围内的运行版本为中性色
+  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.2；越界钉 0.1.6-alpha.3）；支持范围内的运行版本为中性色
   const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1/, 'support-bound declaration is always present')
+  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2/, 'support-bound declaration is always present')
   assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
   // v1.5.1 用户点名：适配声明内联紧跟版本号（不排到状态之后）——扁平文本顺序=版本号→声明→状态。
-  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1）已是最新版本/,
+  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2）已是最新版本/,
     'support bound reads directly after the version number and before the status')
 
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
@@ -1481,14 +1481,15 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
 })
 
-test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.2 (≤0.1.6-alpha.1 stays supported)', async () => {
+test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.3 (≤0.1.6-alpha.2 stays supported)', async () => {
   const cases = [
     { current: '0.1.2-rc.1', red: false },
     { current: '0.1.3-alpha.1', red: false },
     { current: '0.1.5-rc.1', red: false },
     { current: '0.1.5-rc.2', red: false },
     { current: '0.1.6-alpha.1', red: false },
-    { current: '0.1.6-alpha.2', red: true },
+    { current: '0.1.6-alpha.2', red: false },
+    { current: '0.1.6-alpha.3', red: true },
     { current: '0.1.6', red: true },
   ]
   for (const item of cases) {
@@ -1503,7 +1504,7 @@ test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.
     })
     await renderer.load()
     const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1/, `bound note present on ${item.current}`)
+    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2/, `bound note present on ${item.current}`)
     if (item.red) {
       assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
       assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
@@ -1550,7 +1551,7 @@ test('version card keeps the support bound inline after the version number, two 
     assert.ok(linkIndex >= 0, 'identity contains the plugin version link')
     assert.equal(identityChildren[linkIndex + 1], noteWrap.node, 'support bound directly follows the version number element')
     assert.equal(noteWrap.node.props.style.flexBasis, undefined, 'wide containers keep the note inline, never forced onto its own line')
-    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.1）/)
+    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2）/)
 
     // 窄容器（≤480px）两行契约由容器查询负责：identity 转 block 让 版本号+声明 连排一块（行内文本
     // 自然换行，声明永不独占行），status 独立整行——移动端两行：版本号+声明 / 状态。
@@ -6513,6 +6514,63 @@ test('subagent turn-tail row: registered under the subagentRoute feature, select
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, before)
 })
 
+test('subagent turn-tail row: adaptive compatibility for 0.1.6-alpha.2 list slot without props.matched', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') {
+      return {
+        ok: true,
+        value: {
+          records: [
+            { parentSessionId: 'session-1', childSessionId: 'child-1', turn: 3, provider: 'cpa', model: 'gpt-5.6-luna', source: 'routed' },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, {
+    slotProps: {
+      'conversation.chat.turnTail': {
+        turn: { turn: 3, data: { get: (key) => (key === 'turn-process' ? { turn: 3, subagentCount: 1 } : undefined) } },
+        sessionId: 'session-1',
+      },
+    },
+  })
+  await renderer.load()
+  renderer.mount('conversation.chat.turnTail')
+  await renderer.flush()
+  assert.equal(renderer.hasTest('subagent-models-turn-tail'), true, 'renders under 0.1.6-alpha.2 list slot where props.matched is absent')
+  assert.match(renderer.text('conversation.chat.turnTail'), /子代理模型：cpa\/gpt-5\.6-luna/)
+})
+
+test('plugins.bundle.config slot is registered for @gehennawu/dsh-service and renders on page view', async () => {
+  const renderer = createRenderer(async () => ({ ok: true, value: {} }), {
+    initiallyUnmounted: ['settings.section'],
+    slotProps: {
+      'plugins.bundle.config': { view: 'page' },
+    },
+  })
+  await renderer.load()
+  const entries = renderer.registrations()['plugins.bundle.config']
+  assert.ok(entries.some((entry) => entry.key === '@gehennawu/dsh-service'), 'plugins.bundle.config registered for this package')
+  renderer.mount('plugins.bundle.config')
+  await renderer.flush()
+  assert.match(renderer.text('plugins.bundle.config'), /服务控制（dsh-service）/, 'renders feature settings card on page view')
+
+  // summary 视图时不渲染卡片本体（返回 null）
+  const summaryRenderer = createRenderer(async () => ({ ok: true, value: {} }), {
+    initiallyUnmounted: ['settings.section'],
+    slotProps: {
+      'plugins.bundle.config': { view: 'summary' },
+    },
+  })
+  await summaryRenderer.load()
+  summaryRenderer.mount('plugins.bundle.config')
+  await summaryRenderer.flush()
+  assert.equal(summaryRenderer.text('plugins.bundle.config'), '', 'renders null on summary view')
+})
+
 test('subagent turn-tail row: route aggregation and line text assembly', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
@@ -9143,6 +9201,32 @@ test('session manager detail pages events, loads more with seq cursor, and trigg
   assert.equal(renderer.hasTest('sessions-detail-back'), true)
   assert.equal(renderer.hasTest('sessions-detail-export'), true)
   assert.equal(renderer.hasTest('sessions-detail-more'), false, 'no load-more when all events loaded')
+})
+
+test('session manager detail open button uses uiWorkspace.openSession when available', async () => {
+  const opened = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-list': () => ({ ok: true, value: SESSION_LIST_VALUE }),
+    'sessions-view': () => ({ ok: true, value: { session: { id: 'session-cold', title: 'Cold session' }, items: [] } }),
+  }), {
+    services: {
+      uiWorkspace: {
+        openSession(id) { opened.push(id) },
+      },
+    },
+  })
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-view-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail-open'), true)
+  renderer.findByTestId('sessions-detail-open').props.onClick()
+  assert.deepEqual(opened, ['session-cold'], 'uiWorkspace.openSession was called with session id')
 })
 
 test('session manager folds tool messages by default and expands them on demand', async () => {
