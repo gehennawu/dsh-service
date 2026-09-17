@@ -3782,12 +3782,17 @@ window.__ModuleLoader__.load({
         return account !== '' ? `${account} · ${kindText}` : kindText
       }
       /** 百分比窗口的数值文本：percent 必显；窗口带 used/limit（原始数值）时追加「已用 / 总量」figure，
-       * 与控制台「{{used}} / {{limit}}」口径一致——只有比例没有绝对数会丢掉最关键的剩余信息。 */
+       * 与控制台「{{used}} / {{limit}}」口径一致——只有比例没有绝对数会丢掉最关键的剩余信息。
+       * `unit`（宿主声明的量纲）决定绝对数的呈现：`usd` 是金额（两位小数 + `$`），
+       * 缺省按 token 数缩写（K/M/B）——token 数与金额要用两套格式，不能共用一种缩写。 */
       function quotaWindowValueText(window) {
         const percent = `${window.percent}%`
         const used = Number(window.used)
         const limit = Number(window.limit)
         if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return percent
+        if (window.unit === 'usd') {
+          return `${percent} · $${used.toFixed(2)} / $${limit.toFixed(2)}`
+        }
         return `${percent} · ${formatCompactCount(used, { billions: true })} / ${formatCompactCount(limit, { billions: true })}`
       }
       function humanizeDuration(ms, translate) {

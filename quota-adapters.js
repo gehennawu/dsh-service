@@ -719,7 +719,10 @@ function normalizeCommandCodeMoney(value) {
 }
 
 /** Command Code 窗口（五小时/周）→ 已用百分比窗口。used/cap 是绝对 Credit 数，
- * 折算成已用 % 并保留绝对数；cap<=0 或 used 缺失/非法时跳过该窗（不伪造 0%）。 */
+ * 折算成已用 % 并保留绝对数；cap<=0 或 used 缺失/非法时跳过该窗（不伪造 0%）。
+ * `unit:'usd'` 声明绝对数的量纲：Command Code 的 Credit 与美元 1:1（实测
+ * `monthlyCredits + fiveHour.used` 恰等于该计划总额 70），故两列都该带 `$`——
+ * 缺量纲时客户端按 token 数缩写渲染，`14` 会被误读成别的量。 */
 function pushCommandCodeWindow(windows, id, entry) {
   if (entry === null || typeof entry !== 'object') return
   // `Number(null) === 0` 同款坑：缺 used/cap 时先显式挡掉，否则会造出「已用 0 / 上限 0」的假窗。
@@ -734,6 +737,7 @@ function pushCommandCodeWindow(windows, id, entry) {
     percent: Math.max(0, Math.min(100, Math.round((used / cap) * 100))),
     used: Math.round(used * 100) / 100,
     limit: Math.round(cap * 100) / 100,
+    unit: 'usd',
     ...(resetsAt !== undefined ? { resetsAt } : {}),
   })
 }

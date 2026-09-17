@@ -3827,7 +3827,9 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
   assert.match(text, /订阅套餐/)
   assert.match(text, /Pro 月度套餐/)
   assert.match(text, /套餐总额度/)
+  // 无 unit 的窗口（token 数）继续走 K/M/B 缩写：量纲分流不能把 token 数也按金额渲染。
   assert.match(text, /12% · 1\.4B \/ 11B/)
+  assert.doesNotMatch(text, /\$1\.4B/)
   // 有效期作为 resetsAt → 重置倒计时行（时长随执行耗时漂移，只断行存在与文案前缀）。
   const resetLine = renderer.findByTestId('quota-card-reset-mimo-total_token')
   assert.match(String(resetLine.children[0]), /^重置于 /)
@@ -3931,8 +3933,8 @@ test('command-goat card shows the account balance, period spend, plan and usage 
             { id: 'balance', kindKey: 'balance', text: '$69.84' },
             { id: 'period-spend', kindKey: 'period-spend', text: '$0.12' },
             { id: 'plan', kindKey: 'plan-name', text: 'individual goat', resetsAt: new Date(now + 86400_000).toISOString() },
-            { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 7, limit: 14, resetsAt: new Date(now + 3600_000).toISOString() },
-            { id: 'weekly', kindKey: 'weekly', percent: 10, used: 3.5, limit: 35 },
+            { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 7, limit: 14, unit: 'usd', resetsAt: new Date(now + 3600_000).toISOString() },
+            { id: 'weekly', kindKey: 'weekly', percent: 10, used: 3.5, limit: 35, unit: 'usd' },
           ],
           fetchedAt: now,
           usageUrl: 'https://commandcode.ai/settings/usage',
@@ -3972,10 +3974,11 @@ test('command-goat card shows the account balance, period spend, plan and usage 
   assert.match(text, /\$0\.12/)
   assert.match(text, /订阅套餐/)
   assert.match(text, /individual goat/)
-  // 百分比窗：5 小时 50% · 7 / 14、周 10% · 3.5 / 35（控制台口径的绝对数 figure）。
+  // 百分比窗：绝对数是美元（unit:'usd'）→ 两列都带 `$`，不是 token 缩写。
   assert.match(text, /5 小时额度/)
-  assert.match(text, /50% · 7 \/ 14/)
-  assert.match(text, /10% · 3\.5 \/ 35/)
+  assert.match(text, /50% · \$7\.00 \/ \$14\.00/)
+  assert.match(text, /10% · \$3\.50 \/ \$35\.00/)
+  assert.doesNotMatch(text, /50% · 7 \/ 14/)
   assert.ok(renderer.hasTest('quota-card-reset-command-goat-five-hour'))
   assert.ok(renderer.hasTest('quota-card-reset-command-goat-plan'))
   assert.equal(renderer.findByTestId('quota-usage-link-command-goat').props.href, 'https://commandcode.ai/settings/usage')

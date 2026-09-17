@@ -203,8 +203,9 @@ test('Command Code quota normalizes credits, plan, period spend and usage window
     // 套餐 id 是人类可读标识（纯数据，去掉连字符），周期结束作重置时刻。
     { id: 'plan', kindKey: 'plan-name', text: 'individual goat', resetsAt: '2026-10-17T06:28:04.000Z' },
     // used/cap 是绝对 Credit 数（非 0..1 比例）→ 折算已用百分比，绝对数原样下发供客户端缩写。
-    { id: 'five-hour', kindKey: 'five-hour', percent: 1, used: 0.16, limit: 14, resetsAt: new Date(1789645175513).toISOString() },
-    { id: 'weekly', kindKey: 'weekly', percent: 0, used: 0.16, limit: 35, resetsAt: new Date(1790231975513).toISOString() },
+    // unit:'usd' 声明绝对数量纲（Credit 与美元 1:1）：缺了它客户端会按 token 数缩写渲染。
+    { id: 'five-hour', kindKey: 'five-hour', percent: 1, used: 0.16, limit: 14, unit: 'usd', resetsAt: new Date(1789645175513).toISOString() },
+    { id: 'weekly', kindKey: 'weekly', percent: 0, used: 0.16, limit: 35, unit: 'usd', resetsAt: new Date(1790231975513).toISOString() },
   ] })
 
   // 三源各自缺失时的降级：paid 与 free 缺席只按存在的源求和；全缺则整条余额窗不下发。

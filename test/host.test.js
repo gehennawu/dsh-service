@@ -5357,7 +5357,9 @@ test('command-goat adapts from the api host and renders credits, plan and usage 
     ['five-hour', 50],
     ['weekly', 10],
   ])
-  assert.deepEqual(row.windows.find((window) => window.id === 'five-hour').limit, 14)
+  assert.equal(row.windows.find((window) => window.id === 'five-hour').limit, 14)
+  // 量纲随窗口下发：客户端据此渲染 `$` 而不是 token 缩写。
+  assert.equal(row.windows.find((window) => window.id === 'five-hour').unit, 'usd')
   // 四点全在固定账号面，全部带同 key 的 Bearer；查询串锚在订阅周期起点。
   assert.deepEqual(requests.map((request) => request.url.replace('https://api.commandcode.ai', '')), [
     '/alpha/whoami',
@@ -5403,7 +5405,7 @@ test('command-goat normalizer is re-exported from the host half for direct consu
     credits: { credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 }, windowLimits: { fiveHour: { used: 5, cap: 10 } } },
   }).windows, [
     { id: 'balance', kindKey: 'balance', text: '$10.00' },
-    { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 5, limit: 10 },
+    { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 5, limit: 10, unit: 'usd' },
   ])
 })
 
