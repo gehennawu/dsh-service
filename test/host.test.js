@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -11,7 +11,8 @@ import https from 'node:https'
 import { gzipSync, zstdCompress, zstdDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import { createRequire } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
+import fsPromises from 'node:fs/promises'
 
 import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
 
@@ -3587,6 +3588,72 @@ test('skills-list scans roots, marks shadows and legacy entries; toggle round-tr
     assert.equal(await readFile(betaPath, 'utf8'), twice)
     await handler('skills-toggle', { id: beta.id, field: 'user', enable: true })
   })
+})
+
+// 统计技能文件读取次数：只计入 fixture 的技能目录，忽略侧车索引等同进程读盘。
+function countSkillFileReads() {
+  const reads = []
+  const original = fsPromises.readFile
+  fsPromises.readFile = async (path, ...rest) => {
+    if (typeof path === 'string' && path.includes('skills/')) reads.push(path)
+    return original(path, ...rest)
+  }
+  syncBuiltinESMExports()
+  return {
+    reads,
+    restore() {
+      fsPromises.readFile = original
+      syncBuiltinESMExports()
+    },
+  }
+}
+
+test('skills-list reuses parsed entries for unchanged files and re-reads changed ones', async (t) => {
+  const { dshHome, workspace, agentsHome } = await createSkillFixture(t)
+  const { handler } = createHost({
+    services: { workspaceRegistry: { list: () => [{ id: 'ws', path: workspace }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  await withAgentsHome(agentsHome, async () => {
+    const counter = countSkillFileReads()
+    t.after(() => counter.restore())
+
+    const first = await handler('skills-list', {})
+    assert.equal(first.ok, true)
+    const readsAfterFirst = counter.reads.length
+    assert.equal(readsAfterFirst, 4)
+
+    // 目录、权限与 stat 每次照跑，但未变文件不再读盘、不再重新解析。
+    const second = await handler('skills-list', {})
+    assert.equal(counter.reads.length, readsAfterFirst)
+    assert.deepEqual(second.value.entries, first.value.entries)
+
+    // 同字节数改动 + mtime 前移：stat 指纹变化 → 只重读该文件且结果更新。
+    const betaPath = join(agentsHome, 'skills', 'beta.md')
+    const sameSize = SKILL_FILE_BETA.replace('"Beta skill"', '"Beta skil2"')
+    assert.equal(sameSize.length, SKILL_FILE_BETA.length)
+    await writeFile(betaPath, sameSize)
+    const bumped = new Date(Date.now() + 5000)
+    await utimes(betaPath, bumped, bumped)
+
+    const third = await handler('skills-list', {})
+    assert.equal(counter.reads.length, readsAfterFirst + 1)
+    assert.equal(third.value.entries.find((entry) => entry.name === 'beta').description, 'Beta skil2')
+
+    // 文件删除后条目随之消失（缓存不产出幽灵条目）。
+    await rm(betaPath)
+    const fourth = await handler('skills-list', {})
+    assert.equal(fourth.value.entries.some((entry) => entry.name === 'beta'), false)
+  })
+})
+
+test('web restart response carries the instance id and no pre-rendered message', async () => {
+  const { handler } = createHost()
+  const restart = await handler('web', {})
+  assert.equal(restart.ok, true)
+  assert.equal(typeof restart.value.instanceId, 'string')
+  // 重启反馈文案由客户端词典渲染（locale 双语约束），宿主不下发任何用户可见字符串。
+  assert.equal('message' in restart.value, false)
 })
 
 test('bundled skills are listed read-only and reject toggle and fix', async (t) => {

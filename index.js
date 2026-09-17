@@ -2913,8 +2913,10 @@ function buildSkillRoots(ctx, dshHome) {
   return roots
 }
 
-/** 全量扫描：一层深度发现目录 bundle 与扁平 .md，逐文件评估并标注同名遮蔽。 */
-async function scanSkillEntries(ctx, dshHome) {
+/** 全量扫描：一层深度发现目录 bundle 与扁平 .md，逐文件评估并标注同名遮蔽。
+ *  fileCache 只跳过「读文件 + 解析」这一步：目录发现、realpath 去重、权限与 stat
+ *  每次都重跑，缓存命中判据是 stat 的 size+mtimeMs 指纹（先记录后复用）。 */
+async function scanSkillEntries(ctx, dshHome, fileCache) {
   const roots = []
   const entries = []
   // 同一物理目录可能被两条根规则同时命中（典型：HOME 本身注册为工作区时，
@@ -2954,13 +2956,25 @@ async function scanSkillEntries(ctx, dshHome) {
       try {
         const info = await stat(path)
         if (info.size > MAX_SKILL_FILE_BYTES) { entries.push({ ...base, invalid: 'too-large' }); continue }
+        const cached = fileCache?.get(path)
+        if (cached !== undefined && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+          entries.push({ ...base, ...cached.evaluated, bodyHash: cached.bodyHash, bytes: info.size })
+          continue
+        }
         const raw = await readFile(path, 'utf8')
         const evaluated = evaluateSkillFile(raw)
-        entries.push({ ...base, ...evaluated, bodyHash: bodyHashOf(raw, locateSkillFrontmatter(raw)?.bodyStart ?? 0), bytes: info.size })
+        const bodyHash = bodyHashOf(raw, locateSkillFrontmatter(raw)?.bodyStart ?? 0)
+        fileCache?.set(path, { size: info.size, mtimeMs: info.mtimeMs, evaluated, bodyHash })
+        entries.push({ ...base, ...evaluated, bodyHash, bytes: info.size })
       } catch (error) {
         entries.push({ ...base, invalid: 'read-error:' + (error?.code || error?.message || String(error)).slice(0, 80) })
       }
     }
+  }
+  // 本轮未再出现的路径从缓存剔除：技能被删除/改名后缓存不残留悬挂条目。
+  if (fileCache !== undefined) {
+    const seen = new Set(entries.map((entry) => entry.path))
+    for (const key of [...fileCache.keys()]) if (!seen.has(key)) fileCache.delete(key)
   }
   const winners = new Map()
   for (const entry of entries) {
@@ -3042,16 +3056,20 @@ function publicSkillEntry(entry, index) {
 }
 
 /** 变更类动作共用通道：重扫定位签名 ID（浏览器零路径输入），校验后执行手术。 */
-async function mutateSkillEntryById(ctx, dshHome, index, id, allowInvalid, mutate) {
+async function mutateSkillEntryById(ctx, dshHome, index, id, allowInvalid, mutate, fileCache) {
   if (typeof id !== 'string' || id === '') return { ok: false, error: 'unknown-skill' }
-  const { entries } = await scanSkillEntries(ctx, dshHome)
+  const { entries } = await scanSkillEntries(ctx, dshHome, fileCache)
   const entry = entries.find((candidate) => candidate.id === id)
   if (entry === undefined) return { ok: false, error: 'unknown-skill' }
   if (entry.invalid !== undefined && !(allowInvalid === true && entry.invalid.startsWith('legacy-invocation-key:'))) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
   if (entry.writable !== true) return { ok: false, error: 'read-only-source' }
   const raw = await readFile(entry.path, 'utf8')
   const outcome = mutate(raw, entry)
-  if (outcome.text !== raw) await writeFile(entry.path, outcome.text, 'utf8')
+  if (outcome.text !== raw) {
+    await writeFile(entry.path, outcome.text, 'utf8')
+    // 宿主自身写入主动失效缓存：不依赖 mtime 指纹在极端情况下（同毫秒同尺寸）的判断。
+    fileCache?.delete(entry.path)
+  }
   const evaluated = evaluateSkillFile(outcome.text)
   const freshLocated = locateSkillFrontmatter(outcome.text)
   const fresh = { ...entry, ...evaluated, bodyHash: bodyHashOf(outcome.text, freshLocated?.bodyStart ?? 0) }
@@ -4434,6 +4452,9 @@ function apply(ctx) {
   const quotaThrottle = createQuotaThrottle()
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
   let skillsIndexPromise = loadSkillsIndex(dshHome)
+  // 技能文件解析缓存：键=绝对路径，值=stat 指纹（size+mtimeMs）+ 评估结果。
+  // 列表/定位类接口每次都重跑目录发现与 stat，只跳过未变文件的读盘与解析。
+  const skillFileCache = new Map()
   let skillsBatch = null
   // 单条补全的运行日志环形缓冲：客户端在「生成中」期间轮询展示。
   // 条目是结构化 {at, code, params}，本地化文案由客户端词典渲染。
@@ -4476,6 +4497,7 @@ function apply(ctx) {
       try { call.abort(new Error('batch-cancelled')) } catch (_) {}
     }
     skillsActiveControllers.clear()
+    skillFileCache.clear()
   }, 'dsh-service skills batch teardown')
   // ── 子代理路由（v0.27）：三态配置 + subagents seam ─────────────────────
   // 内存态即 seam 读取的事实源：保存端点落盘成功后原地替换，派生路径零读盘。
@@ -5093,7 +5115,7 @@ function apply(ctx) {
     'skills-list': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
       try {
         const index = await skillsIndexPromise
-        const { roots, entries } = await scanSkillEntries(ctx, dshHome)
+        const { roots, entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
         return {
           ok: true,
           value: {
@@ -5123,7 +5145,7 @@ function apply(ctx) {
       if (typeof payload?.enable !== 'boolean') return { ok: false, error: 'invalid-enable' }
       try {
         const index = await skillsIndexPromise
-        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, false, (raw) => ({ text: setSkillInvocationKey(raw, field, payload.enable) }))
+        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, false, (raw) => ({ text: setSkillInvocationKey(raw, field, payload.enable) }), skillFileCache)
         if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
         return { ok: true, value: { entry: outcome.entry } }
       } catch (error) {
@@ -5137,7 +5159,7 @@ function apply(ctx) {
         const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, true, (raw) => {
           const fixed = fixLegacySkillInvocationKeys(raw)
           return { text: fixed.text }
-        })
+        }, skillFileCache)
         if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
         return { ok: true, value: { entry: outcome.entry } }
       } catch (error) {
@@ -5156,7 +5178,7 @@ function apply(ctx) {
         const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
         if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
         const index = await skillsIndexPromise
-        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
         if (entry === undefined) return { ok: false, error: 'unknown-skill' }
         if (entry.invalid !== undefined) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
@@ -5187,7 +5209,7 @@ function apply(ctx) {
       if (description === '') return { ok: false, error: 'invalid-description' }
       try {
         // 注释只进插件侧车索引，绝不写回技能文件；因此不要求条目可写，只要求能被签名 ID 定位。
-        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
         if (entry === undefined) return { ok: false, error: 'unknown-skill' }
         const index = await serializeSkillsIndexWrite((current) => {
@@ -5207,7 +5229,7 @@ function apply(ctx) {
     } },
     'skills-note-clear': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
-        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
         const entry = entries.find((candidate) => candidate.id === payload?.id)
         if (entry === undefined) return { ok: false, error: 'unknown-skill' }
         const index = await serializeSkillsIndexWrite((current) => {
@@ -5233,7 +5255,7 @@ function apply(ctx) {
         const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
         if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
         const index = await skillsIndexPromise
-        const { entries } = await scanSkillEntries(ctx, dshHome)
+        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
         const { candidates, annotated, skipped } = selectSkillBatchCandidates(entries, index)
         const planId = randomUUID()
         // 已注释条目也进计划（单列待客户端确认），体积估算含两者——确认后整批运行。
@@ -5266,7 +5288,7 @@ function apply(ctx) {
         // 扫描一次建立 id→条目映射；逐条只重读目标文件校验新鲜度，不再每条全量重扫五类根。
         let byId = new Map()
         try {
-          const { entries } = await scanSkillEntries(ctx, dshHome)
+          const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
           byId = new Map(entries.map((entry) => [entry.id, entry]))
         } catch (_) {}
         for (let cursor = 0; cursor < skillsBatch.items.length; cursor += 1) {
@@ -5531,7 +5553,7 @@ function apply(ctx) {
       return {
         ok: true,
         value: {
-          message: '重启指令已发出，进程将在 0.5 秒后退出',
+          // 只下发客户端真正消费的实例 id；重启反馈文案由客户端词典渲染（双语约束）。
           instanceId,
         },
       }
