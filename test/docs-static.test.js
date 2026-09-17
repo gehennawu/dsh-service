@@ -94,3 +94,36 @@ test('plugin health checks are documented in both languages and shipped', () => 
   assert.equal(packageJson.files.includes('plugin-health.js'), true)
   assert.equal(packageJson.files.includes('plugin-compat.js'), true)
 })
+
+// 图标目录页是生成物（scripts/model-icons-catalog.mjs），与 src/model-icons.generated.js
+// 同源。这里做漂移检查：数据改了却忘了重渲染、或页面被手改过，都会红。
+// 顺带断言每张图形都出现在页面里——只比对字节无法发现「生成器漏了某个 slug」。
+test('model icon catalog is regenerated from the generated data and covers every mark', async () => {
+  const { parseGeneratedData, renderCatalog } = await import('../scripts/model-icons-catalog.mjs')
+  const source = read('src/model-icons.generated.js')
+  const parsed = parseGeneratedData(source)
+  const expected = renderCatalog({
+    ...parsed,
+    sourceVersion: source.match(/icons-static-svg@([\d.]+)/)[1],
+  })
+  assert.equal(read('docs/model-icons.html'), expected, 'docs/model-icons.html is stale; run node scripts/model-icons-catalog.mjs')
+
+  const html = read('docs/model-icons.html')
+  const slugs = Object.keys(parsed.data)
+  assert.equal(slugs.length, 61, 'icon mark count changed — update the catalog expectations with it')
+  for (const slug of slugs) {
+    assert.match(html, new RegExp(`data-slug="${slug}"`), `catalog is missing mark ${slug}`)
+  }
+  // provider 精确表与别名表都必须逐条落进页面（源码折叠块里的 slug 不算数，
+  // 表格行才是有意展示的口径）。
+  for (const provider of Object.keys(parsed.providers)) {
+    assert.ok(html.includes(`<code>${provider}</code>`), `catalog is missing provider ${provider}`)
+  }
+  for (const [prefix, slug] of parsed.prefixes) {
+    assert.ok(html.includes(`<code>${prefix}</code>`), `catalog is missing prefix ${prefix}`)
+    assert.ok(parsed.data[slug] !== undefined, `prefix ${prefix} points at unknown slug ${slug}`)
+  }
+  // 页面必须零外部请求：出现 http(s) 资源引用即视为引入网络依赖。
+  const external = [...html.matchAll(/(?:src|href)="(https?:[^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(external, [], `catalog must not reference external resources: ${external.join(', ')}`)
+})

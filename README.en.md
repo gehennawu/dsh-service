@@ -220,6 +220,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 - The icon is sized to match the **quota ring** beside the composer (each mark's viewBox is tightened to its real drawn extent and squared at build time, so every brand reads at the same visual size instead of some filling the box and others shrinking)
 - Toggle under Plugins → Plugin configuration → Interaction (on by default, applied live)
 - Icons come from the MIT-licensed [LobeHub Icons](https://github.com/lobehub/lobe-icons) (pinned to `@1.95.0`); **brand marks remain the property of their owners**, so review each vendor's brand guidelines before public-facing use
+- **Every icon is browsable in one page**: [icon catalog](docs/model-icons.html) — 61 marks, 75 provider mappings, the matching rules, and a light/dark comparison; a single offline file, generated from the very data inlined into the client bundle
 
 ### Right-Sidebar file editing
 

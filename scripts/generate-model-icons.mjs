@@ -27,6 +27,7 @@
  * 用法：node scripts/generate-model-icons.mjs
  */
 import { writeFile } from 'node:fs/promises'
+import { renderCatalog } from './model-icons-catalog.mjs'
 
 const VERSION = '1.95.0'
 const CDN = `https://unpkg.com/@lobehub/icons-static-svg@${VERSION}/icons/`
@@ -449,6 +450,13 @@ lines.push(`const MODEL_ICON_PREFIXES = ${JSON.stringify(PREFIX_RULES)}`)
 lines.push('')
 
 await writeFile(new URL('../src/model-icons.generated.js', import.meta.url), lines.join('\n'), 'utf8')
+
+// 可视化目录与数据文件同一次生成，杜绝「文档里的图标集」与「运行期内联的那份」漂移。
+await writeFile(
+  new URL('../docs/model-icons.html', import.meta.url),
+  renderCatalog({ data: out, providers: providerToSlug, prefixes: PREFIX_RULES, sourceVersion: VERSION }),
+  'utf8',
+)
 
 const byTier = report.reduce((acc, r) => {
   acc[r.tier] = (acc[r.tier] ?? 0) + 1
