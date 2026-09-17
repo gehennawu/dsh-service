@@ -365,6 +365,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.edge.reason.noTracker': '无追踪',
       'conversation.jump.previousReply': '上一条用户回复',
       'subagent.title': '子代理模型',
+      'subagent.loading': '读取配置…',
       'subagent.hint': '控制未显式指定模型的子代理所用模型；显式指定的不受影响。切换模式不会清除已保存的自定义模型与回退列表，切回「自定义」即恢复。',
       'subagent.mode.label': '模式',
       'subagent.mode.inherit': '初始（不干预）',
@@ -1211,6 +1212,7 @@ window.__ModuleLoader__.load({
       'mobile.debug.edge.reason.noTracker': 'no tracker',
       'conversation.jump.previousReply': 'Previous user message',
       'subagent.title': 'Subagent model',
+      'subagent.loading': 'Reading configuration…',
       'subagent.hint': 'Controls the model used by subagents without an explicit model; explicitly specified ones are unaffected. Switching modes keeps the saved custom model and fallback list; switch back to "Custom" to reuse them.',
       'subagent.mode.label': 'Mode',
       'subagent.mode.inherit': 'Default (no override)',
@@ -4782,23 +4784,69 @@ window.__ModuleLoader__.load({
       }
 
       const SUBAGENT_MODES = ['inherit', 'follow', 'custom']
+      // 首帧秒开缓存（v1.7.1）：上次成功快照的模式、草稿与模型清单。宿主快照是本页面唯一
+      // 事实源，但「进入 → 请求返回」这段窗口里若直接画 state 初值，会先亮「初始（不干预）」
+      // 再跳到磁盘上真实的「自定义」——模式高亮与整块表单（自定义下拉/回退编辑器）随之从
+      // 287px 撑到 937px，进入本页时按钮和内容跳一下。缓存只作首帧初值，响应到达后整体覆盖；
+      // 结构非法一律忽略，且只存宿主确认过的值（保存后同样经 load 回填）。
+      const SUBAGENT_ROUTE_CACHE_KEY = 'dsh-service-subagent-route-cache'
+      const isSubagentModelEntry = (item) => item !== null && typeof item === 'object'
+        && typeof item.provider === 'string' && typeof item.id === 'string'
+      function readSubagentRouteCache() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(SUBAGENT_ROUTE_CACHE_KEY) || 'null')
+          if (parsed === null || typeof parsed !== 'object') return null
+          if (!SUBAGENT_MODES.includes(parsed.mode)) return null
+          if (!Array.isArray(parsed.models) || !parsed.models.every(isSubagentModelEntry)) return null
+          return {
+            mode: parsed.mode,
+            provider: typeof parsed.provider === 'string' ? parsed.provider : '',
+            model: typeof parsed.model === 'string' ? parsed.model : '',
+            reasoningEffort: typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort : '',
+            fallbacks: Array.isArray(parsed.fallbacks) ? parsed.fallbacks : [],
+            models: parsed.models,
+            ...(parsed.current !== null && typeof parsed.current === 'object' ? { current: parsed.current } : {}),
+            ...(typeof parsed.available === 'boolean' ? { available: parsed.available } : {}),
+          }
+        } catch (_) { return null }
+      }
+      function writeSubagentRouteCache(value) {
+        if (value === null || typeof value !== 'object' || !SUBAGENT_MODES.includes(value.mode)) return
+        if (!Array.isArray(value.models)) return
+        try {
+          localStorage.setItem(SUBAGENT_ROUTE_CACHE_KEY, JSON.stringify({
+            mode: value.mode,
+            provider: typeof value.provider === 'string' ? value.provider : '',
+            model: typeof value.model === 'string' ? value.model : '',
+            reasoningEffort: typeof value.reasoningEffort === 'string' ? value.reasoningEffort : '',
+            fallbacks: Array.isArray(value.fallbacks) ? value.fallbacks : [],
+            models: value.models.filter(isSubagentModelEntry),
+            ...(value.current !== null && typeof value.current === 'object' ? { current: value.current } : {}),
+            ...(typeof value.available === 'boolean' ? { available: value.available } : {}),
+          }))
+        } catch (_) {}
+      }
       function SubagentSection() {
         const translate = useTranslation()
         const { useState, useEffect } = React
+        // 挂载期只读一次缓存作首帧初值：之后的轮询/保存回填不重读。
+        const initialRoute = React.useRef(null)
+        if (initialRoute.current === null) initialRoute.current = { cached: readSubagentRouteCache() }
         // v1.2：输入框底部累计行独立开关（默认开，存 dsh-service settings，热生效）。
         const features = useFeatures()
         const dockEnabled = features.value.subagentModelsDock !== false
         // v0.39：子代理的设置页左列入口已撤销（维护页内有完整功能），不再有段内入口开关。
-        const [snapshot, setSnapshot] = useState(null)
-        const [mode, setMode] = useState('inherit')
-        const [provider, setProvider] = useState('')
-        const [model, setModel] = useState('')
+        const bootstrap = initialRoute.current.cached
+        const [snapshot, setSnapshot] = useState(bootstrap)
+        const [mode, setMode] = useState(bootstrap !== null ? bootstrap.mode : 'inherit')
+        const [provider, setProvider] = useState(bootstrap !== null ? bootstrap.provider : '')
+        const [model, setModel] = useState(bootstrap !== null ? bootstrap.model : '')
         const [loading, setLoading] = useState(true)
         const [saving, setSaving] = useState(false)
         const [savedTick, setSavedTick] = useState(0)
         const [error, setError] = useState('')
-        const [reasoningEffort, setReasoningEffort] = useState('')
-        const [fallbacks, setFallbacks] = useState([])
+        const [reasoningEffort, setReasoningEffort] = useState(bootstrap !== null ? bootstrap.reasoningEffort : '')
+        const [fallbacks, setFallbacks] = useState(bootstrap !== null ? bootstrap.fallbacks : [])
         const [reorderMode, setReorderMode] = useState(false)
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
@@ -4816,6 +4864,8 @@ window.__ModuleLoader__.load({
               if (typeof res.value.provider === 'string') setProvider(res.value.provider)
               if (typeof res.value.model === 'string') setModel(res.value.model)
               setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
+              // 只缓存宿主确认过的状态（保存后同样经 load 回填），下次进入以此为初值。
+              writeSubagentRouteCache(res.value)
               setError('')
             } else {
               setError(res.error || 'unknown')
@@ -4984,6 +5034,9 @@ window.__ModuleLoader__.load({
             React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': String(dockEnabled), 'data-testid': 'subagent-dock-toggle', onClick: () => { featureScope.set('subagentModelsDock', !dockEnabled).catch(() => {}) }, style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 } },
               React.createElement('span', { style: { position: 'absolute', top: '1px', left: dockEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: dockEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)', transition: 'left 150ms ease' } }))),
           snapshot !== null && snapshot.available === false ? React.createElement('p', { 'data-testid': 'subagent-unavailable', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.unavailable')) : null,
+          // 首帧无缓存（首次安装/换浏览器）：给一行读取提示，避免整页空白像「坏掉了」。
+          // 有缓存时首帧就是最终形态，不出现这行。
+          loading && snapshot === null ? React.createElement('p', { 'data-testid': 'subagent-loading', style: hintStyle }, translate('subagent.loading')) : null,
           React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
             SUBAGENT_MODES.map(modeButton)),
           React.createElement('p', { 'data-testid': 'subagent-mode-desc', style: { ...hintStyle, marginTop: '8px' } }, translate('subagent.mode.' + mode + '.desc')),

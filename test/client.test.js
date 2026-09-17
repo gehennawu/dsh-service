@@ -5904,6 +5904,8 @@ function createSubagentRenderer(options = {}) {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'subagent-route') {
       if (options.loadError) return { ok: false, error: options.loadError }
+      // beforeRoute：可选的挂起钩子，用来观察「宿主尚未响应」时的首帧渲染。
+      if (typeof options.beforeRoute === 'function') await options.beforeRoute()
       return { ok: true, value: { ...state.route, models: state.models, current: { provider: 'cpa', model: 'gpt-5.6-sol' } } }
     }
     if (endpoint === 'subagent-route-save') {
@@ -5934,7 +5936,7 @@ function createSubagentRenderer(options = {}) {
     if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
     if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
     throw new Error(`unexpected endpoint ${endpoint}`)
-  }, { featureSettings: options.featureSettings })
+  }, { featureSettings: options.featureSettings, initialStorage: options.initialStorage })
   return { renderer, state }
 }
 
@@ -6051,6 +6053,94 @@ test('subagent tab preserves the reasoning effort across mode switches', async (
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+})
+
+// v1.7.1：首帧秒开缓存——进入子代理页时先用上次成功快照画模式与草稿，宿主响应到达后再覆盖，
+// 消除「先亮初始、再跳到自定义」的按钮/内容位移。
+test('subagent first paint: cached route seeds the first frame so the mode does not jump after load', async () => {
+  const cachedModels = [
+    { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+    { provider: 'cpa', providerName: 'CPA', id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', reasoning: { efforts: [{ id: 'high', name: 'High' }] } },
+  ]
+  const cached = { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }], models: cachedModels, available: true }
+  // 宿主端点挂起：模拟「响应尚未返回」的窗口，此时唯一能画出来的就是缓存。
+  let release = () => {}
+  const gate = new Promise((resolve) => { release = resolve })
+  const pending = createSubagentRenderer({ route: { available: true, mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high' }, initialStorage: { 'dsh-service-subagent-route-cache': JSON.stringify(cached) }, beforeRoute: () => gate })
+  await pending.renderer.load()
+  pending.renderer.mount('settings.section')
+  // 不等待 flush：进入子代理页后的第一帧就必须读缓存，而非等宿主响应（用户报告的「跳一下」窗口）。
+  pending.renderer.findButton('维护').props.onClick()
+  pending.renderer.findButton('子代理').props.onClick()
+  // 首帧（宿主未响应）：模式已经是自定义，自定义区块与回退编辑器在位——不先画初始再跳。
+  assert.equal(pending.renderer.findByTestId('subagent-mode-custom').props['aria-pressed'], 'true')
+  assert.equal(pending.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'false')
+  assert.equal(pending.renderer.hasTest('subagent-custom'), true)
+  assert.equal(pending.renderer.hasTest('subagent-fallback-block'), true)
+  assert.equal(pending.renderer.findByTestId('subagent-provider').props.value, 'cpa')
+  assert.equal(pending.renderer.findByTestId('subagent-model').props.value, 'gpt-5.6-sol')
+  assert.equal(pending.renderer.findByTestId('subagent-reasoning-effort').props.value, 'high')
+  // 首帧也不该出现「模型清单为空」这类只有真快照到达前会误报的告警。
+  assert.equal(pending.renderer.hasTest('subagent-models-empty'), false)
+  release()
+  await pending.renderer.flush()
+  await pending.renderer.flush()
+  // 响应到达后仍是自定义（快照是权威事实源，缓存只作初值）。
+  assert.equal(pending.renderer.findByTestId('subagent-mode-custom').props['aria-pressed'], 'true')
+
+  // 无缓存：保持原行为，首帧落在默认「初始」。
+  const cold = createSubagentRenderer()
+  await cold.renderer.load()
+  cold.renderer.mount('settings.section')
+  cold.renderer.findButton('维护').props.onClick()
+  await cold.renderer.flush()
+  cold.renderer.findButton('子代理').props.onClick()
+  await cold.renderer.flush()
+  await cold.renderer.flush()
+  assert.equal(cold.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
+})
+
+test('subagent route cache: written after a successful load/save and ignored when malformed', async () => {
+  const { renderer, state } = createSubagentRenderer({ route: { available: true, mode: 'follow' } })
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  // load 成功即落缓存（只含轻量路由字段，不含模型清单）。
+  const written = JSON.parse(localStorage.getItem('dsh-service-subagent-route-cache'))
+  assert.equal(written.mode, 'follow')
+  assert.equal('models' in written, true, 'cache carries the catalog so the first frame can resolve provider/model names')
+  assert.equal(written.models.length, 3)
+
+  // 保存 custom 后 load 回填，缓存跟着更新到最新作者态（provider/model 按目录归一后的实际值）。
+  renderer.findByTestId('subagent-mode-custom').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  const afterSave = JSON.parse(localStorage.getItem('dsh-service-subagent-route-cache'))
+  assert.equal(afterSave.mode, 'custom')
+  assert.equal(afterSave.provider, 'deepseek-official')
+  assert.equal(afterSave.model, 'deepseek-v4-flash')
+  assert.deepEqual(state.saves[0], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+
+  // 坏缓存（非法模式 / 非法 JSON / 缺模式）一律当没有：首帧回落默认「初始」，不炸渲染。
+  for (const raw of ['{"mode":"bogus"}', 'not json', '{}', '{"mode":"custom","fallbacks":"nope"}']) {
+    const broken = createSubagentRenderer({ initialStorage: { 'dsh-service-subagent-route-cache': raw } })
+    await broken.renderer.load()
+    broken.renderer.mount('settings.section')
+    broken.renderer.findButton('维护').props.onClick()
+    await broken.renderer.flush()
+    broken.renderer.findButton('子代理').props.onClick()
+    await broken.renderer.flush()
+    await broken.renderer.flush()
+    assert.equal(broken.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true', `bad cache ${raw} must be ignored`)
+    assert.equal(broken.renderer.findByTestId('subagent-section') !== undefined, true)
+  }
 })
 
 test('subagent fallback list: load/add/move/remove rows and save ordered fallbacks with follow and custom modes', async () => {
