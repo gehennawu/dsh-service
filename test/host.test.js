@@ -14,7 +14,7 @@ import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -859,6 +859,8 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   await writeFile(join(dshHome, 'sessions', 'workspace', 'session-1', 'events.jsonl'), '{"type":"test"}\n')
   await writeFile(join(dshHome, 'settings.yaml'), 'theme: system\n')
   await writeFile(join(dshHome, 'cordis.patch.yml'), '- id: local\n')
+  // 统一配置文件随备份收录（恢复预检白名单同步放行）。
+  await writeFile(join(dshHome, 'dsh-service-config.json'), JSON.stringify({ version: 1, settingsNav: { order: ['plugins', 'dsh-service'], hidden: [] } }), { mode: 0o600 })
   await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"web-profile"}\n')
   await writeFile(join(dshHome, 'profiles', 'web', 'node_modules', 'ignored', 'secret.txt'), 'exclude me')
   await writeFile(join(dshHome, '.credentials.yaml'), 'secret: do-not-back-up\n')
@@ -885,6 +887,7 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.ok(archiveEntries.includes('sessions/workspace/session-1/events.jsonl'))
   assert.ok(archiveEntries.includes('config/settings.yaml'))
   assert.ok(archiveEntries.includes('config/cordis.patch.yml'))
+  assert.ok(archiveEntries.includes('config/dsh-service-config.json'))
   assert.ok(archiveEntries.includes('profiles/web/package.json'))
   assert.equal(archiveEntries.some((entry) => entry.includes('node_modules')), false)
   assert.equal(archiveEntries.some((entry) => entry.includes('credentials')), false)
@@ -7387,4 +7390,19 @@ test('unified config：统一配置文件读写、白名单校验与单功能隔
   const afterReset = JSON.parse(await readFile(configFile, 'utf8'))
   assert.deepEqual(afterReset.otherModule, { enabled: true, foo: 'bar' })
   assert.equal(afterReset.settingsNav, undefined)
+})
+
+test('unified config：并发写串行化——两台设备同时迁移不丢区块', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-unified-config-race-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+
+  // 模拟两台设备并发 config-set 各自的配置：串行链保证两个区块都落盘，不互相覆盖丢失。
+  await Promise.all([
+    updateUnifiedConfigSection(dshHome, 'settingsNav', { order: ['general', 'dsh-service'], hidden: [] }),
+    updateUnifiedConfigSection(dshHome, 'deviceTwo', { mark: 'second-device' }),
+  ])
+  const merged = await loadUnifiedConfig(dshHome)
+  assert.deepEqual(merged.settingsNav, { order: ['general', 'dsh-service'], hidden: [] })
+  assert.deepEqual(merged.deviceTwo, { mark: 'second-device' })
+  assert.equal(merged.version, 1)
 })

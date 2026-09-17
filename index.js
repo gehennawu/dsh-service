@@ -807,7 +807,7 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
   try {
     // 进度：复制阶段按真实字节上报；打包/校验阶段上报归档体积（大小 ≈ 源字节，zstd 数据近不可压缩）。
     const sessionsSource = join(dshHome, 'sessions')
-    const configNames = ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md']
+    const configNames = ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md', 'dsh-service-config.json']
     let configBytes = 0
     for (const file of configNames) configBytes += await sumBackupTree(join(dshHome, file))
     let profilesBytes = 0
@@ -3422,16 +3422,24 @@ async function saveUnifiedConfig(dshHome, config) {
   }
 }
 
-async function updateUnifiedConfigSection(dshHome, section, value) {
-  const current = await loadUnifiedConfig(dshHome)
-  const updated = Object.assign({}, current, { version: UNIFIED_CONFIG_VERSION })
-  if (value === null || value === undefined) {
-    delete updated[section]
-  } else {
-    updated[section] = value
-  }
-  await saveUnifiedConfig(dshHome, updated)
-  return updated
+// 统一配置写串行化（按 dshHome 分链）：读-改-写整个文件必须排队，否则两台设备
+// 同时首次迁移（并发 config-set）会在读旧快照后互相覆盖，丢失先写区块。
+const unifiedConfigWriteChains = new Map()
+function updateUnifiedConfigSection(dshHome, section, value) {
+  const previous = unifiedConfigWriteChains.get(dshHome) ?? Promise.resolve()
+  const result = previous.then(async () => {
+    const current = await loadUnifiedConfig(dshHome)
+    const updated = Object.assign({}, current, { version: UNIFIED_CONFIG_VERSION })
+    if (value === null || value === undefined) {
+      delete updated[section]
+    } else {
+      updated[section] = value
+    }
+    await saveUnifiedConfig(dshHome, updated)
+    return updated
+  })
+  unifiedConfigWriteChains.set(dshHome, result.then(() => undefined, () => undefined))
+  return result
 }
 
 // 额度态「不可服务」判定（子代理回退候选过滤用）：lastError 命中配置/凭据/上游 4xx 码集，

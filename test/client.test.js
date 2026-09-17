@@ -10388,3 +10388,81 @@ test('settings nav order: backend sync on startup and local migration', async ()
     hidden: ['models'],
   })
 })
+
+test('settings nav order: backend sync retries after failure and re-pushes pending writes', async () => {
+  const rpcCalls = []
+  let configGetShouldFail = true
+  let remoteConfig = null
+  let configSetShouldFail = false
+
+  const syncRpc = async (channel, endpoint, payload) => {
+    rpcCalls.push({ endpoint, payload })
+    if (endpoint === 'config-get') {
+      if (configGetShouldFail) throw new Error('host restarting')
+      return { ok: true, value: remoteConfig }
+    }
+    if (endpoint === 'config-set') {
+      if (configSetShouldFail) throw new Error('host restarting')
+      remoteConfig = payload.value
+      return { ok: true, value: remoteConfig }
+    }
+    return testSettingsNavRpc(channel, endpoint)
+  }
+
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+    ],
+  }
+
+  // 1. 首次拉取失败（宿主重启窗口）：本地配置保留，下次打开面板重试成功并应用后端配置
+  const renderer = createRenderer(syncRpc, {
+    initialSlots,
+    initialStorage: {
+      'dsh-service-settings-nav-order': JSON.stringify(['plugins', 'dsh-service', 'general']),
+    },
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.deepEqual(
+    JSON.parse(globalThis.localStorage.getItem('dsh-service-settings-nav-order')),
+    ['plugins', 'dsh-service', 'general'],
+    'local config must survive a failed backend pull',
+  )
+
+  configGetShouldFail = false
+  remoteConfig = { order: ['models', 'general', 'dsh-service'], hidden: [] }
+  renderer.unmount('settings.section')
+  renderer.mount('settings.section')
+  await renderer.flush()
+  assert.deepEqual(
+    JSON.parse(globalThis.localStorage.getItem('dsh-service-settings-nav-order')),
+    ['models', 'general', 'dsh-service'],
+    'retry after remount should apply the backend config',
+  )
+
+  // 2. 写后端失败挂 pending：下次打开面板时自动重推本地配置
+  rpcCalls.length = 0
+  configSetShouldFail = true
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('config-tab-navOrder').props.onClick()
+  await renderer.flush()
+  const saveCallsBefore = rpcCalls.filter((c) => c.endpoint === 'config-set').length
+  await renderer.findByTestId('nav-order-save').props.onClick()
+  await renderer.flush()
+  assert.equal(rpcCalls.filter((c) => c.endpoint === 'config-set').length, saveCallsBefore + 1, 'failed write still attempted once')
+
+  configSetShouldFail = false
+  renderer.unmount('settings.section')
+  renderer.mount('settings.section')
+  await renderer.flush()
+  const setCalls = rpcCalls.filter((c) => c.endpoint === 'config-set')
+  assert.equal(setCalls.length, saveCallsBefore + 2, 'pending write should be re-pushed on next panel open')
+  assert.deepEqual(remoteConfig, {
+    order: ['models', 'general', 'dsh-service', 'plugins'],
+    hidden: [],
+  }, 're-pushed value must match the local display order')
+})

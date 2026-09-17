@@ -2604,10 +2604,35 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 从后端统一配置拉取设置栏导航（多设备同步与本地初次迁移）
+      // 从后端统一配置拉取设置栏导航（多设备同步与本地初次迁移）。
+      // 容错三态：拉取失败本会话内可重试；写后端失败挂 pending，下次拉取成功后重推本地。
       let backendSynced = false
+      let backendPushPending = false
+      const persistSettingsNavToBackend = (order, hidden) => {
+        rpcCall('config-set', { section: 'settingsNav', value: { order, hidden } })
+          .then((res) => { if (!res || res.ok !== true) backendPushPending = true })
+          .catch(() => { backendPushPending = true })
+      }
+      const persistSettingsNavReset = () => {
+        rpcCall('config-set', { section: 'settingsNav', value: null })
+          .then((res) => { if (!res || res.ok !== true) backendPushPending = true })
+          .catch(() => { backendPushPending = true })
+      }
+      const pushLocalSettingsNavToBackend = () => {
+        const order = readSettingsNavOrder()
+        const hidden = readSettingsNavHidden()
+        if ((order && order.length > 0) || (hidden && hidden.length > 0)) persistSettingsNavToBackend(order, hidden)
+        else persistSettingsNavReset()
+      }
       const ensureSettingsNavBackendSynced = () => {
-        if (backendSynced) return
+        if (backendSynced) {
+          // 上次写后端失败：本地已生效的配置重推一次，尽量收窄多端漂移窗口。
+          if (backendPushPending) {
+            backendPushPending = false
+            pushLocalSettingsNavToBackend()
+          }
+          return
+        }
         backendSynced = true
         syncSettingsNavFromBackend()
       }
@@ -2626,16 +2651,12 @@ window.__ModuleLoader__.load({
               return
             }
             // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
-            const localOrder = readSettingsNavOrder()
-            const localHidden = readSettingsNavHidden()
-            if ((localOrder && localOrder.length > 0) || (localHidden && localHidden.length > 0)) {
-              await rpcCall('config-set', {
-                section: 'settingsNav',
-                value: { order: localOrder, hidden: localHidden },
-              }).catch(() => {})
-            }
+            pushLocalSettingsNavToBackend()
           }
-        } catch (_) {}
+        } catch (_) {
+          // 拉取失败（瞬时网络/宿主重启窗口）：允许同会话内下次打开面板重试。
+          backendSynced = false
+        }
       }
 
       const useTranslation = () => {
@@ -4458,10 +4479,7 @@ window.__ModuleLoader__.load({
           setOrderList(ids)
           writeSettingsNavOrder(ids)
           notifyNavOrderChanged()
-          rpcCall('config-set', {
-            section: 'settingsNav',
-            value: { order: ids, hidden: Array.isArray(hiddenIds) ? hiddenIds : [] },
-          }).catch(() => {})
+          persistSettingsNavToBackend(ids, Array.isArray(hiddenIds) ? hiddenIds : [])
         }
 
         const toggleVisible = (id) => {
@@ -4474,10 +4492,7 @@ window.__ModuleLoader__.load({
           setHiddenIds(arr)
           writeSettingsNavHidden(arr)
           notifyNavOrderChanged()
-          rpcCall('config-set', {
-            section: 'settingsNav',
-            value: { order: Array.isArray(orderList) ? orderList : null, hidden: arr },
-          }).catch(() => {})
+          persistSettingsNavToBackend(Array.isArray(orderList) ? orderList : null, arr)
         }
 
         const resetDefault = () => {
@@ -4488,7 +4503,7 @@ window.__ModuleLoader__.load({
           notifyNavOrderChanged()
           setSavedTip(true)
           setTimeout(() => setSavedTip(false), 2000)
-          rpcCall('config-set', { section: 'settingsNav', value: null }).catch(() => {})
+          persistSettingsNavReset()
         }
 
         const handleSave = () => {
@@ -4499,10 +4514,7 @@ window.__ModuleLoader__.load({
           notifyNavOrderChanged()
           setSavedTip(true)
           setTimeout(() => setSavedTip(false), 2000)
-          rpcCall('config-set', {
-            section: 'settingsNav',
-            value: { order: ids, hidden: Array.isArray(hiddenIds) ? hiddenIds : [] },
-          }).catch(() => {})
+          persistSettingsNavToBackend(ids, Array.isArray(hiddenIds) ? hiddenIds : [])
         }
 
         const hiddenSet = new Set(Array.isArray(hiddenIds) ? hiddenIds : [])

@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { gunzip } from 'node:zlib'
 
-const CONFIG_FILES = Object.freeze(['settings.yaml', 'cordis.patch.yml', 'AGENTS.md'])
+const CONFIG_FILES = Object.freeze(['settings.yaml', 'cordis.patch.yml', 'AGENTS.md', 'dsh-service-config.json'])
 const PLAN_TTL_MS = 5 * 60 * 1000
 const MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
 const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
