@@ -44,6 +44,15 @@ window.__ModuleLoader__.load({
       try { return typeof node?.getAttribute === 'function' && node.getAttribute(name) !== null } catch (_) { return false }
     }
     /**
+     * 整圆/胶囊几何：官方 ui-theme 的 corner-shape.css 在 @supports 内用通配选择器给
+     * **所有元素**加 corner-shape: superellipse(1.5)（全局圆角平滑，官方既定设计，不是缺陷）。
+     * 官方约定「正圆与胶囊由所属组件把 corner-shape: round 与半径配对」（ui-theme README
+     * §corner-shape.css，官方 20 个包均照此办理）；只写 border-radius: 50%/999px/100px 会被
+     * 超级椭圆压成方角、胶囊两端削平。插件自有整圆/胶囊一律经此助手声明；不支持该属性的引擎
+     * 忽略它，几何自动回落普通圆弧。
+     */
+    const fullRound = (radius) => ({ borderRadius: radius, cornerShape: 'round' })
+    /**
      * 地址后缀是否落在可编辑表内（与官方按解码后文件名后缀匹配同口径）。
      * 只用于「⋯ 菜单要不要露出编辑入口」这类显示判定，真正的档位匹配仍由官方注册面负责。
      * @param address - `dsh-resource://file/…` 地址。
@@ -2358,7 +2367,7 @@ window.__ModuleLoader__.load({
         fontSize: '10px',
         lineHeight: '16px',
         padding: '1px 6px',
-        borderRadius: 999,
+        ...fullRound(999),
         whiteSpace: 'nowrap',
         ...({
           success: { background: 'rgba(16,185,129,0.16)', color: 'var(--dsh-svc-success)' },
@@ -2435,8 +2444,8 @@ window.__ModuleLoader__.load({
             },
               item.icon !== undefined ? React.createElement(TabIcon, { name: item.icon }) : null,
               item.label,
-              item.warning ? React.createElement('span', { 'data-testid': 'tab-dot-' + item.id, 'aria-label': dotLabel, style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
-              item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsh-svc-brand-text)', fontWeight: 700 } }, item.badge.text) : null)
+              item.warning ? React.createElement('span', { 'data-testid': 'tab-dot-' + item.id, 'aria-label': dotLabel, style: { position: 'absolute', top: '-3px', right: '-3px', width: '8px', height: '8px', ...fullRound('50%'), background: 'var(--dsw-alias-state-warn-primary)', boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1)' } }) : null,
+              item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', ...fullRound('999px'), background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsh-svc-brand-text)', fontWeight: 700 } }, item.badge.text) : null)
           }))
       }
       // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
@@ -3168,8 +3177,8 @@ window.__ModuleLoader__.load({
                     'data-testid': 'restart-nav-switch',
                     'aria-checked': String(navEnabled),
                     onClick: () => setNavEnabled(!navEnabled),
-                    style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
-                  }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+                    style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+                  }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
               : null)
         )
       }
@@ -3532,7 +3541,7 @@ window.__ModuleLoader__.load({
               // nowrap + flexShrink:0：容器过窄时整块折行，绝不把文字挤成一列竖排（用户点名）。
               style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', lineHeight: '16px', color: accentColor, whiteSpace: 'nowrap', flexShrink: 0 },
             },
-            React.createElement('span', { style: { width: '7px', height: '7px', borderRadius: '50%', background: accentColor, flexShrink: 0 } }),
+            React.createElement('span', { style: { width: '7px', height: '7px', ...fullRound('50%'), background: accentColor, flexShrink: 0 } }),
             translate(inPeak ? 'quota.peak.nowPeak' : 'quota.peak.nowIdle')),
             nextFlip !== null ? React.createElement('span', {
               'data-testid': 'quota-peak-next',
@@ -3543,7 +3552,7 @@ window.__ModuleLoader__.load({
             })) : null),
           React.createElement('div', {
             'data-testid': 'quota-peak-bar',
-            style: { position: 'relative', height: '14px', borderRadius: 999, overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
+            style: { position: 'relative', height: '14px', ...fullRound(999), overflow: 'hidden', background: 'var(--dsw-alias-interactive-bg-hover)' },
           },
           // 两段式（用户点名）：第一段 = 当前时段剩余，第二段 = 下一个相反时段（可跨天），
           // 宽度按实际时长比例；段内只标「忙时/闲时」，过窄自动隐藏（精确时刻在倒计时与说明行）。
@@ -3627,10 +3636,10 @@ window.__ModuleLoader__.load({
         const warning = remainingBasis === true ? percent <= 20 : percent >= 80
         return React.createElement('div', {
           'data-testid': testId,
-          style: { height, borderRadius: 999, background: 'var(--dsw-alias-interactive-bg-hover)', overflow: 'hidden' },
+          style: { height, ...fullRound(999), background: 'var(--dsw-alias-interactive-bg-hover)', overflow: 'hidden' },
         },
         React.createElement('div', {
-          style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, borderRadius: 999, background: warning ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
+          style: { height: '100%', width: `${Math.max(0, Math.min(100, percent))}%`, ...fullRound(999), background: warning ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)' },
         }))
       }
       /** 窗口行的统一渲染，圆环面板与额度卡共用（此前两处各写一份，配色/倒计时格式容易漂移）：
@@ -3931,7 +3940,7 @@ window.__ModuleLoader__.load({
               setOpen(next)
               if (next) fetchQuotaSnapshot({ providers: provider === null ? [] : [provider] })
             },
-            style: { width: '28px', height: '28px', border: 'none', borderRadius: '999px', background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
+            style: { width: '28px', height: '28px', border: 'none', ...fullRound('999px'), background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
           },
           React.createElement('svg', { viewBox: '0 0 14 14', width: '14', height: '14', 'aria-hidden': true },
             React.createElement('circle', { cx: '7', cy: '7', r: radius, fill: 'none', stroke: 'var(--dsw-alias-border-l3)', strokeWidth: '2' }),
@@ -4082,8 +4091,8 @@ window.__ModuleLoader__.load({
             try { await featureScope.set(key, value[key] === false) } catch (_) {}
             setSaving('')
           },
-          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
-        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+          style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
         return React.createElement('div', null, FEATURE_GROUPS.map(([groupKey, keys]) => React.createElement('div', { key: groupKey, style: { marginTop: '10px' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '2px' } }, translate(groupKey)),
           keys.map(row))))
@@ -4300,8 +4309,8 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { flex: 1, minWidth: 0 } },
               React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.dock.title')),
               React.createElement('p', { style: { ...hintStyle, marginTop: '2px', marginBottom: 0 } }, translate('subagent.dock.desc'))),
-            React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': String(dockEnabled), 'data-testid': 'subagent-dock-toggle', onClick: () => { featureScope.set('subagentModelsDock', !dockEnabled).catch(() => {}) }, style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 } },
-              React.createElement('span', { style: { position: 'absolute', top: '1px', left: dockEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: dockEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)', transition: 'left 150ms ease' } }))),
+            React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': String(dockEnabled), 'data-testid': 'subagent-dock-toggle', onClick: () => { featureScope.set('subagentModelsDock', !dockEnabled).catch(() => {}) }, style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 } },
+              React.createElement('span', { style: { position: 'absolute', top: '1px', left: dockEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: dockEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)', transition: 'left 150ms ease' } }))),
           snapshot !== null && snapshot.available === false ? React.createElement('p', { 'data-testid': 'subagent-unavailable', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.unavailable')) : null,
           React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
             SUBAGENT_MODES.map(modeButton)),
@@ -4633,8 +4642,8 @@ window.__ModuleLoader__.load({
           title: opts.title,
           disabled: opts.disabled,
           onClick: opts.onClick,
-          style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', cursor: opts.disabled ? 'default' : 'pointer', lineHeight: 0, border: '1px solid ' + (opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: opts.armed ? 'transparent' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: opts.disabled ? 0.5 : 1 },
-        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: checked && !opts.armed ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
+          style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', cursor: opts.disabled ? 'default' : 'pointer', lineHeight: 0, border: '1px solid ' + (opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: opts.armed ? 'transparent' : checked ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: opts.disabled ? 0.5 : 1 },
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: checked && !opts.armed ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: opts.armed ? 'var(--dsw-alias-state-warn-primary)' : checked ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
         // v0.31 用户点名两连修：AI 注释块独占整行占满技能展示区；技能自带的描述/用法行
         // 回到「文本 | 开关」双栏的左列原宽度，给右侧胶囊开关列留位。头部行 = 名称 +
         // 自带描述/用法/无效行（左列）+ 右侧开关列，注释块铺满全宽垫底。
@@ -5898,7 +5907,7 @@ window.__ModuleLoader__.load({
                 React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginLeft: '6px', fontSize: '11.5px' } }, translate('sessions.hit.title', { count: hit.items.length }))),
               // v0.37：命中位置直接可见可点——点 seq 芯片直达该命中（不绕一次「打开→翻跳」）。
               hit.items.length > 1 ? React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '5px' } },
-                hit.items.map((item) => React.createElement('button', { key: item.seq, type: 'button', 'data-testid': 'sessions-hit-seq-' + hit.sessionId + '-' + item.seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', color: 'var(--dsw-alias-label-tertiary)' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event, Number(item.seq)) }, '#' + item.seq))) : null,
+                hit.items.map((item) => React.createElement('button', { key: item.seq, type: 'button', 'data-testid': 'sessions-hit-seq-' + hit.sessionId + '-' + item.seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', ...fullRound('999px'), color: 'var(--dsw-alias-label-tertiary)' }, onClick: (event) => openDetail(hit.sessionId, 'search', hit.items, event, Number(item.seq)) }, '#' + item.seq))) : null,
               hit.items.slice(0, 1).map((item, index) => React.createElement('div', { key: index, 'data-testid': 'sessions-hit-snippet-' + hit.sessionId, style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, highlightSessionSnippet(item.snippet, searchResult.query || search, 'sessions-hit-highlight-' + hit.sessionId)))))
           }
           if (visibleItems.length === 0) {
@@ -6008,7 +6017,7 @@ window.__ModuleLoader__.load({
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-prev', style: chipButton, disabled: jumpPrevSeq === undefined || detailLoading, onClick: () => { if (jumpPrevSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpPrevSeq) } }, translate('sessions.hit.prev')),
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-jump-next', style: chipButton, disabled: jumpNextSeq === undefined || detailLoading, onClick: () => { if (jumpNextSeq !== undefined) void loadJumpWindow(detail.sessionId, jumpNextSeq) } }, translate('sessions.hit.next'))),
               React.createElement('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '8px' } },
-                hitSeqList.map((seq) => React.createElement('button', { key: seq, type: 'button', 'data-testid': 'sessions-jump-chip-' + seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', borderRadius: '999px', background: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-secondary)' }, onClick: () => void loadJumpWindow(detail.sessionId, seq) }, '#' + seq))),
+                hitSeqList.map((seq) => React.createElement('button', { key: seq, type: 'button', 'data-testid': 'sessions-jump-chip-' + seq, style: { ...chipButton, padding: '1px 8px', fontSize: '11px', ...fullRound('999px'), background: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: seq === detail.centerSeq ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-secondary)' }, onClick: () => void loadJumpWindow(detail.sessionId, seq) }, '#' + seq))),
               detailLoading && detail.items.length === 0 ? React.createElement('p', { style: hint }, translate('sessions.status.loading')) : null,
               renderEventList(detail.items, hitSet),
               detail.cursor !== undefined && detail.items.length > 0 ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-more', style: chipButton, disabled: detailLoading, onClick: () => void loadDetailPage(detail.sessionId, detail.cursor, detail.view) }, translate('sessions.detail.loadMore', { remaining: Math.max(0, detail.total - detail.items.length) })) : null,
@@ -6075,8 +6084,8 @@ window.__ModuleLoader__.load({
                 'data-testid': 'sessions-nav-switch',
                 'aria-checked': String(navEnabled),
                 onClick: () => setNavEnabled(!navEnabled),
-                style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
-              }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))),
+                style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+              }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))),
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px' } },
             (['all', 'archived', 'deleted']).map((key) => React.createElement('button', { key, type: 'button', 'data-testid': 'sessions-filter-' + key, style: { ...chipButton, background: filter === key ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: filter === key ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-primary)', fontWeight: filter === key ? 650 : 400 }, onClick: () => changeFilter(key) }, translate('sessions.filter.' + key))),
             React.createElement('select', { 'data-testid': 'sessions-sort', style: selectStyle, value: sort, onChange: (event) => setSort(event.target.value) },
@@ -6327,8 +6336,8 @@ window.__ModuleLoader__.load({
               'data-testid': 'quota-nav-switch',
               'aria-checked': String(quotaNav),
               onClick: () => setQuotaNav(!quotaNav),
-              style: { width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
-            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
+              style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
           // 「调整排序」开关（≥2 张卡才有意义）：进入后卡片头部出现 ↑↓，再点一次收起。
           ...(adaptedRows.length >= 2
@@ -6339,7 +6348,7 @@ window.__ModuleLoader__.load({
                   'aria-pressed': String(reorderMode),
                   title: translate('quota.reorder'),
                   onClick: () => setReorderMode(!reorderMode),
-                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsh-svc-border-strong)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', ...fullRound(999), border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsh-svc-border-strong)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                 }, translate('quota.reorder')))]
             : []),
           adaptedRows.length === 0
@@ -6438,7 +6447,7 @@ window.__ModuleLoader__.load({
                           type: 'button',
                           'data-testid': `quota-remove-${row.provider}-${cardId}`,
                           onClick: () => removeResetCard(row.provider, cardId),
-                          style: { fontSize: '11px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+                          style: { fontSize: '11px', padding: '2px 10px', ...fullRound(999), border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
                         }, translate('quota.resetCard.remove')))
                       })
                     : []
@@ -6501,7 +6510,7 @@ window.__ModuleLoader__.load({
                         'data-testid': `quota-advanced-toggle-${row.provider}`,
                         'aria-expanded': String(isAdvanced),
                         onClick: () => setAdvancedOpen(isAdvanced ? null : row.provider),
-                        style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
+                        style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                       }, `${isAdvanced ? '▾' : '▸'} ${translate('quota.advanced')}`)),
                     ...(isAdvanced && row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
                       ? (() => {
@@ -6542,7 +6551,7 @@ window.__ModuleLoader__.load({
                                   type: 'button',
                                   'data-testid': `quota-cred-edit-${row.provider}`,
                                   onClick: () => openCredEditor(row),
-                                  style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                                  style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', ...fullRound(999), border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
                                 // 宿主按 kind registry 下发凭据入口语义键；客户端只本地化，避免新增 kind 时复制分支。
                                 }, translate(`quota.credential.${typeof row.credentialEntryKey === 'string' && row.credentialEntryKey !== '' ? row.credentialEntryKey : 'edit'}`)))]
                         })()
@@ -6577,7 +6586,7 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         'data-testid': `quota-card-edit-${row.provider}`,
                         onClick: () => openCardEditor(row),
-                        style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                        style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
                       }, translate('quota.resetCard.edit')))] : []),
                     ] : []))
                 })),
@@ -7421,7 +7430,7 @@ window.__ModuleLoader__.load({
                   const abnormal = check.status === 'error' || (check.status === 'warning' && check.advisory !== true)
                   const dotColor = check.status === 'ok' ? 'var(--dsh-svc-success)' : check.status === 'warning' ? 'var(--dsh-svc-warning)' : check.status === 'info' ? 'var(--dsh-svc-info)' : 'var(--dsh-svc-danger)'
                   return React.createElement('div', { key: check.id, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 10px', borderRadius: '6px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)', background: abnormal ? (check.status === 'error' ? 'rgba(211,51,51,0.08)' : 'rgba(198,128,0,0.10)') : 'transparent' } },
-                    React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '5px', background: dotColor } }),
+                    React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '5px', background: dotColor } }),
                     React.createElement('div', { style: { minWidth: 0, flex: 1 } },
                       React.createElement('div', { style: { fontSize: '12px', fontWeight: abnormal ? 650 : 550, color: 'var(--dsh-svc-text)' } }, translate('health.check.' + check.id)),
                       React.createElement('div', { style: { fontSize: '11px', lineHeight: 1.5, marginTop: '2px', color: check.status === 'ok' ? 'var(--dsh-svc-text-muted)' : abnormal ? (check.status === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)') : 'var(--dsh-svc-text-muted)' } }, diagnosticDetail(check))))
@@ -7441,7 +7450,7 @@ window.__ModuleLoader__.load({
                 const confirming = pluginConfirmEntry === issue.entryId
                 const busy = pluginBusyEntry === issue.entryId
                 return React.createElement('div', { key: issue.entryId, 'data-testid': `plugin-issue-${issue.entryId}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
-                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '6px', background: phaseColor } }),
+                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '6px', background: phaseColor } }),
                   React.createElement('div', { style: { minWidth: 0, flex: 1 } },
                     React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
                       React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, issue.moduleName),
@@ -7489,7 +7498,7 @@ window.__ModuleLoader__.load({
                     ? translate('plugin.compat.declared')
                     : translate(`plugin.compat.unknown.${row.reason}`)
                 return React.createElement('div', { key: row.key, 'data-testid': `plugin-compat-${row.key}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
-                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', marginTop: '6px', background: dotColor } }),
+                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '6px', background: dotColor } }),
                   React.createElement('div', { style: { minWidth: 0, flex: 1 } },
                     React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
                       React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
@@ -7513,7 +7522,7 @@ window.__ModuleLoader__.load({
                   'data-testid': 'permissions-toggle',
                   'aria-expanded': String(permissionOpen),
                   onClick: () => setPermissionOpen((value) => !value),
-                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', borderRadius: 999, border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
+                  style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: permissionAbnormal > 0 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                 }, `${permissionOpen ? '▾' : '▸'} ${translate(permissionOpen ? 'permissions.hide' : 'permissions.show')}${permissionAbnormal > 0 ? ` · ${permissionAbnormal}` : ''}`)),
               permissionOpen
                 ? React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
@@ -7596,7 +7605,7 @@ window.__ModuleLoader__.load({
                 React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
                   React.createElement('span', null, translate('backup.progress.' + backupProgressPhase, { current: backupProgressStep, total: 4 })),
                   React.createElement('span', null, backupProgressDetail)),
-                React.createElement('div', { style: { marginTop: '5px', height: '6px', borderRadius: '999px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)', overflow: 'hidden' } },
+                React.createElement('div', { style: { marginTop: '5px', height: '6px', ...fullRound('999px'), background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)', overflow: 'hidden' } },
                   React.createElement('div', { style: { height: '100%', width: backupProgressPercent + '%', background: 'var(--dsw-alias-brand-primary)', transition: 'width 240ms ease' } })))
             : null,
           React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
@@ -7780,12 +7789,12 @@ window.__ModuleLoader__.load({
           'aria-disabled': disabled ? 'true' : undefined,
           onClick: disabled ? undefined : () => onChange(!on),
           style: {
-            width: '34px', height: '20px', borderRadius: '10px', padding: 0, flexShrink: 0, position: 'relative',
+            width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative',
             border: `1px solid ${on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`,
             background: on ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)',
             cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1, lineHeight: 0,
           },
-        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: on ? '15px' : '1px', width: '16px', height: '16px', borderRadius: '50%', background: on ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
+        }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: on ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: on ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))
         const notifyRow = (testId, label, labelHint, on, onChange, disabled) => React.createElement('div', { 'data-testid': testId, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '5px 0' } },
           React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
             React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, label),
@@ -7836,13 +7845,13 @@ window.__ModuleLoader__.load({
           ? translate('overview.status.normal')
           : translate(`overview.status.${statusLevel}`, { count: statusItems.length })
         const overviewStatusBlock = React.createElement('div', { 'data-testid': 'overview-status', style: Object.assign({}, displaySurface, { display: 'flex', alignItems: 'center', gap: '10px' }) },
-          React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '10px', height: '10px', borderRadius: '50%', background: statusLevel === 'normal' ? 'var(--dsh-svc-success)' : statusLevel === 'warning' ? 'var(--dsh-svc-warning)' : statusLevel === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-info)' } }),
+          React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '10px', height: '10px', ...fullRound('50%'), background: statusLevel === 'normal' ? 'var(--dsh-svc-success)' : statusLevel === 'warning' ? 'var(--dsh-svc-warning)' : statusLevel === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-info)' } }),
           React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsh-svc-text)' } }, statusText))
         const overviewActionablesBlock = statusItems.length === 0
           ? null
           : React.createElement('div', { 'data-testid': 'overview-actionables', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '4px 10px' }) },
               statusItems.map((item, index) => React.createElement('div', { key: `${item.level}-${index}`, style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 2px', fontSize: '12px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
-                React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', borderRadius: '50%', background: item.level === 'error' ? 'var(--dsh-svc-danger)' : item.level === 'warning' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' } }),
+                React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), background: item.level === 'error' ? 'var(--dsh-svc-danger)' : item.level === 'warning' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' } }),
                 React.createElement('span', { style: { color: 'var(--dsh-svc-text)' } }, item.text))))
         // 概览核心操作按钮（健康检查/额度查询/创建备份）已移除（2026-09-16）：
         // 三个动作在各自功能页内都有常驻入口，概览里重复摆放没有增量价值。
@@ -8834,6 +8843,7 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_clos
   background-color: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) !important;
   border: 1px solid var(--dsw-alias-border-l2) !important;
   border-radius: 999px !important;
+  corner-shape: round !important;
   box-shadow: var(--dsw-shadow-lv2, 0 4px 12px rgba(0, 0, 0, .12)) !important;
 }
 /* 设置/任意模态打开时藏抽屉钮：抽屉列自带 z-index:32 层叠上下文会把模态的
@@ -10448,7 +10458,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
               background: 'var(--dsw-alias-button-floating-fill)',
               color: 'var(--dsw-alias-label-primary)',
               boxShadow: 'var(--dsw-shadow-lv2)',
-              borderRadius: '100px', display: 'flex', alignItems: 'center',
+              ...fullRound('100px'), display: 'flex', alignItems: 'center',
               justifyContent: 'center', pointerEvents: 'auto',
             })
             btn.innerHTML = officialUpSvg(slot)
