@@ -42,7 +42,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 - [🚀 Features](#-features)
   - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
   - [Quota lookup](#quota-lookup) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
-  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
+  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Model provider icons](#model-provider-icons) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
 - [🏗️ Architecture](#-architecture)
 - [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
 - [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
@@ -51,7 +51,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
-Under **Plugins → Plugin configuration**, eleven host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
+Under **Plugins → Plugin configuration**, twelve host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Model provider icons, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
 ![Plugin configuration](./screenshots/plugin-config_en.png)
 
@@ -208,6 +208,18 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 - **Delete**: Only archived sessions can be deleted, and a session that becomes live is rejected again immediately before execution; the two-phase confirmation shows its id / title / workspace / size, persists the deletion record atomically first, and only then removes the log directory; deleted records stay visible under the Deleted filter, with support for single-item clear or batch multi-select / select-all clear (two-phase confirmation, permanently removes from record list); a successful delete notifies the official side immediately — it re-emits the official session-removed event and clears the dead id from the archive set — so the official sidebar and the “Archived sessions” Settings page reflect the new state without a browser reload
 - Entry: the “Sessions” subpage under “Maintenance” (on by default); the optional settings-sidebar entry is off by default
 - Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
+
+### Model provider icons
+
+- The **model button in the composer shows the current provider's brand icon**: on wide screens (>480px) it is **prepended to the model name**; on phones (≤480px, where the official UI collapses the name into an icon) it **replaces** the official generic icon
+- **Providers with no matching icon keep the official default icon untouched** (nothing prepended on wide screens, official icon unchanged on phones) — never a blank or a wrong logo
+- Covers **38 of pi-ai's 40 built-in providers** (`ant-ling` and `radius` have no matching brand mark, so they fall back), plus commonly used routes: Ollama, vLLM, LM Studio, Perplexity, Cohere, Volcengine, Doubao, Hunyuan, Yuanbao, StepFun, SenseNova, Baichuan, 01.AI, Fal, Replicate, Midjourney and more — 61 marks across 75 provider mappings; regional and billing variants (e.g. `xiaomi-token-plan-*`, `qwen-token-plan-*`) share one brand mark
+- **Custom route names are recognised by prefix/alias**: `opencode-goo` → opencode, `openrouter-f` → openrouter, `zai-coding-cn` → Zhipu, `xiaomi-token-plan-cn` → Xiaomi MiMo, `command-goat` → Command Code; anything unrecognised (such as the `cpa` relay, which publishes no brand mark) falls back to the official default icon
+- **Legible in both light and dark themes**: a brand colour is kept only when its contrast is adequate against **both** a light and a dark background; otherwise the icon automatically switches to a monochrome variant that follows the theme's text colour — so you never get a black logo on a dark background, or a nearly invisible one in light mode
+- **Zero runtime network requests**: icons are inlined into the client bundle at build time, so it works offline, needs no CSP exceptions, and never leaks your provider names to a third party
+- The icon is sized to match the **quota ring** beside the composer (each mark's viewBox is tightened to its real drawn extent and squared at build time, so every brand reads at the same visual size instead of some filling the box and others shrinking)
+- Toggle under Plugins → Plugin configuration → Interaction (on by default, applied live)
+- Icons come from the MIT-licensed [LobeHub Icons](https://github.com/lobehub/lobe-icons) (pinned to `@1.95.0`); **brand marks remain the property of their owners**, so review each vendor's brand guidelines before public-facing use
 
 ### Right-Sidebar file editing
 

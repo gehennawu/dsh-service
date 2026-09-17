@@ -43,6 +43,8 @@ function createRenderer(rpcCall, options = {}) {
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    // v1.8：模型厂家/渠道图标默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
+    modelProviderIcons: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -542,6 +544,12 @@ function createRenderer(rpcCall, options = {}) {
       for (const listener of sessionListeners) listener()
       renderAll()
     },
+    // 选定当前会话（引擎按 list.current 找 modelDirectory）：会话切换用例需要它。
+    setCurrentSession(sessionId, byId = { [sessionId]: { id: sessionId } }) {
+      sessionSnapshot = { ids: Object.keys(byId), byId, current: sessionId, phase: 'ready' }
+      for (const listener of sessionListeners) listener()
+      renderAll()
+    },
     sessionSubscriptionCount() {
       return sessionListeners.size
     },
@@ -706,10 +714,28 @@ test('plugin configuration card saves feature switches and disabled features dis
   assert.doesNotMatch(renderer.text('settings.section'), /模型统计|额度查询|备份维护/)
   assert.equal(renderer.hasSlot('conversation.input.left'), false)
   assert.equal(renderer.hasSlot('conversation.input.right'), false)
-  assert.equal(renderer.sessionSubscriptionCount(), 0)
+  // 会话订阅计数：本测试只关了 modelUsage/quotaLookup/backupMaintenance/taskNotifications
+  // 里的一部分——taskNotifications 仍开着，它持有的那份订阅是既有行为；模型厂家图标
+  // （modelProviderIcons 未关）又各持一份。不变量是「功能全关时不留空闲订阅」，
+  // 不是「永远不订阅」。下面显式验证关掉图标功能后计数回落。
+  const sessionsBeforeIconOff = renderer.sessionSubscriptionCount()
+  assert.ok(sessionsBeforeIconOff >= 1, 'enabled features should hold their session subscriptions')
   assert.equal(calls.includes('usage'), false)
   assert.equal(calls.includes('backup-list'), false)
   assert.equal(calls.includes('quota'), false)
+
+  // 关掉「模型厂家图标」→ 它那份会话订阅必须被摘除（证明订阅随功能挂/卸，
+  // 而不是永久占用）。
+  await renderer.setFeature('modelProviderIcons', false)
+  await renderer.flush()
+  assert.equal(
+    renderer.sessionSubscriptionCount(),
+    sessionsBeforeIconOff - 1,
+    'disabling the icon feature must release exactly its own session subscription',
+  )
+  await renderer.setFeature('modelProviderIcons', true)
+  await renderer.flush()
+  assert.equal(renderer.sessionSubscriptionCount(), sessionsBeforeIconOff, 're-enabling restores it')
 
   const modelSwitch = renderer.findByTestId('feature-switch-modelUsage')
   modelSwitch.props.onClick()
@@ -727,7 +753,8 @@ test('plugin configuration card saves feature switches and disabled features dis
 
   await renderer.setFeature('taskNotifications', true)
   assert.equal(renderer.hasSlot('conversation.input.left'), true)
-  assert.equal(renderer.sessionSubscriptionCount(), 1)
+  // 任务通知（既有）与模型厂家图标（v1.8，按会话切换重算渠道图标）各持一份会话订阅。
+  assert.equal(renderer.sessionSubscriptionCount(), 2)
 
   await renderer.setFeature('quotaLookup', true)
   assert.match(renderer.text('settings.section'), /额度查询/)
@@ -10930,4 +10957,389 @@ test('settings nav order: ok:false pulls retry and pending local writes win over
   pendingRenderer.mount('settings.section')
   await pendingRenderer.flush()
   assert.deepEqual(remoteConfig, pendingLocal, 'stale remote data must not overwrite a pending local write')
+})
+
+// ─── v1.8 模型厂家/渠道图标（用户点名）──────────────────────────────────────
+// 覆盖面：纯解析（精确表 / 前缀别名 / 分段兜底 / 未命中回落）、tier 与 data-URI
+// 生成、CSS 两组门（窄态替换 + 未适配零规则）、以及 DOM 层「命中挂属性 / 未命中
+// 摘属性」与 effect 析构对称。
+
+test('model provider icons: exact table, prefix aliases, segment fallback, and unmapped providers resolve to null', async () => {
+  const renderer = createRenderer(async () => { throw new Error('no rpc expected') })
+  await renderer.load()
+  const icons = renderer.moduleExports().modelProviderIcons
+  assert.equal(typeof icons.resolve, 'function')
+
+  // ① 内置 provider 精确命中（含区域/计费变体共享同一 slug）
+  assert.equal(icons.resolve('openai').slug, 'openai')
+  assert.equal(icons.resolve('openai-codex').slug, 'openai')
+  assert.equal(icons.resolve('anthropic').slug, 'anthropic')
+  assert.equal(icons.resolve('google').slug, 'gemini')
+  assert.equal(icons.resolve('google-vertex').slug, 'vertexai')
+  assert.equal(icons.resolve('amazon-bedrock').slug, 'bedrock')
+  assert.equal(icons.resolve('azure-openai-responses').slug, 'azure')
+  assert.equal(icons.resolve('github-copilot').slug, 'github')
+  assert.equal(icons.resolve('zai-codeinting-cn'.replace('codeinting', 'coding')).slug, 'zhipu')
+  assert.equal(icons.resolve('xiaomi-token-plan-ams').slug, 'xiaomimimo')
+  assert.equal(icons.resolve('qwen-token-plan-individual').slug, 'qwen')
+  assert.equal(icons.resolve('kimi-coding').slug, 'kimi')
+
+  // ② 自定义渠道名走前缀/别名（本机真实值）
+  assert.equal(icons.resolve('opencode-goo').slug, 'opencode')
+  assert.equal(icons.resolve('opencode-go-f').slug, 'opencode')
+  assert.equal(icons.resolve('openrouter-f').slug, 'openrouter')
+  assert.equal(icons.resolve('siliconflow').slug, 'siliconcloud')
+
+  // ③ 大小写与空白归一
+  assert.equal(icons.resolve('  OpenAI  ').slug, 'openai')
+  assert.equal(icons.resolve('DeepSeek').slug, 'deepseek')
+
+  // ③b 图标库未收录、本地手绘的品牌（CUSTOM_SVG）：Command Code（commandcode.ai）
+  assert.equal(icons.resolve('command-goat').slug, 'commandcode')
+  assert.equal(icons.resolve('commandcode').slug, 'commandcode')
+  assert.equal(icons.resolve('command-code').slug, 'commandcode')
+  assert.equal(icons.resolve('Command-Code').slug, 'commandcode')
+  // 手绘的是 ⌘ 符号线条（stroke，无填充）：mono 档靠 alpha 出形，必须是 0 档
+  assert.equal(icons.resolve('command-goat').spec.c, 0, 'custom Command Code mark must be mono (stroke silhouette)')
+  // ⌘ 必须是真的 ⌘ 构造：四条边（<path>）+ 四个向外鼓出的环（<circle>）。
+  // 这里刻意分别锁「边」与「环」两种图元——首版把环心放在方框角点上，用的是
+  // <rect> + 四个 <circle>，几何上「有框有环」但读起来是「四环 + 中间一个 X」，
+  // 完全不像 ⌘（真机放大才看出来）。断言两种图元都在，能挡住这种退化。
+  const cmdMark = icons.resolve('command-goat').spec.m
+  assert.ok(cmdMark.includes('<path'), 'custom mark must draw its four edges as a path')
+  assert.ok(cmdMark.includes('<rect') === false, 'custom mark must not use a corner-centred rect construction (reads as an X, not ⌘)')
+  // 校验 ⌘ 的几何自洽：四条边 + 四个环，且**环与边精确相切**。
+  // 解析用显式形状，不靠宽松正则——首版正则把环心坐标当成了路径坐标，导致
+  // 断言恒真（故意破坏数据也测不出来）。
+  const pathD = (cmdMark.match(/<path d="([^"]+)"/) || [])[1]
+  assert.ok(pathD, 'custom mark must draw its four edges as a path')
+  // 路径形如 M-7.6 -4.6H7.6M-7.6 4.6H7.6M-4.6 -7.6V7.6M4.6 -7.6V7.6
+  const segs = [...pathD.matchAll(/M(-?[\d.]+) (-?[\d.]+)([HV])(-?[\d.]+)/g)]
+    .map((m) => ({ x1: +m[1], y1: +m[2], axis: m[3], to: +m[4] }))
+  assert.equal(segs.length, 4, 'custom mark must have four edge segments')
+  const loops = [...cmdMark.matchAll(/<circle cx="(-?[\d.]+)" cy="(-?[\d.]+)" r="([\d.]+)"/g)]
+    .map((m) => ({ cx: +m[1], cy: +m[2], r: +m[3] }))
+  assert.equal(loops.length, 4, 'custom mark must carry its four corner loops')
+
+  const radii = new Set(loops.map((l) => l.r))
+  assert.equal(radii.size, 1, 'all four loops must share one radius')
+  const r = loops[0].r
+
+  // 核心不变量：环心到中心的距离 == 方框半边长 + 环半径。
+  // 这等价于「环恰好鼓在方框外、并与边的端点相切」——旧版声明了 r 却不满足它
+  // （环心 5.1 / 边 8.1 / r 2.5 → 差 0.5），线与环之间留出可见断口，整体散架。
+  const frameHalf = Math.abs(segs[0].y1)          // 横边的 |y| 即方框半边长
+  for (const loop of loops) {
+    const reach = Math.max(Math.abs(loop.cx), Math.abs(loop.cy))
+    assert.ok(
+      Math.abs(reach - (frameHalf + r)) < 1e-9,
+      `loop centre must sit exactly one radius outside the frame (reach ${reach} vs frame ${frameHalf} + r ${r} = ${frameHalf + r})`,
+    )
+  }
+  // 相邻环不得重叠（重叠会糊成一块实心）。
+  for (let i = 0; i < loops.length; i++) {
+    for (let j = i + 1; j < loops.length; j++) {
+      const gap = Math.hypot(loops[i].cx - loops[j].cx, loops[i].cy - loops[j].cy) - 2 * r
+      assert.ok(gap > 0, `adjacent loops must not overlap (gap ${gap.toFixed(3)})`)
+    }
+  }
+
+  // 尺寸对齐额度圆环（用户点名）：15px，且每个图标的 viewBox 必须是**正方形**且
+  // **贴合图形**——这是「所有图标看起来一样大」的前提。生成器用画布量「含描边的
+  // 真实墨迹」再收紧；漏掉这一步各品牌留白不同，同一尺寸会画出参差大小。
+  // 尺寸走 CSS 变量（基准 15px），便于按图标做「光学修正」（满框形状如 ⌘ 收 10%）。
+  assert.match(icons.css, new RegExp(`width: var\\(${icons.sizeVar}, ${icons.basePx}px\\) !important`), 'icon width must fall back to the 15px base')
+  assert.match(icons.css, new RegExp(`height: var\\(${icons.sizeVar}, ${icons.basePx}px\\) !important`))
+  assert.equal(icons.basePx, 15, 'base icon size must match the quota ring calibration')
+  for (const slug of icons.slugs) {
+    const spec = icons.resolve(slug).spec
+    const vb = String(spec.v).trim().split(/\s+/).map(Number)
+    assert.equal(vb.length, 4, `${slug} viewBox must have four numbers`)
+    assert.ok(vb.every((n) => Number.isFinite(n)), `${slug} viewBox numbers must be finite`)
+    assert.ok(
+      Math.abs(vb[2] - vb[3]) < 0.01,
+      `${slug} viewBox must be square so every mark renders at one visual size (got ${spec.v})`,
+    )
+    assert.ok(vb[2] > 0 && vb[3] > 0, `${slug} viewBox must have positive extents`)
+  }
+
+  // 自定义 viewBox 必须被带上（有些品牌不是 24 格）。
+  const customUri = icons.dataUri({ v: '0 0 32 32', m: '<path d="M0 0h32v32H0z"/>', c: 0 }, true)
+  assert.match(decodeURIComponent(customUri), /viewBox="0 0 32 32"/, 'custom viewBox must survive into the data-URI')
+})
+
+test('model provider icons: CSS gates narrow-mode replacement and stays inert for unmapped providers', async () => {
+  const renderer = createRenderer(async () => { throw new Error('no rpc expected') })
+  await renderer.load()
+  const icons = renderer.moduleExports().modelProviderIcons
+  const css = icons.css
+
+  // 宽态：模型名前加图标（触发钮 flex 行的首个子项），且以自有属性为门。
+  // **必须限定 button**：[class*="_7KE1Ra_trigger"] 是子串匹配，会同时命中
+  // _7KE1Ra_triggerLabel / _7KE1Ra_triggerEffort —— 首版真机就是这样在模型名和
+  // 推理等级上各多画了一枚（三枚并排）。回归锁死这条。
+  assert.ok(
+    css.includes(`[${icons.seatAttr}][${icons.attr}] button[class*="_7KE1Ra_trigger"]::before`),
+    'wide mode prepends an icon via ::before on the trigger button only',
+  )
+  // 子串裸匹配不允许再出现：任何给 trigger 画 ::before 的规则都必须带 button 限定。
+  for (const line of css.split('\n')) {
+    if (!line.includes('_7KE1Ra_trigger"]::before')) continue
+    assert.ok(
+      /button\[class\*="_7KE1Ra_trigger"\]/.test(line),
+      'icon ::before rules must target the trigger button, not the label/effort substrings: ' + line.trim(),
+    )
+  }
+  assert.match(css, /content: '' !important/, 'pseudo element needs content to render')
+
+  // mono 走 mask + currentColor（自动跟随深浅主题）；color 档切到 background-image。
+  assert.match(css, /background-color: currentColor !important/)
+  assert.match(css, /-webkit-mask: var\(--dshsvc-model-icon\)/)
+  assert.ok(css.includes(`[${icons.seatAttr}="color"]`), 'color tier has its own rule')
+  assert.match(css, /background-image: var\(--dshsvc-model-icon\) !important/)
+
+  // 窄态替换：官方通用图标必须让位，两条门（≤480px 与官方容器查询）都要在。
+  assert.match(css, /@media \(max-width: 480px\)/, 'mobile breakpoint gate present')
+  assert.match(css, /@container \(width<=360px\)/, 'official narrow-container gate mirrored')
+  const iconHideRules = css.match(/\[class\*="_7KE1Ra_triggerIcon"\] \{ display: none !important; \}/g) || []
+  assert.equal(iconHideRules.length, 2, 'official icon must be hidden in both narrow-mode gates')
+  // 特异性必须高于 mobile.css 那条 display:block!important（同为 (0,2,1) 时靠顺序会输，
+  // 真机实测窄态因此出现两枚图标）——隐藏规则得同时带两个自有属性 → (0,3,1)。
+  for (const line of css.split('\n')) {
+    if (!line.includes('_7KE1Ra_triggerIcon') || !line.includes('display: none')) continue
+    assert.ok(
+      line.includes(`[${icons.seatAttr}][${icons.attr}]`),
+      'the official-icon hide rule must out-specify mobile.css by carrying both our attributes: ' + line.trim(),
+    )
+  }
+
+  // 每一组规则都必须以自有属性为门：未适配渠道（属性没挂）不能有任何效果。
+  // 逐条检查含 _7KE1Ra_ 的规则选择器都带 seatAttr。
+  for (const line of css.split('\n')) {
+    if (!line.includes('_7KE1Ra_') || !line.includes('{')) continue
+    assert.ok(
+      line.includes(`[${icons.seatAttr}]`) || line.includes(`[${icons.seatAttr}="`),
+      `every official-icon rule must be gated by our attribute: ${line.trim()}`,
+    )
+  }
+
+  // 刻意不引用移动端作用域属性：本功能与移动端适配开关无关，且避免与移动端引擎
+  // 的挂载断言互相牵连（首版就是这样把 mobile adapt 用例弄红的）。
+  assert.equal(css.includes('data-dshsvc-mobile'), false, 'icon CSS must not depend on the mobile-adaptation scope attribute')
+})
+
+test('model provider icons: DOM engine applies the mapped icon, clears it for unmapped providers, and tears down symmetrically', async () => {
+  const injectedStyles = []
+  const attrs = new Map()
+  const styleProps = new Map()
+  const seat = {
+    setAttribute(name, value) { attrs.set(name, value) },
+    removeAttribute(name) { attrs.delete(name) },
+    hasAttribute(name) { return attrs.has(name) },
+    style: {
+      setProperty(name, value) { styleProps.set(name, value) },
+      removeProperty(name) { styleProps.delete(name) },
+    },
+  }
+  // 可触发的 MutationObserver：真机里 composer 座出现/重建会引发 DOM 变更，
+  // 引擎据此重算；替身必须能复现这一步，否则「座后到」的路径测不到。
+  const observerCallbacks = []
+  class FakeMutationObserver {
+    constructor(cb) { this.cb = cb }
+    observe() { observerCallbacks.push(this.cb) }
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    documentElement: {},
+    head: { appendChild(el) { injectedStyles.push(el.textContent) } },
+    // dataset 必须有：引擎给样式表打 plugin/pluginCss 标记（与其它功能同规），
+    // 缺了会让 createElement 分支抛错并被容错吞掉，样式表静默不注入。
+    createElement() { return { dataset: {}, remove() {} } },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: (sel) => (sel.includes('model-icon-seat') && attrs.has('data-dshsvc-model-icon-seat') ? [seat] : []),
+    contains: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+
+  // 可切换 provider 的目录桩：订阅回调驱动引擎重新解析。
+  let provider = 'openrouter-f'
+  const directoryListeners = new Set()
+  const directory = {
+    store: {
+      getSnapshot: () => ({ current: { provider } }),
+      subscribe(listener) { directoryListeners.add(listener); return () => directoryListeners.delete(listener) },
+    },
+    load: () => Promise.resolve(),
+  }
+  const setProvider = (next) => {
+    provider = next
+    for (const listener of directoryListeners) listener()
+  }
+
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    // 会话快照要有 current，引擎才去找目录（setSessions 会把 current 置空）。
+    renderer.setCurrentSession('session-1')
+    // 真机里这会伴随 composer DOM 变更 → MutationObserver 回调；替身手动补这一步。
+    for (const cb of observerCallbacks) cb()
+    await renderer.flush()
+
+    // 命中：属主属性 + 变量 + tier 标记都落到座上（未命中则不挂）。
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'mapped provider writes the slug attribute')
+    assert.equal(attrs.get('data-dshsvc-model-icon-seat'), 'mono')
+    assert.ok(styleProps.get('--dshsvc-model-icon')?.startsWith('url("data:image/svg+xml,'), 'mono path writes a mask-ready data-URI')
+    assert.ok(injectedStyles.some((text) => text.includes('_7KE1Ra_trigger')), 'icon stylesheet is injected')
+
+    // 切到未适配渠道：属性和变量必须摘干净，官方默认图标完全照旧。
+    // （cpa 无映射；command-goat 现已配上 Command Code 手绘标，不再适合当反例。）
+    setProvider('cpa')
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'unmapped provider must not keep the slug attribute')
+    assert.equal(attrs.has('data-dshsvc-model-icon-seat'), false, 'unmapped provider must not keep the seat attribute')
+    assert.equal(styleProps.has('--dshsvc-model-icon'), false, 'unmapped provider must not keep the icon variable')
+
+    // 再切回已适配：恢复图标（证明是「按 provider 重算」而不是一次性）。
+    setProvider('deepseek')
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'deepseek')
+
+    // 彩色档写 color 标记（deepseek 的品牌色两态对比度达标，走 background-image 路径）。
+    assert.equal(attrs.get('data-dshsvc-model-icon-seat'), 'color')
+
+    // 析构对称：effect 释放后属性、变量、样式表全部摘除。
+    // 注意 directoryListeners 是共享计数：同一目录 store 上还挂着官方额度环组件
+    // （QuotaRing 的 useEffect），它不归本功能管，所以断言「本功能那一份被解开」
+    // （数量减少）而不是归零——归零会要求我们去动别的组件的订阅。
+    const listenersBeforeDispose = directoryListeners.size
+    renderer.disposeFactory()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'teardown removes the slug attribute')
+    assert.equal(attrs.has('data-dshsvc-model-icon-seat'), false, 'teardown removes the seat attribute')
+    assert.equal(styleProps.has('--dshsvc-model-icon'), false, 'teardown removes the icon variable')
+    assert.equal(directoryListeners.size, listenersBeforeDispose - 1, 'teardown releases exactly its own directory subscription')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: switching sessions re-resolves the icon even when the composer DOM is untouched', async () => {
+  // 回归（真机实测）：宽视口切会话时 composer 座**不重建**（MutationObserver 不回调），
+  // 而目录订阅还挂在旧会话的 store 上 → 属性停在旧渠道的图标上。真机表现：390/430/480
+  // 因重建 composer 而正确，481/1280 仍显示上一个渠道的品牌。修法是显式订阅会话列表。
+  const attrs = new Map()
+  const seat = {
+    setAttribute(n, v) { attrs.set(n, v) },
+    removeAttribute(n) { attrs.delete(n) },
+    hasAttribute(n) { return attrs.has(n) },
+    style: { setProperty() {}, removeProperty() {} },
+  }
+  class FakeMutationObserver { observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {}, documentElement: {},
+    head: { appendChild() {} },
+    createElement() { return { dataset: {}, remove() {} } },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: () => [],
+    contains: () => true,
+    addEventListener() {}, removeEventListener() {}, visibilityState: 'visible',
+  }
+
+  // 两个会话各有自己的目录与 provider。
+  const listeners = new Map([['s1', new Set()], ['s2', new Set()]])
+  const makeDir = (id, provider) => ({
+    store: {
+      getSnapshot: () => ({ current: { provider } }),
+      subscribe(fn) { listeners.get(id).add(fn); return () => listeners.get(id).delete(fn) },
+    },
+    load: () => Promise.resolve(),
+  })
+  const dirs = { s1: makeDir('s1', 'openrouter-f'), s2: makeDir('s2', 'deepseek') }
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: (id) => dirs[id] },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    renderer.setCurrentSession('s1')
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'session 1 resolves its own provider')
+
+    // 切会话：不触发任何 DOM 变更，也不动旧会话的 store——只靠会话列表订阅感知。
+    renderer.setCurrentSession('s2')
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'deepseek', 'switching sessions must re-resolve the icon without any DOM mutation')
+
+    // 再切回：必须也能回来（证明是双向重绑，不是一次性）。
+    renderer.setCurrentSession('s1')
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter')
+
+    renderer.disposeFactory()
+    assert.equal([...listeners.values()].reduce((n, s) => n + s.size, 0), 0, 'teardown must release every directory subscription')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: feature toggle off leaves the official icon untouched and re-enables hot', async () => {
+  const attrs = new Map()
+  const styleProps = new Map()
+  const seat = {
+    setAttribute(name, value) { attrs.set(name, value) },
+    removeAttribute(name) { attrs.delete(name) },
+    hasAttribute(name) { return attrs.has(name) },
+    style: {
+      setProperty(name, value) { styleProps.set(name, value) },
+      removeProperty(name) { styleProps.delete(name) },
+    },
+  }
+  class FakeMutationObserver { observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    documentElement: {},
+    head: { appendChild() {} },
+    createElement() { return { remove() {} } },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: () => [],
+    contains: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+  const directory = {
+    store: { getSnapshot: () => ({ current: { provider: 'deepseek' } }), subscribe: () => () => {} },
+    load: () => Promise.resolve(),
+  }
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: false },
+    })
+    await renderer.load()
+    renderer.setCurrentSession('session-1')
+    await renderer.flush()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'feature off: no icon attribute, official default icon stays')
+
+    // 热开：立即生效。
+    await renderer.setFeature('modelProviderIcons', true)
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'deepseek', 'hot-enable applies the icon')
+
+    // 热关：立即摘除，回到官方默认图标。
+    await renderer.setFeature('modelProviderIcons', false)
+    await renderer.flush()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'hot-disable removes the icon again')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
 })

@@ -8,6 +8,145 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
     const NS = 'dsh-service'
+    // ── 模型厂家/渠道图标（v1.8 用户点名）静态面 ──
+    // 静态常量与纯解析函数放在工厂作用域（与 FILE_EDITOR_* 同规），既让 exports 能直接
+    // 引用（apply 内的局部声明在导出点不可见），也便于测试直达。
+    // 渲染路径由数据里的 c 字段决定，全部实测过（scripts/probe-model-icon-dom.mjs）：
+    //   c=0（mono）mask + background-color:currentColor —— 颜色交给主题文字色，
+    //              浅色 rgb(97,102,107) / 暗色 rgb(207,211,214) 自动跟随，零特判；
+    //   c=1（color）background-image 原样上品牌色。
+    // data-URI 是独立文档上下文，**不继承 currentColor**，所以 mono 必须走 mask
+    // （直接写 fill="currentColor" 的 data-URI 会渲染成全黑/全透明）。
+    const MODEL_ICON_ATTR = 'data-dshsvc-model-icon'
+    const MODEL_ICON_SEAT_ATTR = 'data-dshsvc-model-icon-seat'
+    const MODEL_ICON_VAR = '--dshsvc-model-icon'
+    // 图标尺寸走变量：基准 15px，逐图标可被数据里的光学修正系数（o）覆盖。
+    const MODEL_ICON_SIZE_VAR = '--dshsvc-model-icon-size'
+    const MODEL_ICON_BASE_PX = 15
+    const MODEL_ICON_VIEWBOX = '0 0 24 24'
+
+    /** 把一张图标规格化成 data-URI（mask 用纯黑填充即可，mask 只看 alpha）。 */
+    const modelIconDataUri = (spec, useMask) => {
+      const viewBox = spec.v || MODEL_ICON_VIEWBOX
+      const paint = useMask ? ' fill="#000"' : ''
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}"${paint}>${spec.m}</svg>`
+      return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
+    }
+
+    /**
+     * provider 名 → 图标 slug。先精确命中内置表，再按前缀/别名规则匹配自定义渠道
+     * （本机 7 条 provider 里 6 条是自定义名：opencode-goo → opencode、
+     * openrouter-f → openrouter、zai-coding-cn → zhipu…）。命中不了返回 null，
+     * 由调用方回落官方默认图标。
+     */
+    const resolveModelIcon = (provider) => {
+      if (typeof provider !== 'string' || provider === '') return null
+      const key = provider.trim().toLowerCase()
+      if (key === '') return null
+      // ① 内置 provider 精确表
+      const exactSlug = MODEL_ICON_PROVIDERS[key]
+      if (exactSlug !== undefined && MODEL_ICON_DATA[exactSlug] !== undefined) {
+        return { slug: exactSlug, spec: MODEL_ICON_DATA[exactSlug] }
+      }
+      // ② 前缀/别名（自定义渠道名）。表内长前缀排在前（opencode-go 先于 opencode），
+      //    命中即返回；分隔符限定为 - _ . ，避免 'openaiish' 这类误命中 'openai'。
+      for (const [prefix, slug] of MODEL_ICON_PREFIXES) {
+        if (key !== prefix && !key.startsWith(prefix + '-') && !key.startsWith(prefix + '_') && !key.startsWith(prefix + '.')) continue
+        if (MODEL_ICON_DATA[slug] !== undefined) return { slug, spec: MODEL_ICON_DATA[slug] }
+      }
+      // ③ 兜底：key 本身或其分段就是 slug
+      if (MODEL_ICON_DATA[key] !== undefined) return { slug: key, spec: MODEL_ICON_DATA[key] }
+      for (const part of key.split(/[-_.]/)) {
+        if (part !== '' && MODEL_ICON_DATA[part] !== undefined) return { slug: part, spec: MODEL_ICON_DATA[part] }
+      }
+      return null
+    }
+
+    /** 图标 CSS：宽态加在 label 前，窄态替换官方 svg。整组以属性为门，未命中渠道零规则。 */
+    const MODEL_ICON_CSS = `
+/* 宽态：模型名前加厂家图标（::before 是触发钮 flex 行的首个子项）。
+   官方 triggerIcon 在宽态本就 display:none，故宽态不会与官方图标重复。 */
+/* 必须限定 button：[class*="_7KE1Ra_trigger"] 是子串匹配，会同时命中
+   _7KE1Ra_triggerLabel / _7KE1Ra_triggerEffort —— 首版真机就是这样在模型名和
+   推理等级上各多画了一枚图标（三枚并排）。限定标签既修命中面，又把特异性
+   提到 (0,3,2)，顺带稳赢 mobile.css 的 (0,2,1)。 */
+html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigger"]::before {
+  content: '' !important;
+  flex: none !important;
+  display: block !important;
+  /* 尺寸对齐额度圆环：圆环可见外径 13px（14px 的 SVG 盒，外圈 r=5.5 + 2 描边）。
+     图标是实心块面、圆环是细描边环，同直径下实心更重，故基准取略小的 15px 让
+     「视觉重量」相当（真机像素量测校准，见 scripts/measure-icon-ink.mjs）。
+     能定一个统一数字的前提是生成期已把每个图标的 viewBox 收紧到真实绘制范围——
+     否则各品牌留白不同，同一个数字画出来大小参差（⌘ 曾经只占 55%）。
+     变量留给「形状填充率」这一层：满框形状（如 ⌘）即使外接尺寸相同也更显大，
+     由数据里的光学系数 o 单独修正，见生成器 OPTICAL_SCALE。 */
+  width: var(${MODEL_ICON_SIZE_VAR}, ${MODEL_ICON_BASE_PX}px) !important;
+  height: var(${MODEL_ICON_SIZE_VAR}, ${MODEL_ICON_BASE_PX}px) !important;
+  background-color: currentColor !important;
+  -webkit-mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
+  mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
+}
+/* 彩色档：原样上品牌色（去掉 mask，改用 background-image）。 */
+html [${MODEL_ICON_SEAT_ATTR}="color"] button[class*="_7KE1Ra_trigger"]::before {
+  background-color: transparent !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+  background-image: var(${MODEL_ICON_VAR}) !important;
+  background-position: center !important;
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+}
+/* 窄态「替换」：我方图标已表达厂家，官方那枚通用 IconDataOutline16 必须让位，
+   否则两枚图标并排。两条门覆盖两种进入图标态的方式：
+   ① ≤480px —— 本插件移动端显式把模型钮收成图标的那一档；
+   ② 官方自己的容器查询 —— 容器 ≤360px 时官方本就切到图标态。
+   两态都只在「已适配」时才有官方图标要藏：属性是 JS 按 provider 命中后才挂的，
+   未命中渠道官方图标完全照旧。
+   **选择器必须同时带两个自有属性**（而不是只带 seat 属性）：mobile.css 里那条
+   「移动端作用域属性 + triggerIcon → display:block!important」与本规则同为
+   !important、特异性也同为 (0,2,1)，而 mobile.css 在样式表顺序上排在后面——
+   平局由顺序裁决，官方图标就会赢回来（真机实测：窄态出现两枚图标）。
+   多带一个自身属性把特异性提到 (0,3,1)，即与插入顺序解耦，不依赖谁先挂。
+   刻意不引用移动端作用域属性：本规则与移动端适配开关无关（关掉移动端适配、
+   窄窗口下官方同样会收成图标），也避免与移动端引擎的挂载断言互相牵连。 */
+@media (max-width: 480px) {
+  html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
+}
+@container (width<=360px) {
+  html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
+}
+`
+
+    // DOM 访问容错包装：真机是标准 Element，但测试替身/老外壳可能既没有 document
+    // 也没有 hasAttribute，直接调用会在 effect 析构时抛 `document is not defined` /
+    // `t.hasAttribute is not a function`（本功能首版就是这样红掉的）。
+    const iconDomSetAttr = (el, name, value) => {
+      try {
+        if (el !== null && el !== undefined && typeof el.setAttribute === 'function') el.setAttribute(name, value)
+      } catch (_) {}
+    }
+    const iconDomRemoveAttr = (el, name) => {
+      try {
+        if (el !== null && el !== undefined && typeof el.removeAttribute === 'function') el.removeAttribute(name)
+      } catch (_) {}
+    }
+    const iconDomHasAttr = (el, name) => {
+      try {
+        return el !== null && el !== undefined && typeof el.hasAttribute === 'function' && el.hasAttribute(name) === true
+      } catch (_) { return false }
+    }
+    const iconDomSetVar = (el, name, value) => {
+      try {
+        if (el !== null && el !== undefined && el.style && typeof el.style.setProperty === 'function') el.style.setProperty(name, value)
+      } catch (_) {}
+    }
+    const iconDomRemoveVar = (el, name) => {
+      try {
+        if (el !== null && el !== undefined && el.style && typeof el.style.removeProperty === 'function') el.style.removeProperty(name)
+      } catch (_) {}
+    }
+
     // ── 右栏文件编辑（v1.6 / v1.6.1）静态面：档位 id、可编辑后缀表、头部入口的纯函数 ──
     // 官方右栏文档预览把「渲染器」做成公开注册面（ctx.documentPreviews + keyed 正文槽）。
     // 这里注册一个「编辑」档位：priority 'builtin' 表示**故意不夺默认位**——官方渲染器仍是
@@ -986,6 +1125,7 @@ window.__ModuleLoader__.load({
       'quota.peak.caption.zai': '非高峰时段模型调用按基础积分的 50% 抵扣。高峰时段：每周一至周五 14:00–18:00（UTC+8）；其余时间为非高峰时段，周六和周日全天空闲。',
       // ── 官方右栏文件编辑（v1.6 用户点名）────────────────────────────────
       'features.fileEditor': '右栏文件编辑',
+      'features.modelProviderIcons': '模型厂家图标',
       'editor.viewer': '编辑',
       'editor.loading': '正在读取文件…',
       'editor.preview': '预览',
@@ -1826,6 +1966,7 @@ window.__ModuleLoader__.load({
       'quota.peak.caption.zai': 'Off-peak calls deduct 50% of the base credits. Peak hours: Mon–Fri 14:00–18:00 (UTC+8). All other times are off-peak, including all day Saturday and Sunday.',
       // ── Official right-Sidebar file editing (v1.6) ──────────────────────
       'features.fileEditor': 'Right-Sidebar file editing',
+      'features.modelProviderIcons': 'Model provider icons',
       'editor.viewer': 'Edit',
       'editor.loading': 'Reading file…',
       'editor.preview': 'Preview',
@@ -2356,7 +2497,7 @@ window.__ModuleLoader__.load({
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true }
       const featureScope = ctx.settingsScope.bind({ namespace: NS })
       const featureSnapshot = () => featureScope.getSnapshot()
       const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
@@ -4488,7 +4629,7 @@ window.__ModuleLoader__.load({
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
         ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager'], true],
-        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'fileEditor'], true],
+        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor'], true],
         ['features.external', ['healthz'], false],
       ]
       function FeatureGroups() {
@@ -11553,6 +11694,261 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
         return () => userJump.stop()
       }, 'dsh-service user reply jump')
 
+      // ─── 模型厂家/渠道图标（v1.8 用户点名）──────────────────────────────
+      // 在官方 composer 模型钮上叠加「当前会话 provider」的厂家图标。官方那颗钮是
+      // 独占槽（conversation.input.model，kind:single，官方 ModelSelect 占位），
+      // 无法再注册第二个 occupant，故走纯 CSS 装饰：把 --dshsvc-model-icon 变量
+      // 与 data-dshsvc-model-icon 属性挂在 composer 座上，用 ::before 画图标。
+      //
+      // 三态（用户定稿）：
+      //   ① 宽态（官方显示模型名）→ 模型名前加图标；
+      //   ② 窄态（≤480px，官方/本插件把 label 藏成图标）→ 我方图标替换官方默认图标；
+      //   ③ 未适配渠道 → 完全不动官方默认图标（既不加、也不换）。
+      //
+      // 渲染路径由数据里的 c 字段决定，全部实测过（scripts/probe-model-icon-dom.mjs）：
+      //   c=0（mono）mask + background-color:currentColor —— 颜色交给主题文字色，
+      //              浅色 rgb(97,102,107) / 暗色 rgb(207,211,214) 自动跟随，零特判；
+      //   c=1（color）background-image 原样上品牌色。
+      // data-URI 是独立文档上下文，**不继承 currentColor**，所以 mono 必须走 mask
+      // （直接写 fill="currentColor" 的 data-URI 会渲染成全黑/全透明）。
+      /**
+       * 图标引擎：订阅当前会话的 modelDirectory，把 provider 解析成图标并写到
+       * composer 座上。会话切换/模型切换/主题切换都自然跟随（数据属性驱动 CSS）。
+       */
+      const createModelProviderIcons = () => {
+        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false }
+
+        const currentSessionId = () => {
+          try {
+            const sessions = ctx.sessions
+            if (sessions && sessions.list && typeof sessions.list.getSnapshot === 'function') {
+              const snapshot = sessions.list.getSnapshot()
+              return snapshot && snapshot.current !== undefined ? snapshot.current : undefined
+            }
+          } catch (_) {}
+          return undefined
+        }
+
+        const currentProvider = () => {
+          const sessionId = currentSessionId()
+          if (sessionId === undefined || sessionId === null) return null
+          try {
+            const models = getModelDirectories()
+            if (models === undefined || typeof models.directoryFor !== 'function') return null
+            const directory = models.directoryFor(sessionId)
+            const snapshot = directory && directory.store && typeof directory.store.getSnapshot === 'function'
+              ? directory.store.getSnapshot()
+              : null
+            const provider = snapshot && snapshot.current ? snapshot.current.provider : undefined
+            return typeof provider === 'string' && provider !== '' ? provider : null
+          } catch (_) {
+            return null
+          }
+        }
+
+        /** 找到 composer 座（官方 data-composer-seat，React 不重建的稳定锚点）。 */
+        const findSeat = () => {
+          const doc = docOrNull()
+          if (doc === null) return null
+          try { return doc.querySelector('[data-composer-seat]') } catch (_) { return null }
+        }
+
+        /** 把 provider 解析结果写到座上；未命中则摘属性（官方默认图标照旧）。 */
+        const apply = () => {
+          if (state.disposed) return
+          const seat = findSeat()
+          if (seat === null) { state.seat = null; return }
+          state.seat = seat
+          // 切会话：directory 是「每会话一个」，必须重挂订阅并清掉旧图标，
+          // 否则座上会残留上一个会话的品牌（首版漏了这条）。这里不额外持有
+          // sessions.list 订阅——外壳重建 composer 时 MutationObserver 会调进来，
+          // 而那份额外订阅会破坏「功能全关时不留空闲订阅」的既有不变量。
+          const sessionId = currentSessionId()
+          if (sessionId !== state.lastSession) {
+            state.lastProvider = null
+            clear()
+            subscribe()
+          }
+          const provider = currentProvider()
+          if (provider === state.lastProvider && iconDomHasAttr(seat, MODEL_ICON_SEAT_ATTR)) return
+          state.lastProvider = provider
+          const resolved = provider === null ? null : resolveModelIcon(provider)
+          if (resolved === null) {
+            // 未适配：摘掉属性和变量，官方默认图标完全照旧。
+            iconDomRemoveAttr(seat, MODEL_ICON_ATTR)
+            iconDomRemoveAttr(seat, MODEL_ICON_SEAT_ATTR)
+            iconDomRemoveVar(seat, MODEL_ICON_VAR)
+            iconDomRemoveVar(seat, MODEL_ICON_SIZE_VAR)
+            return
+          }
+          const useMask = resolved.spec.c !== 1
+          iconDomSetVar(seat, MODEL_ICON_VAR, modelIconDataUri(resolved.spec, useMask))
+          // 光学修正：满框形状按系数收一点，其余图标不设变量（回落基准 15px）。
+          const optical = typeof resolved.spec.o === 'number' && resolved.spec.o > 0 ? resolved.spec.o : 1
+          if (optical === 1) iconDomRemoveVar(seat, MODEL_ICON_SIZE_VAR)
+          else iconDomSetVar(seat, MODEL_ICON_SIZE_VAR, `${(MODEL_ICON_BASE_PX * optical).toFixed(2)}px`)
+          iconDomSetAttr(seat, MODEL_ICON_ATTR, resolved.slug)
+          iconDomSetAttr(seat, MODEL_ICON_SEAT_ATTR, useMask ? 'mono' : 'color')
+        }
+
+        const clearSeat = (seat) => {
+          iconDomRemoveAttr(seat, MODEL_ICON_ATTR)
+          iconDomRemoveAttr(seat, MODEL_ICON_SEAT_ATTR)
+          iconDomRemoveVar(seat, MODEL_ICON_VAR)
+          iconDomRemoveVar(seat, MODEL_ICON_SIZE_VAR)
+        }
+
+        const clear = () => {
+          // 两条路都要走：自有查询拿不到时（替身/非常规 DOM）至少清掉我们记着的那颗座，
+          // 否则热关会留下残影（首版实测）。
+          if (state.seat !== null) clearSeat(state.seat)
+          const doc = docOrNull()
+          if (doc !== null && typeof doc.querySelectorAll === 'function') {
+            let nodes = []
+            try { nodes = Array.from(doc.querySelectorAll(`[${MODEL_ICON_SEAT_ATTR}]`)) } catch (_) { nodes = [] }
+            for (const seat of nodes) clearSeat(seat)
+          }
+          state.seat = null
+          state.lastProvider = null
+        }
+
+        /** 订阅会话目录：模型切换（selectModel）会推快照，无需轮询。 */
+        const subscribe = () => {
+          if (state.unsubscribe !== null) { try { state.unsubscribe() } catch (_) {} state.unsubscribe = null }
+          const sessionId = currentSessionId()
+          // 无论是否真的挂上，都要记住「这次为哪个会话解析过」：早退（无会话/服务未就绪）
+          // 若不记，下次 apply() 会以为会话变了而重复挂订阅，析构时只解开一份，留下监听泄漏
+          // （实测：listeners 2 → 1）。
+          state.lastSession = sessionId
+          if (sessionId === undefined || sessionId === null) return
+          try {
+            const models = getModelDirectories()
+            if (models === undefined || typeof models.directoryFor !== 'function') return
+            const directory = models.directoryFor(sessionId)
+            if (directory && directory.store && typeof directory.store.subscribe === 'function') {
+              const stop = directory.store.subscribe(() => apply())
+              state.unsubscribe = typeof stop === 'function' ? stop : null
+              // 目录可能尚未加载：触发一次 load，拿到真实 provider。
+              if (typeof directory.load === 'function') {
+                try {
+                  const pending = directory.load()
+                  if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+
+        /**
+         * 订阅会话列表：**切会话必须能感知到**。
+         *
+         * 只靠 MutationObserver + 目录订阅是不够的：两者都锚在「当前」会话的 DOM 与
+         * store 上——切到新会话时，宽视口下 composer 座不重建（observer 不回调）、
+         * 而目录订阅还挂在**旧会话**的 store 上（新会话的 provider 变化收不到）。
+         * 结果就是属性停在旧渠道上（真机复现：390/430/480 因重建 composer 而正确，
+         * 481/1280 仍显示上一个渠道的图标）。
+         *
+         * 该订阅随功能开关精确挂/卸（start/stop 各自对应），不破坏「功能全关时不留
+         * 空闲订阅」的既有不变量——那正是当初没写它的原因。
+         */
+        const subscribeSessions = () => {
+          if (state.unsubscribeSessions !== null) return
+          try {
+            const sessions = ctx.sessions
+            if (!sessions || !sessions.list || typeof sessions.list.subscribe !== 'function') return
+            const stop = sessions.list.subscribe(() => {
+              if (state.disposed) return
+              const sessionId = currentSessionId()
+              if (sessionId === state.lastSession) return
+              // 会话变了：先摘掉旧图标，再挂到新会话的目录上重算。
+              state.lastProvider = null
+              clear()
+              subscribe()
+              apply()
+            })
+            state.unsubscribeSessions = typeof stop === 'function' ? stop : null
+          } catch (_) {}
+        }
+
+        const start = () => {
+          const doc = docOrNull()
+          if (state.styleTag === null && doc !== null) {
+            try {
+              const tag = doc.createElement('style')
+              tag.dataset.plugin = '@gehennawu/dsh-service'
+              tag.dataset.pluginCss = '@gehennawu/dsh-service/model-icons.css'
+              tag.textContent = MODEL_ICON_CSS
+              doc.head.appendChild(tag)
+              state.styleTag = tag
+            } catch (_) {}
+          }
+          subscribeSessions()
+          subscribe()
+          apply()
+          if (state.observer !== null) return
+          if (doc === null || typeof MutationObserver !== 'function') return
+          if (state.observerCreated) return
+          state.observerCreated = true
+          try {
+            // 会话切换/新会话创建会重建 composer 座；模型切换走上面的 store 订阅。
+            state.observer = new MutationObserver(() => {
+              if (state.seat !== null && typeof doc.contains === 'function' && !doc.contains(state.seat)) {
+                state.seat = null
+                state.lastProvider = null
+              }
+              apply()
+            })
+            state.observer.observe(doc.documentElement, { childList: true, subtree: true })
+          } catch (_) {
+            state.observer = null
+          }
+        }
+
+        const stop = () => {
+          state.disposed = true
+          if (state.unsubscribe !== null) {
+            try { state.unsubscribe() } catch (_) {}
+            state.unsubscribe = null
+          }
+          if (state.unsubscribeSessions !== null) {
+            try { state.unsubscribeSessions() } catch (_) {}
+            state.unsubscribeSessions = null
+          }
+          if (state.observer !== null) {
+            try { state.observer.disconnect() } catch (_) {}
+            state.observer = null
+          }
+          clear()
+          if (state.styleTag !== null) {
+            try { state.styleTag.remove() } catch (_) {}
+            state.styleTag = null
+          }
+        }
+
+        return { start, stop, apply, clear }
+      }
+
+      const modelIconEngine = createModelProviderIcons()
+      ctx.effect(() => {
+        let subscribed = false
+        const sync = () => {
+          const enabled = featureEnabled('modelProviderIcons')
+          if (enabled && !subscribed) {
+            subscribed = true
+            modelIconEngine.start()
+          } else if (!enabled && subscribed) {
+            subscribed = false
+            modelIconEngine.stop()
+          }
+        }
+        const unsubscribeFeatures = featureScope.subscribe(sync)
+        sync()
+        return () => {
+          unsubscribeFeatures()
+          if (subscribed) modelIconEngine.stop()
+        }
+      }, 'dsh-service model provider icons')
+
       const mobileEngine = createMobileAdaptation()
       ctx.effect(() => {
         const unsubscribeFeatures = featureScope.subscribe(() => mobileEngine.evaluate())
@@ -11570,6 +11966,18 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
     exports.subagentTurnTail = { aggregateSubagentRoutes, selectSubagentModelsTurnTail, subagentRouteListText }
     // 右栏文件编辑（v1.6/v1.6.1）：档位 id、可编辑后缀表与入口引擎的纯函数面，供测试与排障复用。
     exports.fileEditor = { id: FILE_EDITOR_ID, extensions: FILE_EDITOR_EXTENSION_TABLE, selectViewerItem, editorExtensionMatches, attr: EDITOR_ENTRY_ATTR, menuItemAttr: EDITOR_MENU_ITEM_ATTR }
+    // v1.8 模型厂家/渠道图标：纯解析面 + 图标数据规模，供自动化测试与排障直视。
+    exports.modelProviderIcons = {
+      resolve: resolveModelIcon,
+      dataUri: modelIconDataUri,
+      attr: MODEL_ICON_ATTR,
+      seatAttr: MODEL_ICON_SEAT_ATTR,
+      sizeVar: MODEL_ICON_SIZE_VAR,
+      basePx: MODEL_ICON_BASE_PX,
+      css: MODEL_ICON_CSS,
+      slugs: Object.keys(MODEL_ICON_DATA),
+      providerCount: Object.keys(MODEL_ICON_PROVIDERS).length,
+    }
     return module.exports
   },
 })

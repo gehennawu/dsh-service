@@ -1206,6 +1206,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     mobileAdaptation: false,
     sessionManager: true,
     fileEditor: true,
+    modelProviderIcons: true,
   })
   assert.deepEqual(registeredSettings[0].schema({}), {
     healthDiagnostics: true,
@@ -1220,6 +1221,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     mobileAdaptation: false,
     sessionManager: true,
     fileEditor: true,
+    modelProviderIcons: true,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
