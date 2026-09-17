@@ -613,6 +613,18 @@ window.__ModuleLoader__.load({
       'tabs.configuration': '配置',
       'tabs.features': '功能',
       'tabs.notifications': '通知',
+      'tabs.navOrder': '设置栏标签',
+      'config.navOrder.title': '设置栏标签排序与显隐',
+      'config.navOrder.dragHint': '可通过拖拽或点击上下箭头调整标签顺序；关闭开关可隐藏不常用标签。',
+      'config.navOrder.moveUp': '上移',
+      'config.navOrder.moveDown': '下移',
+      'config.navOrder.visible': '显示',
+      'config.navOrder.hidden': '隐藏',
+      'config.navOrder.locked': '当前面板（不可隐藏）',
+      'config.navOrder.reset': '恢复默认排序',
+      'config.navOrder.saved': '已保存',
+      'config.navOrder.save': '保存排序',
+      'config.navOrder.empty': '未检测到已注册的设置栏标签',
       'maintenance.empty': '所有维护子页均已关闭。可在「配置 → 功能」中开启备份、技能、子代理或会话管理。',
       'config.notificationsDisabled': '任务通知功能已在「功能」页关闭，以下设置仅作展示；重新开启后通知才会生效。',
       'features.group.runtime': '运行与观测',
@@ -1439,6 +1451,18 @@ window.__ModuleLoader__.load({
       'tabs.configuration': 'Configuration',
       'tabs.features': 'Features',
       'tabs.notifications': 'Notifications',
+      'tabs.navOrder': 'Settings Nav',
+      'config.navOrder.title': 'Settings Navigation Order & Visibility',
+      'config.navOrder.dragHint': 'Drag items or click the arrows to reorder; toggle off to hide unused tabs.',
+      'config.navOrder.moveUp': 'Move up',
+      'config.navOrder.moveDown': 'Move down',
+      'config.navOrder.visible': 'Visible',
+      'config.navOrder.hidden': 'Hidden',
+      'config.navOrder.locked': 'Current panel (locked)',
+      'config.navOrder.reset': 'Reset to default',
+      'config.navOrder.saved': 'Saved',
+      'config.navOrder.save': 'Save order',
+      'config.navOrder.empty': 'No registered settings tabs detected',
       'maintenance.empty': 'All maintenance pages are disabled. Enable backup, skills, subagents, or session management under “Configuration → Features”.',
       'config.notificationsDisabled': 'Task notifications are turned off on the Features page; these settings are shown for reference only until re-enabled.',
       'features.group.runtime': 'Runtime and observation',
@@ -1900,6 +1924,8 @@ window.__ModuleLoader__.load({
     // 组件只引用变量，React 内联样式无需感知当前主题。不支持变量的极老内核回退到浅色深块白字。
     const CHIP_ACTIVE_TEXT = 'var(--dsh-svc-tab-active-text)'
 
+    let syncNavDom = () => {}
+
     function markSettingsNavRows(rows) {
       if (typeof document === 'undefined' || !document.body) return () => {}
       let disposed = false
@@ -1945,6 +1971,7 @@ window.__ModuleLoader__.load({
             else button.removeAttribute(row.attr)
           }
         }
+        syncNavDom()
       }
       sync()
       const bodyObserver = new MutationObserver(scheduleSync)
@@ -2339,6 +2366,243 @@ window.__ModuleLoader__.load({
         ]),
         'dsh-service settings nav icons',
       )
+      // ── 设置栏左侧标签手动排序与显隐（动态映射 Slot order 与版本通知）────
+      const STORAGE_KEY_NAV_ORDER = 'dsh-service-settings-nav-order'
+      const STORAGE_KEY_NAV_HIDDEN = 'dsh-service-settings-nav-hidden'
+
+      const readSettingsNavOrder = () => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY_NAV_ORDER)
+          if (raw) {
+            const parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string')
+          }
+        } catch (_) {}
+        return null
+      }
+
+      const writeSettingsNavOrder = (order) => {
+        try {
+          if (order === null) {
+            localStorage.removeItem(STORAGE_KEY_NAV_ORDER)
+          } else {
+            localStorage.setItem(STORAGE_KEY_NAV_ORDER, JSON.stringify(order))
+          }
+        } catch (_) {}
+      }
+
+      const readSettingsNavHidden = () => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY_NAV_HIDDEN)
+          if (raw) {
+            const parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string' && id !== 'dsh-service')
+          }
+        } catch (_) {}
+        return []
+      }
+
+      const writeSettingsNavHidden = (hidden) => {
+        try {
+          if (hidden === null || hidden.length === 0) {
+            localStorage.removeItem(STORAGE_KEY_NAV_HIDDEN)
+          } else {
+            const filtered = hidden.filter((id) => id !== 'dsh-service')
+            localStorage.setItem(STORAGE_KEY_NAV_HIDDEN, JSON.stringify(filtered))
+          }
+        } catch (_) {}
+      }
+
+      let navOrderRevision = 0
+      const navOrderListeners = new Set()
+      const notifyNavOrderChanged = () => {
+        navOrderRevision++
+        for (const listener of navOrderListeners) {
+          try { listener() } catch (_) {}
+        }
+        // 唤醒底层 SlotCore 及其已注册订阅者（如 DSH 外壳 useSections）
+        try {
+          const core = ctx.slots?._core
+          if (core && typeof core.record === 'function') {
+            const r = core.record('settings.section')
+            if (r) {
+              if (typeof core.markDirty === 'function') core.markDirty('settings.section', r)
+              if (typeof core.flush === 'function') core.flush()
+            }
+          }
+        } catch (_) {}
+        // 兜底原生变动触发器
+        try {
+          if (typeof ctx.slots?.register === 'function') {
+            const dispose = ctx.slots.register({ name: 'settings.section', id: '__dsh_nav_bump__' }, () => null)
+            if (typeof dispose === 'function') dispose()
+          }
+        } catch (_) {}
+        syncNavDom()
+      }
+
+      let origSlotsEntries = null
+      let restoreSlots = null
+      if (ctx.slots && typeof ctx.slots.entries === 'function') {
+        const origEntries = ctx.slots.entries.bind(ctx.slots)
+        origSlotsEntries = origEntries
+        const origGetVersion = typeof ctx.slots.getVersion === 'function' ? ctx.slots.getVersion.bind(ctx.slots) : null
+        const origSubscribe = typeof ctx.slots.subscribe === 'function' ? ctx.slots.subscribe.bind(ctx.slots) : null
+
+        ctx.slots.entries = function (key) {
+          const raw = origEntries(key)
+          if (key !== 'settings.section') return raw
+          const customOrder = readSettingsNavOrder()
+          const hiddenList = readSettingsNavHidden()
+          const hiddenSet = new Set(hiddenList)
+
+          const visibleEntries = raw.filter((e) => {
+            const id = e.options?.id ?? e.options?.key ?? ''
+            if (id === '__dsh_nav_bump__') return false
+            if (id === 'dsh-service') return true
+            return !hiddenSet.has(id)
+          })
+
+          if (!customOrder || customOrder.length === 0) {
+            return visibleEntries
+          }
+
+          return visibleEntries.map((e) => {
+            const id = e.options?.id ?? e.options?.key ?? ''
+            const idx = customOrder.indexOf(id)
+            const order = idx !== -1 ? idx * 10 : 10000 + (e.options?.order ?? 0)
+            return Object.assign({}, e, {
+              options: Object.assign({}, e.options, { order }),
+            })
+          })
+        }
+
+        if (origGetVersion) {
+          ctx.slots.getVersion = function (key) {
+            const base = origGetVersion(key)
+            if (key === 'settings.section') {
+              return base + navOrderRevision * 100000
+            }
+            return base
+          }
+        }
+
+        if (origSubscribe) {
+          ctx.slots.subscribe = function (key, fn) {
+            if (key === 'settings.section') {
+              navOrderListeners.add(fn)
+              const unsub = origSubscribe(key, fn)
+              return () => {
+                navOrderListeners.delete(fn)
+                if (typeof unsub === 'function') unsub()
+              }
+            }
+            return origSubscribe(key, fn)
+          }
+        }
+
+        restoreSlots = () => {
+          ctx.slots.entries = origEntries
+          if (origGetVersion) ctx.slots.getVersion = origGetVersion
+          if (origSubscribe) ctx.slots.subscribe = origSubscribe
+          navOrderListeners.clear()
+        }
+      }
+
+      ctx.effect(() => () => {
+        if (restoreSlots) restoreSlots()
+      }, 'dsh-service settings nav slot wrapping')
+
+      const getRawSettingsSections = () => {
+        let list = []
+        if (origSlotsEntries) list = origSlotsEntries('settings.section')
+        else if (typeof ctx.slots?.entries === 'function') list = ctx.slots.entries('settings.section')
+        return list.filter((e) => (e.options?.id ?? e.options?.key) !== '__dsh_nav_bump__')
+      }
+
+      const resolveSectionLabel = (options) => {
+        if (!options) return ''
+        const label = options.label
+        if (typeof label === 'function') {
+          try {
+            const res = label()
+            if (res) return String(res)
+          } catch (_) {}
+        } else if (typeof label === 'string' && label) {
+          return label
+        }
+        return String(options.id ?? options.key ?? '')
+      }
+
+      syncNavDom = () => {
+        if (typeof document === 'undefined' || !document.body) return
+        const nav = typeof document.querySelector === 'function'
+          ? document.querySelector('[role="dialog"] nav')
+          : null
+        if (!nav) return
+        const buttons = typeof nav.querySelectorAll === 'function'
+          ? nav.querySelectorAll('button')
+          : []
+        if (!buttons || buttons.length === 0) return
+
+        const hiddenList = readSettingsNavHidden()
+        const hiddenSet = new Set(hiddenList)
+        const customOrder = readSettingsNavOrder()
+
+        const raw = getRawSettingsSections()
+        const labelToId = new Map()
+        for (const e of raw) {
+          const id = e.options?.id ?? e.options?.key ?? ''
+          if (!id || id === '__dsh_nav_bump__') continue
+          const label = resolveSectionLabel(e.options)
+          if (label) labelToId.set(label.trim(), id)
+          labelToId.set(id, id)
+        }
+
+        for (const button of buttons) {
+          let id = null
+          const hasAttr = (name) => {
+            if (typeof button.hasAttribute === 'function') return button.hasAttribute(name)
+            if (button.attrs && typeof button.attrs.has === 'function') return button.attrs.has(name)
+            return false
+          }
+          if (hasAttr('data-dsh-service-nav')) id = 'dsh-service'
+          else if (hasAttr('data-dsh-service-quota-nav')) id = 'dsh-service-quota'
+          else if (hasAttr('data-dsh-service-restart-nav')) id = 'dsh-service-restart'
+          else if (hasAttr('data-dsh-service-sessions-nav')) id = 'dsh-service-sessions'
+
+          if (!id) {
+            const labelSpan = typeof button.querySelector === 'function' ? button.querySelector('span') : null
+            const text = (labelSpan ? labelSpan.textContent : button.textContent || '').trim()
+            id = labelToId.get(text)
+          }
+          if (!id) continue
+
+          if (button.style) {
+            if (id === 'dsh-service') {
+              button.style.display = ''
+            } else if (hiddenSet.has(id)) {
+              button.style.display = 'none'
+            } else {
+              button.style.display = ''
+            }
+
+            if (customOrder && customOrder.length > 0) {
+              const idx = customOrder.indexOf(id)
+              button.style.order = idx !== -1 ? String(idx) : '9999'
+            } else {
+              button.style.order = ''
+            }
+          }
+        }
+
+        const navList = typeof nav.querySelector === 'function' ? nav.querySelector('div') : null
+        if (navList && navList.style && customOrder && customOrder.length > 0) {
+          navList.style.display = 'flex'
+          navList.style.flexDirection = 'column'
+        }
+      }
+
       const useTranslation = () => {
         const [, setSnapshot] = useState(ctx.locale.getSnapshot())
         useEffect(() => ctx.locale.subscribe(() => setSnapshot(ctx.locale.getSnapshot())), [])
@@ -2408,6 +2672,7 @@ window.__ModuleLoader__.load({
       const CONFIG_TABS = [
         { id: 'features', labelKey: 'tabs.features' },
         { id: 'notifications', labelKey: 'tabs.notifications' },
+        { id: 'navOrder', labelKey: 'tabs.navOrder' },
       ]
       // v0.39 页面元数据：每页一行描述（标题复用 tabs.* 词条）。
       // 用户复核：概览/模型统计/维护 的描述取消（undefined = 不渲染）；额度描述并入圆环/节流说明。
@@ -4100,6 +4365,265 @@ window.__ModuleLoader__.load({
         return React.createElement('div', null, FEATURE_GROUPS.map(([groupKey, keys]) => React.createElement('div', { key: groupKey, style: { marginTop: '10px' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '2px' } }, translate(groupKey)),
           keys.map(row))))
+      }
+
+      // ─── 设置栏导航管理（排序与显隐）：集中在「配置 → 设置栏标签」子页 ────
+      function SettingsNavOrderSection() {
+        const translate = useTranslation()
+        const [orderList, setOrderList] = useState(readSettingsNavOrder())
+        const [hiddenIds, setHiddenIds] = useState(readSettingsNavHidden())
+        const [savedTip, setSavedTip] = useState(false)
+        const [dragIndex, setDragIndex] = useState(null)
+        const [, setTick] = useState(0)
+
+        useEffect(() => {
+          if (typeof ctx.slots?.subscribe === 'function') {
+            return ctx.slots.subscribe('settings.section', () => setTick((v) => v + 1))
+          }
+        }, [])
+
+        const raw = getRawSettingsSections()
+        const rawMap = new Map()
+        for (const e of raw) {
+          const id = e.options?.id ?? e.options?.key ?? ''
+          if (!id || rawMap.has(id)) continue
+          rawMap.set(id, {
+            id,
+            label: resolveSectionLabel(e.options),
+            defaultOrder: e.options?.order ?? 0,
+          })
+        }
+
+        let displayItems = []
+        if (orderList && orderList.length > 0) {
+          for (const id of orderList) {
+            if (rawMap.has(id)) {
+              displayItems.push(rawMap.get(id))
+              rawMap.delete(id)
+            }
+          }
+        }
+        const remaining = Array.from(rawMap.values()).sort((a, b) => a.defaultOrder - b.defaultOrder)
+        displayItems = displayItems.concat(remaining)
+
+        const moveItem = (from, to) => {
+          if (from < 0 || to < 0 || from >= displayItems.length || to >= displayItems.length || from === to) return
+          const ids = displayItems.map((it) => it.id)
+          const [moved] = ids.splice(from, 1)
+          ids.splice(to, 0, moved)
+          setOrderList(ids)
+          writeSettingsNavOrder(ids)
+          notifyNavOrderChanged()
+        }
+
+        const toggleVisible = (id) => {
+          if (id === 'dsh-service') return
+          const currentHidden = Array.isArray(hiddenIds) ? hiddenIds : []
+          const next = new Set(currentHidden)
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+          const arr = Array.from(next)
+          setHiddenIds(arr)
+          writeSettingsNavHidden(arr)
+          notifyNavOrderChanged()
+        }
+
+        const resetDefault = () => {
+          setOrderList(null)
+          setHiddenIds([])
+          writeSettingsNavOrder(null)
+          writeSettingsNavHidden(null)
+          notifyNavOrderChanged()
+          setSavedTip(true)
+          setTimeout(() => setSavedTip(false), 2000)
+        }
+
+        const handleSave = () => {
+          const ids = displayItems.map((it) => it.id)
+          setOrderList(ids)
+          writeSettingsNavOrder(ids)
+          writeSettingsNavHidden(hiddenIds)
+          notifyNavOrderChanged()
+          setSavedTip(true)
+          setTimeout(() => setSavedTip(false), 2000)
+        }
+
+        const hiddenSet = new Set(Array.isArray(hiddenIds) ? hiddenIds : [])
+
+        return React.createElement('div', {
+          'data-testid': 'config-nav-order-page',
+          style: { display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' },
+        },
+        React.createElement('div', {
+          style: {
+            padding: '10px 14px',
+            borderRadius: 'var(--dsh-svc-radius-control, 8px)',
+            background: 'var(--dsh-svc-card-bg)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            fontSize: '12px',
+            lineHeight: 1.6,
+            color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, translate('config.navOrder.dragHint')),
+        displayItems.length === 0
+          ? React.createElement('div', { style: { padding: '16px', textAlign: 'center', color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px' } }, translate('config.navOrder.empty'))
+          : React.createElement('div', {
+            'data-testid': 'nav-order-list',
+            style: { display: 'flex', flexDirection: 'column', gap: '8px' },
+          }, displayItems.map((item, index) => {
+            const isVisible = item.id === 'dsh-service' ? true : !hiddenSet.has(item.id)
+            const isLocked = item.id === 'dsh-service'
+            const isDragging = dragIndex === index
+
+            return React.createElement('div', {
+              key: item.id,
+              'data-testid': 'nav-order-item-' + item.id,
+              draggable: true,
+              onDragStart: (e) => {
+                try {
+                  e.dataTransfer.setData('text/plain', String(index))
+                  e.dataTransfer.effectAllowed = 'move'
+                } catch (_) {}
+                setDragIndex(index)
+              },
+              onDragOver: (e) => {
+                e.preventDefault()
+                try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+              },
+              onDrop: (e) => {
+                e.preventDefault()
+                let from = index
+                try {
+                  const rawData = e.dataTransfer.getData('text/plain')
+                  from = Number.parseInt(rawData, 10)
+                } catch (_) {}
+                if (!Number.isNaN(from) && from !== index) {
+                  moveItem(from, index)
+                }
+                setDragIndex(null)
+              },
+              onDragEnd: () => setDragIndex(null),
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                padding: '9px 14px',
+                borderRadius: 'var(--dsh-svc-radius-control, 8px)',
+                border: '1px solid ' + (isDragging ? 'var(--dsh-svc-brand)' : 'var(--dsw-alias-border-l1)'),
+                background: isDragging ? 'var(--dsw-alias-interactive-bg-hover)' : 'var(--dsh-svc-card-bg)',
+                opacity: isVisible ? 1 : 0.5,
+                transition: 'border-color 120ms, background 120ms, opacity 120ms',
+                cursor: 'grab',
+                userSelect: 'none',
+              },
+            },
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 } },
+              React.createElement('span', {
+                style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', cursor: 'grab', letterSpacing: '-1px' },
+                'aria-hidden': 'true',
+              }, '⋮⋮'),
+              React.createElement('span', {
+                style: { fontSize: '13px', fontWeight: 550, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+              }, item.label || item.id),
+              React.createElement('span', {
+                style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-tertiary)', fontFamily: 'monospace' },
+              }, item.id),
+              isLocked ? React.createElement('span', {
+                style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(59,130,246,0.12)', color: 'var(--dsh-svc-brand)', fontWeight: 500 },
+              }, translate('config.navOrder.locked')) : null,
+            ),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
+              React.createElement('button', {
+                type: 'button',
+                'data-testid': 'nav-order-up-' + item.id,
+                'aria-label': translate('config.navOrder.moveUp'),
+                title: translate('config.navOrder.moveUp'),
+                disabled: index === 0,
+                onClick: (e) => { e.stopPropagation(); moveItem(index, index - 1) },
+                style: {
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: '24px', height: '24px', padding: 0,
+                  borderRadius: '6px',
+                  border: '1px solid var(--dsw-alias-border-l2)',
+                  background: 'var(--dsw-alias-bg-layer-2)',
+                  color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)',
+                  cursor: index === 0 ? 'default' : 'pointer',
+                  opacity: index === 0 ? 0.35 : 1,
+                  fontSize: '12px',
+                  lineHeight: '24px',
+                },
+              }, '↑'),
+              React.createElement('button', {
+                type: 'button',
+                'data-testid': 'nav-order-down-' + item.id,
+                'aria-label': translate('config.navOrder.moveDown'),
+                title: translate('config.navOrder.moveDown'),
+                disabled: index === displayItems.length - 1,
+                onClick: (e) => { e.stopPropagation(); moveItem(index, index + 1) },
+                style: {
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: '24px', height: '24px', padding: 0,
+                  borderRadius: '6px',
+                  border: '1px solid var(--dsw-alias-border-l2)',
+                  background: 'var(--dsw-alias-bg-layer-2)',
+                  color: index === displayItems.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)',
+                  cursor: index === displayItems.length - 1 ? 'default' : 'pointer',
+                  opacity: index === displayItems.length - 1 ? 0.35 : 1,
+                  fontSize: '12px',
+                  lineHeight: '24px',
+                },
+              }, '↓'),
+              React.createElement('button', {
+                type: 'button',
+                role: 'switch',
+                'data-testid': 'nav-order-toggle-' + item.id,
+                'aria-checked': String(isVisible),
+                'aria-label': translate(isVisible ? 'config.navOrder.visible' : 'config.navOrder.hidden'),
+                title: isLocked ? translate('config.navOrder.locked') : translate(isVisible ? 'config.navOrder.visible' : 'config.navOrder.hidden'),
+                disabled: isLocked,
+                onClick: (e) => { e.stopPropagation(); toggleVisible(item.id) },
+                style: {
+                  width: '34px', height: '20px', ...fullRound('10px'),
+                  padding: 0, position: 'relative', flexShrink: 0,
+                  border: '1px solid ' + (isVisible ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'),
+                  background: isVisible ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                  cursor: isLocked ? 'not-allowed' : 'pointer',
+                  opacity: isLocked ? 0.6 : 1,
+                  lineHeight: 0,
+                },
+              }, React.createElement('span', {
+                style: {
+                  position: 'absolute', top: '1px',
+                  left: isVisible ? '15px' : '1px',
+                  width: '16px', height: '16px', ...fullRound('50%'),
+                  background: isVisible ? '#fff' : 'var(--dsw-alias-label-tertiary)',
+                  transition: 'left 120ms ease',
+                },
+              })),
+            ))
+          })),
+        React.createElement('div', {
+          style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '6px' },
+        },
+        React.createElement('button', {
+          type: 'button',
+          'data-testid': 'nav-order-reset',
+          onClick: resetDefault,
+          style: svcButtonStyle('ghost'),
+        }, translate('config.navOrder.reset')),
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+          savedTip ? React.createElement('span', {
+            'data-testid': 'nav-order-saved-tip',
+            style: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' },
+          }, '✓ ' + translate('config.navOrder.saved')) : null,
+          React.createElement('button', {
+            type: 'button',
+            'data-testid': 'nav-order-save',
+            onClick: handleSave,
+            style: svcButtonStyle('primary'),
+          }, translate('config.navOrder.save')),
+        )))
       }
 
       // ─── 子代理模型（v0.27）：三态路由配置 ────────────────────────────────
@@ -7952,7 +8476,9 @@ window.__ModuleLoader__.load({
               ? React.createElement('div', { 'data-testid': 'config-notifications-page', style: features.taskNotifications === false ? { opacity: 0.55 } : undefined },
                   notificationBlock,
                   ...(features.taskNotifications === false ? [React.createElement('p', { key: 'notify-off-hint', style: Object.assign({}, hint, { marginTop: '8px' }) }, translate('config.notificationsDisabled'))] : []))
-              : React.createElement(FeatureGroups, null)
+              : configTab === 'navOrder'
+                ? React.createElement(SettingsNavOrderSection, null)
+                : React.createElement(FeatureGroups, null)
         // v0.39：根节点带 data-dshsvc-root 作用域锚（焦点环/降动效/reduced-motion 都挂在它下）、
         // data-dshsvc-page 记录当前内部页、dshsvc-page 类收 800px 内容宽。导航渲染收敛到
         // SvcTabs 基元（role=tablist/tab + aria-selected）；旧 group/tray/top-tab 结构已移除。

@@ -4,7 +4,21 @@ import test from 'node:test'
 function createRenderer(rpcCall, options = {}) {
   let moduleDefinition
   let moduleExports
+  let activeCtx = null
   const slotComponents = new Map()
+  const slotVersions = new Map()
+  const slotSubscribers = new Map()
+  if (options.initialSlots) {
+    for (const [name, list] of Object.entries(options.initialSlots)) {
+      const map = new Map()
+      for (const item of list) {
+        const entryKey = item.options?.key ?? item.options?.id ?? 'entry'
+        map.set(entryKey, item)
+      }
+      slotComponents.set(name, map)
+      slotVersions.set(name, 1)
+    }
+  }
   const mountedSlots = new Set()
   const renderedComponents = new Map()
   const hookState = new Map()
@@ -380,6 +394,9 @@ function createRenderer(rpcCall, options = {}) {
             const entries = slotComponents.get(slotOptions.name) || new Map()
             entries.set(entryKey, { component, options: slotOptions })
             slotComponents.set(slotOptions.name, entries)
+            slotVersions.set(slotOptions.name, (slotVersions.get(slotOptions.name) || 0) + 1)
+            const subs = slotSubscribers.get(slotOptions.name)
+            if (subs) { for (const fn of subs) fn() }
             // 挂载门控：mountOnly 白名单优先（只挂被测槽，其余一律不渲染）；
             // 否则默认不挂「右栏编辑正文」（它需要槽主注入的 owner props，
             // 无 props 渲染会发出 file-read 请求，干扰与它无关的用例）。
@@ -397,7 +414,29 @@ function createRenderer(rpcCall, options = {}) {
                 live.delete(entryKey)
                 if (live.size === 0) mountedSlots.delete(name)
               }
+              slotVersions.set(name, (slotVersions.get(name) || 0) + 1)
+              const nameSubs = slotSubscribers.get(name)
+              if (nameSubs) { for (const fn of nameSubs) fn() }
               renderAll()
+            }
+          },
+          entries(key) {
+            const map = slotComponents.get(key)
+            if (!map) return []
+            return Array.from(map.values())
+          },
+          getVersion(key) {
+            return slotVersions.get(key) || 0
+          },
+          subscribe(key, listener) {
+            let listeners = slotSubscribers.get(key)
+            if (!listeners) {
+              listeners = new Set()
+              slotSubscribers.set(key, listeners)
+            }
+            listeners.add(listener)
+            return () => {
+              listeners.delete(listener)
             }
           },
         },
@@ -443,6 +482,7 @@ function createRenderer(rpcCall, options = {}) {
           },
         },
       }
+      activeCtx = ctx
       plugin.apply(ctx)
       moduleExports = plugin
       renderAll()
@@ -580,6 +620,12 @@ function createRenderer(rpcCall, options = {}) {
         for (const { options } of entries.values()) out[slot].push({ ...options })
       }
       return out
+    },
+    get ctx() {
+      return activeCtx
+    },
+    get slots() {
+      return activeCtx ? activeCtx.slots : null
     },
     reloadCount() {
       return reloads
@@ -10155,4 +10201,129 @@ test('right-Sidebar editor also offers an official tab-menu entry that never mat
     if (previousObserver === undefined) delete globalThis.MutationObserver
     else globalThis.MutationObserver = previousObserver
   }
+})
+
+const testSettingsNavRpc = async (channel, endpoint) => {
+  if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+  if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+  if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+  if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+  if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+  if (endpoint === 'usage' || endpoint === 'usage-refresh') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {} } }
+  return { ok: true, value: {} }
+}
+
+test('settings nav order: entries() maps orders from localStorage and filters hidden items', async () => {
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+      { options: { id: 'archived-sessions', order: 40, label: () => '已归档会话' }, component: () => null },
+    ],
+  }
+  const renderer = createRenderer(testSettingsNavRpc, {
+    initialSlots,
+    initialStorage: {
+      'dsh-service-settings-nav-order': JSON.stringify(['plugins', 'dsh-service', 'general']),
+      'dsh-service-settings-nav-hidden': JSON.stringify(['archived-sessions', 'dsh-service']),
+    },
+  })
+  await renderer.load()
+  const entries = renderer.slots.entries('settings.section')
+  const ids = entries.map((e) => e.options.id)
+  assert.ok(ids.includes('plugins'))
+  assert.ok(ids.includes('dsh-service'))
+  assert.ok(ids.includes('general'))
+  assert.ok(ids.includes('models'))
+  assert.ok(!ids.includes('archived-sessions'), 'archived-sessions should be filtered out')
+
+  // Sorted by order (matching DSH shell behavior)
+  const sorted = [...entries].sort((a, b) => a.options.order - b.options.order).map((e) => e.options.id)
+  assert.deepEqual(sorted.slice(0, 3), ['plugins', 'dsh-service', 'general'])
+  // Unlisted models should be at the end
+  assert.equal(sorted[3], 'models')
+})
+
+test('settings nav order: management page allows reordering, toggling visibility, and resetting', async () => {
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+    ],
+  }
+  const renderer = createRenderer(testSettingsNavRpc, {
+    initialSlots,
+  })
+  await renderer.load()
+
+  // Subscribe to settings.section
+  let notifiedCount = 0
+  renderer.slots.subscribe('settings.section', () => { notifiedCount += 1 })
+  const v1 = renderer.slots.getVersion('settings.section')
+
+  // Navigate to Configuration -> Settings Nav tab
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  const navTab = renderer.findByTestId('config-tab-navOrder')
+  assert.ok(navTab)
+  await navTab.props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('config-tab-navOrder').props['aria-selected'], 'true')
+  assert.ok(renderer.hasTest('config-nav-order-page'))
+
+  // All entries present
+  assert.ok(renderer.hasTest('nav-order-item-general'))
+  assert.ok(renderer.hasTest('nav-order-item-models'))
+  assert.ok(renderer.hasTest('nav-order-item-plugins'))
+  assert.ok(renderer.hasTest('nav-order-item-dsh-service'))
+
+  // dsh-service visibility toggle is disabled
+  const dshToggle = renderer.findByTestId('nav-order-toggle-dsh-service')
+  assert.equal(dshToggle.props.disabled, true)
+
+  // Move models down
+  const modelsDown = renderer.findByTestId('nav-order-down-models')
+  assert.ok(modelsDown)
+  await modelsDown.props.onClick({ stopPropagation() {} })
+  await renderer.flush()
+
+  // Verify subscriber was notified and version bumped
+  assert.ok(notifiedCount > 0)
+  assert.ok(renderer.slots.getVersion('settings.section') > v1)
+
+  // Verify storage was updated
+  const storedOrder = JSON.parse(globalThis.localStorage.getItem('dsh-service-settings-nav-order'))
+  assert.ok(Array.isArray(storedOrder))
+  assert.ok(storedOrder.indexOf('models') > 0)
+
+  // Toggle visibility of plugins
+  const pluginsToggle = renderer.findByTestId('nav-order-toggle-plugins')
+  assert.equal(pluginsToggle.props['aria-checked'], 'true')
+  await pluginsToggle.props.onClick({ stopPropagation() {} })
+  await renderer.flush()
+
+  const storedHidden = JSON.parse(globalThis.localStorage.getItem('dsh-service-settings-nav-hidden'))
+  assert.ok(storedHidden.includes('plugins'))
+
+  // Verify entries() in slots filtered plugins out
+  const entriesAfterHide = renderer.slots.entries('settings.section')
+  assert.ok(!entriesAfterHide.some((e) => e.options.id === 'plugins'))
+
+  // Click Save
+  const saveBtn = renderer.findByTestId('nav-order-save')
+  await saveBtn.props.onClick()
+  await renderer.flush()
+  assert.ok(renderer.hasTest('nav-order-saved-tip'))
+
+  // Reset to default
+  const resetBtn = renderer.findByTestId('nav-order-reset')
+  await resetBtn.props.onClick()
+  await renderer.flush()
+
+  assert.equal(globalThis.localStorage.getItem('dsh-service-settings-nav-order'), null)
+  assert.equal(globalThis.localStorage.getItem('dsh-service-settings-nav-hidden'), null)
+  const entriesAfterReset = renderer.slots.entries('settings.section')
+  assert.ok(entriesAfterReset.some((e) => e.options.id === 'plugins'))
 })

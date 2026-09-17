@@ -49,7 +49,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 ## 🚀 Features
 
-The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
+The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
 Under **Plugins → Plugin configuration**, eleven host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
@@ -67,7 +67,7 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 ![Configuration page](./screenshots/configuration_en.png)
 
 - Maintenance groups Sessions, Skills, Subagents, Backups, and Restart; it remembers the most recent subpage and falls back to an available item when a feature is disabled
-- Configuration groups feature switches and task notifications; switches are grouped and apply live, while the Notifications entry stays visible but disabled when that feature is off
+- Configuration groups feature switches, task notifications, and settings nav tabs; switches are grouped and apply live, Notifications stays visible but disabled when that feature is off, and Settings Nav supports manual reordering (drag / arrows) and visibility management of all tabs in the settings dialog sidebar, persisted locally with live updates (the Service Control tab is permanently locked visible to prevent lockout)
 
 ### Version and updates
 

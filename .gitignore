@@ -23,6 +23,9 @@ KNOWLEDGE.md
 #   仅在本地成立，协作者读到的是空指针）
 docs/research/
 docs/internals/
+# Split local knowledge and planning records retain the root documents' privacy.
+docs/knowledge/
+docs/planning/
 
 # 注意：docs/agents/（Issue/分诊/领域流程）与 docs/releases/（发版说明，面向用户）**照常入库**，
 # 勿把整个 docs/ 一并忽略。
