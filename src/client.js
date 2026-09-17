@@ -3237,6 +3237,24 @@ window.__ModuleLoader__.load({
         versionSnapshotPromise = null
         return fetchVersionSnapshot()
       }
+      // 页面加载时的进程身份基线：/restart 是**宿主命令**（commands.register → exit(42)），
+      // 不经过客户端「重启」按钮，客户端拿不到 previousInstanceId；于是每个连接世代建立时
+      // 重取一次 instanceId，与基线比对——不同即新进程已起，照按钮那条路刷新页面。
+      // 基线不能懒取：用户在对话里敲 /restart 时设置面板通常从未打开过，那时也必须已有基线。
+      // 判据仍然只有一条：instanceId 变化 = 新进程；断线重连本身绝不触发刷新（AGENTS.md 不变量）。
+      let bootInstanceId = null
+      const syncProcessIdentity = async (fresh) => {
+        // 重连时必须实拉（缓存里那份还是老进程的），首次建立基线则可以复用共享快照，
+        // 避免与设置面板的首帧请求重复一次。
+        const res = await (fresh === true ? refreshVersionSnapshot() : fetchVersionSnapshot())
+        const nextInstanceId = res && res.ok ? res.value && res.value.instanceId : undefined
+        if (typeof nextInstanceId !== 'string' || nextInstanceId.length === 0) return
+        if (bootInstanceId === null) {
+          bootInstanceId = nextInstanceId
+          return
+        }
+        if (nextInstanceId !== bootInstanceId) window.location.reload()
+      }
       // 升级执行中标志放在 factory 作用域：闭包状态挡不住同一 tick 的重入，跨渲染的新闭包
       // 也各自持有独立的 false，只有插件级可变标志能同时覆盖两种情况。
       let upgradeInFlight = false
@@ -3327,6 +3345,15 @@ window.__ModuleLoader__.load({
         restartFlowListeners.clear()
         runtimeEnvListeners.clear()
       }, 'dsh-service recovery')
+
+      // 宿主命令重启（对话里的 /restart）没有客户端发起方：新进程上线时 connection 会起一个
+      // 新世代并广播 connection/reset，这里借此比对 instanceId 完成「自动刷新」——
+      // 与「重启」按钮的恢复轮询同判据、同结果（按钮路径仍走轮询，两条路互不干扰）。
+      ctx.effect(() => {
+        const dispose = ctx.on('connection/reset', () => { syncProcessIdentity(true).catch(() => {}) })
+        syncProcessIdentity(false).catch(() => {})
+        return dispose
+      }, 'dsh-service process identity')
 
       // 正式/预览/Alpha 通道行：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接。
       // 版本串嵌进 URL 前过安全字符集校验，不过校验的标签降级为纯文本。供版本卡行内展开使用。

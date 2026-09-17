@@ -2518,6 +2518,35 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
   assert.equal(renderer.reloadCount(), 1)
 })
 
+test('host-side /restart reloads the page on the next connection generation without the settings panel', async () => {
+  // 用户报的现象：在对话里用 /restart（宿主命令，commands.register → exit(42)），
+  // 进程被管理器拉起后页面不自动刷新。原因 = 该路径不经过客户端「重启」按钮，
+  // 没有 previousInstanceId，客户端从未比对 instanceId，也就没人发起刷新。
+  // 判据与按钮路径一致：只有 instanceId 变化才算「新进程已起」。
+  let versionCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') {
+      versionCalls += 1
+      // 首个世代 = 老进程（基线）；老进程退出前的一次重连仍是同一 id；新世代 = 新进程。
+      return { ok: true, value: { current: '0.1.0-rc.7', instanceId: versionCalls <= 2 ? 'old-instance' : 'new-instance' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.equal(renderer.reloadCount(), 0)
+
+  // 老进程退出前的一次重连：instanceId 未变，绝不刷新。
+  renderer.emitConnectionReset()
+  await renderer.flush()
+  assert.equal(renderer.reloadCount(), 0, 'a reconnect to the same process must not reload')
+
+  // 新进程上线：connection 起新世代 → 判定新进程 → 刷新。
+  renderer.emitConnectionReset()
+  await renderer.flush()
+  assert.equal(renderer.reloadCount(), 1, 'a new process instance must reload the page')
+})
+
 test('notification switches render four independent toggles (incl. bell visibility) and persist each choice', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
@@ -9841,6 +9870,9 @@ test('right-Sidebar editor loads through its own RPC, tracks dirtiness, saves wi
   const calls = []
   const { renderer } = createFileEditorRenderer(async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
+    // 插件级进程身份基线也会在连接建立时取一次 version：它不属于本编辑器用例，
+    // 不计入 calls（calls[0] 仍断言「编辑器的首个 RPC 是 file-read」）。
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     calls.push({ endpoint, payload })
     if (endpoint === 'file-read') return { ok: true, value: { text: 'hello\n', version: 'v1', path: '/ws/note.md', bytes: 6 } }
     if (endpoint === 'file-write') return { ok: true, value: { version: 'v2', operation: 'update', bytes: 12, before: 'hello\n', path: '/ws/note.md' } }

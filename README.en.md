@@ -83,7 +83,7 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 
 - Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
 - `/restart` also works in conversations; automatically refuses while work is running
-- Probes the new process after restart and reloads the page; manual reload offered after 60 seconds
+- Probes the new process after restart and reloads the page; manual reload offered after 60 seconds. A restart triggered by `/restart` in a conversation reloads the same way: the page records the process identity at load time and compares `instanceId` on reconnect, reloading as soon as the new process is up
 - Optional "Restart" entry in the settings left navigation (off by default), sharing the same confirmation flow as the "Maintenance → Restart" subpage
 - A suspected manual terminal launch warns that nothing will bring the process back and gets a yellow caution in Health
 
