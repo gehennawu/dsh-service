@@ -14,7 +14,7 @@ import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -5311,6 +5311,134 @@ test('stepfun auto-infers balance from the API host; step-plan adapts without a 
   assert.ok(resolvedNames.includes('STEPFUN_TOKEN'))
   assert.ok(!resolvedNames.includes('STEPFUN_OASIS_TOKEN'))
   assert.deepEqual(quotaCredentialHintNames('stepfun-step-plan', { apiKeyEnv: 'SF_API_KEY' }), ['STEPFUN_TOKEN', 'STEPFUN_OASIS_TOKEN'])
+})
+
+test('command-goat adapts from the api host and renders credits, plan and usage windows from the fixed account plane', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-commandcode-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const resolvedNames = []
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: {
+        'command-goat': { displayName: 'command-goat', baseURL: 'https://api.commandcode.ai/provider/v1', apiKeyEnv: 'COMMAND_GOAT_API_KEY' },
+      } } : undefined) },
+      credentials: { resolve: async (name) => { resolvedNames.push(name); return { value: 'user_live_key' } } },
+    },
+  })
+  const requests = stubHttpsRequest(t, (request) => {
+    const path = request.url.split('?')[0]
+    if (path.endsWith('/alpha/whoami')) return { payload: { success: true, user: { userName: 'woodyair' }, org: null } }
+    if (path.endsWith('/alpha/billing/credits')) {
+      return { payload: { credits: { monthlyCredits: 69.836433772, purchasedCredits: 0, freeCredits: 0 },
+        windowLimits: { limited: true, fiveHour: { used: 7, cap: 14, resetAt: 1789645175513 }, weekly: { used: 3.5, cap: 35, resetAt: 1790231975513 } } } }
+    }
+    if (path.endsWith('/alpha/billing/subscriptions')) {
+      return { payload: { success: true, data: { planId: 'individual-goat', status: 'active', currentPeriodStart: '2026-09-17T06:28:04.000Z', currentPeriodEnd: '2026-10-17T06:28:04.000Z' } } }
+    }
+    if (path.endsWith('/alpha/usage/summary')) return { payload: { totalCount: 11, totalCost: 0.12465959800000001, totalTokens: 2219164 } }
+    return { status: 404 }
+  })
+
+  assert.equal(await host.handler('quota', {}).then((res) => res.ok), true)
+  await waitFor(() => requests.length >= 4, 'four fixed account-plane calls')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'command-goat')
+  assert.equal(row.kind, 'command-goat')
+  assert.equal(row.kindSource, 'auto')
+  assert.equal(row.status, 'ok')
+  assert.equal(row.credentialEntryKey, 'edit')
+  assert.equal(row.usageUrl, 'https://commandcode.ai/settings/usage')
+  assert.deepEqual(row.windows.map((window) => [window.id, window.percent ?? window.text]), [
+    ['balance', '$69.84'],
+    ['period-spend', '$0.12'],
+    ['plan', 'individual goat'],
+    ['five-hour', 50],
+    ['weekly', 10],
+  ])
+  assert.deepEqual(row.windows.find((window) => window.id === 'five-hour').limit, 14)
+  // 四点全在固定账号面，全部带同 key 的 Bearer；查询串锚在订阅周期起点。
+  assert.deepEqual(requests.map((request) => request.url.replace('https://api.commandcode.ai', '')), [
+    '/alpha/whoami',
+    '/alpha/billing/credits',
+    '/alpha/billing/subscriptions',
+    `/alpha/usage/summary?since=${encodeURIComponent('2026-09-17T06:28:04.000Z')}`,
+  ])
+  for (const request of requests) assert.equal(request.auth, 'Bearer user_live_key')
+  // 凭据线索：settings apiKeyEnv 命中即止，绝不改试其它同名槽位。
+  assert.deepEqual(resolvedNames, ['COMMAND_GOAT_API_KEY'])
+
+  // 组织号（org.id 有值）→ 四端点都带 orgId，认证面之外不再重复探测。
+  const orgHost = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: {
+        'command-goat': { displayName: 'command-goat', baseURL: '', apiKeyEnv: 'COMMAND_GOAT_API_KEY' },
+      } } : undefined) },
+      credentials: { resolve: async () => ({ value: 'user_org_key' }) },
+    },
+  })
+  const orgRequests = stubHttpsRequest(t, (request) => {
+    const path = request.url.split('?')[0]
+    if (path.endsWith('/alpha/whoami')) return { payload: { success: true, org: { id: 'org-42', login: 'acme' } } }
+    if (path.endsWith('/alpha/billing/credits')) return { payload: { credits: { monthlyCredits: 1 } } }
+    if (path.endsWith('/alpha/billing/subscriptions')) return { payload: { success: true, data: { planId: 'teams-pro' } } }
+    if (path.endsWith('/alpha/usage/summary')) return { payload: { totalCost: 4 } }
+    return { status: 404 }
+  })
+  await orgHost.handler('quota', {})
+  await waitFor(() => orgRequests.length >= 4, 'four org-scoped calls')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const orgRow = (await orgHost.handler('quota', {})).value.providers.find((entry) => entry.provider === 'command-goat')
+  assert.equal(orgRow.kind, 'command-goat', 'empty baseURL claims the route id')
+  assert.deepEqual(orgRow.windows.map((window) => window.id), ['balance', 'period-spend', 'plan'])
+  assert.deepEqual(orgRequests.filter((request) => request.url.includes('orgId=org-42')).length, 3)
+})
+
+test('command-goat normalizer is re-exported from the host half for direct consumers', () => {
+  // index.js 的公开导出是既有 kind 的一致契约（stepfun 同款）：宿主测试直接断言，
+  // 防止「Adapter 里改了归一化、index 侧包装漏接线」这类只在发布后暴露的静默漂移。
+  assert.deepEqual(normalizeCommandCodeQuota({
+    credits: { credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 }, windowLimits: { fiveHour: { used: 5, cap: 10 } } },
+  }).windows, [
+    { id: 'balance', kindKey: 'balance', text: '$10.00' },
+    { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 5, limit: 10 },
+  ])
+})
+
+test('command-goat reports a rejected key as a credential failure and keeps the credential form available', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-commandcode-401-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: {
+        'command-goat': { displayName: 'command-goat', baseURL: 'https://api.commandcode.ai/provider/v1', apiKeyEnv: 'COMMAND_GOAT_API_KEY' },
+      } } : undefined) },
+      credentials: {
+        resolve: async () => ({ value: 'user_wrong' }),
+        describe: async (name) => ({ name, configured: false, writable: true }),
+      },
+    },
+  })
+  const requests = stubHttpsRequest(t, () => ({
+    status: 401,
+    payload: { success: false, error: { code: 'UNAUTHORIZED', status: 401, message: "Invalid 'Authorization' header or token." } },
+  }))
+
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'one whoami attempt')
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve))
+
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'command-goat')
+  // 错 key 归凭据类：行回 unconfigured（卡片保留填写入口），上游原话与线索状态一并下发。
+  assert.equal(row.status, 'unconfigured')
+  assert.equal(row.errorCode, 'credential-rejected')
+  assert.match(row.errorDetail, /Invalid 'Authorization' header or token/)
+  assert.deepEqual(row.credentialHints.map((hint) => hint.name), ['COMMAND_GOAT_API_KEY', 'COMMAND_CODE_API_KEY', 'COMMANDCODE_API_KEY'])
+  // 认证面已经判定凭据无效：不拿同一把错 key 继续打另外三个端点。
+  assert.equal(requests.length, 1)
 })
 
 

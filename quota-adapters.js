@@ -693,6 +693,152 @@ async function fetchStepFunStepPlanUsage({ credential, signal, requestJson }) {
   return windows
 }
 
+// ─── Command Code（command-goat）账号额度 ────────────────────────────────────
+// 数据源是 Command Code 的账号额度面（官方 CLI `cmd /usage` 与 Studio 用量页同一组端点，
+// 全部是宿主常量、无 baseURL 派生）：`GET /alpha/whoami`（取 org.id，个人号 org 为 null）→
+// `GET /alpha/billing/credits?orgId=`（credits 三源 + windowLimits.fiveHour/weekly 的 used/cap/resetAt）→
+// `GET /alpha/billing/subscriptions?orgId=`（planId/status/currentPeriodStart/currentPeriodEnd）→
+// `GET /alpha/usage/summary?orgId=&since=`（本计费周期 totalCost/totalCount/totalTokens）。
+// 认证与推理同 key（Bearer <CMD_API_KEY>，`user_*` 前缀）。归一化口径与 Studio 用量页一致：
+// 余额窗 = monthlyCredits + purchasedCredits + freeCredits，另出「本周期已用」与「套餐」两个文本窗；
+// 窗口 used/cap 是 Credit 数（非 0..1 比例）→ 折算已用百分比，绝对数原样下发（客户端做缩写）；
+// resetAt 是毫秒时间戳。
+const COMMAND_CODE_WHOAMI_URL = 'https://api.commandcode.ai/alpha/whoami'
+const COMMAND_CODE_CREDITS_URL = 'https://api.commandcode.ai/alpha/billing/credits'
+const COMMAND_CODE_SUBSCRIPTIONS_URL = 'https://api.commandcode.ai/alpha/billing/subscriptions'
+const COMMAND_CODE_USAGE_URL = 'https://api.commandcode.ai/alpha/usage/summary'
+
+/** 金额归一到两位小数字符串：负数/非有限/空值拒绝。两个「数值化陷阱」都要堵：
+ * `Number('')` 与 `Number(null)` 都是 0——上游缺字段会被伪装成 $0.00 余额。 */
+function normalizeCommandCodeMoney(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string' && value.trim() === '') return null
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount < 0) return null
+  return (Math.round(amount * 100) / 100).toFixed(2)
+}
+
+/** Command Code 窗口（五小时/周）→ 已用百分比窗口。used/cap 是绝对 Credit 数，
+ * 折算成已用 % 并保留绝对数；cap<=0 或 used 缺失/非法时跳过该窗（不伪造 0%）。 */
+function pushCommandCodeWindow(windows, id, entry) {
+  if (entry === null || typeof entry !== 'object') return
+  // `Number(null) === 0` 同款坑：缺 used/cap 时先显式挡掉，否则会造出「已用 0 / 上限 0」的假窗。
+  if (entry.used === null || entry.used === undefined || entry.cap === null || entry.cap === undefined) return
+  const used = Number(entry.used)
+  const cap = Number(entry.cap)
+  if (!Number.isFinite(used) || used < 0 || !Number.isFinite(cap) || cap <= 0) return
+  const resetsAt = normalizeResetTimestamp(entry.resetAt)
+  windows.push({
+    id,
+    kindKey: id,
+    percent: Math.max(0, Math.min(100, Math.round((used / cap) * 100))),
+    used: Math.round(used * 100) / 100,
+    limit: Math.round(cap * 100) / 100,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  })
+}
+
+/** 四端点原始载荷 → 窗口。credits 响应自带嵌套信封 `{credits:{monthlyCredits,…},windowLimits}`、
+ * subscriptions 是 `{success,data:{planId,…}}`、summary 与 whoami 是平铺对象——各自按真实形状取。
+ * 文本窗口只放可读金额与套餐标识（宿主不拼句子，窗口名走客户端词典）；
+ * summary 缺席时「本周期已用」整行不下发，绝不拿剩余冒充总额。 */
+function normalizeCommandCodeQuota(payload) {
+  const windows = []
+  if (payload === null || typeof payload !== 'object') return { windows }
+  const rawCredits = payload.credits !== null && typeof payload.credits === 'object' ? payload.credits : null
+  const creditSources = rawCredits?.credits !== null && typeof rawCredits?.credits === 'object' ? rawCredits.credits : null
+  if (creditSources !== null) {
+    const monthly = normalizeCommandCodeMoney(creditSources.monthlyCredits)
+    const purchased = normalizeCommandCodeMoney(creditSources.purchasedCredits)
+    const free = normalizeCommandCodeMoney(creditSources.freeCredits)
+    if (monthly !== null || purchased !== null || free !== null) {
+      const remaining = Number(monthly ?? 0) + Number(purchased ?? 0) + Number(free ?? 0)
+      windows.push({ id: 'balance', kindKey: 'balance', text: `$${remaining.toFixed(2)}` })
+    }
+  }
+  const rawSummary = payload.summary !== null && typeof payload.summary === 'object' ? payload.summary : null
+  const spent = rawSummary === null ? null : normalizeCommandCodeMoney(rawSummary.totalCost)
+  if (spent !== null) windows.push({ id: 'period-spend', kindKey: 'period-spend', text: `$${spent}` })
+  const subscription = payload.subscription?.data !== null && typeof payload.subscription?.data === 'object'
+    ? payload.subscription.data
+    : payload.subscription !== null && typeof payload.subscription === 'object' ? payload.subscription : null
+  const rawPlan = typeof subscription?.planId === 'string' ? subscription.planId.trim() : ''
+  if (rawPlan !== '') {
+    const periodEnd = normalizeResetTimestamp(subscription?.currentPeriodEnd)
+    windows.push({
+      id: 'plan',
+      kindKey: 'plan-name',
+      text: rawPlan.replace(/[_-]+/g, ' ').trim().slice(0, MAX_QUOTA_PROVIDER_NAME),
+      ...(periodEnd !== undefined ? { resetsAt: periodEnd } : {}),
+    })
+  }
+  const limits = rawCredits?.windowLimits !== null && typeof rawCredits?.windowLimits === 'object' ? rawCredits.windowLimits : null
+  if (limits !== null) {
+    pushCommandCodeWindow(windows, 'five-hour', limits.fiveHour)
+    pushCommandCodeWindow(windows, 'weekly', limits.weekly)
+  }
+  return { windows }
+}
+
+/** Command Code 编排：whoami 取 orgId（认证失败即止，不再打后续端点）→ credits/subscriptions
+ * 并发取 → usage/summary 带上订阅周期起点（官方 CLI 同序，让花费口径锚在当个计费周期）。
+ * 个人号 org=null，orgId 为空时端点不带查询参数；401/403 一律归一 credential-rejected
+ * （错 key 要能就地重填）。三段额度面独立失败不拖垮整行——有任一段可用即展示，
+ * 全不可用才抛首个端点的稳定错误码（原话随 detail 透出）。 */
+async function fetchCommandCodeQuota({ credential, signal, requestJson }) {
+  if (typeof requestJson !== 'function') throw new Error('transport-unavailable')
+  const raw = String(credential ?? '').trim()
+  if (raw === '') throw new Error('credential-missing')
+  // 发现链已按 policy.format 加了 Bearer；粘贴带回的 `Authorization: Bearer x` 整头也容错。
+  const token = raw.replace(/^authorization:\s*/i, '').replace(/^bearer\s+/i, '')
+  if (token === '') throw new Error('credential-missing')
+  const authorization = `Bearer ${token}`
+  const blocking = (error) => error?.message === 'http-status:401' || error?.message === 'http-status:403'
+  const get = async (endpoint) => {
+    try {
+      return { ok: true, value: await requestJson(endpoint, { authorization, signal }) }
+    } catch (error) {
+      if (blocking(error)) {
+        // 错 key 归凭据类（行回 unconfigured 以便就地重填），但上游原话照旧透出——
+        // 统一失败信封要求「为什么被拒」可读，不能只剩一个家族码。
+        const rejected = new Error('credential-rejected')
+        if (typeof error?.detail === 'string' && error.detail !== '') rejected.detail = error.detail
+        throw rejected
+      }
+      return { ok: false, error }
+    }
+  }
+  const whoami = await get(COMMAND_CODE_WHOAMI_URL)
+  if (whoami.ok !== true) {
+    // 认证面都拿不到：orgId 无处可取，后三个端点必然同样失败，直接如实报首个错误。
+    throw whoami.error
+  }
+  const orgId = typeof whoami.value?.org?.id === 'string' && whoami.value.org.id.trim() !== '' ? whoami.value.org.id.trim() : ''
+  const query = orgId === '' ? '' : `?orgId=${encodeURIComponent(orgId)}`
+  const [creditsResult, subscriptionResult] = await Promise.all([
+    get(`${COMMAND_CODE_CREDITS_URL}${query}`),
+    get(`${COMMAND_CODE_SUBSCRIPTIONS_URL}${query}`),
+  ])
+  const subscription = subscriptionResult.ok === true ? subscriptionResult.value : null
+  const periodStart = typeof subscription?.data?.currentPeriodStart === 'string' ? subscription.data.currentPeriodStart.trim() : ''
+  const summaryParams = periodStart === ''
+    ? query
+    : `${query === '' ? '?' : `${query}&`}since=${encodeURIComponent(periodStart)}`
+  const summaryResult = await get(`${COMMAND_CODE_USAGE_URL}${summaryParams}`)
+  const failures = [creditsResult, subscriptionResult, summaryResult].filter((result) => result.ok !== true)
+  const windows = normalizeCommandCodeQuota({
+    credits: creditsResult.ok === true ? creditsResult.value : null,
+    subscription,
+    summary: summaryResult.ok === true ? summaryResult.value : null,
+  }).windows
+  if (windows.length === 0) {
+    const first = failures[0]
+    if (first !== undefined) throw first.error
+    throw new Error('bad-payload:shape')
+  }
+  return windows
+}
+
 const CLIPROXY_CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const CLIPROXY_GEMINI_QUOTA_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
 // antigravity 额度候选（v1.4.8 修订 + 复核收敛为 daily-only）：CPA 的 antigravity 流量默认全打
@@ -1198,6 +1344,15 @@ function createQuotaAdapterCatalog() {
       entryKey: 'editToken',
       usageUrl: 'https://platform.stepfun.com/plan-usage',
     }),
+    createComposedAdapter({
+      kind: 'command-goat',
+      fetch: fetchCommandCodeQuota,
+      keyHints: ['COMMAND_CODE_API_KEY', 'COMMANDCODE_API_KEY'],
+      hosts: ['api.commandcode.ai', 'commandcode.ai'],
+      // 查询面是固定账号面（与推理 baseURL 无关）：未声明端点的同名渠道按路由 id 认领。
+      routeIds: ['command-goat'],
+      usageUrl: 'https://commandcode.ai/settings/usage',
+    }),
   ])
 }
 
@@ -1235,12 +1390,14 @@ export {
   cliproxyProjectFor,
   createQuotaAdapterCatalog,
   fetchCliproxyUsage,
+  fetchCommandCodeQuota,
   fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
   findQuotaAdapter,
   normalizeAntigravityModels,
   normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
+  normalizeCommandCodeQuota,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,
   normalizeKimiBalance,

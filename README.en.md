@@ -125,9 +125,10 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 | StepFun Balance | Official `GET /v1/accounts` (API key, com/ai dual domains) |
 | StepFun Step Plan | Console BFF subscription quota (Oasis-Token console session; 5-hour/weekly windows vs Credit pool auto-detected) |
 | Xiaomi MiMo Token Plan | Console-origin plan quota (web session cookie) |
+| Command Code (command-goat) | Official account quota plane `api.commandcode.ai/alpha/*` (same key reused: balance + period spend + plan + 5-hour/weekly windows) |
 | CLIProxyAPI deployment | Official remaining quota of each OAuth upstream account |
 
-- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry)
+- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry); the Command Code quota plane reuses the inference key, so no extra credential is needed
 - Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); auto-query can be set to manual-only / 1 / 2 / 5 / 10 minutes
 - CLIProxyAPI: when an account's live query fails, its last cached snapshot windows are shown with a "cached" badge; snapshot windows whose reset time has already passed (the window they described has ended) are dropped, avoiding the illusion of quota stuck on yesterday
 - Failures state their real reason: cards and the ring show "error copy (HTTP status · failing endpoint · failing account · upstream message) · next automatic retry" — a wrong key, an unpaid balance, rate limiting, and a moved endpoint each read differently instead of one generic notice; an upstream 401/403 is classified as "credential rejected by upstream" and the card keeps its credential form available, and business error codes inside an HTTP 200 envelope are classified the same way (auth failure → credential rejected, expired plan → no active subscription, vendor-side failure → upstream service error) instead of being reported as "unexpected response format"
@@ -354,6 +355,12 @@ It is the "likely manual terminal launch" detection — no process manager found
 <summary><strong>A quota card shows "credential missing"?</strong></summary>
 
 Use the inline form on the card: an API key for regular adaptations, the management key for CLIProxyAPI (not the proxy key), and the console cookie for Xiaomi Token Plan. The value goes into the DSH credential store and the provider refreshes automatically; if a process environment variable shadows the name, the host refuses the write — change the variable itself.
+</details>
+
+<details>
+<summary><strong>Command Code shows "credential rejected by upstream"?</strong></summary>
+
+The inference and quota planes share one key (`user_*` prefix, created in Studio's API keys page). This error means the upstream rejected the key: regenerate or copy it in Studio at commandcode.ai, then paste it via "Set API credential". If the channel's baseURL points at a self-hosted relay rather than `api.commandcode.ai`, note the quota plane always queries the official account plane — a relay key cannot read official quota.
 </details>
 
 <details>

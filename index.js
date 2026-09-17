@@ -24,11 +24,13 @@ import {
   cliproxyProjectFor as cliproxyProjectForAdapter,
   createQuotaAdapterCatalog,
   fetchCliproxyUsage as fetchCliproxyAdapterUsage,
+  fetchCommandCodeQuota as fetchCommandCodeQuotaAdapter,
   fetchStepFunStepPlanUsage as fetchStepFunStepPlanAdapterUsage,
   fetchXiaomiTokenPlanUsage as fetchXiaomiTokenPlanAdapterUsage,
   normalizeAntigravityModels as normalizeAntigravityModelsAdapter,
   normalizeAntigravityQuotaSummary as normalizeAntigravityQuotaSummaryAdapter,
   normalizeCodexRateLimit as normalizeCodexRateLimitAdapter,
+  normalizeCommandCodeQuota as normalizeCommandCodeQuotaAdapter,
   normalizeDeepseekBalance as normalizeDeepseekBalanceAdapter,
   normalizeGeminiBuckets as normalizeGeminiBucketsAdapter,
   normalizeKimiBalance as normalizeKimiBalanceAdapter,
@@ -1435,6 +1437,20 @@ function normalizeStepFunStepPlanUsage(payload) {
 // status==1 但无任何窗口 → no-subscription（未订阅 Step Plan）。
 async function fetchStepFunStepPlanUsage({ credential, signal }) {
   return fetchStepFunStepPlanAdapterUsage({ credential, signal, requestJson: requestQuotaJson })
+}
+
+// ─── Command Code（command-goat）账号额度查询 ────────────────────────────────
+// 查询面完全固定（api.commandcode.ai 的 alpha 面，与 settings baseURL 无关）：whoami 取 orgId →
+// credits（三源余额 + 五小时/周窗 used/cap）→ subscriptions（套餐与计费周期）→ usage/summary
+// （周期花费）。认证与推理同 key（Bearer <用户 key>），凭据线索走 settings apiKeyEnv 在前、
+// COMMAND_CODE_API_KEY 殿后。归一化：余额/花费是文本窗、窗口是百分比窗（宿主下发绝对数，
+// 客户端做缩写），全部由 Adapter 持有——index.js 只做装配。
+function normalizeCommandCodeQuota(payload) {
+  return normalizeCommandCodeQuotaAdapter(payload)
+}
+
+async function fetchCommandCodeQuota({ credential, signal }) {
+  return fetchCommandCodeQuotaAdapter({ credential, signal, requestJson: requestQuotaJson })
 }
 
 
@@ -6121,6 +6137,7 @@ export {
   evaluateSkillFile,
   extractSkillDraftJson,
   fetchCliproxyUsage,
+  fetchCommandCodeQuota,
   fetchProviderUsage,
   fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
@@ -6139,6 +6156,7 @@ export {
   normalizeAntigravityModels,
   normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
+  normalizeCommandCodeQuota,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,
   normalizeKimiBalance,
@@ -6199,6 +6217,7 @@ export default {
   evaluateSkillFile,
   extractSkillDraftJson,
   fetchCliproxyUsage,
+  fetchCommandCodeQuota,
   fetchProviderUsage,
   fetchStepFunStepPlanUsage,
   fetchXiaomiTokenPlanUsage,
@@ -6217,6 +6236,7 @@ export default {
   normalizeAntigravityModels,
   normalizeAntigravityQuotaSummary,
   normalizeCodexRateLimit,
+  normalizeCommandCodeQuota,
   normalizeDeepseekBalance,
   normalizeGeminiBuckets,
   normalizeKimiBalance,

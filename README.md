@@ -127,9 +127,10 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 | StepFun 余额 | 官方 `GET /v1/accounts`（API key，com/ai 双域） |
 | StepFun Step Plan | 控制台 BFF 订阅额度（Oasis-Token 登录令牌；5 小时/周窗口与 Credit 月池自动识别） |
 | 小米 MiMo Token Plan | 控制台同源套餐额度（网页登录态 Cookie） |
+| Command Code（command-goat） | 官方账号额度面 `api.commandcode.ai/alpha/*`（同 key 复用：余额 + 本周期花费 + 套餐 + 5 小时/周窗口） |
 | CLIProxyAPI 部署 | 各 OAuth 上游账号官方剩余额度 |
 
-- 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie，StepFun Step Plan 填控制台令牌（Oasis-Token，`Oasis-Webid` 由令牌自动派生无需手填）
+- 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie，StepFun Step Plan 填控制台令牌（Oasis-Token，`Oasis-Webid` 由令牌自动派生无需手填）；Command Code 额度面与推理面同一把 key，无需另配
 - 防风控：结果缓存 60 秒、失败指数退避（30 秒 ×2、封顶 15 分钟）；自动查询可调为仅手动 / 1 / 2 / 5 / 10 分钟
 - CLIProxyAPI 某账号实时查询失败时，回退显示其上次缓存的快照窗口并标注「缓存」徽标；重置时间已过的快照窗口（快照描述的窗口已结束）直接丢弃，避免「额度停在昨天」的错觉
 - 失败原因如实呈现：卡片与圆环显示「错误文案（HTTP 状态 · 失败端点 · 失败账号 · 上游原话）· 下次自动重试时刻」——错 key、欠费、限流、路径变更各有各的上游原话与状态码，不再只有一个笼统提示；上游 401/403 判为「凭据被上游拒绝」，卡片同时保留凭据填写入口；HTTP 200 业务信封里的错误码同样定族——鉴权失败判凭据被拒（保留填写入口）、套餐到期判无生效订阅、上游自身故障判「上游服务故障」，不再一律报「响应格式异常」
@@ -356,6 +357,12 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 <summary><strong>额度卡片显示「凭据未配置」？</strong></summary>
 
 点击卡片上的内联表单写入凭据：普通适配填 API key，CLIProxyAPI 填管理密钥（不是代理 key），小米 Token Plan 填控制台 Cookie。写入 DSH 凭据库后自动强制刷新；被进程环境变量遮蔽时宿主会拒绝写入，需改环境变量本身。
+</details>
+
+<details>
+<summary><strong>Command Code 卡片显示「凭据被上游拒绝」？</strong></summary>
+
+推理面和额度面共用同一把 key（`user_*` 前缀，Studio 的 API keys 页生成）。卡片显示该错误说明 key 被上游判为无效：到 commandcode.ai 的 Studio 重新生成或复制 key，点卡片「填写 API 密钥」粘贴即可。若渠道 baseURL 指向的是自建中转而非 `api.commandcode.ai`，额度面仍固定查官方账号面——中转 key 查不到官方额度。
 </details>
 
 <details>

@@ -3914,6 +3914,103 @@ test('stepfun cards show money text windows and the credit-pool plan windows wit
   assert.match(renderer.text('settings.section'), /填写控制台令牌（Oasis-Token，浏览器登录态）/)
 })
 
+test('command-goat card shows the account balance, period spend, plan and usage windows', async () => {
+  // Command Code 额度卡：余额 / 本周期已用 / 套餐是文本窗，5 小时与周窗是百分比窗
+  // （宿主下发绝对 used/limit，客户端缩写）；卡片标题链到官方用量页。
+  const now = Date.now()
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const quotaResponse = {
+    ok: true,
+    value: {
+      serverTime: now,
+      providers: [
+        {
+          provider: 'command-goat', displayName: 'command-goat', adapted: true, kind: 'command-goat', kindSource: 'auto',
+          credentialEntryKey: 'edit', refreshing: false, status: 'ok',
+          windows: [
+            { id: 'balance', kindKey: 'balance', text: '$69.84' },
+            { id: 'period-spend', kindKey: 'period-spend', text: '$0.12' },
+            { id: 'plan', kindKey: 'plan-name', text: 'individual goat', resetsAt: new Date(now + 86400_000).toISOString() },
+            { id: 'five-hour', kindKey: 'five-hour', percent: 50, used: 7, limit: 14, resetsAt: new Date(now + 3600_000).toISOString() },
+            { id: 'weekly', kindKey: 'weekly', percent: 10, used: 3.5, limit: 35 },
+          ],
+          fetchedAt: now,
+          usageUrl: 'https://commandcode.ai/settings/usage',
+        },
+        {
+          provider: 'goat-relay', displayName: 'goat-relay', adapted: true, kind: 'command-goat', credentialEntryKey: 'edit',
+          refreshing: false, status: 'unconfigured', errorCode: 'credential-rejected', errorDetail: "Invalid 'Authorization' header or token.",
+          nextAllowedAt: null,
+          credentialHints: [
+            { name: 'COMMAND_GOAT_API_KEY', configured: false },
+            { name: 'COMMAND_CODE_API_KEY', configured: false },
+            { name: 'COMMANDCODE_API_KEY', configured: false },
+          ],
+        },
+      ],
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '1.6.3', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '1.6.3', latest: '1.6.3', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return quotaResponse
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 文本窗：余额、本周期已用、套餐标识（planId 去分隔符）；绝对数窗不必缩写。
+  assert.match(text, /余额/)
+  assert.match(text, /\$69\.84/)
+  assert.match(text, /本周期已用/)
+  assert.match(text, /\$0\.12/)
+  assert.match(text, /订阅套餐/)
+  assert.match(text, /individual goat/)
+  // 百分比窗：5 小时 50% · 7 / 14、周 10% · 3.5 / 35（控制台口径的绝对数 figure）。
+  assert.match(text, /5 小时额度/)
+  assert.match(text, /50% · 7 \/ 14/)
+  assert.match(text, /10% · 3\.5 \/ 35/)
+  assert.ok(renderer.hasTest('quota-card-reset-command-goat-five-hour'))
+  assert.ok(renderer.hasTest('quota-card-reset-command-goat-plan'))
+  assert.equal(renderer.findByTestId('quota-usage-link-command-goat').props.href, 'https://commandcode.ai/settings/usage')
+  assert.equal(renderer.findByTestId('quota-usage-link-command-goat').props.target, '_blank')
+  // 适配来源标签：baseURL 自动识别。
+  assert.match(text, /自动识别/)
+  // 错 key 行的凭据入口文案是经典「填写 API 密钥」（额度面与推理面同 key），不是 Cookie/管理密钥版。
+  renderer.findByTestId('quota-advanced-toggle-goat-relay').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /凭据被上游拒绝/)
+  assert.match(renderer.text('settings.section'), /Invalid 'Authorization' header or token/)
+  assert.ok(renderer.hasTest('quota-cred-edit-goat-relay'))
+  assert.match(renderer.text('settings.section'), /填写 API 密钥/)
+})
+
+test('quota kind dropdown offers command-goat alongside every other built-in adapter', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '1.6.3', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '1.6.3', latest: '1.6.3', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [{ provider: 'command-goat', displayName: 'command-goat', adapted: false }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const kinds = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
+  assert.deepEqual(kinds, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
+  const labels = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.children).flat(Infinity)
+  assert.ok(labels.includes('Command Code 账号额度'), `kind dropdown labels missing command-goat: ${JSON.stringify(labels)}`)
+})
+
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
@@ -4014,7 +4111,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // v0.39：类型切换在折叠的「高级配置」区，先展开 openrouter 卡。

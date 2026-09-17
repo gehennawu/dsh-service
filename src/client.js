@@ -943,12 +943,14 @@ window.__ModuleLoader__.load({
       'quota.kind.stepfun-step-plan': 'StepFun Step Plan 订阅',
       'quota.kind.cliproxy': 'CLIProxyAPI 账号额度',
       'quota.kind.xiaomi-token-plan-cn': '小米 MiMo Token Plan',
+      'quota.kind.command-goat': 'Command Code 账号额度',
       'quota.window.total_token': '套餐总额度',
       'quota.window.compensation_total_token': '补偿积分',
       'quota.window.plan-name': '订阅套餐',
       'quota.window.credit-pool': '月度 Credit 池',
       'quota.window.topup-credit': '加油包 Credit',
       'quota.window.five-hour': '5 小时额度',
+      'quota.window.period-spend': '本周期已用',
       'quota.error.no-subscription': '当前账号没有生效中的订阅额度',
       'quota.error.credential-rejected': '凭据被上游拒绝，请重新填写（控制台类渠道请重新从浏览器复制登录态）',
       'quota.credential.editCookie': '填写控制台 Cookie（网页登录态）',
@@ -1779,12 +1781,14 @@ window.__ModuleLoader__.load({
       'quota.kind.stepfun': 'StepFun Balance',
       'quota.kind.stepfun-step-plan': 'StepFun Step Plan',
       'quota.kind.xiaomi-token-plan-cn': 'Xiaomi MiMo Token Plan',
+      'quota.kind.command-goat': 'Command Code account quota',
       'quota.window.total_token': 'Plan total quota',
       'quota.window.compensation_total_token': 'Compensation credits',
       'quota.window.plan-name': 'Subscription plan',
       'quota.window.credit-pool': 'Monthly credit pool',
       'quota.window.topup-credit': 'Top-up credit',
       'quota.window.five-hour': '5-hour quota',
+      'quota.window.period-spend': 'Spent this period',
       'quota.error.no-subscription': 'No active quota subscription on this account',
       'quota.error.credential-rejected': 'Credential rejected by upstream; enter it again (for console types, copy the browser session again)',
       'quota.credential.editCookie': 'Set console cookie (web session)',
@@ -3574,7 +3578,7 @@ window.__ModuleLoader__.load({
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat']
       function readQuotaPollMinutes() {
         try {
           const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
@@ -4021,18 +4025,8 @@ window.__ModuleLoader__.load({
         const labelText = quotaWindowDisplayLabel(window, translate)
         const labelStyle = { color: 'var(--dsw-alias-label-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
         const valueStyle = { color: 'var(--dsw-alias-label-primary)', fontWeight: 500, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0 }
-        if (typeof window.text === 'string') {
-          return React.createElement('div', {
-            key: window.id,
-            ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
-            style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' },
-          },
-          React.createElement('span', { style: labelStyle, title: labelText }, labelText),
-          React.createElement('span', {
-            'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
-            style: valueStyle,
-          }, window.text))
-        }
+        // 重置倒计时（两种窗口共用）：文本窗也可能是周期性的（如订阅套餐的计费周期结束），
+        // 早退会让 resetsAt 静默丢失，故与百分比窗走同一段渲染。
         let resetNode = null
         if (typeof window.resetsAt === 'string') {
           const at = Date.parse(window.resetsAt)
@@ -4042,6 +4036,19 @@ window.__ModuleLoader__.load({
               style: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
             }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
           }
+        }
+        if (typeof window.text === 'string') {
+          return React.createElement('div', {
+            key: window.id,
+            ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
+          },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '12px', lineHeight: '18px' } },
+            React.createElement('span', { style: labelStyle, title: labelText }, labelText),
+            React.createElement('span', {
+              'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
+              style: valueStyle,
+            }, window.text)),
+          resetNode)
         }
         return React.createElement('div', {
           key: window.id,
