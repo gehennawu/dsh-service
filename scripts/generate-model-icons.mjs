@@ -341,24 +341,18 @@ const CUSTOM_SVG = {
     '</g></svg>',
 
   /**
-   * Xiaomi「mi」品牌标——**替换**图标库的 `xiaomimimo`。
+   * Xiaomi「mi」品牌标（彩色形态 A）——**替换**图标库的 `xiaomimimo`。
    *
-   * 为什么不直接用库里的：`xiaomimimo.svg` 是「Xiaomi / MIMO」**两行文字组合标**
-   * （第一行完整 Xiaomi 单词 + 第二行 MIMO），在 15px 下两行各自不足 7px 高、糊成
-   * 一团灰（真机 1x 像素对照：覆盖率仅 0.378，在 63 张里排第 50；同尺寸的 openai
-   * 是 0.578）。而它还被 4 个 provider（xiaomi + 三个 token-plan 区域变体）共用，
-   * 影响面最大。
-   *
-   * 图源：simple-icons（CC0-1.0，`icons/xiaomi.svg`）——该库只有**纯 mi 标**，没有
-   * 那层深色圆角底板干扰。这里只取其中 mi 字形的两个子路径（第一段 `M12 0…` 是外层
-   * 圆角方框，**丢掉**：它同 ⌘ 的板子问题一样，会把 15px 糊成实心块）。
-   * 覆盖率为 0.564，与 openai（0.578）同档，属于正常品牌标的重量。
-   *
-   * 注：viewBox 只是初始值，生成期会按真实墨迹重算覆盖（见 tightenViewBoxes）。
+   * 采用官方 2021 原研哉 Alive 超椭圆全彩标：
+   * - 底板：Lamé curve / 超椭圆方程 (|x/a|^3 + |y/b|^3 = 1) 优雅平滑曲率，品牌橙 #FF6900
+   * - 字标：纯白 MI 居中字标，保持 41.5 模数与「少一点心」的几何构图
+   * - 档位：彩色档（c: 1），通过 background-image 原样渲染品牌橙，不随 currentColor 变黑白，
+   *   在深浅两色主题下均高度清晰鲜明。
    */
   xiaomi:
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">' +
-    '<path d="M4.906 7.405h5.624c1.47 0 3.007.068 3.764.827.746.746.827 2.233.83 3.676v4.54a.15.15 0 0 1-.152.147h-1.947a.15.15 0 0 1-.152-.148V11.83c-.002-.806-.048-1.634-.464-2.051-.358-.36-1.026-.441-1.72-.458H7.158a.15.15 0 0 0-.151.147v6.98a.15.15 0 0 1-.152.148H4.906a.15.15 0 0 1-.15-.148V7.554a.15.15 0 0 1 .15-.149zm12.131 0h1.949a.15.15 0 0 1 .15.15v8.892a.15.15 0 0 1-.15.148h-1.949a.15.15 0 0 1-.151-.148V7.554a.15.15 0 0 1 .151-.149zM8.92 10.948h2.046c.083 0 .15.066.15.147v5.352a.15.15 0 0 1-.15.148H8.92a.15.15 0 0 1-.152-.148v-5.352a.15.15 0 0 1 .152-.147Z"/>' +
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' +
+    '<path fill="#FF6900" d="M458.634 53.496C410.33 5.378 340.875 0 256 0c-84.982 0-154.542 5.44-202.826 53.688C4.897 101.916 0 171.364 0 256.249c0 84.899 4.897 154.368 53.194 202.613C101.475 507.117 171.027 512 256 512c84.974 0 154.514-4.884 202.795-53.139 48.294-48.254 53.205-117.714 53.205-202.613 0-84.72-4.964-154.243-53.366-202.479z"/>' +
+    '<path fill="#FFF" d="M404.554 158.605c1.759 0 3.223 1.417 3.223 3.161v189.386c0 1.715-1.464 3.139-3.223 3.139H363.058c-1.781 0-3.228-1.424-3.228-3.139V161.766c0-1.743 1.446-3.161 3.228-3.161h41.496zM224.476 158.605c31.303 0 64.033 1.435 80.176 17.589 15.871 15.897 17.59 47.549 17.656 78.286v96.671c0 1.715-1.446 3.139-3.219 3.139h-41.49c-1.777 0-3.229-1.424-3.229-3.139V252.817c-.044-17.167-1.031-34.81-9.884-43.692-7.62-7.641-21.839-9.391-36.625-9.754h-75.21c-1.764 0-3.208 1.419-3.208 3.136v148.645c0 1.715-1.462 3.139-3.237 3.139H107.9c-1.774 0-3.201-1.424-3.201-3.139V161.766c0-1.743 1.426-3.161 3.201-3.161h116.576zm9.287 75.427c1.766 0 3.201 1.413 3.201 3.143v113.977c0 1.715-1.436 3.139-3.201 3.139h-43.584c-1.792 0-3.228-1.424-3.228-3.139V237.175c0-1.73 1.436-3.143 3.228-3.143h43.584z"/>' +
     '</svg>',
 }
 
@@ -394,12 +388,13 @@ for (const [provider, slug] of ENTRIES) {
     continue
   }
 
-  // 本地手绘品牌优先：图标库里没有的（如 Command Code）不打 CDN。
+  // 本地手绘/定制品牌优先：图标库里没有或需定制的不打 CDN。
   const customSvg = CUSTOM_SVG[slug]
+  const isCustomColor = customSvg !== undefined && (customSvg.includes('#FF6900') || customSvg.includes('#ff6900'))
   // 单色候选：base slug（多数为 currentColor）
-  const monoSvg = customSvg !== undefined ? customSvg : await fetchSvg(slug)
-  // 彩色候选：slug-color
-  const colorSvg = customSvg !== undefined ? null : await fetchSvg(slug + '-color')
+  const monoSvg = customSvg !== undefined ? (isCustomColor ? null : customSvg) : await fetchSvg(slug)
+  // 彩色候选：slug-color（或本地彩色定制）
+  const colorSvg = customSvg !== undefined ? (isCustomColor ? customSvg : null) : await fetchSvg(slug + '-color')
 
   let tier = null
   let chosen = null
@@ -407,6 +402,7 @@ for (const [provider, slug] of ENTRIES) {
   const colorOk =
     colorSvg !== null &&
     (() => {
+      if (customSvg !== undefined && isCustomColor) return true
       const colors = hardcodedColors(colorSvg)
       // 没有硬编码色（渐变/currentColor）时按 mono 处理，不算可读品牌色
       if (colors.length === 0) return false

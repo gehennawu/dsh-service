@@ -87,8 +87,10 @@ html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigge
   -webkit-mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
   mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
 }
-/* 彩色档：原样上品牌色（去掉 mask，改用 background-image）。 */
-html [${MODEL_ICON_SEAT_ATTR}="color"] button[class*="_7KE1Ra_trigger"]::before {
+/* 彩色档：原样上品牌色（去掉 mask，改用 background-image）。
+   选择器必须同样带上 [${MODEL_ICON_ATTR}] 保持特异性 (0,3,2) 与上方单色规则平齐，
+   以保证 !important 级联下后定义的 mask:none / transparent 胜出。 */
+html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigger"]::before {
   background-color: transparent !important;
   -webkit-mask: none !important;
   mask: none !important;

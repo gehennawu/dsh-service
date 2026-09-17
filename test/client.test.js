@@ -11044,21 +11044,17 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
     }
   }
 
-  // 图标库「收录了但在这个尺寸下不可用」的品牌：Xiaomi 用纯 mi 标替换 xiaomimimo 组合标。
-  // 库里那份是「Xiaomi / MIMO」两行文字组合标，15px 下两行各不足 7px 高、糊成一团
-  // （真机 1x 像素对照覆盖率 0.378 vs openai 0.578）。断言它的图形特征，挡住退回组合标：
-  //   - 只有**一条** <path>（mi 的笔画是同一路径的三段 subpath，用 fill）；
-  //   - 绝不含 <text>/<rect>（组合标靠文字排版，正是要避免的形态）。
+  // 图标库「收录了但在这个尺寸下不可用」的品牌：Xiaomi 用原研哉 2021 全彩超椭圆标（形态 A）替换 xiaomimimo 组合标。
+  // 库里那份是「Xiaomi / MIMO」两行文字组合标，15px 下两行各不足 7px 高、糊成一团。
+  // 彩色形态 A 包含：超椭圆底板（#FF6900）+ 纯白 MI 字标，属于彩色档（c: 1），通过 background-image 渲染。
   const miSpec = icons.resolve('xiaomi-token-plan-cn').spec
   assert.equal(icons.resolve('xiaomi').slug, 'xiaomi')
   assert.equal(icons.resolve('mimo').slug, 'xiaomi')
-  assert.equal(miSpec.c, 0, 'Xiaomi mi mark must be mono (single-colour glyph)')
-  assert.equal((miSpec.m.match(/<path/g) || []).length, 1, 'mi mark must be one filled path (three subpaths)')
+  assert.equal(miSpec.c, 1, 'Xiaomi mi mark must be color tier (c: 1) with brand orange superellipse')
+  assert.equal((miSpec.m.match(/<path/g) || []).length, 2, 'mi mark has two paths (orange superellipse + white letters)')
+  assert.ok(miSpec.m.includes('#FF6900'), 'mi mark must include Xiaomi brand orange #FF6900')
   assert.ok(!miSpec.m.includes('<text'), 'mi mark must not rely on text layout')
-  assert.ok(!miSpec.m.includes('<rect'), 'mi mark must not carry the rounded-square plate (would smudge at 15px)')
-  // mi 的笔画是同一路径里的三段 subpath（左「m」、右「i」竖、i 的点），每段以一次
-  // moveto 起笔——SVG 的相对/绝对 moveto 分别写作 m / M，两者都要数。
-  assert.equal((miSpec.m.match(/[Mm]/g) || []).length, 3, 'mi mark must keep exactly its three subpaths')
+  assert.ok(!miSpec.m.includes('<rect'), 'mi mark must use the Kenya Hara superellipse curve, not raw <rect>')
 
   // 尺寸对齐额度圆环（用户点名）：15px，且每个图标的 viewBox 必须是**正方形**且
   // **贴合图形**——这是「所有图标看起来一样大」的前提。生成器用画布量「含描边的
