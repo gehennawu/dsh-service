@@ -25,6 +25,30 @@ function quotaErrorCode(error) {
   return family === 'http-status' || family === 'upstream-status' ? raw : family
 }
 
+// 业务错误信封（HTTP 200 + `{code,msg,success:false}`）里的错误码不是「响应格式异常」。
+// 上游把「凭据被拒 / 套餐失效 / 服务自身故障」都塞进 200 信封，只看 HTTP 状态会把三者
+// 一律误报成格式问题（智谱开放平台实测：凭据有效、订阅生效，配额端点仍回
+// `{"code":500,"msg":"内部服务器错误","success":false}`；同一凭据的推理端点正常回 1308 限流）。
+// 码表取自智谱《错误码》文档，只对语义明确的码定族；未知码仍走 bad-payload 并透出上游原话——不猜。
+// 归属：凭据类码走与 HTTP 401/403 同一条路（换候选 → 链尾归 credential-rejected，行回 unconfigured
+// 以便就地重填）；套餐失效 = no-subscription；服务故障 = upstream-error（5xx 语义，不进
+// QUOTA_UNUSABLE_ERROR_RE，故不会因配额服务抖动把渠道从子代理路由里摘掉——推理平面是好的）。
+const QUOTA_ENVELOPE_AUTH_CODES = new Set([401, 403, 1000, 1001, 1003, 1005])
+const QUOTA_ENVELOPE_NO_SUBSCRIPTION_CODES = new Set([1309, 1314])
+const QUOTA_ENVELOPE_CREDENTIAL_CODES = new Set([1315])
+const QUOTA_ENVELOPE_UPSTREAM_CODES = new Set([500, 1200, 1230, 1234])
+
+/** 业务信封错误码 → 稳定错误码族（auth 由调用方按 401 处理）；无映射返回 undefined。 */
+function quotaEnvelopeErrorFamily(code) {
+  const value = Number(code)
+  if (!Number.isFinite(value)) return undefined
+  if (QUOTA_ENVELOPE_AUTH_CODES.has(value)) return 'auth'
+  if (QUOTA_ENVELOPE_NO_SUBSCRIPTION_CODES.has(value)) return 'no-subscription'
+  if (QUOTA_ENVELOPE_CREDENTIAL_CODES.has(value)) return 'credential-rejected'
+  if (QUOTA_ENVELOPE_UPSTREAM_CODES.has(value)) return 'upstream-error'
+  return undefined
+}
+
 function sanitizeQuotaErrorDetail(value) {
   if (typeof value !== 'string') return undefined
   const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -260,7 +284,6 @@ function createEndpointAdapter(options) {
           continue
         }
         if (windows.length === 0) {
-          const error = new Error('bad-payload')
           const sanitize = context.sanitizeErrorDetail ?? sanitizeQuotaErrorDetail
           // 业务信封（`{code!==0, msg}`）与 OpenAI 风格错误（`{error:{message}}`）两族；
           // 只认这两族，成功信封里的 `message:"OK"` 之类不当错误原因透出。
@@ -272,6 +295,12 @@ function createEndpointAdapter(options) {
             ? quotaUpstreamErrorMessage(payload.error)
             : undefined
           const detail = sanitize(envelopeMessage ?? upstreamMessage)
+          // 信封错误码定族：凭据类与 HTTP 401/403 同路（换候选，链尾归 credential-rejected）。
+          const family = payload !== null && typeof payload === 'object'
+            ? quotaEnvelopeErrorFamily(payload.code)
+            : undefined
+          const error = new Error(family === undefined || family === 'auth' ? 'bad-payload' : family)
+          if (family === 'auth') error.status = 401
           if (detail !== undefined) error.detail = detail
           parseFailure ??= annotate(error, endpoint)
           lastError = parseFailure

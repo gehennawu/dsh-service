@@ -5540,6 +5540,12 @@ test('quota error rows render one unified line: family copy, HTTP status, endpoi
               errorDetail: 'Authentication Fails, Your api key: ****wxyz is invalid', nextAllowedAt: Date.now() - 1,
               credentialHints: [{ name: 'DEEPSEEK_API_KEY', configured: true }],
             },
+            // HTTP 200 的业务信封自报服务故障：没有 HTTP 状态码后缀，只有家族码 + 失败端点 + 上游原话。
+            {
+              provider: 'zai-up-key', displayName: 'Z.ai', adapted: true, kind: 'zai-coding-cn', kindSource: 'config',
+              refreshing: false, status: 'error', errorCode: 'upstream-error', errorEndpoint: 'open.bigmodel.cn',
+              errorDetail: '内部服务器错误', nextAllowedAt: Date.now() - 1,
+            },
           ],
         },
       }
@@ -5557,6 +5563,8 @@ test('quota error rows render one unified line: family copy, HTTP status, endpoi
   assert.equal(cpaLine, '上游官方接口返回错误状态 (HTTP 401 · codex-user@example.com · token expired)')
   const dsLine = renderer.findByTestId('quota-error-ds-key').children.join('')
   assert.equal(dsLine, '凭据被上游拒绝，请重新填写（控制台类渠道请重新从浏览器复制登录态） (Authentication Fails, Your api key: ****wxyz is invalid)')
+  const upLine = renderer.findByTestId('quota-error-zai-up-key').children.join('')
+  assert.equal(upLine, '上游服务故障（额度接口报错，稍后自动重试） (open.bigmodel.cn · 内部服务器错误)')
   // 带后缀的错误码不得掉进「未知错误」兜底。
   assert.doesNotMatch(renderer.text(), /未知错误/)
 })

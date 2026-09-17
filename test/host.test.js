@@ -3165,7 +3165,7 @@ test('fetchProviderUsage retries transient network errors with a fresh request',
   assert.equal(attempts.length, 2)
 })
 
-test('quota RPC tries the zai dual-domain candidate chain and surfaces the server envelope', async (t) => {
+test('quota RPC classifies the zai dual-domain candidate chain and its business envelope', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-chain-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
@@ -3196,14 +3196,16 @@ test('quota RPC tries the zai dual-domain candidate chain and surfaces the serve
   process.env.ZAI_CODING_CN_API_KEY = 'env-key'
   t.after(() => { delete process.env.ZAI_CODING_CN_API_KEY })
 
-  // 空窗口 + 业务信封：两个候选都试过，最终错误透出服务端 msg。
+  // 空窗口 + 业务信封里的**鉴权码**（1001 = 未收到/无效凭据）：不是「响应格式异常」，
+  // 而是凭据被拒——两个候选都试过，链尾归 credential-rejected，行回 unconfigured 以便就地重填。
   await host.handler('quota', {})
   await waitFor(() => requests.length >= 2, 'both candidates')
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
   const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
-  assert.equal(row.status, 'error')
-  assert.equal(row.errorCode, 'bad-payload')
+  assert.equal(row.status, 'unconfigured')
+  assert.equal(row.errorCode, 'credential-rejected')
   assert.equal(row.errorDetail, 'token expired or incorrect')
+  assert.equal(row.errorEndpoint, 'open.bigmodel.cn')
 
   // env 兜底生效：请求确实带上了环境变量里的 key（Bearer）。
   assert.ok(requests.every(() => true))
@@ -3230,6 +3232,58 @@ test('quota RPC tries the zai dual-domain candidate chain and surfaces the serve
   const okRowAfter = (await okHost.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
   assert.equal(okRowAfter.windows.length, 3)
   assert.equal(okRowAfter.errorDetail, undefined)
+})
+
+test('quota business envelope codes map to stable families instead of bad-payload', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-envelope-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+  }))
+  const providers = { 'zai-coding-cn': { baseURL: '', apiKeyEnv: 'ZAI_CODING_CN_API_KEY' } }
+  const originalGet = https.get
+  t.after(() => { https.get = originalGet })
+  process.env.ZAI_CODING_CN_API_KEY = 'env-key'
+  t.after(() => { delete process.env.ZAI_CODING_CN_API_KEY })
+
+  // HTTP 200 + 业务信封：每次换新宿主实例（节流清零），只关心落定后的稳定错误码族。
+  const rowFor = async (body) => {
+    const requests = []
+    https.get = (url, options, callback) => {
+      requests.push(String(url))
+      const response = new EventEmitter()
+      response.statusCode = 200
+      response.setEncoding = () => {}
+      const request = new EventEmitter()
+      request.destroy = () => {}
+      process.nextTick(() => {
+        callback(response)
+        response.emit('data', JSON.stringify(body))
+        response.emit('end')
+      })
+      return request
+    }
+    const host = createHost(quotaHostOverrides(dshHome, providers, 'k'))
+    await host.handler('quota', {})
+    await waitFor(() => requests.length >= 1, 'upstream call')
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
+    return (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  }
+
+  // 凭据有效、套餐生效时上游自报服务故障（实测智谱形态：两个域名都回这个信封）：
+  // 载荷格式没问题，报「响应格式异常」会让用户去查迁移/配置，方向全错。
+  const upstreamRow = await rowFor({ code: 500, msg: '内部服务器错误', success: false })
+  assert.equal(upstreamRow.status, 'error')
+  assert.equal(upstreamRow.errorCode, 'upstream-error')
+  assert.equal(upstreamRow.errorDetail, '内部服务器错误')
+  // 套餐已到期（1309）与产品类型不匹配的 key（1315）各有更准确的族。
+  assert.equal((await rowFor({ code: 1309, msg: '您的 GLM Coding Plan 套餐已到期', success: false })).errorCode, 'no-subscription')
+  assert.equal((await rowFor({ code: 1315, msg: '该 API Key 仅限企业编程套餐场景使用', success: false })).errorCode, 'credential-rejected')
+  // 未知码不猜族：仍按 bad-payload 透出上游原话（保留诊断线索）。
+  const unknownRow = await rowFor({ code: 1210, msg: 'API 调用参数有误', success: false })
+  assert.equal(unknownRow.errorCode, 'bad-payload')
+  assert.equal(unknownRow.errorDetail, 'API 调用参数有误')
 })
 
 test('quota candidate chain switches domains only on 401/403, not on other 4xx', async (t) => {
@@ -5574,6 +5628,9 @@ test('quotaProviderUnusable：失败码/上游 4xx/100% 窗口判不可用；瞬
   assert.equal(quotaProviderUnusable({ lastError: 'network' }), false)
   assert.equal(quotaProviderUnusable({ lastError: 'timeout' }), false)
   assert.equal(quotaProviderUnusable({ lastError: 'upstream-status:500' }), false)
+  // 额度接口自身故障（业务信封 5xx）不代表渠道不可用：推理平面可能完全正常。
+  assert.equal(quotaProviderUnusable({ lastError: 'upstream-error' }), false)
+  assert.equal(quotaProviderUnusable({ lastError: 'no-subscription' }), true)
   assert.equal(quotaProviderUnusable({ windows: [{ percent: 100, label: 'x' }] }), true)
   assert.equal(quotaProviderUnusable({ windows: [{ percent: 99.9 }] }), false)
   assert.equal(quotaProviderUnusable({ windows: [{ text: '¥12' }] }), false)
