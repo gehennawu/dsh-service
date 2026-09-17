@@ -907,9 +907,10 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': '移除',
       'quota.retryAt': '{time} 后可重试',
       'quota.refresh': '刷新',
-      'quota.card.moveUp': '上移',
-      'quota.card.moveDown': '下移',
-      'quota.reorder': '调整排序',
+      'quota.reorder': '调整排序与显隐',
+      'quota.order.title': '额度卡排序与显隐',
+      'quota.order.hint': '可通过拖拽或点击上下箭头调整卡片顺序；关闭开关可隐藏不常用卡片（隐藏只影响展示，不影响查询与轮询）。',
+      'quota.order.allHidden': '所有已适配卡片都被隐藏了；在「调整排序与显隐」里打开开关即可恢复显示。',
       'quota.usageLink': '打开官网用量页',
       'quota.adapt': '适配',
       'quota.kind.opencode-go': 'OpenCode Go',
@@ -1746,9 +1747,10 @@ window.__ModuleLoader__.load({
       'quota.resetCard.remove': 'Remove',
       'quota.retryAt': 'Retry allowed after {time}',
       'quota.refresh': 'Refresh',
-      'quota.card.moveUp': 'Move up',
-      'quota.card.moveDown': 'Move down',
-      'quota.reorder': 'Reorder',
+      'quota.reorder': 'Reorder & visibility',
+      'quota.order.title': 'Quota card order & visibility',
+      'quota.order.hint': 'Drag items or click the arrows to reorder; toggle off to hide cards you rarely need (hiding only affects display, not querying or polling).',
+      'quota.order.allHidden': 'All adapted cards are hidden; turn a toggle back on under “Reorder & visibility” to show them again.',
       'quota.usageLink': 'Open the official usage page',
       'quota.adapt': 'Adapt',
       'quota.kind.opencode-go': 'OpenCode Go',
@@ -2603,68 +2605,84 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 从后端统一配置拉取设置栏导航（多设备同步与本地初次迁移）。
-      // 容错三态：拉取失败本会话内可重试；写后端失败挂 pending，下次拉取成功后重推本地。
-      let backendSynced = false
-      let backendPushPending = false
-      const persistSettingsNavToBackend = (order, hidden) => {
-        rpcCall('config-set', { section: 'settingsNav', value: { order, hidden } })
-          .then((res) => { if (!res || res.ok !== true) backendPushPending = true })
-          .catch(() => { backendPushPending = true })
-      }
-      const persistSettingsNavReset = () => {
-        rpcCall('config-set', { section: 'settingsNav', value: null })
-          .then((res) => { if (!res || res.ok !== true) backendPushPending = true })
-          .catch(() => { backendPushPending = true })
-      }
-      const pushLocalSettingsNavToBackend = () => {
-        const order = readSettingsNavOrder()
-        const hidden = readSettingsNavHidden()
-        if ((order && order.length > 0) || (hidden && hidden.length > 0)) persistSettingsNavToBackend(order, hidden)
-        else persistSettingsNavReset()
-      }
-      const ensureSettingsNavBackendSynced = () => {
-        if (backendSynced) {
-          // 上次写后端失败：本地已生效的配置重推一次，尽量收窄多端漂移窗口。
-          if (backendPushPending) {
-            backendPushPending = false
-            pushLocalSettingsNavToBackend()
-          }
-          return
+      // 统一配置区块的后端同步（设置栏标签、额度卡排序共用一份实现）：
+      // 拉取失败本会话内可重试；写后端失败挂 pending，下次拉取成功后重推本地。
+      // localStorage 仍是首帧缓存，后端成功拉到时为权威事实源。
+      const createSectionBackendSync = ({ section, readOrder, readHidden, writeLocal }) => {
+        const state = { synced: false, pushPending: false }
+        const persist = (order, hidden) => {
+          rpcCall('config-set', { section, value: { order, hidden } })
+            .then((res) => { if (!res || res.ok !== true) state.pushPending = true })
+            .catch(() => { state.pushPending = true })
         }
-        backendSynced = true
-        syncSettingsNavFromBackend()
+        const persistReset = () => {
+          rpcCall('config-set', { section, value: null })
+            .then((res) => { if (!res || res.ok !== true) state.pushPending = true })
+            .catch(() => { state.pushPending = true })
+        }
+        const pushLocal = () => {
+          const order = readOrder()
+          const hidden = readHidden()
+          if ((order && order.length > 0) || (hidden && hidden.length > 0)) persist(order, hidden)
+          else persistReset()
+        }
+        const pull = async () => {
+          try {
+            const res = await rpcCall('config-get', { section })
+            if (!res || res.ok !== true || res.value === undefined) {
+              state.synced = false
+              return
+            }
+            // 本地写已生效但后端落盘失败时，本地是待提交的新事实；先重推，不能让旧远端覆盖它。
+            if (state.pushPending) {
+              state.pushPending = false
+              pushLocal()
+              return
+            }
+            const remote = res.value
+            const hasRemote = remote !== null && typeof remote === 'object' && (Array.isArray(remote.order) || Array.isArray(remote.hidden))
+            if (hasRemote) {
+              writeLocal(Array.isArray(remote.order) ? remote.order : null, Array.isArray(remote.hidden) ? remote.hidden : [])
+              return
+            }
+            // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
+            pushLocal()
+          } catch (_) {
+            // 拉取失败（瞬时网络/宿主重启窗口）：允许同会话内下次打开面板重试。
+            state.synced = false
+          }
+        }
+        return {
+          persist,
+          persistReset,
+          ensureSynced: () => {
+            if (state.synced) {
+              // 上次写后端失败：本地已生效的配置重推一次，尽量收窄多端漂移窗口。
+              if (state.pushPending) {
+                state.pushPending = false
+                pushLocal()
+              }
+              return
+            }
+            state.synced = true
+            void pull()
+          },
+        }
       }
 
-      const syncSettingsNavFromBackend = async () => {
-        try {
-          const res = await rpcCall('config-get', { section: 'settingsNav' })
-          if (!res || res.ok !== true || res.value === undefined) {
-            backendSynced = false
-            return
-          }
-          // 本地写已生效但后端落盘失败时，本地是待提交的新事实；先重推，不能让旧远端覆盖它。
-          if (backendPushPending) {
-            backendPushPending = false
-            pushLocalSettingsNavToBackend()
-            return
-          }
-          const hasRemoteConfig = res.value !== null && typeof res.value === 'object' && (Array.isArray(res.value.order) || Array.isArray(res.value.hidden))
-          if (hasRemoteConfig) {
-            const remoteOrder = Array.isArray(res.value.order) ? res.value.order : null
-            const remoteHidden = Array.isArray(res.value.hidden) ? res.value.hidden : []
-            writeSettingsNavOrder(remoteOrder)
-            writeSettingsNavHidden(remoteHidden)
-            notifyNavOrderChanged()
-            return
-          }
-          // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
-          pushLocalSettingsNavToBackend()
-        } catch (_) {
-          // 拉取失败（瞬时网络/宿主重启窗口）：允许同会话内下次打开面板重试。
-          backendSynced = false
-        }
-      }
+      const settingsNavBackend = createSectionBackendSync({
+        section: 'settingsNav',
+        readOrder: () => readSettingsNavOrder(),
+        readHidden: () => readSettingsNavHidden(),
+        writeLocal: (order, hidden) => {
+          writeSettingsNavOrder(order)
+          writeSettingsNavHidden(hidden)
+          notifyNavOrderChanged()
+        },
+      })
+      const persistSettingsNavToBackend = settingsNavBackend.persist
+      const persistSettingsNavReset = settingsNavBackend.persistReset
+      const ensureSettingsNavBackendSynced = settingsNavBackend.ensureSynced
 
       const useTranslation = () => {
         const [, setSnapshot] = useState(ctx.locale.getSnapshot())
@@ -3549,19 +3567,55 @@ window.__ModuleLoader__.load({
         try { localStorage.setItem(QUOTA_POLL_KEY, String(minutes)) } catch (_) {}
       }
       const QUOTA_CARD_ORDER_KEY = 'dsh-service-quota-card-order'
-      // 卡片手动排序（用户点名）：localStorage 只存 provider 名单；坏形状/超限整体回退快照序。
-      function readQuotaCardOrder() {
+      const QUOTA_CARD_HIDDEN_KEY = 'dsh-service-quota-card-hidden'
+      // 供应商名由 settings / llm 渠道清单派生，可能含中文、空格、`@`（用户自定义键），
+      // 不套设置栏的 ID 字符集；只约束类型、非空与长度，真实内容白名单是「快照里存在的
+      // provider」——不在快照里的名字既不渲染、也不参与排序。
+      const QUOTA_CARD_NAME_MAX = 128
+      const readQuotaCardNameList = (storageKey, fallback) => {
         try {
-          const raw = JSON.parse(localStorage.getItem(QUOTA_CARD_ORDER_KEY) ?? 'null')
-          if (!Array.isArray(raw)) return []
-          return raw.filter((name) => typeof name === 'string' && name !== '').slice(0, 64)
+          const raw = localStorage.getItem(storageKey)
+          if (!raw) return fallback
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed) || parsed.length > SETTINGS_NAV_MAX_ITEMS) return fallback
+          if (!parsed.every((name) => typeof name === 'string' && name.trim() !== '' && name.trim().length <= QUOTA_CARD_NAME_MAX)) return fallback
+          return parsed.map((name) => name.trim())
         } catch (_) {
-          return []
+          return fallback
         }
       }
-      function writeQuotaCardOrder(order) {
-        try { localStorage.setItem(QUOTA_CARD_ORDER_KEY, JSON.stringify(order.slice(0, 64))) } catch (_) {}
+      // 卡片手动排序与显隐（用户点名）：localStorage 只存 provider 名单；坏形状/超限整体回退快照序。
+      const readQuotaCardOrder = () => readQuotaCardNameList(QUOTA_CARD_ORDER_KEY, [])
+      const readQuotaCardHidden = () => readQuotaCardNameList(QUOTA_CARD_HIDDEN_KEY, [])
+      const writeQuotaCardOrder = (order) => {
+        try {
+          if (order === null) localStorage.removeItem(QUOTA_CARD_ORDER_KEY)
+          else localStorage.setItem(QUOTA_CARD_ORDER_KEY, JSON.stringify(order.slice(0, SETTINGS_NAV_MAX_ITEMS)))
+        } catch (_) {}
       }
+      const writeQuotaCardHidden = (hidden) => {
+        try {
+          if (hidden === null || hidden.length === 0) localStorage.removeItem(QUOTA_CARD_HIDDEN_KEY)
+          else localStorage.setItem(QUOTA_CARD_HIDDEN_KEY, JSON.stringify(hidden.slice(0, SETTINGS_NAV_MAX_ITEMS)))
+        } catch (_) {}
+      }
+      let quotaCardListeners = new Set()
+      const notifyQuotaCardsChanged = () => {
+        for (const listener of quotaCardListeners) {
+          try { listener() } catch (_) {}
+        }
+      }
+      // 与设置栏标签同款的多端同步（同一份 createSectionBackendSync 实现）。
+      const quotaCardsBackend = createSectionBackendSync({
+        section: 'quotaCards',
+        readOrder: () => readQuotaCardOrder(),
+        readHidden: () => readQuotaCardHidden(),
+        writeLocal: (order, hidden) => {
+          writeQuotaCardOrder(order)
+          writeQuotaCardHidden(hidden)
+          notifyQuotaCardsChanged()
+        },
+      })
       /** 快照序 → 记忆序：名单内的按存储位次在前，名单外的保持快照相对顺序追加在后。 */
       function applyQuotaCardOrder(rows, order) {
         const rank = new Map(order.map((name, index) => [name, index]))
@@ -6857,6 +6911,17 @@ window.__ModuleLoader__.load({
           acquireQuotaLoop({ all: true })
           return () => releaseQuotaLoop({ all: true })
         }, [])
+        // 排序与显隐的多端同步：进入额度页时拉一次后端权威值（拉取失败下次进入重试），
+        // 并订阅本地/远端变更刷新管理列表。
+        useEffect(() => {
+          quotaCardsBackend.ensureSynced()
+          const update = () => {
+            setCardOrder(readQuotaCardOrder())
+            setCardHidden(readQuotaCardHidden())
+          }
+          quotaCardListeners.add(update)
+          return () => quotaCardListeners.delete(update)
+        }, [])
         const [pollMinutes, setPollMinutes] = useState(readQuotaPollMinutes())
         const [configError, setConfigError] = useState('')
         const providers = quota.providers || []
@@ -6989,24 +7054,72 @@ window.__ModuleLoader__.load({
         const adaptProvider = (providerName, kind) => requestQuotaConfig({ provider: providerName, kind })
         // 删掉手动覆盖键，回退 baseURL 自动推断。
         const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
-        // 卡片手动排序：localStorage 名单驱动展示序（纯客户端，宿主契约不动）；新供应商自然排末尾。
+        // 卡片排序与显隐（用户点名）：localStorage 名单驱动展示序，后端统一配置多端同步；
+        // 新供应商自然排末尾。管理界面照搬「设置栏标签」的列表形态（拖拽 + ↑↓ + 显隐开关）。
         const [cardOrder, setCardOrder] = useState(readQuotaCardOrder())
-        // 排序模式开关（用户点名）：平时不显示 ↑↓，点「调整排序」才出现，避免卡片头部常驻小钮。
+        const [cardHidden, setCardHidden] = useState(readQuotaCardHidden())
+        // 面板开合（用户点名）：平时不显示管理列表，点「调整排序」才展开，避免常驻占位。
         const [reorderMode, setReorderMode] = useState(false)
+        const [cardsSavedTip, setCardsSavedTip] = useState(false)
+        const [cardDragIndex, setCardDragIndex] = useState(null)
+        const cardsSavedTipTimer = useRef(null)
+        useEffect(() => () => {
+          if (cardsSavedTipTimer.current !== null) cardsSavedTipTimer.current()
+          cardsSavedTipTimer.current = null
+        }, [])
         // 卡片分区（v0.20）：只展示已适配供应商；未适配/已停用的不渲染灰行，统一收进底部「手动适配」行。
         const adaptedRows = applyQuotaCardOrder(providers.filter((row) => row.adapted === true), cardOrder)
+        const hiddenCardSet = new Set(cardHidden)
+        const visibleCardRows = adaptedRows.filter((row) => !hiddenCardSet.has(row.provider))
         const candidateRows = providers.filter((row) => row.adapted !== true)
         const quotaSelectStyle = { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' }
-        // ↑↓ 换位：以当前可见卡序列表交换相邻项并整体落盘（新见过的供应商一并入册）。
+        const showCardsSavedTip = () => {
+          setCardsSavedTip(true)
+          if (cardsSavedTipTimer.current !== null) cardsSavedTipTimer.current()
+          cardsSavedTipTimer.current = ctx.timer.timeout(() => {
+            cardsSavedTipTimer.current = null
+            setCardsSavedTip(false)
+          }, 2000)
+        }
+        const commitCards = (order, hidden) => {
+          setCardOrder(order)
+          setCardHidden(hidden)
+          writeQuotaCardOrder(order)
+          writeQuotaCardHidden(hidden)
+          notifyQuotaCardsChanged()
+          quotaCardsBackend.persist(order, hidden)
+        }
+        // 管理列表的展示项：记忆序在前，快照里新出现的按快照相对顺序追加在后。
+        const managedCardItems = applyQuotaCardOrder(adaptedRows, cardOrder).map((row) => ({ id: row.provider, label: row.displayName || row.provider }))
+        // ↑↓ 换位：以当前管理列表交换相邻项并整体落盘（新见过的供应商一并入册）。
         const moveQuotaCard = (providerName, delta) => {
-          const names = adaptedRows.map((row) => row.provider)
+          const names = managedCardItems.map((item) => item.id)
           const from = names.indexOf(providerName)
           const to = from + delta
           if (from < 0 || to < 0 || to >= names.length || from === to) return
           names.splice(to, 0, names.splice(from, 1)[0])
-          setCardOrder(names)
-          writeQuotaCardOrder(names)
+          commitCards(names, cardHidden)
         }
+        const toggleCardVisible = (providerName) => {
+          const next = new Set(cardHidden)
+          if (next.has(providerName)) next.delete(providerName)
+          else next.add(providerName)
+          commitCards(managedCardItems.map((item) => item.id), Array.from(next))
+        }
+        const saveCardsConfig = () => {
+          commitCards(managedCardItems.map((item) => item.id), cardHidden)
+          showCardsSavedTip()
+        }
+        const resetCardsConfig = () => {
+          setCardOrder([])
+          setCardHidden([])
+          writeQuotaCardOrder(null)
+          writeQuotaCardHidden(null)
+          notifyQuotaCardsChanged()
+          quotaCardsBackend.persistReset()
+          showCardsSavedTip()
+        }
+
         // 手动适配行（未适配/已停用的候选供应商）的选择状态；拆成两个独立 state 避免对象草稿接力更新。
         const [addProvider, setAddProvider] = useState('')
         const [addKind, setAddKind] = useState('')
@@ -7044,22 +7157,160 @@ window.__ModuleLoader__.load({
               style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
             }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
-          // 「调整排序」开关（≥2 张卡才有意义）：进入后卡片头部出现 ↑↓，再点一次收起。
+          // 「调整排序」开关（形状照搬设置栏标签管理页：展开列表 + 拖拽/↑↓/显隐 + 恢复默认/保存）。
           ...(adaptedRows.length >= 2
             ? [React.createElement('div', { key: 'quota-reorder-row', style: { display: 'flex', justifyContent: 'flex-end', margin: '2px 0 8px' } },
                 React.createElement('button', {
                   type: 'button',
                   'data-testid': 'quota-reorder-toggle',
-                  'aria-pressed': String(reorderMode),
+                  'aria-expanded': String(reorderMode),
                   title: translate('quota.reorder'),
                   onClick: () => setReorderMode(!reorderMode),
                   style: { fontSize: '12px', lineHeight: '20px', padding: '2px 12px', ...fullRound(999), border: `1px solid ${reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsh-svc-border-strong)'}`, background: 'transparent', color: reorderMode ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                 }, translate('quota.reorder')))]
             : []),
+          reorderMode && adaptedRows.length >= 2
+            ? React.createElement('div', {
+                'data-testid': 'quota-card-order-panel',
+                style: { display: 'flex', flexDirection: 'column', gap: '10px', margin: '0 0 12px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)' },
+              },
+              React.createElement('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
+                React.createElement('div', { style: { minWidth: 0, flex: '1 1 240px' } },
+                  React.createElement('div', { 'data-testid': 'quota-card-order-title', style: { fontSize: '13px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('quota.order.title')),
+                  React.createElement('div', { style: { marginTop: '3px', fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, translate('quota.order.hint'))),
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
+                  cardsSavedTip ? React.createElement('span', {
+                    'data-testid': 'quota-card-order-saved',
+                    style: { fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' },
+                  }, '✓ ' + translate('config.navOrder.saved')) : null,
+                  React.createElement('button', {
+                    type: 'button',
+                    'data-testid': 'quota-card-order-reset',
+                    onClick: resetCardsConfig,
+                    style: svcButtonStyle('ghost'),
+                  }, translate('config.navOrder.reset')),
+                  React.createElement('button', {
+                    type: 'button',
+                    'data-testid': 'quota-card-order-save',
+                    onClick: saveCardsConfig,
+                    style: svcButtonStyle('primary'),
+                  }, translate('config.navOrder.save')))),
+              React.createElement('div', {
+                'data-testid': 'quota-card-order-list',
+                style: { display: 'flex', flexDirection: 'column', gap: '8px' },
+              }, managedCardItems.map((item, index) => {
+                const isVisible = !hiddenCardSet.has(item.id)
+                const isDragging = cardDragIndex === index
+                return React.createElement('div', {
+                  key: item.id,
+                  'data-testid': 'quota-card-order-item-' + item.id,
+                  draggable: true,
+                  onDragStart: (e) => {
+                    try {
+                      e.dataTransfer.setData('text/plain', String(index))
+                      e.dataTransfer.effectAllowed = 'move'
+                    } catch (_) {}
+                    setCardDragIndex(index)
+                  },
+                  onDragOver: (e) => {
+                    e.preventDefault()
+                    try { e.dataTransfer.dropEffect = 'move' } catch (_) {}
+                  },
+                  onDrop: (e) => {
+                    e.preventDefault()
+                    let from = index
+                    try {
+                      const rawData = e.dataTransfer.getData('text/plain')
+                      from = Number.parseInt(rawData, 10)
+                    } catch (_) {}
+                    if (!Number.isNaN(from) && from !== index) {
+                      const names = managedCardItems.map((entry) => entry.id)
+                      const [moved] = names.splice(from, 1)
+                      names.splice(index, 0, moved)
+                      commitCards(names, cardHidden)
+                    }
+                    setCardDragIndex(null)
+                  },
+                  onDragEnd: () => setCardDragIndex(null),
+                  style: {
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+                    padding: '7px 10px', borderRadius: 'var(--dsh-svc-radius-control, 8px)',
+                    border: '1px solid ' + (isDragging ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l1)'),
+                    background: isDragging ? 'var(--dsw-alias-interactive-bg-hover)' : 'var(--dsh-svc-card-bg)',
+                    opacity: isVisible ? 1 : 0.5,
+                    transition: 'border-color 120ms, background 120ms, opacity 120ms',
+                    cursor: 'grab', userSelect: 'none',
+                  },
+                },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 } },
+                  React.createElement('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', letterSpacing: '-1px' }, 'aria-hidden': 'true' }, '⋮⋮'),
+                  React.createElement('span', { style: { fontSize: '13px', fontWeight: 550, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, item.label)),
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
+                  React.createElement('button', {
+                    type: 'button',
+                    'data-testid': 'quota-card-order-up-' + item.id,
+                    'aria-label': translate('config.navOrder.moveUp'),
+                    title: translate('config.navOrder.moveUp'),
+                    disabled: index === 0,
+                    onClick: (e) => { e.stopPropagation(); moveQuotaCard(item.id, -1) },
+                    style: {
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: '24px', height: '24px', padding: 0, borderRadius: '6px',
+                      border: '1px solid var(--dsw-alias-border-l2)',
+                      background: 'var(--dsw-alias-bg-layer-2)',
+                      color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)',
+                      cursor: index === 0 ? 'default' : 'pointer',
+                      opacity: index === 0 ? 0.35 : 1, fontSize: '12px', lineHeight: '24px',
+                    },
+                  }, '↑'),
+                  React.createElement('button', {
+                    type: 'button',
+                    'data-testid': 'quota-card-order-down-' + item.id,
+                    'aria-label': translate('config.navOrder.moveDown'),
+                    title: translate('config.navOrder.moveDown'),
+                    disabled: index === managedCardItems.length - 1,
+                    onClick: (e) => { e.stopPropagation(); moveQuotaCard(item.id, 1) },
+                    style: {
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: '24px', height: '24px', padding: 0, borderRadius: '6px',
+                      border: '1px solid var(--dsw-alias-border-l2)',
+                      background: 'var(--dsw-alias-bg-layer-2)',
+                      color: index === managedCardItems.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)',
+                      cursor: index === managedCardItems.length - 1 ? 'default' : 'pointer',
+                      opacity: index === managedCardItems.length - 1 ? 0.35 : 1, fontSize: '12px', lineHeight: '24px',
+                    },
+                  }, '↓'),
+                  React.createElement('button', {
+                    type: 'button',
+                    role: 'switch',
+                    'data-testid': 'quota-card-order-toggle-' + item.id,
+                    'aria-checked': String(isVisible),
+                    'aria-label': translate(isVisible ? 'config.navOrder.visible' : 'config.navOrder.hidden'),
+                    title: translate(isVisible ? 'config.navOrder.visible' : 'config.navOrder.hidden'),
+                    onClick: (e) => { e.stopPropagation(); toggleCardVisible(item.id) },
+                    style: {
+                      width: '34px', height: '20px', ...fullRound('10px'),
+                      padding: 0, position: 'relative', flexShrink: 0,
+                      border: '1px solid ' + (isVisible ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'),
+                      background: isVisible ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)',
+                      cursor: 'pointer', lineHeight: 0,
+                    },
+                  }, React.createElement('span', {
+                    style: {
+                      position: 'absolute', top: '1px', left: isVisible ? '15px' : '1px',
+                      width: '16px', height: '16px', ...fullRound('50%'),
+                      background: isVisible ? '#fff' : 'var(--dsw-alias-label-tertiary)',
+                      transition: 'left 120ms ease',
+                    },
+                  }))))
+              })))
+            : null,
           adaptedRows.length === 0
             ? React.createElement('p', { style: hint }, translate('quota.noAdapted'))
-            : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
-                adaptedRows.map((row, index) => {
+            : visibleCardRows.length === 0
+              ? React.createElement('p', { 'data-testid': 'quota-cards-all-hidden', style: hint }, translate('quota.order.allHidden'))
+              : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                visibleCardRows.map((row, index) => {
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
                     // 官网用量页链接（用户点名）：宿主按 kind 下发 usageUrl 时，展示名本身即外链。
                     typeof row.usageUrl === 'string' && row.usageUrl !== ''
@@ -7171,28 +7422,8 @@ window.__ModuleLoader__.load({
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
                       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } },
-                        // 手动排序（用户点名）：仅在「调整排序」模式下出现；↑↓ 与相邻卡换位，
-                        // 首/末卡对应方向禁用；顺序存本浏览器。
-                        ...(reorderMode ? [
-                          React.createElement('button', {
-                            type: 'button',
-                            'data-testid': `quota-move-up-${row.provider}`,
-                            'aria-label': translate('quota.card.moveUp'),
-                            title: translate('quota.card.moveUp'),
-                            disabled: index === 0,
-                            onClick: () => moveQuotaCard(row.provider, -1),
-                            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === 0 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === 0 ? 'default' : 'pointer', opacity: index === 0 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
-                          }, '↑'),
-                          React.createElement('button', {
-                            type: 'button',
-                            'data-testid': `quota-move-down-${row.provider}`,
-                            'aria-label': translate('quota.card.moveDown'),
-                            title: translate('quota.card.moveDown'),
-                            disabled: index === adaptedRows.length - 1,
-                            onClick: () => moveQuotaCard(row.provider, 1),
-                            style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 'none', background: 'transparent', color: index === adaptedRows.length - 1 ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: index === adaptedRows.length - 1 ? 'default' : 'pointer', opacity: index === adaptedRows.length - 1 ? 0.45 : 1, fontSize: '12px', lineHeight: '16px' },
-                          }, '↓'),
-                        ] : []),
+                        // 排序与显隐统一收进上方管理面板（形状照搬设置栏标签页），
+                        // 卡片头部不再常驻 ↑↓，避免「平时就挂着小钮」。
                         // 手动刷新：SVG 图标按钮，点击强制该 provider 重拉上游；在途时置灰防重入。
                         React.createElement('button', {
                           type: 'button',

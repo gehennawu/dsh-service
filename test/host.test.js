@@ -7585,6 +7585,47 @@ test('unified config：统一配置文件读写、白名单校验与单功能隔
   assert.equal(afterReset.settingsNav, undefined)
 })
 
+test('unified config：额度卡排序区块读写与设置栏标签区块互不干扰', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cards-config-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome } })
+
+  // 1. 未设置时返回 null；非法值与非法 section 一律拒绝。
+  assert.equal((await host.handler('config-get', { section: 'quotaCards' })).value, null)
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaCards', value: 'nope' }), { ok: false, error: 'invalid-section-value' })
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaCardzz', value: {} }), { ok: false, error: 'invalid-section' })
+
+  // 2. 供应商名不是 slot id：允许中文、空格与 `@`（llm-pi-ai 的 provider 键由用户自定义），
+  //    只做类型/非空/长度约束；空串、非字符串与超长项被过滤，未知字段被剥离。
+  const saved = await host.handler('config-set', {
+    section: 'quotaCards',
+    value: {
+      order: ['智谱 中转', 'relay@corp', '', 42, 'x'.repeat(129), 'kimi-row'],
+      hidden: ['硅基流动', 'relay@corp', null],
+      extraField: 'should-be-stripped',
+    },
+  })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(saved.value, {
+    order: ['智谱 中转', 'relay@corp', 'kimi-row'],
+    hidden: ['硅基流动', 'relay@corp'],
+  })
+
+  // 3. 落盘原子且权限 0600；区块与设置栏标签并存互不覆盖。
+  await host.handler('config-set', { section: 'settingsNav', value: { order: ['general', 'dsh-service'], hidden: ['plugins'] } })
+  const configFile = join(dshHome, 'dsh-service-config.json')
+  const diskRaw = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.deepEqual(diskRaw.quotaCards, { order: ['智谱 中转', 'relay@corp', 'kimi-row'], hidden: ['硅基流动', 'relay@corp'] })
+  assert.deepEqual(diskRaw.settingsNav, { order: ['general', 'dsh-service'], hidden: ['plugins'] })
+  assert.equal((await stat(configFile)).mode & 0o777, 0o600)
+
+  // 4. 重置只清自己这一块，设置栏标签配置必须完好。
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaCards', value: null }), { ok: true, value: null })
+  const afterReset = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.equal(afterReset.quotaCards, undefined)
+  assert.deepEqual(afterReset.settingsNav, { order: ['general', 'dsh-service'], hidden: ['plugins'] })
+})
+
 test('unified config：并发写串行化——两台设备同时迁移不丢区块', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-unified-config-race-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

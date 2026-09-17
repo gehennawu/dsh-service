@@ -67,7 +67,7 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 ![Configuration page](./screenshots/configuration_en.png)
 
 - Maintenance groups Sessions, Skills, Subagents, Backups, and Restart; it remembers the most recent subpage and falls back to an available item when a feature is disabled
-- Configuration groups feature switches, task notifications, and settings nav tabs; switches are grouped and apply live, Notifications stays visible but disabled when that feature is off, and Settings Nav supports manual reordering (drag / arrows) and visibility management of all tabs in the settings dialog sidebar, persisted to the server-side unified config file `$DSH_HOME/dsh-service-config.json` (cross-device sync, auto-fetched on startup with a local-cache fallback), applying live (the Service Control tab is permanently locked visible to prevent lockout)
+- Configuration groups feature switches, task notifications, and settings nav tabs; switches are grouped and apply live, Notifications stays visible but disabled when that feature is off, and Settings Nav supports manual reordering (drag / arrows) and visibility management of all tabs in the settings dialog sidebar, persisted to the server-side unified config file `$DSH_HOME/dsh-service-config.json` (cross-device sync, auto-fetched on startup with a local-cache fallback), applying live (the Service Control tab is permanently locked visible to prevent lockout); quota card order and visibility use the same config (the `quotaCards` section, fetched when the quota page opens)
 - Unified plugin config file: lightweight per-feature preferences converge into a single `$DSH_HOME/dsh-service-config.json` (atomic write, `0600`), partitioned by feature section — updating or clearing one section never touches others; large caches (usage index etc.) and encrypted credentials stay out of this file
 
 ### Version and updates
@@ -112,6 +112,7 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
 - Provider cards keep the existing window presentation (label + percent / independent bar / reset countdown); **advanced configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
+- Card **order and visibility**: "Reorder & visibility" on the quota page expands a management list where cards can be dragged or nudged with ↑/↓, and a toggle hides cards you rarely need (hiding only affects display, not querying or polling); the config shares one backend with the Settings Nav tabs, stored in the `quotaCards` section of the unified server-side config `$DSH_HOME/dsh-service-config.json` (cross-device sync with a local-cache fallback, sections never affect each other)
 - A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
 - Built-in adaptations:
 

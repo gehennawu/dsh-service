@@ -4315,6 +4315,7 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const cardOrder = () => renderer.findByTestId('quota-card-list').children.flat(Infinity).map((child) => child.props['data-testid'])
+  const panelOrder = () => renderer.findByTestId('quota-card-order-list').children.flat(Infinity).map((child) => child.props['data-testid'])
   // 官网用量页链接：zai 卡标题为外链（新标签页），kimi 未登记无链接。
   const zaiLink = renderer.findByTestId('quota-usage-link-zai-row')
   assert.equal(zaiLink.props.href, 'https://open.bigmodel.cn/coding-plan/personal/usage')
@@ -4322,22 +4323,51 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   assert.equal(renderer.hasTest('quota-usage-link-kimi-row'), false)
   // 初始为快照序。
   assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-kimi-row', 'quota-provider-card-sf-row'])
-  // 默认收起：无 ↑↓ 按钮；≥2 张卡才显示「调整排序」开关，点击后箭头才出现。
-  assert.equal(renderer.hasTest('quota-move-up-zai-row'), false)
+  // 默认收起：无管理列表；≥2 张卡才显示「调整排序与显隐」开关，点击后列表才出现。
+  assert.equal(renderer.hasTest('quota-card-order-panel'), false)
   assert.equal(renderer.hasTest('quota-reorder-toggle'), true)
   renderer.findByTestId('quota-reorder-toggle').props.onClick()
   await renderer.flush()
-  assert.equal(renderer.findByTestId('quota-reorder-toggle').props['aria-pressed'], 'true')
-  // 进入排序模式后：首卡↑、末卡↓禁用。
-  assert.equal(renderer.findByTestId('quota-move-up-zai-row').props.disabled, true)
-  assert.equal(renderer.findByTestId('quota-move-down-zai-row').props.disabled, false)
-  assert.equal(renderer.findByTestId('quota-move-down-sf-row').props.disabled, true)
+  assert.equal(renderer.findByTestId('quota-reorder-toggle').props['aria-expanded'], 'true')
+  assert.deepEqual(panelOrder(), ['quota-card-order-item-zai-row', 'quota-card-order-item-kimi-row', 'quota-card-order-item-sf-row'])
+  // 进入管理列表后：首项↑、末项↓禁用；卡片头部不再常驻箭头。
+  assert.equal(renderer.findByTestId('quota-card-order-up-zai-row').props.disabled, true)
+  assert.equal(renderer.findByTestId('quota-card-order-down-zai-row').props.disabled, false)
+  assert.equal(renderer.findByTestId('quota-card-order-down-sf-row').props.disabled, true)
+  assert.equal(renderer.hasTest('quota-move-up-zai-row'), false)
   // ↓ 换位立即生效并整体落盘。
-  renderer.findByTestId('quota-move-down-zai-row').props.onClick()
+  renderer.findByTestId('quota-card-order-down-zai-row').props.onClick({ stopPropagation: () => {} })
   await renderer.flush()
   assert.deepEqual(cardOrder(), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row'])
   assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-order')), ['kimi-row', 'zai-row', 'sf-row'])
-  assert.equal(renderer.findByTestId('quota-move-up-kimi-row').props.disabled, true)
+  assert.equal(renderer.findByTestId('quota-card-order-up-kimi-row').props.disabled, true)
+  // 显隐开关：关掉 kimi 后卡片列表不再渲染它，管理列表仍保留该行（开关是「可见」态）。
+  renderer.findByTestId('quota-card-order-toggle-kimi-row').props.onClick({ stopPropagation: () => {} })
+  await renderer.flush()
+  assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-sf-row'])
+  assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-hidden')), ['kimi-row'])
+  assert.equal(renderer.findByTestId('quota-card-order-toggle-kimi-row').props['aria-checked'], 'false')
+  assert.deepEqual(panelOrder(), ['quota-card-order-item-kimi-row', 'quota-card-order-item-zai-row', 'quota-card-order-item-sf-row'])
+  // 全部隐藏：卡片列表整体让位给提示行，管理列表照常可操作（否则等于把自己锁死）。
+  renderer.findByTestId('quota-card-order-toggle-zai-row').props.onClick({ stopPropagation: () => {} })
+  await renderer.flush()
+  renderer.findByTestId('quota-card-order-toggle-sf-row').props.onClick({ stopPropagation: () => {} })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-card-list'), false)
+  assert.ok(renderer.hasTest('quota-cards-all-hidden'))
+  // 恢复默认排序：清空两个 localStorage 键并复位展示。
+  renderer.findByTestId('quota-card-order-reset').props.onClick()
+  await renderer.flush()
+  assert.equal(localStorage.getItem('dsh-service-quota-card-order'), null)
+  assert.equal(localStorage.getItem('dsh-service-quota-card-hidden'), null)
+  assert.deepEqual(cardOrder(), ['quota-provider-card-zai-row', 'quota-provider-card-kimi-row', 'quota-provider-card-sf-row'])
+  assert.ok(renderer.hasTest('quota-card-order-saved'))
+  // 保存按钮：把当前管理列表整体落盘。
+  renderer.findByTestId('quota-card-order-down-zai-row').props.onClick({ stopPropagation: () => {} })
+  await renderer.flush()
+  renderer.findByTestId('quota-card-order-save').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-order')), ['kimi-row', 'zai-row', 'sf-row'])
   // 快照里新出现的供应商即使排宿主清单第一位，也追加在记忆序之后。
   snapshotProviders = [
     { provider: 'openrouter-row', displayName: 'OpenRouter', adapted: true, kind: 'openrouter', refreshing: false, status: 'ok', windows: [{ id: 'credits', percent: 25 }], fetchedAt: Date.now() },
@@ -4347,16 +4377,111 @@ test('quota cards support manual reordering persisted in localStorage', async ()
   await renderer.flush()
   await renderer.flush()
   assert.deepEqual(cardOrder(), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row', 'quota-provider-card-openrouter-row'])
-  // 再点一次收起箭头；只剩一张卡时「调整排序」开关整体消失。
+  // 再点一次收起管理列表；只剩一张卡时「调整排序与显隐」开关整体消失。
   renderer.findByTestId('quota-reorder-toggle').props.onClick()
   await renderer.flush()
-  assert.equal(renderer.hasTest('quota-move-up-kimi-row'), false)
+  assert.equal(renderer.hasTest('quota-card-order-panel'), false)
   snapshotProviders = [snapshotProviders.find((row) => row.provider === 'kimi-row')]
   renderer.findByTestId('quota-refresh-kimi-row').props.onClick()
   await renderer.flush()
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-reorder-toggle'), false)
 })
+
+test('quota card order: backend sync, retry after failure, and local migration', async () => {
+  const rpcCalls = []
+  let configGetShouldFail = true
+  let configSetShouldFail = false
+  let remoteConfig = { order: ['sf-row', 'zai-row'], hidden: ['kimi-row'] }
+  const providers = [
+    { provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 3 }], fetchedAt: Date.now() },
+    { provider: 'kimi-row', displayName: 'Kimi', adapted: true, kind: 'kimi', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥12.34' }], fetchedAt: Date.now() },
+    { provider: 'sf-row', displayName: '硅基流动', adapted: true, kind: 'siliconflow', refreshing: false, status: 'ok', windows: [{ id: 'balance', text: '¥8.00' }], fetchedAt: Date.now() },
+  ]
+  const syncRpc = async (channel, endpoint, payload) => {
+    rpcCalls.push({ endpoint, payload })
+    if (endpoint === 'config-get') {
+      if (configGetShouldFail) throw new Error('host restarting')
+      return { ok: true, value: remoteConfig }
+    }
+    if (endpoint === 'config-set') {
+      if (configSetShouldFail) throw new Error('host restarting')
+      remoteConfig = payload.value
+      return { ok: true, value: remoteConfig }
+    }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers } }
+    return testSettingsNavRpc(channel, endpoint)
+  }
+  const openQuotaPage = async (renderer) => {
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    await renderer.flush()
+  }
+  const cardOrder = (renderer) => renderer.findByTestId('quota-card-list').children.flat(Infinity).map((child) => child.props['data-testid'])
+  const configCalls = () => rpcCalls.filter((call) => call.endpoint === 'config-set' && call.payload?.section === 'quotaCards')
+
+  // 1. 首次拉取失败（宿主重启窗口）：本地配置保留、照常渲染，后端值不覆盖。
+  const renderer = createRenderer(syncRpc, {
+    initialStorage: { 'dsh-service-quota-card-order': JSON.stringify(['kimi-row', 'zai-row', 'sf-row']) },
+  })
+  await renderer.load()
+  await openQuotaPage(renderer)
+  assert.ok(rpcCalls.some((call) => call.endpoint === 'config-get' && call.payload?.section === 'quotaCards'), 'entering the quota page must pull the backend card config')
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem('dsh-service-quota-card-order')),
+    ['kimi-row', 'zai-row', 'sf-row'],
+    'local config must survive a failed backend pull',
+  )
+  assert.deepEqual(cardOrder(renderer), ['quota-provider-card-kimi-row', 'quota-provider-card-zai-row', 'quota-provider-card-sf-row'])
+
+  // 2. 重新进入额度页时重试成功：后端为权威事实源，覆盖本地。
+  configGetShouldFail = false
+  renderer.unmount('settings.section')
+  renderer.mount('settings.section')
+  await openQuotaPage(renderer)
+  assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-order')), ['sf-row', 'zai-row'])
+  assert.deepEqual(JSON.parse(localStorage.getItem('dsh-service-quota-card-hidden')), ['kimi-row'])
+  assert.deepEqual(cardOrder(renderer), ['quota-provider-card-sf-row', 'quota-provider-card-zai-row'])
+
+  // 3. 写后端失败挂 pending：下次进入额度页自动重推本地已生效配置。
+  rpcCalls.length = 0
+  configSetShouldFail = true
+  renderer.findByTestId('quota-reorder-toggle').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-card-order-down-sf-row').props.onClick({ stopPropagation: () => {} })
+  await renderer.flush()
+  assert.equal(configCalls().length, 1, 'failed write still attempted once')
+  // 隐藏的卡片仍留在排序名单里（与设置栏标签同款：显隐与顺序是两份独立名单），只是不渲染。
+  assert.deepEqual(configCalls()[0].payload.value, { order: ['zai-row', 'sf-row', 'kimi-row'], hidden: ['kimi-row'] })
+
+  configSetShouldFail = false
+  renderer.unmount('settings.section')
+  renderer.mount('settings.section')
+  await openQuotaPage(renderer)
+  assert.equal(configCalls().length, 2, 'pending write should be re-pushed on next quota page entry')
+  assert.deepEqual(configCalls()[1].payload.value, { order: ['zai-row', 'sf-row', 'kimi-row'], hidden: ['kimi-row'] }, 're-pushed value must match the locally applied config')
+
+  // 4. 本地已有历史配置而后端为空 → 首次自动迁移；且只动自己的区块。
+  rpcCalls.length = 0
+  remoteConfig = null
+  const migrateRenderer = createRenderer(syncRpc, {
+    initialStorage: {
+      'dsh-service-quota-card-order': JSON.stringify(['zai-row', 'sf-row', 'kimi-row']),
+      'dsh-service-quota-card-hidden': JSON.stringify(['sf-row']),
+    },
+  })
+  await migrateRenderer.load()
+  await openQuotaPage(migrateRenderer)
+  const migrateCall = configCalls()[0]
+  assert.ok(migrateCall, 'local quota card config should auto-migrate to the backend')
+  assert.deepEqual(migrateCall.payload.value, { order: ['zai-row', 'sf-row', 'kimi-row'], hidden: ['sf-row'] })
+  // 迁移只写 quotaCards 区块：卡片配置绝不落到设置栏标签区块（后者另有自己的拉取/重置逻辑）。
+  assert.equal(
+    rpcCalls.some((call) => call.endpoint === 'config-set' && call.payload?.section === 'settingsNav' && call.payload.value !== null),
+    false,
+  )
+})
+
 
 test('deepseek balance card shows a peak/off-peak timeline following Beijing time', async () => {
   // 固定时刻驱动（Date.now 覆盖 + ctx.timer 桩推进）：周三 10:30 北京时间 = UTC 02:30，处于高峰中段。

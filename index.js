@@ -219,7 +219,7 @@ const QUOTA_UNUSABLE_STATUS_RE = /^(?:http-status|upstream-status):4\d\d$/i
 const UNIFIED_CONFIG_FILE = 'dsh-service-config.json'
 const UNIFIED_CONFIG_VERSION = 1
 const MAX_UNIFIED_CONFIG_BYTES = 128 * 1024
-const CONFIG_ALLOWED_SECTIONS = Object.freeze(['settingsNav'])
+const CONFIG_ALLOWED_SECTIONS = Object.freeze(['settingsNav', 'quotaCards'])
 const NAV_ITEM_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_NAV_ITEMS = 64
 
@@ -3410,6 +3410,31 @@ function sanitizeSettingsNavConfig(value) {
   }
 }
 
+// 额度卡排序与显隐：与设置栏标签同形（order 名单 + hidden 名单），但名单成员是
+// **供应商名**而非 slot id——供应商名由 settings / llm 渠道清单派生，字符集可能含
+// 中文、空格、`@` 等（`llm-pi-ai` 的 provider 键就是用户自定义字符串），故这里不套
+// NAV_ITEM_ID_RE，只做长度与类型约束；真正的内容白名单在客户端（快照里不存在的
+// provider 不渲染、也不参与排序），宿主不猜测当前有哪些供应商、更不接受任意路径类输入。
+const QUOTA_CARD_ITEM_MAX = 128
+function sanitizeQuotaCardsConfig(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || Array.isArray(value)) return null
+
+  const nameOk = (name) => typeof name === 'string' && name.trim() !== '' && name.trim().length <= QUOTA_CARD_ITEM_MAX
+
+  let order = null
+  if (Array.isArray(value.order)) {
+    order = value.order.filter(nameOk).map((name) => name.trim()).slice(0, MAX_NAV_ITEMS)
+  }
+
+  let hidden = []
+  if (Array.isArray(value.hidden)) {
+    hidden = value.hidden.filter(nameOk).map((name) => name.trim()).slice(0, MAX_NAV_ITEMS)
+  }
+
+  return { order, hidden }
+}
+
 async function loadUnifiedConfig(dshHome) {
   try {
     const target = join(dshHome, UNIFIED_CONFIG_FILE)
@@ -6097,6 +6122,12 @@ function apply(ctx) {
         let sanitized = null
         if (section === 'settingsNav') {
           sanitized = sanitizeSettingsNavConfig(payload?.value)
+          if (payload?.value !== null && payload?.value !== undefined && sanitized === null) {
+            return { ok: false, error: 'invalid-section-value' }
+          }
+        }
+        if (section === 'quotaCards') {
+          sanitized = sanitizeQuotaCardsConfig(payload?.value)
           if (payload?.value !== null && payload?.value !== undefined && sanitized === null) {
             return { ok: false, error: 'invalid-section-value' }
           }
