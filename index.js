@@ -213,6 +213,14 @@ const SUBAGENT_DISPATCH_PAGE_MAX = 400
 const QUOTA_UNUSABLE_ERROR_RE = /^(credential-missing|credential-rejected|credentials-unavailable|no-base-url|no-subscription|host-not-pinned|mgmt-disabled|transport-unavailable|bad-payload)/i
 const QUOTA_UNUSABLE_STATUS_RE = /^(?:http-status|upstream-status):4\d\d$/i
 
+// 统一配置文件（v1.6.4）：收敛各功能独立配置，避免文件碎片化；修改/清除单项配置不影响其他字段。
+const UNIFIED_CONFIG_FILE = 'dsh-service-config.json'
+const UNIFIED_CONFIG_VERSION = 1
+const MAX_UNIFIED_CONFIG_BYTES = 128 * 1024
+const CONFIG_ALLOWED_SECTIONS = Object.freeze(['settingsNav'])
+const NAV_ITEM_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
+const MAX_NAV_ITEMS = 64
+
 // 升级目标白名单：命令与包名全来自宿主常量，浏览器不传任何输入；
 // TARGET_RE 与 dsh-market 同源，只放行「包名@版本」字符集。
 const TARGET_RE = /^[A-Za-z0-9@:./_#+~^=-]+$/
@@ -3360,6 +3368,72 @@ async function saveSubagentRoute(dshHome, config) {
   }
 }
 
+function sanitizeSettingsNavConfig(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || Array.isArray(value)) return null
+
+  let order = null
+  if (Array.isArray(value.order)) {
+    order = value.order
+      .filter((id) => typeof id === 'string' && NAV_ITEM_ID_RE.test(id.trim()))
+      .map((id) => id.trim())
+      .slice(0, MAX_NAV_ITEMS)
+  }
+
+  let hidden = []
+  if (Array.isArray(value.hidden)) {
+    hidden = value.hidden
+      .filter((id) => typeof id === 'string' && id.trim() !== 'dsh-service' && NAV_ITEM_ID_RE.test(id.trim()))
+      .map((id) => id.trim())
+      .slice(0, MAX_NAV_ITEMS)
+  }
+
+  return {
+    order,
+    hidden,
+  }
+}
+
+async function loadUnifiedConfig(dshHome) {
+  try {
+    const target = join(dshHome, UNIFIED_CONFIG_FILE)
+    const info = await stat(target)
+    if (info.size > MAX_UNIFIED_CONFIG_BYTES) return { version: UNIFIED_CONFIG_VERSION }
+    const parsed = JSON.parse(await readFile(target, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed
+    }
+    return { version: UNIFIED_CONFIG_VERSION }
+  } catch (_) {
+    return { version: UNIFIED_CONFIG_VERSION }
+  }
+}
+
+async function saveUnifiedConfig(dshHome, config) {
+  await mkdir(dshHome, { recursive: true })
+  const target = join(dshHome, UNIFIED_CONFIG_FILE)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  try {
+    const payload = JSON.stringify(config, null, 2)
+    await writeFile(temporary, payload, { mode: 0o600 })
+    await rename(temporary, target)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+async function updateUnifiedConfigSection(dshHome, section, value) {
+  const current = await loadUnifiedConfig(dshHome)
+  const updated = Object.assign({}, current, { version: UNIFIED_CONFIG_VERSION })
+  if (value === null || value === undefined) {
+    delete updated[section]
+  } else {
+    updated[section] = value
+  }
+  await saveUnifiedConfig(dshHome, updated)
+  return updated
+}
+
 // 额度态「不可服务」判定（子代理回退候选过滤用）：lastError 命中配置/凭据/上游 4xx 码集，
 // 或任一显示窗口 percent≥100（已用尽）。无数据 / 刷新中 / 瞬态错误视为可用——fail-open，
 // 不因额度数据缺席或一次网络抖动误伤正常渠道。
@@ -5975,6 +6049,36 @@ function apply(ctx) {
         return fileEditorFailure(fileEditorErrorCode(error))
       }
     } },
+    'config-get': { handle: async (payload) => {
+      try {
+        const config = await loadUnifiedConfig(dshHome)
+        const section = typeof payload?.section === 'string' ? payload.section : undefined
+        if (section !== undefined) {
+          if (!CONFIG_ALLOWED_SECTIONS.includes(section)) return { ok: false, error: 'invalid-section' }
+          return { ok: true, value: config[section] ?? null }
+        }
+        return { ok: true, value: config }
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+    } },
+    'config-set': { audit: true, handle: async (payload) => {
+      const section = typeof payload?.section === 'string' ? payload.section : ''
+      if (!CONFIG_ALLOWED_SECTIONS.includes(section)) return { ok: false, error: 'invalid-section' }
+      try {
+        let sanitized = null
+        if (section === 'settingsNav') {
+          sanitized = sanitizeSettingsNavConfig(payload?.value)
+          if (payload?.value !== null && payload?.value !== undefined && sanitized === null) {
+            return { ok: false, error: 'invalid-section-value' }
+          }
+        }
+        const updated = await updateUnifiedConfigSection(dshHome, section, sanitized)
+        return { ok: true, value: updated[section] ?? null }
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+    } },
   }
   const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
   try {
@@ -6063,6 +6167,10 @@ export {
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
   viewSessionPage,
+  loadUnifiedConfig,
+  saveUnifiedConfig,
+  updateUnifiedConfigSection,
+  sanitizeSettingsNavConfig,
 }
 export default {
   SKILL_SOURCE_RANK,
@@ -6137,4 +6245,8 @@ export default {
   unwrapCliproxyApiCallEnvelope,
   unwrapXiaomiConsoleEnvelope,
   viewSessionPage,
+  loadUnifiedConfig,
+  saveUnifiedConfig,
+  updateUnifiedConfigSection,
+  sanitizeSettingsNavConfig,
 }

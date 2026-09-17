@@ -7315,3 +7315,76 @@ test('file-write guards the version, fenced by sandbox policy, and broadcasts th
   assert.deepEqual(await readOnlyHost.handler('file-write', { address: fileAddress('note.md'), text: 'nope\n', version: readOnlyRead.value.version }), { ok: false, error: 'file-forbidden' })
   assert.equal(await readFile(join(readOnlyWorkspace, 'note.md'), 'utf8'), 'keep\n')
 })
+
+test('unified config：统一配置文件读写、白名单校验与单功能隔离更新', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-unified-config-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome } })
+
+  // 1. 初始状态：配置文件不存在时 config-get 返回默认结构
+  const initial = await host.handler('config-get', {})
+  assert.equal(initial.ok, true)
+  assert.deepEqual(initial.value, { version: 1 })
+
+  // 查未设置的 section 返回 null
+  const initialNav = await host.handler('config-get', { section: 'settingsNav' })
+  assert.equal(initialNav.ok, true)
+  assert.equal(initialNav.value, null)
+
+  // 查非法 section 拒绝
+  assert.deepEqual(await host.handler('config-get', { section: 'malicious' }), { ok: false, error: 'invalid-section' })
+
+  // 2. config-set 校验：非法 section 或非法值拒绝
+  assert.deepEqual(await host.handler('config-set', { section: 'malicious', value: {} }), { ok: false, error: 'invalid-section' })
+  assert.deepEqual(await host.handler('config-set', { section: 'settingsNav', value: 'not-an-object' }), { ok: false, error: 'invalid-section-value' })
+  assert.deepEqual(await host.handler('config-set', { section: 'settingsNav', value: 123 }), { ok: false, error: 'invalid-section-value' })
+
+  // 3. 保存 settingsNav：白名单过滤、dsh-service 锁定不隐藏、原子落盘 0600
+  const saved = await host.handler('config-set', {
+    section: 'settingsNav',
+    value: {
+      order: ['plugins', 'dsh-service', 'general', 'bad/id', 'ok_item-1'],
+      hidden: ['models', 'dsh-service', 'bad id!'],
+      extraField: 'should-be-stripped',
+    },
+  })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(saved.value, {
+    order: ['plugins', 'dsh-service', 'general', 'ok_item-1'],
+    hidden: ['models'],
+  })
+
+  // 验证磁盘文件内容与权限
+  const configFile = join(dshHome, 'dsh-service-config.json')
+  const diskRaw = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.equal(diskRaw.version, 1)
+  assert.deepEqual(diskRaw.settingsNav, {
+    order: ['plugins', 'dsh-service', 'general', 'ok_item-1'],
+    hidden: ['models'],
+  })
+  assert.equal(diskRaw.settingsNav.extraField, undefined)
+  const fileStat = await stat(configFile)
+  assert.equal(fileStat.mode & 0o777, 0o600)
+
+  // 4. 多功能模块隔离验证：模拟其他模块在配置文件中已有数据
+  diskRaw.otherModule = { enabled: true, foo: 'bar' }
+  await writeFile(configFile, JSON.stringify(diskRaw, null, 2), { mode: 0o600 })
+
+  // 更新 settingsNav，otherModule 必须完好无损
+  await host.handler('config-set', {
+    section: 'settingsNav',
+    value: { order: ['general', 'dsh-service'], hidden: [] },
+  })
+  const afterUpdate = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.deepEqual(afterUpdate.otherModule, { enabled: true, foo: 'bar' })
+  assert.deepEqual(afterUpdate.settingsNav, { order: ['general', 'dsh-service'], hidden: [] })
+
+  // 重置/清除 settingsNav（value: null），otherModule 仍然完好无损
+  const resetRes = await host.handler('config-set', { section: 'settingsNav', value: null })
+  assert.equal(resetRes.ok, true)
+  assert.equal(resetRes.value, null)
+
+  const afterReset = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.deepEqual(afterReset.otherModule, { enabled: true, foo: 'bar' })
+  assert.equal(afterReset.settingsNav, undefined)
+})

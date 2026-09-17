@@ -2540,6 +2540,7 @@ window.__ModuleLoader__.load({
           ? document.querySelector('[role="dialog"] nav')
           : null
         if (!nav) return
+        ensureSettingsNavBackendSynced()
         const buttons = typeof nav.querySelectorAll === 'function'
           ? nav.querySelectorAll('button')
           : []
@@ -2601,6 +2602,40 @@ window.__ModuleLoader__.load({
           navList.style.display = 'flex'
           navList.style.flexDirection = 'column'
         }
+      }
+
+      // 从后端统一配置拉取设置栏导航（多设备同步与本地初次迁移）
+      let backendSynced = false
+      const ensureSettingsNavBackendSynced = () => {
+        if (backendSynced) return
+        backendSynced = true
+        syncSettingsNavFromBackend()
+      }
+
+      const syncSettingsNavFromBackend = async () => {
+        try {
+          const res = await rpcCall('config-get', { section: 'settingsNav' })
+          if (res && res.ok === true && res.value !== undefined) {
+            const hasRemoteConfig = res.value !== null && typeof res.value === 'object' && (Array.isArray(res.value.order) || Array.isArray(res.value.hidden))
+            if (hasRemoteConfig) {
+              const remoteOrder = Array.isArray(res.value.order) ? res.value.order : null
+              const remoteHidden = Array.isArray(res.value.hidden) ? res.value.hidden : []
+              writeSettingsNavOrder(remoteOrder)
+              writeSettingsNavHidden(remoteHidden)
+              notifyNavOrderChanged()
+              return
+            }
+            // 宿主尚未存入该配置，但当前本地已有历史配置 → 自动初次迁移至后端
+            const localOrder = readSettingsNavOrder()
+            const localHidden = readSettingsNavHidden()
+            if ((localOrder && localOrder.length > 0) || (localHidden && localHidden.length > 0)) {
+              await rpcCall('config-set', {
+                section: 'settingsNav',
+                value: { order: localOrder, hidden: localHidden },
+              }).catch(() => {})
+            }
+          }
+        } catch (_) {}
       }
 
       const useTranslation = () => {
@@ -4382,6 +4417,15 @@ window.__ModuleLoader__.load({
           }
         }, [])
 
+        useEffect(() => {
+          const update = () => {
+            setOrderList(readSettingsNavOrder())
+            setHiddenIds(readSettingsNavHidden())
+          }
+          navOrderListeners.add(update)
+          return () => navOrderListeners.delete(update)
+        }, [])
+
         const raw = getRawSettingsSections()
         const rawMap = new Map()
         for (const e of raw) {
@@ -4414,6 +4458,10 @@ window.__ModuleLoader__.load({
           setOrderList(ids)
           writeSettingsNavOrder(ids)
           notifyNavOrderChanged()
+          rpcCall('config-set', {
+            section: 'settingsNav',
+            value: { order: ids, hidden: Array.isArray(hiddenIds) ? hiddenIds : [] },
+          }).catch(() => {})
         }
 
         const toggleVisible = (id) => {
@@ -4426,6 +4474,10 @@ window.__ModuleLoader__.load({
           setHiddenIds(arr)
           writeSettingsNavHidden(arr)
           notifyNavOrderChanged()
+          rpcCall('config-set', {
+            section: 'settingsNav',
+            value: { order: Array.isArray(orderList) ? orderList : null, hidden: arr },
+          }).catch(() => {})
         }
 
         const resetDefault = () => {
@@ -4436,6 +4488,7 @@ window.__ModuleLoader__.load({
           notifyNavOrderChanged()
           setSavedTip(true)
           setTimeout(() => setSavedTip(false), 2000)
+          rpcCall('config-set', { section: 'settingsNav', value: null }).catch(() => {})
         }
 
         const handleSave = () => {
@@ -4446,6 +4499,10 @@ window.__ModuleLoader__.load({
           notifyNavOrderChanged()
           setSavedTip(true)
           setTimeout(() => setSavedTip(false), 2000)
+          rpcCall('config-set', {
+            section: 'settingsNav',
+            value: { order: ids, hidden: Array.isArray(hiddenIds) ? hiddenIds : [] },
+          }).catch(() => {})
         }
 
         const hiddenSet = new Set(Array.isArray(hiddenIds) ? hiddenIds : [])
@@ -7227,6 +7284,10 @@ window.__ModuleLoader__.load({
         const runtimeEnv = useRuntimeEnv()
         const installedVersion = useInstalledVersion()
         const usageRequestPayload = { timezoneOffsetMinutes: new Date().getTimezoneOffset() }
+
+        useEffect(() => {
+          ensureSettingsNavBackendSynced()
+        }, [])
 
         // 进入面板时拉取当前版本和健康快照；健康数据每 5 秒刷新，卸载即停止。
         // version 走全插件共享的缓存快照：无论哪个挂载点先到，都只有一次请求。

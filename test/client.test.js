@@ -10327,3 +10327,64 @@ test('settings nav order: management page allows reordering, toggling visibility
   const entriesAfterReset = renderer.slots.entries('settings.section')
   assert.ok(entriesAfterReset.some((e) => e.options.id === 'plugins'))
 })
+
+test('settings nav order: backend sync on startup and local migration', async () => {
+  const rpcCalls = []
+  let remoteConfig = { order: ['models', 'general', 'dsh-service'], hidden: ['plugins'] }
+
+  const syncRpc = async (channel, endpoint, payload) => {
+    rpcCalls.push({ endpoint, payload })
+    if (endpoint === 'config-get') {
+      return { ok: true, value: remoteConfig }
+    }
+    if (endpoint === 'config-set') {
+      remoteConfig = payload.value
+      return { ok: true, value: remoteConfig }
+    }
+    return testSettingsNavRpc(channel, endpoint)
+  }
+
+  const initialSlots = {
+    'settings.section': [
+      { options: { id: 'general', order: 0, label: () => '通用' }, component: () => null },
+      { options: { id: 'models', order: 10, label: () => '模型' }, component: () => null },
+      { options: { id: 'plugins', order: 30, label: () => '插件' }, component: () => null },
+    ],
+  }
+
+  // 1. 启动时从后端同步配置并覆盖本地
+  const renderer = createRenderer(syncRpc, { initialSlots })
+  await renderer.load()
+  await renderer.flush()
+
+  // 验证 config-get 被调用
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'config-get' && c.payload?.section === 'settingsNav'))
+
+  // 验证 entries() 已经应用了后端的排序与隐藏（plugins 隐藏，models 在前）
+  const entries = renderer.slots.entries('settings.section')
+  assert.ok(!entries.some((e) => e.options.id === 'plugins'), 'plugins should be hidden per backend config')
+  const sorted = [...entries].sort((a, b) => a.options.order - b.options.order).map((e) => e.options.id)
+  assert.deepEqual(sorted, ['models', 'general', 'dsh-service'])
+
+  // 2. 验证本地已有配置但后端为空时（首次自动迁移）
+  rpcCalls.length = 0
+  remoteConfig = null
+  const rendererMigrate = createRenderer(syncRpc, {
+    initialSlots,
+    initialStorage: {
+      'dsh-service-settings-nav-order': JSON.stringify(['general', 'plugins', 'dsh-service']),
+      'dsh-service-settings-nav-hidden': JSON.stringify(['models']),
+    },
+  })
+  await rendererMigrate.load()
+  await rendererMigrate.flush()
+
+  // 验证 config-set 被调用以迁移本地配置
+  const migrateCall = rpcCalls.find((c) => c.endpoint === 'config-set')
+  assert.ok(migrateCall, 'should auto-migrate local settings to backend')
+  assert.equal(migrateCall.payload.section, 'settingsNav')
+  assert.deepEqual(migrateCall.payload.value, {
+    order: ['general', 'plugins', 'dsh-service'],
+    hidden: ['models'],
+  })
+})
