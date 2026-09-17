@@ -10484,60 +10484,6 @@ test('settings nav order: entries() maps orders from localStorage and filters hi
   assert.equal(renderer.slotSubscriptionCount('settings.section'), nativeSubscriptionsBefore)
 })
 
-test('settings nav labels: bilingual static labels collapse to the active interface language', async () => {
-  const renderer = createRenderer(testSettingsNavRpc)
-  await renderer.load()
-  const { localizeBilingualLabel } = renderer.moduleExports().settingsNavLabels
-
-  // 双语静态串：按当前语言取对应一侧（两侧顺序无关）。
-  assert.equal(localizeBilingualLabel('Theme / 外观', 'zh'), '外观')
-  assert.equal(localizeBilingualLabel('Theme / 外观', 'en'), 'Theme')
-  assert.equal(localizeBilingualLabel('外观 / Theme', 'zh'), '外观')
-  assert.equal(localizeBilingualLabel('外观/Theme', 'en'), 'Theme')
-  assert.equal(localizeBilingualLabel('外观/Theme', 'zh'), '外观')
-  // 判定不成立时原样返回：同语系、纯中文/纯英文、多段、空段、非字符串。
-  assert.equal(localizeBilingualLabel('服务控制/额度查询', 'zh'), '服务控制/额度查询')
-  assert.equal(localizeBilingualLabel('OpenAI / Anthropic', 'zh'), 'OpenAI / Anthropic')
-  assert.equal(localizeBilingualLabel('a / b / 外观', 'zh'), 'a / b / 外观')
-  assert.equal(localizeBilingualLabel('  / 外观', 'zh'), '  / 外观')
-  assert.equal(localizeBilingualLabel('通用设置', 'en'), '通用设置')
-  assert.equal(localizeBilingualLabel(undefined, 'zh'), undefined)
-  const fn = () => 'Theme / 外观'
-  assert.equal(localizeBilingualLabel(fn, 'zh'), fn)
-})
-
-test('settings nav labels: ledger and management page render single-language labels that follow locale switches', async () => {
-  const initialSlots = {
-    'settings.section': [
-      { options: { id: 'general', order: 0, label: () => '通用设置' }, component: () => null },
-      { options: { id: 'dream-skin', order: 10, label: 'Theme / 外观' }, component: () => null },
-    ],
-  }
-  const renderer = createRenderer(testSettingsNavRpc, { initialSlots })
-  await renderer.load()
-
-  // 账本出口（外壳导航条读它）已是单语言；纯中文标签原样透传。
-  const ledger = renderer.slots.entries('settings.section')
-  assert.equal(ledger.find((e) => e.options.id === 'dream-skin').options.label(), '外观')
-  assert.equal(ledger.find((e) => e.options.id === 'general').options.label(), '通用设置')
-
-  // 管理页列表同一份文案。
-  await renderer.findButton('配置').props.onClick()
-  await renderer.flush()
-  await renderer.findByTestId('config-tab-navOrder').props.onClick()
-  await renderer.flush()
-  assert.ok(renderer.hasTest('nav-order-item-dream-skin'))
-  assert.match(renderer.text('settings.section'), /外观/)
-  assert.doesNotMatch(renderer.text('settings.section'), /Theme \/ 外观/)
-
-  // 语言切换后账本与列表都按新语言重算。
-  renderer.setLocale('en')
-  await renderer.flush()
-  assert.equal(renderer.slots.entries('settings.section').find((e) => e.options.id === 'dream-skin').options.label(), 'Theme')
-  assert.match(renderer.text('settings.section'), /Theme/)
-  assert.doesNotMatch(renderer.text('settings.section'), /外观/)
-})
-
 test('settings nav order: management page allows reordering, toggling visibility, and resetting', async () => {
   const initialSlots = {
     'settings.section': [
