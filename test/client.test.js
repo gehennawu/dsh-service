@@ -4908,6 +4908,11 @@ test('skills tab renders three groups with badges, filters, and double-confirm t
   renderer.findByTestId('skills-filter').props.onChange({ target: { value: '' } })
   await renderer.flush()
 
+  // 条目默认折叠：开关在折叠体里，先点开 beta 的头部行才能操作。
+  assert.equal(renderer.hasTest('skill-switch-model-beta'), false)
+  renderer.findByTestId('skill-header-beta').props.onClick()
+  await renderer.flush()
+
   // 两段式开关：第一击只进入待确认，不发 RPC；第二击才下发 enable=true（点亮模型可见）。
   const betaSwitch = renderer.findByTestId('skill-switch-model-beta')
   assert.equal(betaSwitch.props['aria-checked'], 'false')
@@ -4920,7 +4925,8 @@ test('skills tab renders three groups with badges, filters, and double-confirm t
   assert.deepEqual(fixture.state.toggles, [{ id: 'id-beta', field: 'model', enable: true }])
   assert.equal(renderer.findByTestId('skill-switch-model-beta').props['aria-checked'], 'true')
 
-  // 无效条目组：delta 带 legacy ⚠ 与修复按钮；修复与开关同款两段式——第一击只进入待确认不发 RPC。
+  // 无效条目组：delta 带 legacy ⚠ 与修复按钮（⚠ 是警告不是细节，折叠态也照常露出）；
+  // 修复与开关同款两段式——第一击只进入待确认不发 RPC。
   assert.equal(renderer.hasTest('skills-invalid-group'), true)
   renderer.findByTestId('skill-fix-delta').props.onClick()
   await renderer.flush()
@@ -4931,6 +4937,63 @@ test('skills tab renders three groups with badges, filters, and double-confirm t
   await renderer.flush()
   assert.deepEqual(fixture.state.fixes, [{ id: 'id-delta' }])
   assert.equal(renderer.hasTest('skills-invalid-group'), false)
+})
+
+test('skills list defaults to collapsed entries with a top expand-all toggle', async () => {
+  const fixture = createSkillsRpcFixture()
+  const renderer = baseSkillRenderer(fixture)
+  await renderer.load()
+  renderer.mount('settings.section')
+  renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  renderer.findButton('技能').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+
+  // 默认全部折叠：折叠体、开关与 ✨ 都不在树里，只剩可点的头部行。
+  assert.equal(renderer.hasTest('skill-body-alpha'), false)
+  assert.equal(renderer.hasTest('skill-switch-model-alpha'), false)
+  assert.equal(renderer.hasTest('skill-describe-alpha'), false)
+  assert.equal(renderer.findByTestId('skill-header-alpha').props['aria-expanded'], 'false')
+  // 无效条目的 ⚠ 行即使在折叠态也露出（含一键修复入口）。
+  assert.equal(renderer.hasTest('skill-fix-delta'), true)
+
+  // 单条点击独立开合：alpha 展开不牵动 beta。
+  renderer.findByTestId('skill-header-alpha').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-alpha'), true)
+  assert.equal(renderer.hasTest('skill-switch-model-alpha'), true)
+  assert.equal(renderer.findByTestId('skill-header-alpha').props['aria-expanded'], 'true')
+  assert.equal(renderer.hasTest('skill-body-beta'), false)
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部展开')
+  renderer.findByTestId('skill-header-alpha').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-alpha'), false)
+
+  // 顶部按钮一键展开全部可见条目，按钮自身切成「全部折叠」。
+  renderer.findByTestId('skills-expand-all').props.onClick()
+  await renderer.flush()
+  for (const name of ['alpha', 'beta', 'gamma', 'delta']) assert.equal(renderer.hasTest('skill-body-' + name), true, name + ' expanded')
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部折叠')
+
+  // 过滤态下按钮只作用于命中的条目：全收 alpha，被过滤掉的 beta/gamma/delta 保持展开。
+  renderer.findByTestId('skills-filter').props.onChange({ target: { value: 'alp' } })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部折叠')
+  renderer.findByTestId('skills-expand-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-alpha'), false)
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部展开')
+
+  renderer.findByTestId('skills-filter').props.onChange({ target: { value: '' } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-beta'), true)
+  assert.equal(renderer.hasTest('skill-body-alpha'), false)
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部展开')
+  renderer.findByTestId('skills-expand-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('skill-body-alpha'), true)
+  assert.equal(renderer.findByTestId('skills-expand-all').children.join(''), '全部折叠')
 })
 
 test('AI describe dialog loads models, drafts a preview diff, and writes after explicit confirm', async () => {
@@ -4944,6 +5007,8 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   await renderer.flush()
   await renderer.flush()
 
+  renderer.findByTestId('skill-header-alpha').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('skill-describe-alpha').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -4965,13 +5030,16 @@ test('AI describe dialog loads models, drafts a preview diff, and writes after e
   // 注释以独立块展示在条目下方：只含描述与用法两行，不再带标题说明。
   assert.equal(renderer.hasTest('skill-note-alpha'), true)
   assert.equal(renderer.text().includes('仅面板展示'), false)
-  // v0.31 用户点名：描述/用法/注释占满技能展示区宽度——注释框是条目卡的直接子节点
-  // （独占整行），不再嵌在「名称 | 开关」双栏的左列里被开关列挤窄。
+  // v0.31 用户点名：描述/用法/注释占满技能展示区宽度——折叠体里「文本 | 开关」双栏 + 注释块
+  // 独占整行（不再嵌在左列里被开关列挤窄）；折叠头部行只留名称徽标。
   const entryNode = renderer.findByTestId('skill-entry-alpha')
   const directIds = entryNode.children.filter((child) => child !== null && child.props && child.props['data-testid']).map((child) => child.props['data-testid'])
-  assert.deepEqual(directIds, ['skill-note-alpha'])
+  assert.deepEqual(directIds, ['skill-header-alpha', 'skill-body-alpha'])
   const headerRow = entryNode.children[0]
-  assert.equal(headerRow.props.style.display, 'flex', 'name + switches share the top row')
+  assert.equal(headerRow.props.style.display, 'flex', 'collapsed header keeps the name row')
+  const bodyNode = renderer.findByTestId('skill-body-alpha')
+  const bodyIds = bodyNode.children.filter((child) => child !== null && child.props && child.props['data-testid']).map((child) => child.props['data-testid'])
+  assert.deepEqual(bodyIds, ['skill-note-alpha'], 'the note block spans the whole entry width')
   // 运行日志盒保留最后一次生成的过程记录（结构化条目经词典渲染）。
   assert.equal(renderer.hasTest('skill-describe-log'), true)
   assert.match(renderer.text(), /解析成功，草稿就绪/)
@@ -4998,6 +5066,8 @@ test('skill run logs render timestamps in local time instead of UTC', async () =
   await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-header-alpha').props.onClick()
   await renderer.flush()
   renderer.findByTestId('skill-describe-alpha').props.onClick()
   await renderer.flush()
@@ -5146,6 +5216,8 @@ test('skills tab renders localized error text instead of crashing on failed load
   assert.equal(renderer.hasTest('skills-section'), true)
 
   // 双击只读条目开关 → 宿主拒绝 → 错误行显示词典文案而非原始错误码，页面不崩溃。
+  renderer.findByTestId('skill-header-gamma').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('skill-switch-model-gamma').props.onClick()
   await renderer.flush()
   renderer.findByTestId('skill-switch-model-gamma').props.onClick()
@@ -5198,6 +5270,8 @@ test('AI completion requests carry the active UI language so host prompts follow
   await renderer.flush()
 
   // 英文环境发起补全：请求带 lang:'en'；切回中文另开一条补全：lang 跟随切换。
+  renderer.findByTestId('skill-header-alpha').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('skill-describe-alpha').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -5207,6 +5281,8 @@ test('AI completion requests carry the active UI language so host prompts follow
   await renderer.flush()
   assert.equal(fixture.state.describes.length, 1)
   renderer.setLocale('zh')
+  await renderer.flush()
+  renderer.findByTestId('skill-header-beta').props.onClick()
   await renderer.flush()
   renderer.findByTestId('skill-describe-beta').props.onClick()
   await renderer.flush()
@@ -5225,6 +5301,8 @@ test('describe dialog shows the panel-only disclaimer before saving a note', asy
   await renderer.flush()
   renderer.findButton('技能').props.onClick()
   await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('skill-header-alpha').props.onClick()
   await renderer.flush()
   renderer.findByTestId('skill-describe-alpha').props.onClick()
   await renderer.flush()
@@ -5257,6 +5335,8 @@ test('AI describe dialog renders directly below the target skill item instead of
   assert.equal(renderer.hasTest('skill-describe-dialog'), false)
 
   // 为 alpha（位于 auto 组）开启补全
+  renderer.findByTestId('skill-header-alpha').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('skill-describe-alpha').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -5273,6 +5353,8 @@ test('AI describe dialog renders directly below the target skill item instead of
   assert.deepEqual(autoChildIds, ['skill-entry-alpha', 'skill-describe-dialog'])
 
   // 切换为 beta（位于 manual 组）开启补全：设置框必须移到 beta 下方，auto 组不再包含设置框
+  renderer.findByTestId('skill-header-beta').props.onClick()
+  await renderer.flush()
   renderer.findByTestId('skill-describe-beta').props.onClick()
   await renderer.flush()
   await renderer.flush()

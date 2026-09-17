@@ -407,6 +407,8 @@ window.__ModuleLoader__.load({
       'skills.error.annotated-confirm-required': '已注释技能需再次确认后才能被覆盖',
       'skills.empty': '未发现任何技能',
       'skills.filter': '按名称过滤…',
+      'skills.expandAll': '全部展开',
+      'skills.collapseAll': '全部折叠',
       'skills.colon': '：',
       'skills.group.auto': '自动加载',
       'skills.group.manual': '仅手动调用',
@@ -1236,6 +1238,8 @@ window.__ModuleLoader__.load({
       'skills.error.annotated-confirm-required': 'Annotated skills need an explicit confirm before being overwritten',
       'skills.empty': 'No skills found',
       'skills.filter': 'Filter by name…',
+      'skills.expandAll': 'Expand all',
+      'skills.collapseAll': 'Collapse all',
       'skills.colon': ': ',
       'skills.group.auto': 'Auto-loaded',
       'skills.group.manual': 'Manual only',
@@ -4469,6 +4473,9 @@ window.__ModuleLoader__.load({
         const [error, setError] = useState('')
         const [loading, setLoading] = useState(true)
         const [filterText, setFilterText] = useState('')
+        // 技能条目默认全部折叠（长列表先当索引用）：记录已展开的条目签名 ID，
+        // 点条目各自开合，顶部按钮对当前可见条目一键全开/全收。
+        const [expandedSkillIds, setExpandedSkillIds] = useState([])
         const [confirmingKey, setConfirmingKey] = useState(null)
         const [describe, setDescribe] = useState(null)   // {entry, models, modelItem, draft, busy, error, applied}
         const [batchBusy, setBatchBusy] = useState(false)
@@ -4540,6 +4547,7 @@ window.__ModuleLoader__.load({
         const patchEntry = (next) => {
           setData((prev) => prev === null ? prev : { ...prev, entries: prev.entries.map((entry) => entry.id === next.id ? next : entry) })
         }
+        const toggleSkillExpanded = (id) => setExpandedSkillIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : prev.concat([id]))
         // 待确认态 3 秒无第二击自动复位（armed 态不再无限滞留）。
         useEffect(() => {
           if (confirmingKey === null) return undefined
@@ -4647,9 +4655,12 @@ window.__ModuleLoader__.load({
         // v0.31 用户点名两连修：AI 注释块独占整行占满技能展示区；技能自带的描述/用法行
         // 回到「文本 | 开关」双栏的左列原宽度，给右侧胶囊开关列留位。头部行 = 名称 +
         // 自带描述/用法/无效行（左列）+ 右侧开关列，注释块铺满全宽垫底。
+        // 条目默认折叠：头部行只剩折叠箭头 + 名称徽标行（可点，独立开合）；描述/用法/开关/
+        // 注释都进折叠体。无效 ⚠ 行是警告不是细节，折叠态也照常露出。
         const entryCard = { border: '1px solid var(--dsh-alias-border-l2)', borderRadius: '10px', padding: '11px 13px', marginBottom: '8px', background: 'var(--dsh-svc-card-bg)' }
 
         const renderEntry = (entry) => {
+          const expanded = expandedSkillIds.includes(entry.id)
           const invalidLegacy = typeof entry.invalid === 'string' && entry.invalid.startsWith('legacy-invocation-key:')
           const nameLine = React.createElement('div', { style: { fontSize: '14px', fontWeight: 650, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' } },
             entry.name,
@@ -4681,11 +4692,17 @@ window.__ModuleLoader__.load({
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' } }, translate('skills.switch.user'),
               pillSwitch(entry.invocation.user, { testid: 'skill-switch-user-' + entry.name, disabled: !entry.writable, armed: confirmingKey === entry.id + ':user', title: confirmingKey === entry.id + ':user' ? translate('skills.switch.confirm') : undefined, onClick: () => void toggleSkill(entry, 'user') })),
             data !== null && data.llmAvailable ? React.createElement('button', { type: 'button', 'data-testid': 'skill-describe-' + entry.name, onClick: () => void openDescribe(entry), style: Object.assign({}, svcRowActionStyle(), { fontSize: '11px', padding: '3px 10px' }) }, '✨ ' + translate('skills.describe.button')) : null) : null
-          return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
+          const headerRow = React.createElement('button', { type: 'button', 'data-testid': 'skill-header-' + entry.name, 'aria-expanded': String(expanded), onClick: () => toggleSkillExpanded(entry.id), style: { display: 'flex', alignItems: 'flex-start', gap: '8px', width: '100%', padding: 0, border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' } },
+            React.createElement('span', { 'aria-hidden': 'true', style: { flexShrink: 0, fontSize: '11px', lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' } }, expanded ? '▾' : '▸'),
+            React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine))
+          const body = expanded ? React.createElement('div', { 'data-testid': 'skill-body-' + entry.name, style: { marginTop: '2px' } },
             React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start', justifyContent: 'space-between' } },
-              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, nameLine, descLine, usageLine, invalidLine),
+              React.createElement('div', { style: { minWidth: 0, flex: 1 } }, descLine, usageLine, invalidLine),
               switches),
-            noteLine)
+            noteLine) : invalidLine
+          return React.createElement('div', { key: entry.id, 'data-testid': 'skill-entry-' + entry.name, style: entryCard },
+            headerRow,
+            body)
         }
 
         const renderLogBox = (testid, lines, showHeader) => lines.length === 0 ? null : React.createElement('div', { 'data-testid': testid, style: { marginTop: '9px', padding: '7px 10px', borderRadius: '7px', background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l2)', maxHeight: '130px', overflowY: 'auto' } },
@@ -4721,12 +4738,23 @@ window.__ModuleLoader__.load({
             draft !== null && !applied ? React.createElement('button', { type: 'button', 'data-testid': 'skill-apply-confirm', disabled: busy, onClick: () => void applyDraft(), style: { fontSize: '12px', padding: '6px 16px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid transparent', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.55 : 1 } }, translate('skills.apply.confirm')) : null)
         }
 
+        // 过滤后的可见条目：顶部「全部展开」按钮与分组列表共用同一份口径。
+        const needle = filterText.trim().toLowerCase()
+        const visibleEntries = data === null ? [] : (needle === '' ? data.entries : data.entries.filter((entry) => entry.name.toLowerCase().includes(needle)))
+        const allVisibleExpanded = visibleEntries.length > 0 && visibleEntries.every((entry) => expandedSkillIds.includes(entry.id))
+        const toggleAllVisible = () => {
+          const visibleIds = visibleEntries.map((entry) => entry.id)
+          if (allVisibleExpanded) {
+            setExpandedSkillIds((prev) => prev.filter((id) => !visibleIds.includes(id)))
+            return
+          }
+          setExpandedSkillIds((prev) => visibleIds.reduce((next, id) => next.includes(id) ? next : next.concat([id]), prev))
+        }
+
         const renderGroups = () => {
           if (data === null || data.entries.length === 0) return React.createElement('p', { style: hint }, translate('skills.empty'))
-          const needle = filterText.trim().toLowerCase()
-          const visible = needle === '' ? data.entries : data.entries.filter((entry) => entry.name.toLowerCase().includes(needle))
-          const invalidEntries = visible.filter((entry) => entry.invalid !== undefined)
-          const validEntries = visible.filter((entry) => entry.invalid === undefined)
+          const invalidEntries = visibleEntries.filter((entry) => entry.invalid !== undefined)
+          const validEntries = visibleEntries.filter((entry) => entry.invalid === undefined)
           const groups = [
             ['skills.group.auto', validEntries.filter((entry) => entry.invocation.model)],
             ['skills.group.manual', validEntries.filter((entry) => !entry.invocation.model && entry.invocation.user)],
@@ -4826,6 +4854,8 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
             React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+              // 条目默认折叠：一键全开/全收当前可见条目（过滤后只作用于命中的那些）。
+              React.createElement('button', { type: 'button', 'data-testid': 'skills-expand-all', 'data-variant': 'neutral', disabled: visibleEntries.length === 0, style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px', cursor: visibleEntries.length === 0 ? 'default' : 'pointer', opacity: visibleEntries.length === 0 ? 0.55 : 1 }), onClick: () => toggleAllVisible() }, allVisibleExpanded ? translate('skills.collapseAll') : translate('skills.expandAll')),
               // v0.39：技能的设置页左列入口已撤销（维护页内有完整功能），只剩刷新按钮。
               // v0.39 统一：刷新钮三胞胎（usage/skills/sessions）同一紧凑 neutral 视觉。
               React.createElement('button', { type: 'button', 'data-testid': 'skills-refresh', 'data-variant': 'neutral', style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '28px', padding: '4px 10px', fontSize: '12px' }), onClick: () => void load() }, '↻'))),

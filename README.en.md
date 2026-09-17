@@ -149,6 +149,7 @@ Under **Plugins → Plugin configuration**, eleven host-level switches: **Health
 ![Skills management](./screenshots/skill-manager_en.png)
 
 - Lists local skills in three sections — **auto-loaded / manual-only / fully disabled**; same-name shadowing marks both copies, bundled directories are read-only
+- Entries start collapsed into one row (name plus source / read-only / annotated badges); the top button expands or collapses every visible entry at once, and clicking an entry's name row toggles that entry alone; an invalid entry keeps its ⚠ and one-click fix visible while collapsed
 - Two switches edit the SKILL.md frontmatter directly (`disable-model-invocation` / `user-invocable`); changes go live within ~200 ms
 - Entries with legacy camelCase keys are dropped by the official parser: ⚠ warning + one-click canonical fix
 - ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled. Already-annotated skills are listed separately in the plan and are only overwritten after a "Confirm forced refill" second confirmation (annotating no longer blocks future batch fills forever); completion-log timestamps use your local timezone
