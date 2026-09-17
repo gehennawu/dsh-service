@@ -117,6 +117,14 @@ test('built-in route defaults derive the endpoint only for the Adapter that owns
   assert.deepEqual(quotaAdapterEndpoints(opencode, { baseURL: '' }), [])
   assert.deepEqual(quotaAdapterEndpoints(opencode, { name: 'opencode-go', baseURL: 'https://relay.example/v1' }), [])
   assert.deepEqual(prepareQuotaAdapterConfig(opencode, { name: 'opencode-no-base', baseURL: '' }), { ok: false, error: 'unsafe-provider-endpoint' })
+  // 显式 baseURL 的 anthropic-messages 组形状（`…/zen/go`，不带 /v1）：通用 /usage 拼接实测打到
+  // 上游 404 HTML 网页（`…/zen/go/usage` → 404 text/html；同域 `…/zen/go/v1/usage` 无 key 401 JSON）。
+  // 两种 zen 网关显式形状都归一到 /v1，且归一化后仍受主机白名单约束。
+  assert.deepEqual(quotaAdapterEndpoints(opencode, { baseURL: 'https://opencode.ai/zen/go' }), ['https://opencode.ai/zen/go/v1/usage'])
+  assert.deepEqual(quotaAdapterEndpoints(opencode, { baseURL: 'https://opencode.ai/zen/go/' }), ['https://opencode.ai/zen/go/v1/usage'])
+  assert.deepEqual(quotaAdapterEndpoints(opencode, { baseURL: 'https://child.opencode.ai/zen/go' }), ['https://child.opencode.ai/zen/go/v1/usage'])
+  // 边界：非 zen 网关的自定义路径不猜 /v1，保持通用 /usage 拼接。
+  assert.deepEqual(quotaAdapterEndpoints(opencode, { baseURL: 'https://api.opencode.ai/custom' }), ['https://api.opencode.ai/custom/usage'])
   // 固定端点 kind 只需认领即可用（zai 的候选链与 baseURL 无关）。
   assert.deepEqual(quotaAdapterEndpoints(findQuotaAdapter(adapters, 'zai-coding-cn'), { name: 'zai-coding-cn', baseURL: '' }), [
     'https://open.bigmodel.cn/api/monitor/usage/quota/limit',

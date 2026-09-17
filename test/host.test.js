@@ -3071,6 +3071,12 @@ test('balance parsers map credits percent and text balances', () => {
     [{ id: 'credits', percent: 25 }],
   )
   assert.deepEqual(normalizeOpenRouterCredits({ data: { total_credits: 0 } }).windows, [])
+  // 免费/未充值渠道 key：官方 credits 端点照常 200、total_credits 为 0——给可读余额文本，
+  // 不再落进「空窗口 → 响应格式异常」的误报分支。
+  assert.deepEqual(
+    normalizeOpenRouterCredits({ data: { total_credits: 0, total_usage: 0 } }).windows,
+    [{ id: 'credits', text: '$0.00' }],
+  )
   assert.deepEqual(normalizeKimiBalance({ available_balance: 1234 }).windows, [{ id: 'balance', text: '¥12.34' }])
   assert.deepEqual(normalizeKimiBalance({ balance: 88.5 }).windows, [{ id: 'balance', text: '¥88.50' }])
   assert.deepEqual(normalizeSiliconFlowInfo({ data: { balance: 12 } }).windows, [{ id: 'balance', text: '¥12.00' }])

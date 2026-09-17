@@ -165,6 +165,7 @@ function defineQuotaAdapter(definition, metadata = {}) {
     routeIds: Object.freeze([...(metadata.routeIds ?? [])]),
     defaultBaseURL: typeof metadata.defaultBaseURL === 'string' && metadata.defaultBaseURL !== '' ? metadata.defaultBaseURL : undefined,
     usageUrl: metadata.usageUrl,
+    usageBasePathname: typeof metadata.usageBasePathname === 'function' ? metadata.usageBasePathname : undefined,
   }))
   return adapter
 }
@@ -200,6 +201,12 @@ function adapterEndpoints(adapter, profile) {
     ? (adapterOwnsUndeclaredRoute(metadata.routeIds, profile) ? safeBaseUrl(metadata.defaultBaseURL, metadata.hosts) : undefined)
     : safeBaseUrl(declared, metadata.hosts)
   if (base === undefined) return []
+  // 适配器可对「显式 baseURL」声明用量路径归一（如 opencode-go 的协议组 baseUrl 不带 /v1，
+  // 通用 /usage 拼接会打到上游 404 网页）；钩子返回 undefined 时走通用 /usage 拼接。
+  if (typeof metadata.usageBasePathname === 'function') {
+    const derived = metadata.usageBasePathname(base)
+    if (derived !== undefined) return [derived.toString()]
+  }
   base.pathname = `${base.pathname}/usage`.replace(/\/{2,}/g, '/')
   return [base.toString()]
 }
@@ -291,6 +298,7 @@ function createEndpointAdapter(options) {
     routeIds: options.routeIds,
     defaultBaseURL: options.defaultBaseURL,
     usageUrl: options.usageUrl,
+    usageBasePathname: options.usageBasePathname,
   })
   return adapter
 }
@@ -392,7 +400,10 @@ function normalizeOpenRouterCredits(payload) {
   const data = payload?.data !== null && typeof payload?.data === 'object' ? payload.data : payload
   const total = Number(data?.total_credits ?? data?.credits)
   const used = Number(data?.total_usage ?? data?.usage)
-  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(used)) return { windows: [] }
+  if (!Number.isFinite(total) || !Number.isFinite(used)) return { windows: [] }
+  // 未充值/免费渠道 key：官方 credits 端点照常 200，但 total_credits 为 0——这不是「响应格式异常」，
+  // 而是余额确为零；百分比在 0/0 上无意义，改给可读余额文本（与其它余额型 provider 同一形态）。
+  if (total <= 0) return { windows: [{ id: 'credits', text: `$${Math.max(0, total - used).toFixed(2)}` }] }
   return { windows: [{ id: 'credits', percent: Math.max(0, Math.min(100, Math.round((used / total) * 100))) }] }
 }
 
@@ -1058,6 +1069,17 @@ function createQuotaAdapterCatalog() {
       routeIds: ['opencode-go'],
       defaultBaseURL: 'https://opencode.ai/zen/go/v1',
       usageUrl: 'https://opencode.ai/',
+      // 显式 baseURL 也踩同一个坑：注册表 anthropic-messages 组给的是 `…/zen/go`（不带 /v1），
+      // 通用 `/usage` 拼接会打到 `…/zen/go/usage` → 上游 404 HTML 网页（实测 404 text/html；
+      // 同域 `…/zen/go/v1/usage` 无 key 401 JSON、带 key 200）。只归一 zen 网关两种形状，
+      // 其余自定义/反代路径返回 undefined 交回通用 `/usage` 拼接（不猜 /v1）。
+      usageBasePathname(base) {
+        const pathname = base.pathname.replace(/\/+$/, '')
+        if (pathname.endsWith('/zen/go')) base.pathname = `${pathname}/v1/usage`
+        else if (pathname.endsWith('/zen/go/v1')) base.pathname = `${pathname}/usage`
+        else return undefined
+        return base
+      },
     }),
     createEndpointAdapter({
       kind: 'zai-coding-cn',
