@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
     const NS = 'dsh-service'
-    // ── 模型厂家/渠道图标（v1.8 用户点名）静态面 ──
+    // ── 模型厂家/渠道图标（v1.8 新增）静态面 ──
     // 静态常量与纯解析函数放在工厂作用域（与 FILE_EDITOR_* 同规），既让 exports 能直接
     // 引用（apply 内的局部声明在导出点不可见），也便于测试直达。
     // 渲染路径由数据里的 c 字段决定，全部实测过（scripts/probe-model-icon-dom.mjs）：
@@ -3759,7 +3759,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
           return fallback
         }
       }
-      // 卡片手动排序与显隐（用户点名）：localStorage 只存 provider 名单；坏形状/超限整体回退快照序。
+      // 卡片手动排序与显隐：localStorage 只存 provider 名单；坏形状/超限整体回退快照序。
       const readQuotaCardOrder = () => readQuotaCardNameList(QUOTA_CARD_ORDER_KEY, [])
       const readQuotaCardHidden = () => readQuotaCardNameList(QUOTA_CARD_HIDDEN_KEY, [])
       const writeQuotaCardOrder = (order) => {
@@ -7229,11 +7229,11 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
         const adaptProvider = (providerName, kind) => requestQuotaConfig({ provider: providerName, kind })
         // 删掉手动覆盖键，回退 baseURL 自动推断。
         const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
-        // 卡片排序与显隐（用户点名）：localStorage 名单驱动展示序，后端统一配置多端同步；
+        // 卡片排序与显隐：localStorage 名单驱动展示序，后端统一配置多端同步；
         // 新供应商自然排末尾。管理界面照搬「设置栏标签」的列表形态（拖拽 + ↑↓ + 显隐开关）。
         const [cardOrder, setCardOrder] = useState(readQuotaCardOrder())
         const [cardHidden, setCardHidden] = useState(readQuotaCardHidden())
-        // 面板开合（用户点名）：平时不显示管理列表，点「调整排序」才展开，避免常驻占位。
+        // 面板开合：平时不显示管理列表，点「调整排序」才展开，避免常驻占位。
         const [reorderMode, setReorderMode] = useState(false)
         const [cardsSavedTip, setCardsSavedTip] = useState(false)
         const [cardDragIndex, setCardDragIndex] = useState(null)
@@ -11705,13 +11705,13 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
         return () => userJump.stop()
       }, 'dsh-service user reply jump')
 
-      // ─── 模型厂家/渠道图标（v1.8 用户点名）──────────────────────────────
+      // ─── 模型厂家/渠道图标（v1.8 新增）──────────────────────────────
       // 在官方 composer 模型钮上叠加「当前会话 provider」的厂家图标。官方那颗钮是
       // 独占槽（conversation.input.model，kind:single，官方 ModelSelect 占位），
       // 无法再注册第二个 occupant，故走纯 CSS 装饰：把 --dshsvc-model-icon 变量
       // 与 data-dshsvc-model-icon 属性挂在 composer 座上，用 ::before 画图标。
       //
-      // 三态（用户定稿）：
+      // 三态：
       //   ① 宽态（官方显示模型名）→ 模型名前加图标；
       //   ② 窄态（≤480px，官方/本插件把 label 藏成图标）→ 我方图标替换官方默认图标；
       //   ③ 未适配渠道 → 完全不动官方默认图标（既不加、也不换）。

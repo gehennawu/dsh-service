@@ -81,7 +81,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   sessionManager: true,
   // v1.6 用户点名：官方右栏文件预览的「编辑」档位（写盘走会话沙箱 + 版本守卫）。
   fileEditor: true,
-  // v1.8 用户点名：composer 模型按钮显示厂家/渠道图标（宽态加在模型名前，
+  // v1.8 新增：composer 模型按钮显示厂家/渠道图标（宽态加在模型名前，
   // 窄态替换官方默认图标；未适配渠道保留官方默认图标）。
   modelProviderIcons: true,
 })

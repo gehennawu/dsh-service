@@ -2547,7 +2547,7 @@ test('restart recovery offers manual reload after sixty seconds', async () => {
 })
 
 test('host-side /restart reloads the page on the next connection generation without the settings panel', async () => {
-  // 用户报的现象：在对话里用 /restart（宿主命令，commands.register → exit(42)），
+  // 场景：在对话里用 /restart（宿主命令，commands.register → exit(42)），
   // 进程被管理器拉起后页面不自动刷新。原因 = 该路径不经过客户端「重启」按钮，
   // 没有 previousInstanceId，客户端从未比对 instanceId，也就没人发起刷新。
   // 判据与按钮路径一致：只有 instanceId 变化才算「新进程已起」。
@@ -6251,7 +6251,7 @@ test('subagent first paint: cached route seeds the first frame so the mode does 
   const pending = createSubagentRenderer({ route: { available: true, mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high' }, initialStorage: { 'dsh-service-subagent-route-cache': JSON.stringify(cached) }, beforeRoute: () => gate })
   await pending.renderer.load()
   pending.renderer.mount('settings.section')
-  // 不等待 flush：进入子代理页后的第一帧就必须读缓存，而非等宿主响应（用户报告的「跳一下」窗口）。
+  // 不等待 flush：进入子代理页后的第一帧就必须读缓存，而非等宿主响应（否则首帧先亮旧模式，出现「跳一下」窗口）。
   pending.renderer.findButton('维护').props.onClick()
   pending.renderer.findButton('子代理').props.onClick()
   // 首帧（宿主未响应）：模式已经是自定义，自定义区块与回退编辑器在位——不先画初始再跳。
@@ -11043,7 +11043,7 @@ test('settings nav order: ok:false pulls retry and pending local writes win over
   assert.deepEqual(remoteConfig, pendingLocal, 'stale remote data must not overwrite a pending local write')
 })
 
-// ─── v1.8 模型厂家/渠道图标（用户点名）──────────────────────────────────────
+// ─── v1.8 模型厂家/渠道图标 ──────────────────────────────────
 // 覆盖面：纯解析（精确表 / 前缀别名 / 分段兜底 / 未命中回落）、tier 与 data-URI
 // 生成、CSS 两组门（窄态替换 + 未适配零规则）、以及 DOM 层「命中挂属性 / 未命中
 // 摘属性」与 effect 析构对称。
@@ -11140,7 +11140,7 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.ok(!miSpec.m.includes('<text'), 'mi mark must not rely on text layout')
   assert.ok(!miSpec.m.includes('<rect'), 'mi mark must use the Kenya Hara superellipse curve, not raw <rect>')
 
-  // 尺寸对齐额度圆环（用户点名）：15px，且每个图标的 viewBox 必须是**正方形**且
+  // 尺寸对齐额度圆环：15px，且每个图标的 viewBox 必须是**正方形**且
   // **贴合图形**——这是「所有图标看起来一样大」的前提。生成器用画布量「含描边的
   // 真实墨迹」再收紧；漏掉这一步各品牌留白不同，同一尺寸会画出参差大小。
   // 尺寸走 CSS 变量（基准 15px），便于按图标做「光学修正」（满框形状如 ⌘ 收 10%）。
