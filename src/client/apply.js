@@ -284,68 +284,8 @@
       // 会话活跃态（sessions.list 快照派生，订阅推送更新）：任务通知和后台额度轮询共享这一事实源。
       // 两项都关闭时彻底摘除订阅；任一重新开启时重新建立当前快照基线，不补发关闭期间的旧边沿。
       const sessionActivity = { anyRunning: false, runningSessionIds: new Set() }
-      if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
-        const observed = new Map()
-        let baselined = false
-        let sessionsDispose = null
-        let resetDispose = null
-        const observeSessions = () => {
-          const snapshot = ctx.sessions.list.getSnapshot()
-          if (!snapshot || !snapshot.byId) return
-          sessionActivity.runningSessionIds = new Set(Object.entries(snapshot.byId).filter(([, summary]) => summary.running === true).map(([id]) => id))
-          sessionActivity.anyRunning = sessionActivity.runningSessionIds.size > 0
-          if (!baselined) {
-            baselined = true
-            for (const [id, summary] of Object.entries(snapshot.byId)) {
-              observed.set(id, { running: summary.running === true, pending: summary.pendingInteraction !== undefined })
-            }
-            return
-          }
-          for (const [id, summary] of Object.entries(snapshot.byId)) {
-            const next = { running: summary.running === true, pending: summary.pendingInteraction !== undefined }
-            const prev = observed.get(id)
-            if (prev !== undefined) {
-              if (prev.running && !next.running && summary.origin !== 'subagent' && featureEnabled('taskNotifications') && notifyState.current.enabled && notifyState.current.done) {
-                fireNotification(t('notification.doneTitle'), t('notification.doneBody', { title: summary.displayTitle || id }))
-              }
-              if (!prev.pending && next.pending && featureEnabled('taskNotifications') && notifyState.current.enabled && notifyState.current.input) {
-                const kindKey = NOTIFY_KIND_KEYS[summary.pendingInteraction]
-                const kind = kindKey ? t(kindKey) : String(summary.pendingInteraction)
-                fireNotification(t('notification.inputTitle'), t('notification.inputBody', { title: summary.displayTitle || id, kind }))
-              }
-            }
-            observed.set(id, next)
-          }
-          for (const id of [...observed.keys()]) {
-            if (!(id in snapshot.byId)) observed.delete(id)
-          }
-          // agent 启动时轮询链可能已因「隐藏页跳过周期」而死（runQuotaCycle 跳过即不再排下一轮）：
-          // 有活跃会话就重新拉起排程（幂等：已有挂起定时器/refs=0/仅手动时 no-op）。
-          if (sessionActivity.anyRunning) scheduleQuotaCycle()
-        }
-        const stopSessionObservation = () => {
-          if (sessionsDispose !== null) { sessionsDispose(); sessionsDispose = null }
-          if (resetDispose !== null) { resetDispose(); resetDispose = null }
-          observed.clear()
-          baselined = false
-          sessionActivity.anyRunning = false
-          sessionActivity.runningSessionIds = new Set()
-        }
-        const syncSessionObservation = () => {
-          const needed = featureEnabled('taskNotifications') || featureEnabled('quotaLookup')
-          if (!needed) { stopSessionObservation(); return }
-          if (sessionsDispose !== null) return
-          sessionsDispose = ctx.sessions.list.subscribe(() => observeSessions())
-          resetDispose = ctx.on('connection/reset', () => { observed.clear(); baselined = false })
-          observeSessions()
-        }
-        syncSessionObservation()
-        const unsubscribeFeatures = featureScope.subscribe(syncSessionObservation)
-        ctx.effect(() => () => {
-          unsubscribeFeatures()
-          stopSessionObservation()
-        }, 'dsh-service: shared session observation')
-      }
+      // 会话活跃观察已抽至 src/client/session-activity.js；调用点在额度核心解构之后
+      // （观察回调引用 scheduleQuotaCycle，按值传入需其先解构）。
 
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，
       // 清单见 scripts/client-source.mjs）。返回值解构回原名供 ServicePanel/导航入口/覆盖层消费；
@@ -355,6 +295,7 @@
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
       const { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, notifyQuotaCardsChanged, notifyQuotaPollChanged, quotaCardListeners, quotaCardsBackend, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaCardHidden, writeQuotaCardOrder, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
+      createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS, scheduleQuotaCycle })
 
       // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
       // 各家计费口径同族：非高峰时段按高峰价格的一半计/抵扣。北京时间固定 UTC+8 无夏令时：
@@ -6558,6 +6499,7 @@
     return module.exports
   },
 })
+
 
 
 
