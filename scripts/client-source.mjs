@@ -18,6 +18,7 @@ const CLIENT_SOURCE_FILES = [
   'src/client/mobile.js',
   'src/client/conversation-nav.js',
   'src/client/subagent-dispatch-ring.js',
+  'src/client/settings-nav-tabs.js',
   'src/client/model-icons.js',
   'src/client/apply.js',
 ]
