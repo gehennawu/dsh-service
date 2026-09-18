@@ -302,6 +302,7 @@ function hardcodedColors(svg) {
     let hex = m[1].toLowerCase()
     if (hex === 'white') hex = '#ffffff'
     else if (hex === 'black') hex = '#000000'
+    else if (hex === 'gold') hex = '#ffd700'
     else if (/^#[0-9a-fA-F]{3}$/.test(hex)) {
       hex = '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3]
     }
@@ -396,7 +397,25 @@ const CUSTOM_SVG = {
 const OPTICAL_SCALE = {
   // ⌘ 满框（方框 + 四角环占满四角）→ 收 10%，真机与额度圆环观感相当。
   commandcode: 0.9,
+  // DeepSeek 蓝鲸横向扁平（纵横比约 1.36:1），上下天然留白较多 → 放大 15% 补齐视觉高度与体量。
+  deepseek: 1.15,
+  // 智谱星图主体紧凑且线条纤细，外围微小悬浮点撑大了包围盒 → 放大 20% 补齐视觉体量。
+  zhipu: 1.2,
 }
+
+/**
+ * 允许走彩色档的显式名单。
+ * 针对虽然个别浅色停点（如黄色渐变、金橙色边缘）未过 3.0 WCAG 机器硬阈值，
+ * 但整体具有高饱和度、高辨识度且在浅色/深色主题下均清晰可见的官方彩色图标。
+ */
+const COLOR_ALLOWLIST = new Set([
+  'cloudflare',   // Cloudflare 经典双橙云（#F38020 + #FCAD32）
+  'gemini',       // Google Gemini 官方四色渐变星芒（蓝绿红黄）
+  'qwen',         // 阿里通义千问紫靛渐变莫比乌斯环（#6336E7 ~ #6F69F7）
+  'nvidia',       // 英伟达标志性 GeForce 绿（#74B71B）
+  'mistral',      // 法国 Mistral 经典橙红像素阶梯（#FFAF00 ~ #E10500）
+  'siliconcloud', // 硅基流动蜂巢电光紫（#6E29F6）
+])
 
 const out = {}
 const providerToSlug = {}
@@ -430,6 +449,7 @@ for (const [provider, slug] of ENTRIES) {
     colorSvg !== null &&
     (() => {
       if (customSvg !== undefined && isCustomColor) return true
+      if (COLOR_ALLOWLIST.has(slug)) return true
       const colors = hardcodedColors(colorSvg)
       // 没有硬编码色（渐变/currentColor）时按 mono 处理，不算可读品牌色
       if (colors.length === 0) return false
