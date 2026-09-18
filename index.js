@@ -439,6 +439,11 @@ async function listBackups(dshHome) {
   return { items, totalBytes: items.reduce((total, item) => total + item.sizeBytes, 0) }
 }
 
+// tar 的退出码分三档（GNU tar / bsdtar 同构）：0 = 成功；1 = 「有文件在读取期间变化」这类
+// 警告，归档**已经写出**，只是某个文件不是精确副本；≥2 或信号 = 真失败，归档不可信。
+// staging 树由本次备份独占，tar 运行期间没有任何写入者，故退出码 1 只可能来自文件系统的
+// 元数据结算（ZFS-FUSE 上刚写入文件的 ctime 会延迟刷新，实测静态树插件路径 8 次 6 次触发），
+// 属于误报——真实完整性由归档解析器逐条目核对（verifyArchivedTree），不靠退出码裁决。
 async function runTar(ctx, cwd, argv) {
   const subprocess = ctx.get('subprocess')
   if (subprocess === undefined) throw new Error('subprocess-unavailable')
@@ -461,16 +466,19 @@ async function runTar(ctx, cwd, argv) {
   })
   const outcome = await handle.done
   const stderr = handle.collected.stderr?.readFrom(0).text || ''
-  if (outcome.exitCode !== 0 || outcome.signal !== null) {
-    const detail = stderr.trim() || outcome.signal || outcome.exitCode
-    const error = new Error(/file changed|file removed|cannot stat|No such file or directory/i.test(stderr) ? 'backup-source-changed' : `tar-failed: ${detail}`)
-    error.code = /file changed|file removed|cannot stat|No such file or directory/i.test(stderr) ? 'backup-source-changed' : 'tar-failed'
-    throw error
+  if (outcome.exitCode === 0 && outcome.signal === null) return false
+  if (outcome.exitCode === 1 && outcome.signal === null) {
+    ctx.logger?.warn?.(`dsh-service: tar reported a volatile source while archiving; verifying the archive against staging: ${stderr.trim().slice(0, 300) || 'no diagnostics'}`)
+    return true
   }
+  const detail = stderr.trim() || outcome.signal || outcome.exitCode
+  const error = new Error(`tar-failed: ${detail}`)
+  error.code = 'tar-failed'
+  throw error
 }
 
 function isRetryableBackupError(error) {
-  if (error?.code === 'backup-source-changed') return true
+  if (error?.code === 'backup-source-changed' || error?.code === 'backup-archive-incomplete') return true
   return ['EINTR', 'ENOENT', 'EBUSY'].includes(error?.code)
 }
 
@@ -804,7 +812,7 @@ async function publishBackupExclusively(source, target) {
   await unlink(source)
 }
 
-async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}) {
+async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}, verifyArchive) {
   // 会话目录优先走持久化 seam（稳定读取，v0.45.1）；不可用（旧宿主/后端缺失/读取失败）时回退
   // fs.cp 整树复制 + stat 前后校验，第二次整次重试兜底，失败不发布不完整归档。
   const workspace = join(backupDir, `.staging-${randomUUID()}`)
@@ -911,7 +919,14 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
           } catch (_) {}
         }
       })()
-      await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles'])
+      const volatileSource = await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles'])
+      // 退出码 1 只说明 tar 认为某个文件在读取期间变化过，不能据此判定归档好坏：
+      // 拿归档回头核对暂存树，逐条目全等才继续，任何差异都判为不完整并拒绝发布。
+      if (volatileSource) {
+        if (typeof verifyArchive !== 'function') throw Object.assign(new Error('backup-source-changed'), { code: 'backup-source-changed' })
+        const volatileInfo = await stat(temporary)
+        await verifyArchive({ id: backupId(name), name, path: temporary, sizeBytes: volatileInfo.size, mtimeMs: volatileInfo.mtimeMs }, workspace)
+      }
     } finally {
       sampling = false
       if (sampleArchive !== null) await sampleArchive.catch(() => {})
@@ -938,13 +953,13 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
   }
 }
 
-async function createBackup(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}) {
+async function createBackup(ctx, dshHome, backupDir, name, validateArchive, onProgress = () => {}, verifyArchive) {
   const snapshot = await listBackups(dshHome)
   if (snapshot.items.some((item) => item.name === name)) throw new Error('backup-name-collision')
   let lastError
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      await createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress)
+      await createBackupAttempt(ctx, dshHome, backupDir, name, validateArchive, onProgress, verifyArchive)
       const result = await listBackups(dshHome)
       return { item: result.items.find((item) => item.name === name), ...result }
     } catch (error) {
@@ -5195,10 +5210,15 @@ function apply(ctx) {
       try {
         return { ok: true, value: await withBackupLock(() => {
           const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
-          return createBackup(ctx, dshHome, join(dshHome, 'backups'), name, async (source) => {
+          const withValidator = async (source, task) => {
             const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
-            try { return await validator.inspectBackup(source.id) } finally { await validator.dispose() }
-          }, setBackupProgress).finally(clearBackupProgress)
+            try { return await task(validator) } finally { await validator.dispose() }
+          }
+          return createBackup(ctx, dshHome, join(dshHome, 'backups'), name, async (source) => {
+            return withValidator(source, (validator) => validator.inspectBackup(source.id))
+          }, setBackupProgress, async (source, root) => {
+            return withValidator(source, (validator) => validator.verifyArchivedTree(source, root))
+          }).finally(clearBackupProgress)
         }) }
       } catch (error) {
         return rpcFailure(error)

@@ -740,25 +740,28 @@ test('usage index tolerates a malformed persisted failure list instead of failin
   assert.deepEqual(refreshed.value.failedSessions, [])
 })
 
-test('backup creation retries a transient tar file-change failure from a fresh staging tree', async (t) => {
+test('backup creation tolerates tar volatile-source warnings when the archive provably covers staging', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-retry-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
   await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), '{"type":"session"}\n')
 
+  // ZFS-FUSE 等挂载会让 tar 对静态 staging 树误报「读取期间变化」（退出码 1，归档完整）。
+  // 真跑 tar 产出真实归档，但把退出码/stderr 伪造成该告警形态。
   const realSubprocess = localSubprocess()
   let tarCalls = 0
   const subprocess = {
     resolveExecutable: realSubprocess.resolveExecutable,
     spawn(spec) {
       tarCalls += 1
-      if (tarCalls === 1) {
-        return {
-          collected: { stderr: { readFrom: () => ({ text: 'sessions/workspace/session.jsonl: file changed as we read it' }) } },
-          done: Promise.resolve({ exitCode: 1, signal: null }),
-        }
+      const handle = realSubprocess.spawn(spec)
+      return {
+        collected: {
+          stdout: handle.collected.stdout,
+          stderr: { readFrom: () => ({ text: 'sessions/workspace/session.jsonl: file changed as we read it\n' }) },
+        },
+        done: handle.done.then((outcome) => ({ ...outcome, exitCode: 1, signal: null })),
       }
-      return realSubprocess.spawn(spec)
     },
   }
   const { handler, rawHandler } = createHost({ services: { subprocess }, env: { DSH_HOME: dshHome } })
@@ -770,9 +773,71 @@ test('backup creation retries a transient tar file-change failure from a fresh s
   assert.equal(rawFailure.error.code, 'internal')
   assert.equal(rawFailure.error.message, 'unknown-backup')
   assert.equal((await handler('backup-inspect', { id: result.value.item.id })).value.validForRestore, true)
-  assert.equal(tarCalls, 2)
+  assert.equal(tarCalls, 1, 'a verified archive is published without retrying the whole backup')
   assert.equal((await handler('backup-list', {})).value.items.length, 1)
   assert.deepEqual((await readdir(join(dshHome, 'backups'))).filter((name) => name.startsWith('.staging-')), [])
+})
+
+test('backup creation rejects a volatile-source archive that does not cover the staging tree', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-incomplete-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), '{"type":"session"}\n')
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'other.jsonl'), '{"type":"session"}\n')
+
+  // 真跑 tar，但用 --exclude 漏掉一个已暂存文件，模拟「警告为真、归档确实缺内容」。
+  const realSubprocess = localSubprocess()
+  const subprocess = {
+    resolveExecutable: realSubprocess.resolveExecutable,
+    spawn(spec) {
+      const [flag, output, ...operands] = spec.argv.slice(1)
+      assert.equal(flag, '-czf')
+      const patched = ['--exclude', 'session.jsonl', flag, output, ...operands]
+      const handle = realSubprocess.spawn({ ...spec, argv: [spec.argv[0], ...patched] })
+      return {
+        collected: {
+          stdout: handle.collected.stdout,
+          stderr: { readFrom: () => ({ text: 'sessions/workspace/session.jsonl: file changed as we read it\n' }) },
+        },
+        done: handle.done.then((outcome) => ({ ...outcome, exitCode: 1, signal: null })),
+      }
+    },
+  }
+  const { handler } = createHost({ services: { subprocess }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('backup-create', {})
+  assert.equal(result.ok, false, JSON.stringify(result))
+  assert.equal(result.error, 'backup-archive-incomplete')
+  assert.equal((await handler('backup-list', {})).value.items.length, 0)
+  assert.deepEqual((await readdir(join(dshHome, 'backups'))).filter((name) => name.startsWith('.staging-')), [])
+})
+
+test('backup creation keeps failing on tar errors that are not volatile-source warnings', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-fatal-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), '{"type":"session"}\n')
+
+  const realSubprocess = localSubprocess()
+  const subprocess = {
+    resolveExecutable: realSubprocess.resolveExecutable,
+    spawn(spec) {
+      const handle = realSubprocess.spawn(spec)
+      return {
+        collected: {
+          stdout: handle.collected.stdout,
+          stderr: { readFrom: () => ({ text: 'tar: sessions/workspace/session.jsonl: Cannot open: Input/output error\n' }) },
+        },
+        done: handle.done.then((outcome) => ({ ...outcome, exitCode: 2, signal: null })),
+      }
+    },
+  }
+  const { handler } = createHost({ services: { subprocess }, env: { DSH_HOME: dshHome } })
+
+  const result = await handler('backup-create', {})
+  assert.equal(result.ok, false, JSON.stringify(result))
+  assert.equal(result.error.startsWith('tar-failed'), true)
+  assert.equal((await handler('backup-list', {})).value.items.length, 0)
 })
 
 test('backup progress RPC exposes phase snapshots during creation and goes idle afterwards', async (t) => {

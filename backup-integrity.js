@@ -204,6 +204,7 @@ function parseTar(expanded, options = {}) {
     seen.set(path, type)
     validateEntry(path, type, payload, state)
     if (options.collectEntries === true) entries.push({ path, type, data: type === 'file' ? Buffer.from(payload) : undefined })
+    else if (options.digestEntries === true) entries.push(type === 'file' ? { path, type, size: headerSize, sha256: createHash('sha256').update(payload).digest('hex') } : { path, type })
     else entries.push(null)
   }
 
@@ -274,6 +275,56 @@ async function hashFile(path) {
     stream.on('end', resolvePromise)
   })
   return hash.digest('hex')
+}
+
+// 归档与暂存树逐条目比对（仅 tar 报「读取期间有变化」时启用）。
+// 退出码 1 只说明 tar 认为某个文件不是精确副本、不说明是哪个文件、更不说明归档是否完整；
+// 唯一可靠的裁决是拿归档内容回头核对它打包的那棵树：条目集合、文件大小、文件 sha256
+// 三者全等才算数，任何差异一律判为不完整归档并拒绝发布。
+async function digestTree(root) {
+  const files = new Map()
+  const dirs = new Set()
+  const walk = async (dir, logical) => {
+    let entries
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch (error) {
+      if (error?.code === 'ENOENT') return
+      throw error
+    }
+    for (const entry of entries) {
+      const child = join(dir, entry.name)
+      const childLogical = logical === '' ? entry.name : `${logical}/${entry.name}`
+      const info = await lstat(child)
+      if (info.isSymbolicLink()) throw domainError('backup-source-unsafe', childLogical)
+      if (info.isDirectory()) {
+        dirs.add(childLogical)
+        await walk(child, childLogical)
+        continue
+      }
+      if (!info.isFile()) throw domainError('backup-source-unsafe', childLogical)
+      files.set(childLogical, { size: info.size, sha256: await hashFile(child) })
+    }
+  }
+  await walk(root, '')
+  return { files, dirs }
+}
+
+async function compareEntriesToTree(entries, root) {
+  const archivedFiles = new Map()
+  const archivedDirs = new Set()
+  for (const entry of entries) {
+    if (entry === null) continue
+    if (entry.type === 'directory') archivedDirs.add(entry.path)
+    else archivedFiles.set(entry.path, { size: entry.size, sha256: entry.sha256 })
+  }
+  const tree = await digestTree(root)
+  for (const [path, archived] of archivedFiles) {
+    const staged = tree.files.get(path)
+    if (staged === undefined) throw domainError('backup-archive-incomplete', path)
+    if (staged.size !== archived.size || staged.sha256 !== archived.sha256) throw domainError('backup-archive-incomplete', path)
+  }
+  for (const path of tree.files.keys()) if (!archivedFiles.has(path)) throw domainError('backup-archive-incomplete', path)
+  for (const path of archivedDirs) if (!tree.dirs.has(path)) throw domainError('backup-archive-incomplete', path)
+  for (const path of tree.dirs) if (!archivedDirs.has(path)) throw domainError('backup-archive-incomplete', path)
 }
 
 async function assertDirectoryOrMissing(path) {
@@ -436,6 +487,19 @@ export function createBackupIntegrity(options) {
     return (await inspectArchive(source)).report
   }
 
+  // tar 报「读取期间有变化」时的完整性兜底：解析归档并把它逐条目核对回暂存树。
+  // 只有归档是暂存树的完整精确副本时才返回 true；任何缺失、截断或内容差异都判为不可发布。
+  async function verifyArchivedTree(source, root) {
+    await ensureRecovered()
+    const inspected = await inspectArchive(source, { digestEntries: true })
+    if (!inspected.report.validForRestore || inspected.parsed === null) {
+      const issue = inspected.report.issues?.[0]?.code
+      throw domainError(issue || 'backup-archive-invalid')
+    }
+    await compareEntriesToTree(inspected.parsed.entries, root)
+    return true
+  }
+
   async function prepareRestore(id) {
     return withLock(async () => {
       await ensureRecovered()
@@ -571,7 +635,7 @@ export function createBackupIntegrity(options) {
     plans.clear()
   }
 
-  return { inspectBackup, prepareRestore, commitRestore, dispose }
+  return { inspectBackup, verifyArchivedTree, prepareRestore, commitRestore, dispose }
 }
 
 export { CONFIG_FILES, PLAN_TTL_MS }
