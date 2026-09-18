@@ -1078,6 +1078,18 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'usage.toolErrors.toggle': '工具报错（{count} 类）',
       'usage.toolErrors.empty': '最近 24 小时没有记录到工具报错。',
       'usage.errors.count': '{count} 次',
+      'usage.failures.global': '全局会话统计（不受项目筛选影响）：成功统计 {successful} 个会话，跳过 {failed} 个会话。',
+      'usage.failures.staleHint': '统计结果可能包含无法重新读取会话的旧缓存数据；这些数据已保留但可能过期。',
+      'usage.failures.show': '查看跳过会话详情',
+      'usage.failures.hide': '收起跳过会话详情',
+      'usage.failures.id': '会话 ID',
+      'usage.failures.code': '错误类型',
+      'usage.failures.message': '原因',
+      'usage.failures.stale': '保留上次统计（已过期，仍计入总量）',
+      'usage.failures.notStale': '无可用缓存，未计入统计',
+      'usage.failures.reason.format-migration-failed': '会话格式转换被拒绝。',
+      'usage.failures.reason.session-read-failed': '无法打开或读取会话。',
+      'usage.failures.reason.session-fold-failed': '无法统计会话事件。',
       'notification.title': '通知',
       'notification.description': '主会话任务结束，或会话需要授权、抉择时发送浏览器通知；子代理完成任务不通知。',
       'notification.enable': '开启通知',
@@ -1920,6 +1932,18 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'usage.toolErrors.toggle': 'Tool errors ({count} types)',
       'usage.toolErrors.empty': 'No tool errors were recorded in the last 24 hours.',
       'usage.errors.count': '{count} occurrence(s)',
+      'usage.failures.global': 'Global session indexing (not affected by project filter): {successful} sessions indexed successfully, {failed} skipped.',
+      'usage.failures.staleHint': 'Totals may include retained cached data from sessions that could not be read again; it may be stale.',
+      'usage.failures.show': 'Show skipped session details',
+      'usage.failures.hide': 'Hide skipped session details',
+      'usage.failures.id': 'Session ID',
+      'usage.failures.code': 'Error type',
+      'usage.failures.message': 'Reason',
+      'usage.failures.stale': 'Retained stale statistics (included in totals)',
+      'usage.failures.notStale': 'No cached data, excluded from totals',
+      'usage.failures.reason.format-migration-failed': 'Session format migration was refused.',
+      'usage.failures.reason.session-read-failed': 'Session could not be opened or read.',
+      'usage.failures.reason.session-fold-failed': 'Session events could not be indexed.',
       'notification.title': 'Notifications',
       'notification.description': 'Browser notifications when a root task finishes or approval/choice is needed; subagent completion stays silent.',
       'notification.enable': 'Enable notifications',
@@ -7856,6 +7880,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
         const [usage, setUsage] = useState(null)
         const [usageBusy, setUsageBusy] = useState(false)
         const [usageError, setUsageError] = useState(null)
+        const [usageFailureDetails, setUsageFailureDetails] = useState(false)
         const [upgradeBusy, setUpgradeBusy] = useState(false)
         const [upgradeError, setUpgradeError] = useState(null)
         // 疑似手动启动环境的升级两段式：确认后果 → 仍要升级；成功后不自动退出，改示指引。
@@ -7930,11 +7955,17 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
           rpcCall('usage', usageRequestPayload).then(async (res) => {
             if (!active) return
             if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
+            setUsageError(null)
+            setUsageFailureDetails(false)
             setUsage(res.value)
             if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
             try {
               const refreshed = await rpcCall('usage-refresh', usageRequestPayload)
-              if (active && refreshed && refreshed.ok) setUsage(refreshed.value)
+              if (active && refreshed && refreshed.ok) {
+                setUsageError(null)
+                setUsageFailureDetails(false)
+                setUsage(refreshed.value)
+              }
             } catch (_) {}
           }).catch(() => {
             if (active) setUsageError(translate('usage.error'))
@@ -8499,6 +8530,29 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
           .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
         const modelErrors = selectedErrors(usage?.errors?.models)
         const toolErrors = selectedErrors(usage?.errors?.tools)
+        const usageFailures = Array.isArray(usage?.failedSessions) ? usage.failedSessions : []
+        const usageSuccessfulSessions = Number.isFinite(Number(usage?.successfulSessions))
+          ? Number(usage.successfulSessions)
+          : Math.max(0, Number(usage?.indexedSessions || 0) - usageFailures.filter((failure) => failure && failure.stale === true).length)
+        const usageFailureWarning = usageFailures.length === 0
+          ? null
+          : React.createElement('div', { 'data-testid': 'usage-failure-warning', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsh-svc-warning)', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsh-svc-text)' } },
+              React.createElement('div', { style: { fontSize: '12px', lineHeight: 1.5, fontWeight: 650 } }, translate('usage.failures.global', { successful: usageSuccessfulSessions.toLocaleString(), failed: usageFailures.length.toLocaleString() })),
+              usageFailures.some((failure) => failure && failure.stale === true)
+                ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11px', lineHeight: 1.5, color: 'var(--dsh-svc-text-muted)' } }, translate('usage.failures.staleHint'))
+                : null,
+              React.createElement('button', { type: 'button', 'data-testid': 'usage-failure-details-toggle', 'aria-expanded': String(usageFailureDetails), style: Object.assign({}, toggle, { marginTop: '5px', padding: 0 }), onClick: () => setUsageFailureDetails((value) => !value) }, `${usageFailureDetails ? '▾' : '▸'} ${translate(usageFailureDetails ? 'usage.failures.hide' : 'usage.failures.show')}`),
+               usageFailureDetails
+                ? React.createElement('div', { 'data-testid': 'usage-failure-details', style: { display: 'grid', gap: '6px', marginTop: '8px' } },
+                     usageFailures.map((failure, index) => {
+                       const item = failure && typeof failure === 'object' ? failure : {}
+                       return React.createElement('div', { key: `${String(item.id || 'unknown')}:${index}`, style: { padding: '7px 9px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-card-bg)', fontSize: '11px', lineHeight: 1.5 } },
+                        React.createElement('div', { style: { overflowWrap: 'anywhere' } }, `${translate('usage.failures.id')}: ${typeof item.id === 'string' && item.id !== '' ? item.id : '—'}`),
+                        React.createElement('div', { style: { overflowWrap: 'anywhere' } }, `${translate('usage.failures.code')}: ${typeof item.code === 'string' && item.code !== '' ? item.code : '—'}`),
+                        React.createElement('div', { style: { overflowWrap: 'anywhere', color: 'var(--dsh-svc-text-muted)' } }, `${translate('usage.failures.message')}: ${['format-migration-failed', 'session-read-failed', 'session-fold-failed'].includes(item.code) ? translate(`usage.failures.reason.${item.code}`) : typeof item.message === 'string' && item.message !== '' ? item.message : '—'}`),
+                        React.createElement('div', { style: { marginTop: '2px', color: 'var(--dsh-svc-warning)' } }, translate(item.stale === true ? 'usage.failures.stale' : 'usage.failures.notStale')))
+                     }))
+                 : null)
         const errorList = (kind, errors) => React.createElement('div', { key: kind, style: { display: 'grid', gap: '6px', marginTop: '8px' } },
           errors.length === 0
             ? React.createElement('p', { style: hint }, translate(kind === 'model' ? 'usage.errors.empty' : 'usage.toolErrors.empty'))
@@ -8517,6 +8571,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
                 React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
                 usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
+          usageFailureWarning,
           usage && usage.indexedSessions > 0
             ? React.createElement('div', { 'data-testid': 'usage-statistics-region', style: Object.assign({}, displaySurface, { padding: '12px', borderRadius: '9px' }) },
                 // v0.39 头部行统一：图例（输入/输出/缓存）+ 刷新钮收进统计区头部，不再散落图下与列表尾。

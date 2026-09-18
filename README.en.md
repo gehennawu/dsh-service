@@ -106,6 +106,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 - Per-model horizontal bars with a "Today / Last 7 days / All time" toggle
 - Last-24-hour model/tool errors (collapsed by default, rendered only when present)
 - Steps whose provider reports no token usage are excluded
+- A session that cannot be read, migrated, or parsed no longer blocks other sessions. An all-projects warning shows successful/skipped counts and expandable session IDs, error categories, and safe summaries. Previously indexed data is retained and marked stale; first-time failures contribute nothing and are retried on the next refresh. Only global errors, such as an unavailable service, failed session listing, or failed index write, fail the entire refresh
 
 ### Quota lookup
 

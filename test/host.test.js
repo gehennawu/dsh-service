@@ -717,6 +717,29 @@ test('usage index version mismatch rebuilds the persisted index', async (t) => {
   assert.deepEqual(Object.keys(stored.sessions), [])
 })
 
+test('usage index tolerates a malformed persisted failure list instead of failing the RPC', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-tampered-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const tampered = {
+    version: 5,
+    updatedAt: now,
+    failedSessions: 'not-an-array',
+    sessions: { kept: { revision: 'r', lastSeq: 0, project: { id: 'p', title: 'Kept' }, currentModel: null, hours: {} } },
+  }
+  await mkdir(dshHome, { recursive: true })
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(tampered))
+  const persistence = { listSnapshots: async () => [], readFrom: async () => ({ meta: {}, events: [] }) }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const cached = await handler('usage', {})
+  assert.equal(cached.ok, true)
+  assert.deepEqual(cached.value.failedSessions, [])
+  assert.equal(cached.value.indexedSessions, 1)
+  const refreshed = await handler('usage-refresh', {})
+  assert.equal(refreshed.ok, true)
+  assert.deepEqual(refreshed.value.failedSessions, [])
+})
+
 test('backup creation retries a transient tar file-change failure from a fresh staging tree', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-retry-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -6563,6 +6586,170 @@ test('session management sizes are lazy-loaded, cached in-process and reusable w
   assert.deepEqual(Object.keys(mixed.value.bytes), ['session-beta'])
 })
 
+test('usage reads keep the committed snapshot while concurrent refresh callers share one transaction', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-flight-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  let unblock
+  let entered
+  const gate = new Promise(resolve => { unblock = resolve })
+  const started = new Promise(resolve => { entered = resolve })
+  let blocked = false
+  let revision = 'r1'
+  let reads = 0
+  const now = Date.now()
+  const persistence = {
+    list: async () => [{ header: { id: 'one', cwd: '/fixture' }, revision }],
+    async readFrom(id, offset) {
+      reads += 1
+      if (blocked) { entered(); await gate }
+      return { events: [
+        { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'test', model: 'test' } } } },
+        { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 10 } } },
+        ...(revision === 'r2' ? [{ type: 'assistant/message', seq: 2, time: now, data: { usage: { inputTokens: 20 } } }] : []),
+      ].filter(event => event.seq >= offset) }
+    },
+  }
+  const host = createHost({ env: { DSH_HOME: dshHome }, services: { sessionPersistence: persistence } })
+  t.after(host.dispose)
+  t.after(() => unblock())
+  const first = (await host.handler('usage-refresh', {})).value
+  blocked = true
+  revision = 'r2'
+  const pending = host.handler('usage-refresh', {})
+  await started
+  const concurrent = host.handler('usage-refresh', {})
+  try { assert.deepEqual((await host.handler('usage', {})).value, first) }
+  finally { unblock() }
+  const [one, two] = await Promise.all([pending, concurrent])
+  assert.deepEqual(one, two)
+  assert.equal(one.value.totals.inputTokens, 30)
+  assert.equal(reads, 2)
+  assert.deepEqual((await host.handler('usage', {})).value, one.value)
+})
+
+test('usage refresh preserves committed totals on fold and global failures without losing retry offsets', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-atomic-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  let revision = 'r1'
+  let malformed = false
+  let failList = false
+  let events = [
+    { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'test', model: 'test' } } } },
+    { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 10 } } },
+  ]
+  const offsets = []
+  const persistence = {
+    async list() { if (failList) throw new Error('storage-unavailable'); return [{ header: { id: 'one', cwd: '/fixture' }, revision }] },
+    async open() { return { async read(offset) {
+      offsets.push(offset)
+      if (malformed) return { events: null }
+      return { events: events.filter(event => event === null || event.seq >= offset) }
+    }, async close() {} } },
+  }
+  const host = createHost({ env: { DSH_HOME: dshHome }, services: { sessionPersistence: persistence } })
+  t.after(host.dispose)
+  const first = (await host.handler('usage-refresh', {})).value
+  revision = 'r2'
+  events.push({ type: 'assistant/message', seq: 2, time: now, data: { usage: { inputTokens: 20 } } }, null)
+  const partial = await host.handler('usage-refresh', {})
+  assert.equal(partial.ok, true)
+  assert.equal(partial.value.totals.inputTokens, 10, 'partially folded events must not pollute cached totals')
+  assert.equal(partial.value.failedSessions[0].code, 'session-fold-failed')
+  malformed = true
+  const invalid = await host.handler('usage-refresh', {})
+  assert.equal(invalid.value.failedSessions[0]?.code, 'session-read-failed', 'malformed read envelopes must not commit the revision as empty success')
+  malformed = false
+  events = events.filter(Boolean)
+  failList = true
+  assert.equal((await host.handler('usage-refresh', {})).ok, false)
+  failList = false
+  const beforeWrite = (await host.handler('usage', {})).value
+  const target = join(dshHome, 'dsh-service-usage-index.json')
+  const original = await readFile(target)
+  await rm(target)
+  await mkdir(target)
+  assert.equal((await host.handler('usage-refresh', {})).ok, false, 'index rename failure is global')
+  assert.deepEqual((await host.handler('usage', {})).value, beforeWrite, 'failed save does not publish memory cache')
+  await rm(target, { recursive: true })
+  await writeFile(target, original)
+  const recovered = (await host.handler('usage-refresh', {})).value
+  assert.equal(recovered.totals.inputTokens, 30)
+  assert.deepEqual(recovered.failedSessions, [])
+  assert.deepEqual(offsets, [0, 2, 2, 2, 2])
+  assert.equal(first.totals.inputTokens, 10)
+  const unavailable = createHost({ env: { DSH_HOME: dshHome } })
+  t.after(unavailable.dispose)
+  assert.equal((await unavailable.handler('usage-refresh', {})).ok, false)
+  const incompatible = createHost({ env: { DSH_HOME: dshHome }, services: { sessionPersistence: { list: persistence.list } } })
+  t.after(incompatible.dispose)
+  assert.equal((await incompatible.handler('usage-refresh', {})).ok, false, 'missing persistence read API is a global service failure')
+})
+
+test('usage refresh isolates unreadable sessions, persists partial results, and retries unchanged failures', async (t) => {
+  for (const phase of ['open', 'read', 'legacy']) await t.test(phase, async (t) => {
+    const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-partial-'))
+    t.after(() => rm(dshHome, { recursive: true, force: true }))
+    const now = Date.now()
+    let broken = true
+    let ids = ['good-before', 'bad', 'good-after']
+    let closes = 0
+    const events = [
+      { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'test', model: 'test' } } } },
+      { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 10, outputTokens: 2 } } },
+    ]
+    const failure = new Error('@deepseek-ai/dsh-session-format-v0-to-v1 refuses this format v0 Session: user/message 8 source summary requires notice form; raw log: D:\\private\\session; token=secret-value')
+    const list = async () => ids.map(id => ({ header: { id, cwd: '/fixture' }, revision: 'r1' }))
+    const read = async (id) => {
+      if (id === 'bad' && broken) throw failure
+      return { events }
+    }
+    const persistence = phase === 'legacy' ? { listSnapshots: list, readFrom: read } : {
+      list,
+      async open(id) {
+        if (phase === 'open' && id === 'bad' && broken) throw failure
+        return { read: () => read(id), inheritedEventCount: 0, close: async () => { closes += 1 } }
+      },
+    }
+    const makeHost = () => {
+      const host = createHost({ env: { DSH_HOME: dshHome }, services: { sessionPersistence: persistence } })
+      t.after(host.dispose)
+      return host
+    }
+    let host = makeHost()
+    const first = await host.handler('usage-refresh', {})
+    assert.equal(first.ok, true)
+    assert.equal(first.value.totals.inputTokens, 20)
+    assert.equal(first.value.successfulSessions, 2)
+    assert.equal(first.value.indexedSessions, 2)
+    assert.deepEqual(first.value.failedSessions.map(({ id, code, stale }) => ({ id, code, stale })), [{ id: 'bad', code: 'format-migration-failed', stale: false }])
+    assert.doesNotMatch(JSON.stringify(first.value.failedSessions), /private|secret-value|raw log/)
+    if (phase === 'read') assert.equal(closes, 3)
+    host = makeHost()
+    assert.deepEqual((await host.handler('usage', {})).value, first.value)
+    broken = false
+    const recovered = await host.handler('usage-refresh', {})
+    assert.equal(recovered.value.totals.inputTokens, 30)
+    assert.equal(recovered.value.successfulSessions, 3)
+    assert.deepEqual(recovered.value.failedSessions, [])
+    ids = ['good-before', 'good-after']
+    const deleted = await host.handler('usage-refresh', {})
+    assert.equal(deleted.value.totals.inputTokens, 20)
+    ids = ['bad']
+    broken = true
+    const allFailed = (await host.handler('usage-refresh', {})).value
+    assert.equal(allFailed.indexedSessions, 0)
+    assert.equal(allFailed.successfulSessions, 0)
+    assert.equal(allFailed.failedSessions.length, 1)
+    host = makeHost()
+    assert.deepEqual((await host.handler('usage', {})).value, allFailed)
+    ids = []
+    const removedFailure = (await host.handler('usage-refresh', {})).value
+    assert.deepEqual(removedFailure.failedSessions, [])
+    assert.equal(removedFailure.indexedSessions, 0)
+  })
+})
+
 test('usage refresh rides the 0.1.5 handle-shaped persistence: open/read/close, inherited cut, and error-safe close', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-handle-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -6633,11 +6820,14 @@ test('usage refresh rides the 0.1.5 handle-shaped persistence: open/read/close, 
   assert.equal(lastOffset, 3, 'the incremental read resumes from lastSeq + 1')
   assert.deepEqual(resumed.value.days[day].totals.inputTokens, 110)
 
-  // read 抛错：错误照常上抛，但 close 必须已执行（finally 兜底），不泄漏 handle。
+  // read 抛错隔离为部分成功，保留旧缓存，但 close 仍须执行。
   failReads = true
   revision = 'rev-3'
   const failed = await handler('usage-refresh', {})
-  assert.equal(failed.ok, false)
+  assert.equal(failed.ok, true)
+  assert.equal(failed.value.successfulSessions, 0)
+  assert.equal(failed.value.totals.inputTokens, 110)
+  assert.equal(failed.value.failedSessions[0].stale, true)
   assert.equal(closes, 3, 'the read handle is closed even when the read rejects')
   failReads = false
   const recovered = await handler('usage-refresh', {})

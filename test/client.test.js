@@ -1021,6 +1021,131 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(refreshes, 2)
 })
 
+test('usage partial failures stay visible globally, explain stale rows in zh/en, and clear after recovery', async () => {
+  const day = new Date().toLocaleDateString('en-CA')
+  const totals = { steps: 2, inputTokens: 120, outputTokens: 30, cacheReadTokens: 40, cacheWriteTokens: 5, cacheHitRate: 40 / 165 }
+  const usageWithFailure = {
+    updatedAt: Date.now(),
+    indexedSessions: 2,
+    successfulSessions: 1,
+    failedSessions: [{ id: 'legacy-v0', code: 'format-migration-failed', message: 'Session format migration was refused.', stale: true }],
+    totals,
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals, models: [] }] } },
+  }
+  const cleanUsage = { ...usageWithFailure, indexedSessions: 2, successfulSessions: 2, failedSessions: [] }
+  let refreshes = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-partial' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageWithFailure }
+    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: cleanUsage } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('usage-statistics-region'), true, 'partial success keeps the chart')
+  assert.equal(renderer.hasTest('usage-failure-warning'), true, 'failure warning is outside the statistics gate')
+  assert.match(renderer.text('settings.section'), /全部项目.*成功统计 1 个会话，跳过 1 个会话/)
+  assert.match(renderer.text('settings.section'), /统计结果可能包含.*旧缓存数据/)
+  assert.doesNotMatch(renderer.text('settings.section'), /legacy-v0/)
+  renderer.findByTestId('usage-failure-details-toggle').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /legacy-v0.*会话格式转换被拒绝/)
+  assert.match(renderer.text('settings.section'), /保留上次统计（已过期，仍计入总量）/)
+
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /Global session indexing.*1 sessions indexed successfully, 1 skipped/)
+  assert.match(renderer.text('settings.section'), /Totals may include retained cached data/)
+  assert.match(renderer.text('settings.section'), /legacy-v0.*Session format migration was refused/)
+  assert.match(renderer.text('settings.section'), /Retained stale statistics \(included in totals\)/)
+
+  renderer.findByTestId('usage-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(refreshes, 1)
+  assert.equal(renderer.hasTest('usage-failure-warning'), false, 'a clean manual refresh clears the warning')
+  assert.equal(renderer.hasTest('usage-statistics-region'), true)
+})
+
+test('usage all-failed payload shows warning without indexed sessions and recovers on refresh', async () => {
+  const failedUsage = {
+    updatedAt: Date.now(),
+    indexedSessions: 0,
+    successfulSessions: 0,
+    failedSessions: [{ id: 'broken-session', code: 'session-read-failed', message: '会话读取失败', stale: false }],
+    totals: {},
+    projects: [],
+    errors: { models: [], tools: [] },
+    days: {},
+  }
+  const recoveredUsage = {
+    ...failedUsage,
+    indexedSessions: 1,
+    successfulSessions: 1,
+    failedSessions: [],
+  }
+  let refreshes = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-all-failed' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: failedUsage }
+    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: recoveredUsage } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  renderer.setLocale('en')
+  await renderer.flush()
+
+  assert.equal(renderer.hasTest('usage-failure-warning'), true, 'all failures remain visible with indexedSessions=0')
+  assert.equal(renderer.hasTest('usage-statistics-region'), false)
+  assert.match(renderer.text('settings.section'), /Global session indexing.*0 sessions indexed successfully, 1 skipped/)
+  renderer.findByTestId('usage-failure-details-toggle').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /broken-session.*Session could not be opened or read.*No cached data, excluded from totals/)
+
+  renderer.findButton('Refresh usage').props.onClick()
+  await renderer.flush()
+  assert.equal(refreshes, 1)
+  assert.equal(renderer.hasTest('usage-failure-warning'), false)
+})
+
+test('usage old payload without failedSessions remains compatible', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-legacy' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 1, totals: {}, projects: [], days: {}, errors: {} } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), false)
+  assert.equal(renderer.hasTest('usage-refresh-fallback'), false)
+})
+
 test('usage model list re-sorts and relabels when switching between total and today scopes', async () => {
   const formatDay = (offset) => {
     const date = new Date()

@@ -2000,7 +2000,7 @@ async function persistenceReadSlice(persistence, header, fromSeq) {
     const handle = await persistence.open(header.id, 'read')
     try {
       const read = await handle.read(fromSeq)
-      return { events: Array.isArray(read?.events) ? read.events : [], inheritedEventCount: handle.inheritedEventCount }
+      return { events: usageReadEvents(read), inheritedEventCount: handle.inheritedEventCount }
     } finally {
       try { await handle.close() } catch (_) {}
     }
@@ -2025,7 +2025,8 @@ function usageReadStart(previous) {
 }
 
 function usageReadEvents(read) {
-  return Array.isArray(read?.events) ? read.events : []
+  if (!Array.isArray(read?.events)) throw new Error('invalid-session-events')
+  return read.events
 }
 
 function foldUsageEvents(ctx, record, previous, events, inheritedEventCount = 0) {
@@ -2064,8 +2065,15 @@ function foldUsageEvents(ctx, record, previous, events, inheritedEventCount = 0)
   return session
 }
 
+// The index file is external input: a hand-edited or truncated cache must never break the RPC.
+function usageFailedSessions(index) {
+  return Array.isArray(index?.failedSessions) ? index.failedSessions.filter((failure) => failure !== null && typeof failure === 'object') : []
+}
+
 function publicUsage(index, timezoneOffsetMinutes = 0) {
-  const result = { updatedAt: index.updatedAt, indexedSessions: Object.keys(index.sessions).length, totals: emptyUsageTotals(), days: {}, errors: { models: [], tools: [] } }
+  const failedSessions = usageFailedSessions(index)
+  const indexedSessions = Object.keys(index.sessions).length
+  const result = { updatedAt: index.updatedAt, indexedSessions, successfulSessions: indexedSessions - failedSessions.filter((failure) => failure.stale).length, failedSessions, totals: emptyUsageTotals(), days: {}, errors: { models: [], tools: [] } }
   const projects = new Map()
   const modelErrors = new Map()
   const toolErrors = new Map()
@@ -2119,10 +2127,21 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
   return result
 }
 
-async function refreshUsageIndex(ctx, dshHome, index) {
+function usageSessionFailure(id, error, stage, stale) {
+  // Do not persist arbitrary exception text: it can contain paths, message bodies or credentials.
+  const migration = /dsh-session-format-.*refuses this format/.test(String(error?.message || ''))
+  const code = migration ? 'format-migration-failed' : stage === 'fold' ? 'session-fold-failed' : 'session-read-failed'
+  const message = migration ? 'Session format migration was refused.' : stage === 'fold' ? 'Session events could not be indexed.' : 'Session could not be opened or read.'
+  return { id, code, message, stale }
+}
+
+async function refreshUsageIndex(ctx, dshHome, currentIndex) {
   const persistence = ctx.get('sessionPersistence')
-  if (persistence === undefined) throw new Error('session-persistence-unavailable')
+  if (persistence == null || (typeof persistence.open !== 'function' && typeof persistence.readFrom !== 'function')) throw new Error('session-persistence-unavailable')
   const snapshots = await persistenceListSnapshots(persistence)
+  // This is our JSON-only usage cache, not a live Host object. Publish only after save succeeds.
+  const index = structuredClone(currentIndex)
+  index.failedSessions = []
   const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
   for (const id of Object.keys(index.sessions)) if (!liveIds.has(id)) delete index.sessions[id]
   const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
@@ -2133,11 +2152,18 @@ async function refreshUsageIndex(ctx, dshHome, index) {
     const previous = index.sessions[id]
     if (previous?.revision === revision) continue
     const fromSeq = usageReadStart(previous)
-    const read = await persistenceReadSlice(persistence, record.header, fromSeq)
-    const inheritedEventCount = inheritedEventCountFor(record, read)
-    const next = foldUsageEvents(ctx, record, previous, usageReadEvents(read), inheritedEventCount)
-    next.revision = revision
-    index.sessions[id] = next
+    let stage = 'read'
+    try {
+      const read = await persistenceReadSlice(persistence, record.header, fromSeq)
+      const inheritedEventCount = inheritedEventCountFor(record, read)
+      const events = usageReadEvents(read)
+      stage = 'fold'
+      const next = foldUsageEvents(ctx, record, previous === undefined ? undefined : structuredClone(previous), events, inheritedEventCount)
+      next.revision = revision
+      index.sessions[id] = next
+    } catch (error) {
+      index.failedSessions.push(usageSessionFailure(id, error, stage, previous !== undefined))
+    }
   }
   index.updatedAt = Date.now()
   await saveUsageIndex(dshHome, index)
@@ -5129,7 +5155,10 @@ function apply(ctx) {
     } },
     'usage-refresh': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {
       if (usageRefreshPromise === undefined) {
-        usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).finally(() => { usageRefreshPromise = undefined })
+        usageRefreshPromise = usageIndexPromise.then((index) => refreshUsageIndex(ctx, dshHome, index)).then((index) => {
+          usageIndexPromise = Promise.resolve(index)
+          return index
+        }).finally(() => { usageRefreshPromise = undefined })
       }
       return { ok: true, value: publicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
 
