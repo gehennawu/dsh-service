@@ -81,6 +81,24 @@ test('scanCodeHits treats sentence-like mentions in strings as documentation, no
   assert.deepEqual([...scanCodeHits("classList.contains('Md3f7G_')", codeBreaks)], ['chat-hash'])
 })
 
+test('scanCodeHits flags 0.1.6-alpha.2 slot retirement and session-open removal with documented limits', () => {
+  const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
+  // 第三方真实引用：字符串形态的槽位注册、直接方法调用
+  assert.deepEqual([...scanCodeHits("ctx.slots.inject('settings.plugin.item', () => {})", codeBreaks)], ['settings-plugin-item'])
+  assert.deepEqual([...scanCodeHits("{ name: 'settings.plugin.item', key: 'x' }", codeBreaks)], ['settings-plugin-item'])
+  assert.deepEqual([...scanCodeHits('ctx.sessions.open(detail.sessionId)', codeBreaks)], ['sessions-open-method'])
+  // 词典/提示的「提及」形态不计：标识后跟全角括号或空格
+  assert.deepEqual([...scanCodeHits('注册已退役的设置页槽位 settings.plugin.item（0.1.6-alpha.2 起槽位移除）', codeBreaks)], [])
+  assert.deepEqual([...scanCodeHits('调用已移除的打开方法 sessions.open（0.1.6-alpha.2 起移除）', codeBreaks)], [])
+  assert.deepEqual([...scanCodeHits('Calls the retired slot settings.plugin.item (removed in 0.1.6-alpha.2)', codeBreaks)], [])
+  // 已知局限：可选用链 `sessions?.open` 不含 `sessions.open` 串，扫描不到——研究 §10 建议
+  // 的 match 即直接调用形态，需在词典与知识条目注明
+  assert.deepEqual([...scanCodeHits('ctx.sessions?.open(detail.sessionId)', codeBreaks)], [])
+  // 本插件自身的双版本注册形态命中 settings-plugin-item：由 selfExempt 豁免（见自证用例）
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-plugin-item').selfExempt, true)
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'sessions-open-method').selfExempt, undefined)
+})
+
 test('manifestCallRefs only matches real require/import calls, not stringified examples', () => {
   const manifestBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'manifest')
   // 真调用：require/import 的引号前无转义反斜杠 → 算引用
@@ -97,15 +115,23 @@ test('manifestCallRefs only matches real require/import calls, not stringified e
 test('self-proof: scanning this plugin own manifest and built entries yields zero hits', async () => {
   // 自证回归（v1.3 词典自指误报修复）：构建产物里若再出现裸旧标识（词典文案、代码引用），
   // 本测试立即变红——兼容性扫描绝不能把自己报告成不兼容。
+  // 0.1.6-alpha.2 修订：`settings-plugin-item` 标记 selfExempt——本插件为双版本兼容在自身
+  // 保留该退役槽位注册（老宿主仍需），豁免其命中；其余破坏面仍强制零命中，且豁免条目
+  // 对第三方插件的扫描照常生效。
   const { readFileSync } = await import('node:fs')
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const manifestBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'manifest')
   const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
+  const exemptIds = new Set(COMPAT_BREAKS.filter((b) => b.selfExempt === true).map((b) => b.id))
   assert.deepEqual([...collectManifestHits(pkg, manifestBreaks)], [])
   const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   const host = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
-  assert.deepEqual([...scanCodeHits(client, codeBreaks)], [], 'client.js must not reference changed interfaces')
-  assert.deepEqual([...scanCodeHits(host, codeBreaks)], [], 'index.js must not reference changed interfaces')
+  const scanNonExempt = (text) => [...scanCodeHits(text, codeBreaks)].filter((id) => !exemptIds.has(id))
+  assert.deepEqual(scanNonExempt(client), [], 'client.js must not reference changed interfaces outside dual-version exemptions')
+  assert.deepEqual(scanNonExempt(host), [], 'index.js must not reference changed interfaces outside dual-version exemptions')
+  // 豁免命中必须确实存在且仅来自客户端半：双版本注册是豁免的前提，注册消失了应删豁免。
+  const exemptHits = [...scanCodeHits(client, codeBreaks)].filter((id) => exemptIds.has(id))
+  assert.deepEqual(exemptHits, ['settings-plugin-item'], 'the self-exemption must stay tied to the retained dual-version slot registration')
 })
 
 test('collectManifestHits scans dependency keys and the dsh field', () => {

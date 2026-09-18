@@ -96,6 +96,25 @@ export const COMPAT_BREAKS = Object.freeze([
     layer: 'code',
     match: 'data-time-hover-root',
   },
+  {
+    // 0.1.6-alpha.2 退役设置页槽位：第三方注册它则配置卡片在新插件页不再渲染。
+    // selfExempt：本插件为双版本兼容在自身保留该槽位注册（老宿主仍需），自证扫描豁免其命中；
+    // 第三方插件命中仍按「可能不兼容」报告（研究 §10：dsh-v0.1.6-alpha.2-plugin-impact.md）。
+    id: 'settings-plugin-item',
+    layer: 'code',
+    match: 'settings.plugin.item',
+    selfExempt: true,
+  },
+  {
+    // 0.1.6-alpha.2 移除 ISessions 命令式打开方法：第三方调用它则详情页「打开」点击无响应
+    // （官方改由 ui-workspace 的 openSession 承载）。call: true = 方法名条目，真实引用以
+    // 调用括号结尾——`sessions.open(` 算引用，`sessions.openBar` 前缀误报与词典/提示提及
+    // 都不算。已知局限：可选用链 `sessions?.open` 不含该串，扫描不到（研究 §10 建议形态）。
+    id: 'sessions-open-method',
+    layer: 'code',
+    match: 'sessions.open',
+    call: true,
+  },
 ])
 
 const MANIFEST_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
@@ -114,16 +133,20 @@ const DOCUMENT_TRAIL = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\s,;:!?()]/
 
 export function scanCodeHits(text, breaks) {
   const hits = new Set()
-  // 判定一次前缀命中的「引用形态」：紧跟字符是文档字符 → 提及（false），否则 → 引用。
+  // 判定一次前缀命中的「引用形态」：默认（文档性后缀规则）紧跟字符是文档字符 → 提及（false），
+  // 否则 → 引用；方法名条目（call: true）反其道——只有紧跟调用括号 `(` 才算引用（方法调用），
+  // 标识符后跟字母的前缀误报（`sessions.openBar`）与「句子提及（」都不算。
   const inString = (mode) => mode !== 'normal' && mode !== 'line' && mode !== 'block'
-  const isReferenceAt = (text, i, match) => {
+  const isReferenceAt = (text, i, b) => {
+    const match = b.match
     if (!text.startsWith(match, i)) return false
     const next = text[i + match.length]
+    if (b.call === true) return next === '('
     if (next === undefined || DOCUMENT_TRAIL.test(next)) return false
     return true
   }
   const tryHit = (text, i) => {
-    for (const b of breaks) if (!hits.has(b.id) && isReferenceAt(text, i, b.match)) hits.add(b.id)
+    for (const b of breaks) if (!hits.has(b.id) && isReferenceAt(text, i, b)) hits.add(b.id)
   }
   const n = text.length
   let i = 0
