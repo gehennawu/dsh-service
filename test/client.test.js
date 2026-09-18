@@ -1676,7 +1676,8 @@ test('version card keeps the support bound inline after the version number, two 
   globalThis.document = {
     body: {},
     head: { appendChild(el) { injectedStyles.push(el.textContent) } },
-    createElement() { return { remove() {} } },
+    // 真实 DOM 元素必有 dataset（插件按 alpha.2 的 style[data-plugin] 归属约定写它）。
+    createElement() { return { dataset: {}, remove() {} } },
     querySelector: () => null,
     querySelectorAll: () => [],
     addEventListener() {},
@@ -4904,7 +4905,7 @@ test('quota surfaces share one visibilitychange listener instead of one per moun
   globalThis.document = {
     body: {},
     head: { appendChild() {} },
-    createElement: () => ({}),
+    createElement: () => ({ dataset: {} }),
     visibilityState: 'visible',
     querySelector: () => null,
     querySelectorAll: () => [],
@@ -5193,7 +5194,9 @@ test('settings nav rows get icon markers by localized label and follow text chan
   globalThis.document = {
     body: {},
     head: { appendChild(el) { injectedStyles.push(el.textContent) } },
-    createElement() { return {} },
+    // dataset 必须有：插件给注入的样式表打 data-plugin 归属标记（0.1.6-alpha.2 起加载器
+    // 按该标记移除样式），缺了会让样式注入分支抛错、样式表静默不进 injectedStyles。
+    createElement() { return { dataset: {} } },
     querySelector(selector) { return selector === '[role="dialog"] nav' ? nav : null },
     querySelectorAll(selector) {
       if (selector === '[role="dialog"] nav button') return navButtons
@@ -11567,7 +11570,7 @@ test('model provider icons: feature toggle off leaves the official icon untouche
     body: {},
     documentElement: {},
     head: { appendChild() {} },
-    createElement() { return { remove() {} } },
+    createElement() { return { dataset: {}, remove() {} } },
     querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
     querySelectorAll: () => [],
     contains: () => true,

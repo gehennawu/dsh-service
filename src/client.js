@@ -2543,6 +2543,11 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
+        // 归属标记：0.1.6-alpha.2 起客户端加载器按 style[data-plugin] 精确移除（removeOwnedStyles），
+        // 未标记的标签会被 claimStyles 收归「当前物化的插件」——归属就取决于物化时机。
+        // 本插件四处注入统一显式声明，不依赖该时序假设。
+        svcStyle.dataset.plugin = '@gehennawu/dsh-service'
+        svcStyle.dataset.pluginCss = '@gehennawu/dsh-service/theme-tokens.css'
         svcStyle.textContent = [
           // ── 统一视觉语言令牌（v0.39）：--dsh-svc-* 单一事实源──
           // 铁律一：恒为 var(--dsw-alias-*, <兜底>)，暗色块只换兜底叶值，不覆盖别名解析。
