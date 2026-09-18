@@ -15,6 +15,7 @@ import { dirname, resolve } from 'node:path'
 // 「立即求值的前向引用」。
 const CLIENT_SOURCE_FILES = [
   'src/client.js',
+  'src/client/visual-primitives.js',
   'src/client/mobile.js',
   'src/client/conversation-nav.js',
   'src/client/subagent-dispatch-ring.js',
