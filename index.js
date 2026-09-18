@@ -3765,10 +3765,6 @@ async function saveDeletedSessions(dshHome, data) {
 // 标题缓存磁盘持久化：{version, items: {id: {title, revision?, live}}}——只存标题与指纹，
 // 不含任何会话内容；损坏/版本不符整体丢弃（回退全量拉取，宁慢勿错）。at 不落盘：
 // 加载后按 0 处理，revision 对不上或缺失时自然判定过期重读。
-function createEmptySessionTitles() {
-  return { version: SESSIONS_TITLE_VERSION, items: {} }
-}
-
 async function loadSessionTitles(dshHome) {
   try {
     const parsed = JSON.parse(await readFile(join(dshHome, SESSIONS_TITLE_FILE), 'utf8'))
