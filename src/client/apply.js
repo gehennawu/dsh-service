@@ -213,46 +213,9 @@
               item.badge ? React.createElement('span', { 'data-testid': item.badge.testid, style: { position: 'absolute', top: '-7px', right: '-10px', fontSize: '9px', lineHeight: '14px', padding: '0 4px', ...fullRound('999px'), background: 'var(--dsw-alias-state-warn-primary)', color: 'var(--dsh-svc-brand-text)', fontWeight: 700 } }, item.badge.text) : null)
           }))
       }
-      // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
-      let notifyEnabled = false
-      let notifyDone = true
-      let notifyInput = true
-      // 输入框铃铛图标的显隐（v0.31 用户点名）：默认显示，独立于通知行为开关——
-      // 藏掉铃铛只是收起快捷入口，通知照常按既有三档工作。
-      let notifyBellVisible = true
-      try { notifyEnabled = localStorage.getItem('dsh-service-notify') === 'true' } catch (_) {}
-      try { notifyDone = localStorage.getItem('dsh-service-notify-done') !== 'false' } catch (_) {}
-      try { notifyInput = localStorage.getItem('dsh-service-notify-input') !== 'false' } catch (_) {}
-      try { notifyBellVisible = localStorage.getItem('dsh-service-notify-bell') !== 'false' } catch (_) {}
-      const notifyListeners = new Set()
-      const bellListeners = new Set()
-      const persistNotify = (key, value) => { try { localStorage.setItem(key, value ? 'true' : 'false') } catch (_) {} }
-      const publishNotify = () => { for (const listener of notifyListeners) listener() }
-      const publishBell = () => { for (const listener of bellListeners) listener() }
-      const setNotifyEnabled = (value) => { notifyEnabled = value; persistNotify('dsh-service-notify', value); publishNotify() }
-      const setNotifyDone = (value) => { notifyDone = value; persistNotify('dsh-service-notify-done', value); publishNotify() }
-      const setNotifyInput = (value) => { notifyInput = value; persistNotify('dsh-service-notify-input', value); publishNotify() }
-      const setNotifyBellVisible = (value) => {
-        notifyBellVisible = value === true
-        persistNotify('dsh-service-notify-bell', notifyBellVisible)
-        publishBell()
-      }
-      /** 槽位注入回调用：铃铛显隐变化时重挂 conversation.input.left 条目。 */
-      const subscribeBellVisible = (listener) => { bellListeners.add(listener); return () => bellListeners.delete(listener) }
-      const useNotifyState = () => {
-        const [, setTick] = useState(0)
-        const [enabled, setEnabled] = useState(notifyEnabled)
-        const [done, setDone] = useState(notifyDone)
-        const [input, setInput] = useState(notifyInput)
-        const [bell, setBell] = useState(notifyBellVisible)
-        React.useEffect(() => {
-          const update = () => { setEnabled(notifyEnabled); setDone(notifyDone); setInput(notifyInput); setBell(notifyBellVisible); setTick((t) => t + 1) }
-          notifyListeners.add(update)
-          bellListeners.add(update)
-          return () => { notifyListeners.delete(update); bellListeners.delete(update) }
-        }, [])
-        return { enabled, done, input, bell, setEnabled: (v) => setNotifyEnabled(v), setDone: (v) => setNotifyDone(v), setInput: (v) => setNotifyInput(v), setBell: setNotifyBellVisible }
-      }
+      // 全局通知状态服务已抽至 src/client/notification-service.js（工厂作用域分片）；开关
+      // let 改为 notifyState.current.* 箱体活读（原 let 快照语义不跨工厂边界）。
+      const { notifyState, useNotifyState, NOTIFY_KIND_KEYS, fireNotification, subscribeBellVisible } = createNotificationService()
       // 设置页左列入口开关的通用实现（重启/额度/技能三个入口共用，不再三套复制）：
       // localStorage 持久化、默认关；开启才注册 settings.section 条目、关闭即注销——
       // 导航列单元格由外壳渲染，null 内容不能隐藏导航项。feature 可选：功能关闭时同样注销。
@@ -458,24 +421,7 @@
       if (hasSkillsBatchPendingMarker()) void adoptSkillsBatchStatus()
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
-      const NOTIFY_KIND_KEYS = {
-        approval: 'notification.kind.approval',
-        'plan-review': 'notification.kind.plan-review',
-        question: 'notification.kind.question',
-      }
-      const notifyPermissionGranted = () => typeof Notification !== 'undefined' && Notification.permission === 'granted'
-      const fireNotification = (title, body) => {
-        if (!notifyPermissionGranted()) return
-        try {
-          const notification = new Notification(title, { body })
-          // 点击系统通知弹窗：聚焦 DSH 页面并关闭该通知（chrome/ff 从通知点击回调
-          // 视为用户手势，window.focus() 可把标签页带到前台）
-          notification.onclick = () => {
-            try { window.focus() } catch (_) {}
-            try { notification.close() } catch (_) {}
-          }
-        } catch (_) {}
-      }
+      // NOTIFY_KIND_KEYS 与 fireNotification 已并入 src/client/notification-service.js（见上方解构）。
       const getModelDirectories = () => {
         try {
           if (typeof ctx.get === 'function') return ctx.get('modelDirectories')
@@ -506,10 +452,10 @@
             const next = { running: summary.running === true, pending: summary.pendingInteraction !== undefined }
             const prev = observed.get(id)
             if (prev !== undefined) {
-              if (prev.running && !next.running && summary.origin !== 'subagent' && featureEnabled('taskNotifications') && notifyEnabled && notifyDone) {
+              if (prev.running && !next.running && summary.origin !== 'subagent' && featureEnabled('taskNotifications') && notifyState.current.enabled && notifyState.current.done) {
                 fireNotification(t('notification.doneTitle'), t('notification.doneBody', { title: summary.displayTitle || id }))
               }
-              if (!prev.pending && next.pending && featureEnabled('taskNotifications') && notifyEnabled && notifyInput) {
+              if (!prev.pending && next.pending && featureEnabled('taskNotifications') && notifyState.current.enabled && notifyState.current.input) {
                 const kindKey = NOTIFY_KIND_KEYS[summary.pendingInteraction]
                 const kind = kindKey ? t(kindKey) : String(summary.pendingInteraction)
                 fireNotification(t('notification.inputTitle'), t('notification.inputBody', { title: summary.displayTitle || id, kind }))
@@ -6422,7 +6368,7 @@
         const sync = () => {
           if (dispose !== null) { dispose(); dispose = null }
           // 铃铛显隐开关关闭时整条注销（v0.31 用户点名），通知行为不受影响。
-          if (!featureEnabled('taskNotifications') || !notifyBellVisible) return
+          if (!featureEnabled('taskNotifications') || !notifyState.current.bellVisible) return
           dispose = ctx.slots.register(
             { name: 'conversation.input.left', id: 'dsh-service-notify', order: 90, label: () => t('notification.bellOn') },
             () => React.createElement(InlineNotifyBell, null),
@@ -7455,6 +7401,7 @@
     return module.exports
   },
 })
+
 
 
 
