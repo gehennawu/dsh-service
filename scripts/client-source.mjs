@@ -19,6 +19,7 @@ const CLIENT_SOURCE_FILES = [
   'src/client/notification-service.js',
   'src/client/version-restart.js',
   'src/client/quota-core.js',
+  'src/client/skills-batch-shared.js',
   'src/client/mobile.js',
   'src/client/conversation-nav.js',
   'src/client/subagent-dispatch-ring.js',

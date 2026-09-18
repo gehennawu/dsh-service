@@ -270,155 +270,8 @@
       const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-quota', legacyStorageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
       const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-sessions', legacyStorageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
-      let skillsBatchState = null       // 宿主状态快照
-      let skillsBatchPlan = null        // 本端计划（含所选模型）
-      let skillsBatchModels = null      // 模型清单缓存（null=未拉取，[]=不可用）
-      let skillsBatchModelItem = null   // 批量选中的模型
-      let skillsBatchError = ''
-      let skillsBatchListDirty = false  // 落定后请挂载中的列表自刷新
-      let skillsBatchPollHandle = null
-      let skillsBatchAdoptPromise = null
-      let skillsBatchStatusChecked = false
-      const SKILLS_BATCH_PENDING_STORAGE_KEY = 'dsh-service-skills-batch-pending'
-      const skillsBatchListeners = new Set()
-      const publishSkillsBatch = () => { for (const listener of skillsBatchListeners) listener() }
-      const setSkillsBatchPending = (pending) => {
-        try {
-          if (pending) localStorage.setItem(SKILLS_BATCH_PENDING_STORAGE_KEY, 'true')
-          else localStorage.removeItem(SKILLS_BATCH_PENDING_STORAGE_KEY)
-        } catch (_) {}
-      }
-      const hasSkillsBatchPendingMarker = () => {
-        try { return localStorage.getItem(SKILLS_BATCH_PENDING_STORAGE_KEY) === 'true' } catch (_) { return false }
-      }
-      const rememberSkillsBatchPhase = (phase) => {
-        setSkillsBatchPending(phase === 'planned' || phase === 'running')
-      }
-      const skillsBatchPollStop = () => {
-        if (skillsBatchPollHandle !== null) { clearInterval(skillsBatchPollHandle); skillsBatchPollHandle = null }
-      }
-      const syncSkillsBatchPolling = (immediate = true) => {
-        // 功能关闭时不轮询（宿主也会拒绝 skill-* RPC）；重开后由下一次交互重新拉起。
-        const shouldPoll = skillsBatchState !== null && skillsBatchState.phase === 'running' && featureEnabled('skillManager')
-        if (shouldPoll && skillsBatchPollHandle === null) {
-          const tick = async () => {
-            try {
-              const res = await rpcCall('skills-batch-status', {})
-              if (!res.ok) return
-              const previousPhase = skillsBatchState !== null ? skillsBatchState.phase : null
-              skillsBatchState = res.value
-              rememberSkillsBatchPhase(res.value.phase)
-              if (previousPhase === 'running' && res.value.phase !== 'running') {
-                // 落定：停止轮询，请挂载中的列表刷新 annotated 标记。
-                skillsBatchPollStop()
-                skillsBatchListDirty = true
-              }
-              publishSkillsBatch()
-            } catch (_) {}
-          }
-          if (immediate) void tick()
-          skillsBatchPollHandle = setInterval(() => void tick(), 2000)
-        }
-      }
-      const fetchSkillsBatchModels = async () => {
-        if (skillsBatchModels !== null) return skillsBatchModels
-        try {
-          const res = await rpcCall('skills-models', {})
-          if (!res.ok) { skillsBatchModels = []; return skillsBatchModels }
-          skillsBatchModels = res.value.models ?? []
-          if (skillsBatchModelItem === null) skillsBatchModelItem = resolveSkillModelChoice(skillsBatchModels, res.value.current)
-        } catch (_) { skillsBatchModels = [] }
-        return skillsBatchModels
-      }
-      const changeSkillsBatchModel = (key) => {
-        const item = (skillsBatchModels ?? []).find((candidate) => skillModelKey(candidate) === key) ?? null
-        skillsBatchModelItem = item
-        if (item !== null) {
-          try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: item.provider, model: item.id })) } catch (_) {}
-        }
-        publishSkillsBatch()
-      }
-      const adoptSkillsBatchStatus = () => {
-        if (skillsBatchStatusChecked) return Promise.resolve(skillsBatchState)
-        if (skillsBatchAdoptPromise !== null) return skillsBatchAdoptPromise
-        skillsBatchAdoptPromise = (async () => {
-          try {
-            const res = await rpcCall('skills-batch-status', {})
-            if (res.ok) {
-              skillsBatchStatusChecked = true
-              rememberSkillsBatchPhase(res.value.phase)
-              if (res.value.phase !== 'idle') {
-                skillsBatchState = res.value
-                syncSkillsBatchPolling(false)
-                publishSkillsBatch()
-              }
-            }
-          } catch (_) {}
-          return skillsBatchState
-        })().finally(() => { skillsBatchAdoptPromise = null })
-        return skillsBatchAdoptPromise
-      }
-      const planSkillsBatchShared = async () => {
-        skillsBatchError = ''
-        publishSkillsBatch()
-        const models = await fetchSkillsBatchModels()
-        if (models.length === 0 || skillsBatchModelItem === null) { skillsBatchError = 'models-empty'; publishSkillsBatch(); return false }
-        try { localStorage.setItem(SKILLS_MODEL_STORAGE_KEY, JSON.stringify({ provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })) } catch (_) {}
-        const res = await rpcCall('skills-batch-plan', { provider: skillsBatchModelItem.provider, model: skillsBatchModelItem.id })
-        if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
-        skillsBatchPlan = { ...res.value, modelItem: skillsBatchModelItem }
-        const annotatedCount = Array.isArray(res.value.annotated) ? res.value.annotated.length : 0
-        skillsBatchState = { phase: 'planned', total: res.value.candidates.length + annotatedCount, done: 0, failures: [], current: null, estBytes: res.value.estBytes, logs: [] }
-        rememberSkillsBatchPhase('planned')
-        syncSkillsBatchPolling()
-        publishSkillsBatch()
-        return true
-      }
-      const startSkillsBatchShared = async (forceAnnotated = false) => {
-        if (skillsBatchPlan === null || skillsBatchState === null) return false
-        // 计划含已注释条目时宿主要求显式确认（annotated-confirm-required 兜底），客户端只在
-        // 两段式武装确认后传 forceAnnotated: true。
-        const res = await rpcCall('skills-batch-run', {
-          planId: skillsBatchPlan.planId,
-          lang: currentUiLocale(),
-          ...(forceAnnotated === true ? { forceAnnotated: true } : {}),
-        })
-        if (!res.ok) { skillsBatchError = res.error || 'unknown'; publishSkillsBatch(); return false }
-        skillsBatchState = { ...skillsBatchState, phase: 'running' }
-        rememberSkillsBatchPhase('running')
-        syncSkillsBatchPolling()
-        publishSkillsBatch()
-        return true
-      }
-      const cancelSkillsBatchShared = async () => {
-        try {
-          await rpcCall('skills-batch-cancel', {})
-          setSkillsBatchPending(false)
-        } catch (_) {}
-      }
-      const useSkillsBatch = () => {
-        const [, bump] = useState(0)
-        useEffect(() => {
-          const update = () => bump((v) => v + 1)
-          skillsBatchListeners.add(update)
-          return () => skillsBatchListeners.delete(update)
-        }, [])
-        return { batch: skillsBatchState, plan: skillsBatchPlan, models: skillsBatchModels, modelItem: skillsBatchModelItem, error: skillsBatchError }
-      }
-      // 轮询器归属当前 Fiber（AGENTS.md 生命周期不变量）：插件停止即停表；
-      // 功能开关关闭也停表。放在 useSkillsBatch 之后——这里引用的函数都已就绪。
-      ctx.effect(() => {
-        const unsubscribe = featureScope.subscribe(() => {
-          if (!featureEnabled('skillManager')) skillsBatchPollStop()
-        })
-        return () => {
-          unsubscribe()
-          skillsBatchPollStop()
-        }
-      }, 'dsh-service skills batch polling lifecycle')
-      // 只有本页曾启动过未落定批量任务时才在刷新后恢复：普通页面启动零 RPC；
-      // 计划/运行阶段落本地 marker，落定/取消即清除。技能页首次进入仍会主动核对一次宿主状态。
-      if (hasSkillsBatchPendingMarker()) void adoptSkillsBatchStatus()
+      // ── 批量补全共享状态：正文已抽至 src/client/skills-batch-shared.js（工厂作用域分片）；
+      // 工厂调用点在「技能管理」段 resolveSkillModelChoice 定义之后（模型目录三件套按值传入）。
       // 会话边沿通知：running→idle 记一次任务结束；pendingInteraction 出现记一次需要确认。
       // 数据源是客户端运行时的会话列表快照（订阅推送）；首个快照只建立基线，重连后重建基线，二者都不响铃。
       // NOTIFY_KIND_KEYS 与 fireNotification 已并入 src/client/notification-service.js（见上方解构）。
@@ -1819,6 +1672,10 @@
         return item
       }
 
+      // 技能批量共享态工厂：正文见 src/client/skills-batch-shared.js；模型目录三件套已在前文定义，
+      // 此处按值传入（调用点晚于其声明，无 TDZ）；返回值解构回原名供技能段消费。
+      const { adoptSkillsBatchStatus, cancelSkillsBatchShared, changeSkillsBatchModel, fetchSkillsBatchModels, planSkillsBatchShared, publishSkillsBatch, skillsBatchListDirtyRef, startSkillsBatchShared, useSkillsBatch } = createSkillsBatchShared({ ctx, rpcCall, featureEnabled, featureScope, currentUiLocale, SKILLS_MODEL_STORAGE_KEY, skillModelKey, resolveSkillModelChoice })
+
       // 宿主下发的日志条目是结构化 {at, name?, code, params}：时间戳按本机时区格式化（用户点名：
       // 原先 toISOString 出 UTC 时刻，看日志对不上本地钟）、文案词典渲染，词典没有的 code 原样透出。
       const formatSkillLogLine = (translate, entry) => {
@@ -1910,8 +1767,8 @@
         }, [])
         // 落定后刷新列表拿最新注释标记；订阅回调里消费脏标记。
         useEffect(() => {
-          if (batch !== null && (batch.phase === 'done' || batch.phase === 'cancelled') && skillsBatchListDirty) {
-            skillsBatchListDirty = false
+          if (batch !== null && (batch.phase === 'done' || batch.phase === 'cancelled') && skillsBatchListDirtyRef.current) {
+            skillsBatchListDirtyRef.current = false
             void load()
           }
         }, [batch !== null && batch.phase])
@@ -6701,6 +6558,7 @@
     return module.exports
   },
 })
+
 
 
 
