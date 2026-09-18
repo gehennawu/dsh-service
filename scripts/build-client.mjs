@@ -1,6 +1,8 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { minify } from 'terser'
 
+import { INLINE_ANCHOR as ANCHOR, readClientSource } from './client-source.mjs'
+
 // 模型厂家/渠道图标数据（src/model-icons.generated.js，由 scripts/generate-model-icons.mjs
 // 联网生成、已入库）在这里被**内联**进客户端源，再一起过 terser：
 //   - 构建本身不联网，离线可重现；
@@ -8,10 +10,13 @@ import { minify } from 'terser'
 //   - 数据与代码同一次压缩，省掉一次网络往返。
 // 插入点是 factory 作用域顶部（`const NS = 'dsh-service'` 之后），apply() 内的
 // 图标引擎直接引用这三个绑定。
-const ANCHOR = "const NS = 'dsh-service'"
+//
+// 客户端源码可能由多个分片组成（清单在 scripts/client-source.mjs，构建与静态测试
+// 共用同一份）：分片不是模块，而是同一个 factory 作用域的连续切片，拼接后仍是一份
+// 普通 JS；加载器只认 exports["./client"] 单一产物，故这里也只产出包根 client.js。
 
 const generated = await readFile(new URL('../src/model-icons.generated.js', import.meta.url), 'utf8')
-const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
+const { source, files } = await readClientSource()
 
 // generated 文件自带 leading 注释行，取其声明本体即可。
 const declarations = generated
@@ -25,7 +30,7 @@ if (!declarations.includes('MODEL_ICON_DATA') || !declarations.includes('MODEL_I
 }
 
 const at = source.indexOf(ANCHOR)
-if (at === -1) throw new Error(`client source anchor not found: ${ANCHOR}`)
+if (at === -1) throw new Error(`client source anchor not found: ${ANCHOR} (read ${files.join(', ')})`)
 const insertAt = at + ANCHOR.length
 
 const inlined =

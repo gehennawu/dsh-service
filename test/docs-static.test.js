@@ -4,8 +4,14 @@ import { dirname, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { readClientSource } from '../scripts/client-source.mjs'
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(resolve(root, path), 'utf8')
+
+// 客户端源码按清单拼接后读取（清单在 scripts/client-source.mjs，构建脚本共用同一份）：
+// 拆分后若这里仍写死 read('src/client.js')，断言到的将是一份不参与构建的文本。
+const clientSource = async () => (await readClientSource()).source
 
 function imageTargets(markdown) {
   return [...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1])
@@ -37,13 +43,13 @@ test('README image references exist and screenshots ship in the npm package', ()
   assert.ok(packageJson.files.includes('screenshots'), 'package files must include screenshots used by the READMEs')
 })
 
-test('published browser entry stays at the DSH-standard package-root client.js', () => {
+test('published browser entry stays at the DSH-standard package-root client.js', async () => {
   const packageJson = JSON.parse(read('package.json'))
   assert.equal(packageJson.exports['./client'], './client.js')
   assert.equal(packageJson.files.includes('client.js'), true)
   assert.equal(packageJson.files.includes('src/client.js'), false)
   assert.equal(packageJson.files.some((path) => path.startsWith('dist/')), false)
-  const source = read('src/client.js')
+  const source = await clientSource()
   const artifact = read('client.js')
   assert.match(artifact, /^window\.__ModuleLoader__\.load\(/)
   assert.ok(artifact.length < source.length * 0.75, `generated client artifact should be at least 25% smaller (${artifact.length}/${source.length})`)
@@ -134,9 +140,9 @@ test('model icon catalog is regenerated from the generated data and covers every
 // 这里用源码逐字比对，把「同算法」从注释里的承诺变成可执行断言。
 test('catalog data-URI builder stays byte-identical to the runtime modelIconDataUri', async () => {
   const { dataUri } = await import('../scripts/model-icons-catalog.mjs')
-  const client = read('src/client.js')
+  const client = await clientSource()
   const runtime = client.match(/const modelIconDataUri = \(spec, useMask\) => \{(.*?)\n    \}/s)
-  assert.notEqual(runtime, null, 'runtime modelIconDataUri not found in src/client.js')
+  assert.notEqual(runtime, null, 'runtime modelIconDataUri not found in the concatenated client source')
 
   // 两处都是 DATA-URI 模板：抽出各自的 svg 模板串，断言逐字相等。
   const catalogSvg = read('scripts/model-icons-catalog.mjs').match(/const svg = `([^`]*)`/)
