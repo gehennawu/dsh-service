@@ -141,6 +141,22 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_clos
   corner-shape: round !important;
   box-shadow: var(--dsw-shadow-lv2, 0 4px 12px rgba(0, 0, 0, .12)) !important;
 }
+/* 设置内容列利用率（2026-09-19 用户点名「窗口利用率太低」）：手机全屏后内容仍被
+   宿主 options 24px → 插件看板卡 12px → 汇总小卡 10px 的多层内边距套娃收窄
+   （单侧 ~46px、约一成屏宽）。只收紧间距不动物料：options 是宿主滚动容器、
+   全分区生效（24→14）；看板/图表卡按 testid 收紧；汇总行禁折行——label/value
+   两个 span 在窄卡会被 flex 按比例收缩成 40~70px 盒子导致短标签折行
+   （2026-09-18 真机 360/390px 实测），nowrap 后装不下时值列省略兜底。 */
+html[data-dshsvc-mobile] [class*="VOzbGW_options"] { padding: 0 14px 18px !important; }
+html[data-dshsvc-mobile] [data-testid="usage-statistics-region"] { padding: 8px !important; }
+html[data-dshsvc-mobile] [data-testid="usage-chart"] { padding: 8px 8px 2px !important; }
+html[data-dshsvc-mobile] [data-testid^="usage-summary-"] { column-gap: 8px !important; }
+html[data-dshsvc-mobile] [data-testid^="usage-summary-"] > span { white-space: nowrap !important; }
+html[data-dshsvc-mobile] [data-testid^="usage-summary-"] > span:last-child {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
 /* 设置/任意模态打开时藏抽屉钮：抽屉列自带 z-index:32 层叠上下文会把模态的
    z1000 封顶在 32，body 级 z33 的钮反而浮在设置页上（真机实测）。:has 不支持时
    退化为旧行为（钮仍显示），无副作用。 */

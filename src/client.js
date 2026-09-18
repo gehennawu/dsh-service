@@ -1072,7 +1072,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'usage.output': '输出 token',
       'usage.cache': '缓存 token',
       'usage.hitRate': '缓存命中率',
-      'usage.today': '今天',
+      'usage.today': '今日',
       'usage.sevenDays': '近 7 天',
       'usage.errors.title': '模型报错',
       'usage.errors.toggle': '模型报错（{count} 类）',

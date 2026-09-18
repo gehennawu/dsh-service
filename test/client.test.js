@@ -963,7 +963,7 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.match(text, /输入 tok.*输出 tok.*缓存 tok/)
   const statisticsRegion = renderer.findByTestId('usage-statistics-region')
   assert.match(statisticsRegion.props.style.border, /solid/)
-  assert.match(text, /今天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
+  assert.match(text, /今日.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
   assert.match(text, /近 7 天.*输入 tok.*输出 tok.*缓存 tok.*成功模型步骤.*缓存命中率/)
   assert.match(text, /token 总量.*4\.3K/)
   assert.equal(renderer.findAllByTestIdPrefix('usage-summary-today-').length, 6)
