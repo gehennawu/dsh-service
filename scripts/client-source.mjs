@@ -15,6 +15,9 @@ import { dirname, resolve } from 'node:path'
 // 「立即求值的前向引用」。
 const CLIENT_SOURCE_FILES = [
   'src/client.js',
+  'src/client/mobile.js',
+  'src/client/conversation-nav.js',
+  'src/client/apply.js',
 ]
 
 /** 客户端工厂入口标记：整个产物有且只能有一个。 */
