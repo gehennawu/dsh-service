@@ -55,6 +55,24 @@ test('published browser entry stays at the DSH-standard package-root client.js',
   assert.ok(artifact.length < source.length * 0.75, `generated client artifact should be at least 25% smaller (${artifact.length}/${source.length})`)
 })
 
+// 运行时完整性守卫：宿主半拆出兄弟模块后（*-routes.js 等），只要 index.js 相对导入的
+// 本地模块有一个没进 package.json files，发布包就会在加载时崩。这里解析 index.js 的
+// 相对导入并逐个核对 files 白名单，新增拆分文件时忘记登记会直接红。
+test('every local module imported by the host entry ships in the package files list', () => {
+  const packageJson = JSON.parse(read('package.json'))
+  const host = read('index.js')
+  const relativeImports = [...host.matchAll(/from\s+'(\.[^']+)'/g)].map((m) => m[1])
+  assert.ok(relativeImports.length >= 5, `expected the host entry to import its sibling modules (${relativeImports.join(', ')})`)
+  for (const spec of relativeImports) {
+    const target = (spec.endsWith('.js') ? spec : `${spec}.js`).replace(/^\.\//, '')
+    assert.equal(
+      packageJson.files.includes(target),
+      true,
+      `host imports "${spec}" but package.json files does not ship "${target}" — the published tarball would crash on load`,
+    )
+  }
+})
+
 test('backup integrity and restore preflight are documented in both languages and shipped', () => {
   const zh = section(read('README.md'), '### 备份管理')
   const en = section(read('README.en.md'), '### Backup management')

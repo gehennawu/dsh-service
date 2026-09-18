@@ -126,9 +126,16 @@ test('self-proof: scanning this plugin own manifest and built entries yields zer
   assert.deepEqual([...collectManifestHits(pkg, manifestBreaks)], [])
   const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   const host = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+  // 宿主端点已按功能域拆到 *-routes.js（packageEntryFiles 只扫 exports 入口，不会覆盖它们），
+  // 自证明必须显式纳入，否则拆出的 handler 逃过退役接口扫描。
+  const ROUTE_MODULES = ['skill-routes.js', 'session-routes.js', 'quota-routes.js', 'subagent-routes.js', 'backup-routes.js']
+  const routeTexts = ROUTE_MODULES.map((f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'))
   const scanNonExempt = (text) => [...scanCodeHits(text, codeBreaks)].filter((id) => !exemptIds.has(id))
   assert.deepEqual(scanNonExempt(client), [], 'client.js must not reference changed interfaces outside dual-version exemptions')
   assert.deepEqual(scanNonExempt(host), [], 'index.js must not reference changed interfaces outside dual-version exemptions')
+  for (let i = 0; i < ROUTE_MODULES.length; i += 1) {
+    assert.deepEqual(scanNonExempt(routeTexts[i]), [], `${ROUTE_MODULES[i]} must not reference changed interfaces`)
+  }
   // 豁免命中必须确实存在且仅来自客户端半：双版本注册是豁免的前提，注册消失了应删豁免。
   const exemptHits = [...scanCodeHits(client, codeBreaks)].filter((id) => exemptIds.has(id))
   assert.deepEqual(exemptHits, ['settings-plugin-item'], 'the self-exemption must stay tied to the retained dual-version slot registration')

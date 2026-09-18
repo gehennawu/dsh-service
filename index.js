@@ -15,6 +15,11 @@ import { promisify } from 'node:util'
 import { ServerResponse as NodeServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { createBackupIntegrity } from './backup-integrity.js'
+import { createSkillsRoutes } from './skill-routes.js'
+import { createSessionsRoutes } from './session-routes.js'
+import { createQuotaRoutes } from './quota-routes.js'
+import { createSubagentRoutes } from './subagent-routes.js'
+import { createBackupRoutes } from './backup-routes.js'
 import { collectPluginCompat, pluginCompatCheckItem } from './plugin-compat.js'
 import { collectPluginHealth, pluginCheckItem, restartPluginEntry } from './plugin-health.js'
 import {
@@ -527,6 +532,18 @@ function rpcErrorMessage(result) {
   if (typeof result.error === 'string') return result.error
   if (result.error !== null && typeof result.error === 'object' && typeof result.error.message === 'string') return result.error.message
   return 'internal-error'
+}
+
+/** 合并各功能域的端点表；重复键是拆分回归（两个模块声明同一端点），立即抛错。 */
+function mergeRouteTables(tables) {
+  const merged = {}
+  for (const table of tables) {
+    for (const key of Object.keys(table)) {
+      if (key in merged) throw new Error(`dsh-service: duplicate rpc endpoint "${key}"`)
+      merged[key] = table[key]
+    }
+  }
+  return merged
 }
 
 function createRpcDispatcher({ endpoints, featureEnabled = () => true, logger, now = Date.now }) {
@@ -4620,11 +4637,13 @@ function apply(ctx) {
   let updatePromise
   const quotaThrottle = createQuotaThrottle()
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
-  let skillsIndexPromise = loadSkillsIndex(dshHome)
+  // 可重赋值的 let 一律以 { current } 箱体跨模块传递：端点工厂解构是值快照，
+  // let 重赋值不会穿过解构边界；箱体靠对象身份保持活绑定。
+  const skillsIndexRef = { current: loadSkillsIndex(dshHome) }
   // 技能文件解析缓存：键=绝对路径，值=stat 指纹（size+mtimeMs）+ 评估结果。
   // 列表/定位类接口每次都重跑目录发现与 stat，只跳过未变文件的读盘与解析。
   const skillFileCache = new Map()
-  let skillsBatch = null
+  const skillsBatchRef = { current: null }
   // 单条补全的运行日志环形缓冲：客户端在「生成中」期间轮询展示。
   // 条目是结构化 {at, code, params}，本地化文案由客户端词典渲染。
   const describeJobs = new Map()
@@ -4643,11 +4662,11 @@ function apply(ctx) {
   let skillsIndexWrites = Promise.resolve()
   const serializeSkillsIndexWrite = (work) => {
     const result = skillsIndexWrites.then(async () => {
-      const current = { ...(await skillsIndexPromise) }
+      const current = { ...(await skillsIndexRef.current) }
       const outcome = await work(current)
       if (outcome?.save === false) return outcome?.value
       await saveSkillsIndex(dshHome, current)
-      skillsIndexPromise = Promise.resolve(current)
+      skillsIndexRef.current = Promise.resolve(current)
       return outcome?.value
     })
     skillsIndexWrites = result.then(() => undefined, () => undefined)
@@ -4661,7 +4680,7 @@ function apply(ctx) {
     return { signal: call.signal, done: () => skillsActiveControllers.delete(call) }
   }
   ctx.effect(() => () => {
-    if (skillsBatch !== null) skillsBatch.aborted = true
+    if (skillsBatchRef.current !== null) skillsBatchRef.current.aborted = true
     for (const call of skillsActiveControllers) {
       try { call.abort(new Error('batch-cancelled')) } catch (_) {}
     }
@@ -4670,9 +4689,9 @@ function apply(ctx) {
   }, 'dsh-service skills batch teardown')
   // ── 子代理路由（v0.27）：三态配置 + subagents seam ─────────────────────
   // 内存态即 seam 读取的事实源：保存端点落盘成功后原地替换，派生路径零读盘。
-  let subagentRouteConfig = createEmptySubagentRoute()
+  const subagentRouteRef = { current: createEmptySubagentRoute() }
   const subagentRouteLoadPromise = Promise.resolve().then(async () => {
-    subagentRouteConfig = await loadSubagentRoute(dshHome)
+    subagentRouteRef.current = await loadSubagentRoute(dshHome)
   })
   // 配置写串行化（quota-config 同款）：所有写先等首次加载完成再从同一内存快照复制，
   // 避免与启动加载竞态把磁盘回退成 inherit。
@@ -4680,18 +4699,18 @@ function apply(ctx) {
   const serializeSubagentRouteWrite = (work) => {
     const result = subagentRouteWrites.then(async () => {
       await subagentRouteLoadPromise
-      const current = { ...subagentRouteConfig }
+      const current = { ...subagentRouteRef.current }
       const outcome = await work(current)
       if (outcome?.save === false) return outcome.value
       await saveSubagentRoute(dshHome, current)
-      subagentRouteConfig = current
+      subagentRouteRef.current = current
       return outcome.value
     })
     subagentRouteWrites = result.then(() => undefined, () => undefined)
     return result
   }
   // seam 是否已挂上（宿主 subagents 服务存在时由下面的 inject 置真）：快照端点据此告知客户端。
-  let subagentSeamInstalled = false
+  const subagentSeamRef = { current: false }
   // 子代理派发记录环（v1.2）：apply 级持有，RPC 端点与 seam 共同读写（seam 写入、端点只读）。
   const dispatchRing = { order: [], byChild: new Map() }
   // 只包装宿主 subagents 注册表的两个入口（start / startContinuable，spawn/fork/acp 全走这
@@ -4752,7 +4771,7 @@ function apply(ctx) {
     const applyInjection = (request) => {
       // 功能关闭：零记录（完全静默，与原生行为一致）——记录是 subagentRoute 功能的一部分。
       if (!featureEnabled('subagentRoute')) return { request, dispatch: undefined }
-      const injected = resolveSubagentInjection(request, subagentRouteConfig, {
+      const injected = resolveSubagentInjection(request, subagentRouteRef.current, {
         isRoutable,
         readParentHeader,
         isQuotaHealthy,
@@ -4818,7 +4837,7 @@ function apply(ctx) {
         } catch (error) {
           ctx.logger?.warn?.(`dsh-service: subagent dispatch record failed: ${error?.message ?? String(error)}`)
         }
-      } else if (agent?.session?.header?.parentSession && subagentRouteConfig.mode !== 'inherit') {
+      } else if (agent?.session?.header?.parentSession && subagentRouteRef.current.mode !== 'inherit') {
         ctx.logger?.warn?.(`dsh-service: subagent "${agent?.id}" created without ALS dispatch context, subagent route skipped`)
       }
       const effort = dispatch?.reasoningEffort
@@ -4843,14 +4862,14 @@ function apply(ctx) {
       }
       return { ...proposal, reasoningEffort: effort }
     }) : null
-    subagentSeamInstalled = true
+    subagentSeamRef.current = true
     scope.effect(() => () => {
       subagents.start = originalStart
       subagents.startContinuable = originalStartContinuable
       if (typeof disposeCreated === 'function') disposeCreated()
       if (typeof disposeRequest === 'function') disposeRequest()
       effortSupportCache.clear()
-      subagentSeamInstalled = false
+      subagentSeamRef.current = false
     }, 'dsh-service subagent route seam teardown')
   })
   let quotaConfig = createEmptyQuotaConfig()
@@ -5077,7 +5096,9 @@ function apply(ctx) {
   }
 
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能统一登记在内部注册表。
-  const rpcEndpoints = {
+  // 核心域端点：与 commands / webServer / 移动端压缩装配耦合最深，留在本文件。
+  // 功能域端点在各 *-routes.js 模块，依赖显式注入；mergeRouteTables 拒绝重复键。
+  const coreRoutes = {
     'version': { handle: async (payload, rpcEndpoint) => {
       // runtimeEnv 随进程身份（instanceId）一起返回：概览展示、升级前置确认与重启警告共用，
       // 客户端对缺字段的老宿主静默降级。
@@ -5195,531 +5216,6 @@ function apply(ctx) {
       }
 
     } },
-    'backup-list': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
-      try {
-        return { ok: true, value: await listBackups(dshHome) }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-progress': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
-      return { ok: true, value: { ...backupProgress } }
-
-    } },
-    'backup-create': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        return { ok: true, value: await withBackupLock(() => {
-          const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
-          const withValidator = async (source, task) => {
-            const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
-            try { return await task(validator) } finally { await validator.dispose() }
-          }
-          return createBackup(ctx, dshHome, join(dshHome, 'backups'), name, async (source) => {
-            return withValidator(source, (validator) => validator.inspectBackup(source.id))
-          }, setBackupProgress, async (source, root) => {
-            return withValidator(source, (validator) => validator.verifyArchivedTree(source, root))
-          }).finally(clearBackupProgress)
-        }) }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-export': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const value = await exportBackup(dshHome, downloadTokens, payload?.id)
-        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
-        return { ok: true, value }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-delete': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const value = await deleteBackup(dshHome, payload?.id)
-        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
-        return { ok: true, value }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-inspect': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
-      try {
-        const value = await backupIntegrity.inspectBackup(payload?.id)
-        if (value === undefined) return rpcFailure(new Error('unknown-backup'))
-        return { ok: true, value }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-restore-prepare': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id) }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-restore-commit': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        return { ok: true, value: await backupIntegrity.commitRestore(payload?.planId) }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'backup-restore': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
-      return rpcFailure(new Error('restore-preflight-required'))
-
-    } },
-    'backup-import': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const value = await importBackup(dshHome, payload?.name, payload?.data, async (source) => {
-          const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
-          try { return await validator.inspectBackup(source.id) } finally { await validator.dispose() }
-        })
-        if (value === undefined) return rpcFailure(new Error('invalid-backup'))
-        return { ok: true, value }
-      } catch (error) {
-        return rpcFailure(error)
-      }
-
-    } },
-    'skills-list': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
-      try {
-        const index = await skillsIndexPromise
-        const { roots, entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-        return {
-          ok: true,
-          value: {
-            roots: roots.map(({ source, dir, writable }) => ({ source, dir, writable })),
-            entries: entries.map((entry) => publicSkillEntry(entry, index)),
-            llmAvailable: ctx.get('llm') !== undefined,
-          },
-        }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-models': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
-      const llm = ctx.get('llm')
-      if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
-      try {
-        return { ok: true, value: await listSkillModels(llm, ctx.get('agentDefaultModel')) }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-toggle': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const field = payload?.field === 'model' || payload?.field === 'user' ? payload.field : null
-      if (field === null) return { ok: false, error: 'invalid-field' }
-      if (typeof payload?.enable !== 'boolean') return { ok: false, error: 'invalid-enable' }
-      try {
-        const index = await skillsIndexPromise
-        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, false, (raw) => ({ text: setSkillInvocationKey(raw, field, payload.enable) }), skillFileCache)
-        if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
-        return { ok: true, value: { entry: outcome.entry } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-fix-keys': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const index = await skillsIndexPromise
-        const outcome = await mutateSkillEntryById(ctx, dshHome, index, payload?.id, true, (raw) => {
-          const fixed = fixLegacySkillInvocationKeys(raw)
-          return { text: fixed.text }
-        }, skillFileCache)
-        if (!outcome.ok) return { ok: false, error: outcome.error, ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}) }
-        return { ok: true, value: { entry: outcome.entry } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-describe': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
-      const llm = ctx.get('llm')
-      if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
-      const provider = typeof payload?.provider === 'string' ? payload.provider : ''
-      const model = typeof payload?.model === 'string' ? payload.model : ''
-      if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
-      try {
-        // provider/model 必须命中白名单；条目必须能被签名 ID 重新定位。
-        const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
-        if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
-        const index = await skillsIndexPromise
-        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-        const entry = entries.find((candidate) => candidate.id === payload?.id)
-        if (entry === undefined) return { ok: false, error: 'unknown-skill' }
-        if (entry.invalid !== undefined) return { ok: false, error: 'invalid-skill', detail: entry.invalid }
-        const raw = await readFile(entry.path, 'utf8')
-        const job = makeDescribeJobLogger(entry.id)
-        job.push('located', { name: entry.name ?? '', chars: raw.length })
-        // 注册进活动调用表：Fiber 销毁时立即中断，不再僵尸到 90s 超时。
-        const call = registerSkillCall()
-        try {
-          const draft = await describeSkillDraft(llm, entry.name ?? '', raw, provider, model, (code, params) => job.push(code, params), { signal: call.signal, lang: normalizeSkillDescribeLang(payload?.lang) })
-          return { ok: true, value: { draft } }
-        } finally {
-          call.done()
-        }
-      } catch (error) {
-        return rpcTechnicalFailure(error, error?.message === 'describe-timeout' ? { detail: 'timeout' } : {})
-      }
-
-    } },
-    'skills-describe-log': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
-      const job = describeJobs.get(typeof payload?.id === 'string' ? payload.id : '')
-      return { ok: true, value: { logs: job ? [...job.logs] : [] } }
-
-    } },
-    'skills-note-save': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const description = sanitizeSkillDraftText(payload?.patch?.description, SKILL_DESCRIPTION_MAX_CHARS)
-      const usage = sanitizeSkillDraftText(payload?.patch?.usage ?? '', SKILL_USAGE_MAX_CHARS)
-      if (description === '') return { ok: false, error: 'invalid-description' }
-      try {
-        // 注释只进插件侧车索引，绝不写回技能文件；因此不要求条目可写，只要求能被签名 ID 定位。
-        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-        const entry = entries.find((candidate) => candidate.id === payload?.id)
-        if (entry === undefined) return { ok: false, error: 'unknown-skill' }
-        const index = await serializeSkillsIndexWrite((current) => {
-          current[entry.path] = {
-            bodyHash: entry.bodyHash,
-            note: { description, usage },
-            ...(typeof payload?.model === 'string' ? { model: payload.model.slice(0, 120) } : {}),
-            at: Date.now(),
-          }
-          return { value: current }
-        })
-        return { ok: true, value: { entry: publicSkillEntry({ ...entry }, index) } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-note-clear': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-        const entry = entries.find((candidate) => candidate.id === payload?.id)
-        if (entry === undefined) return { ok: false, error: 'unknown-skill' }
-        const index = await serializeSkillsIndexWrite((current) => {
-          delete current[entry.path]
-          return { value: current }
-        })
-        return { ok: true, value: { entry: publicSkillEntry(entry, index) } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-batch-plan': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      // 覆盖竞态守卫：运行中生成新计划会让在途循环错位到新清单，直接拒绝。
-      if (skillsBatch !== null && (skillsBatch.running || skillsBatch.phase === 'running')) return { ok: false, error: 'batch-already-running' }
-      const provider = typeof payload?.provider === 'string' ? payload.provider : ''
-      const model = typeof payload?.model === 'string' ? payload.model : ''
-      if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
-      try {
-        // 与单条 describe 同款白名单：批量路由必须命中 skills-models 清单。
-        const llm = ctx.get('llm')
-        if (llm === undefined || typeof llm.stream !== 'function') return { ok: false, error: 'llm-unavailable' }
-        const whitelist = await listSkillModels(llm, ctx.get('agentDefaultModel'))
-        if (!whitelist.models.some((item) => item.provider === provider && item.id === model)) return { ok: false, error: 'invalid-model-route' }
-        const index = await skillsIndexPromise
-        const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-        const { candidates, annotated, skipped } = selectSkillBatchCandidates(entries, index)
-        const planId = randomUUID()
-        // 已注释条目也进计划（单列待客户端确认），体积估算含两者——确认后整批运行。
-        const planIds = new Set([...candidates, ...annotated].map((candidate) => candidate.id))
-        skillsBatch = { phase: 'planned', planId, provider, model, candidates, annotated, items: candidates, total: candidates.length + annotated.length, done: 0, failures: [], aborted: false, running: false, current: null, logs: [], estBytes: entries.filter((entry) => planIds.has(entry.id)).reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) }
-        return { ok: true, value: { planId, candidates, annotated, skipped, estBytes: skillsBatch.estBytes } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'skills-batch-run': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      if (skillsBatch === null || skillsBatch.planId !== payload?.planId) return { ok: false, error: 'unknown-batch-plan' }
-      if (skillsBatch.running || skillsBatch.phase === 'done' || skillsBatch.phase === 'cancelled') return { ok: false, error: 'batch-already-' + (skillsBatch.running ? 'running' : skillsBatch.phase) }
-      // 已注释条目的强制覆盖确认闸：计划含已注释条目时，客户端必须显式确认
-      // （forceAnnotated: true）才允许启动——注释过不等于永远不能再次补全，但覆盖旧注释要有确认。
-      const planAnnotated = Array.isArray(skillsBatch.annotated) ? skillsBatch.annotated : []
-      if (planAnnotated.length > 0 && payload?.forceAnnotated !== true) return { ok: false, error: 'annotated-confirm-required' }
-      // 确认后新注释覆盖旧注释：候选 + 已注释合并成一个运行清单，进度口径随之更新。
-      skillsBatch.items = [...(skillsBatch.candidates ?? []), ...planAnnotated]
-      skillsBatch.total = skillsBatch.items.length
-      skillsBatch.phase = 'running'
-      skillsBatch.running = true
-      // 补全语言在 run 时刻定格（而非 plan 时刻）：计划确认前切换界面语言，按新语言补全。
-      skillsBatch.lang = normalizeSkillDescribeLang(payload?.lang)
-      // 批量级 AbortController：取消/销毁时立即中断在途 LLM 调用（不只等当前条目自然结束）。
-      const batchCall = registerSkillCall()
-      // 有意不 await：批量在后台顺序执行，客户端轮询 skills-batch-status 取进度。
-      void (async () => {
-        // 扫描一次建立 id→条目映射；逐条只重读目标文件校验新鲜度，不再每条全量重扫五类根。
-        let byId = new Map()
-        try {
-          const { entries } = await scanSkillEntries(ctx, dshHome, skillFileCache)
-          byId = new Map(entries.map((entry) => [entry.id, entry]))
-        } catch (_) {}
-        for (let cursor = 0; cursor < skillsBatch.items.length; cursor += 1) {
-          const item = skillsBatch.items[cursor]
-          if (skillsBatch.aborted) break
-          skillsBatch.current = item.name
-          const batchLog = (code, params = {}) => {
-            skillsBatch.logs.push({ at: Date.now(), name: item.name, code, params })
-            if (skillsBatch.logs.length > 120) skillsBatch.logs.shift()
-          }
-          batchLog('item-start')
-          try {
-            const llm = ctx.get('llm')
-            if (llm === undefined) throw new Error('llm-unavailable')
-            const entry = byId.get(item.id)
-            if (entry === undefined || entry.invalid !== undefined) throw new Error('entry-changed')
-            let raw
-            try {
-              raw = await readFile(entry.path, 'utf8')
-            } catch (_) {
-              throw new Error('entry-changed')
-            }
-            const evaluated = evaluateSkillFile(raw)
-            if (evaluated.invalid !== undefined) throw new Error('entry-changed')
-            const located = locateSkillFrontmatter(raw)
-            const draft = await describeSkillDraft(llm, entry.name ?? '', raw, skillsBatch.provider, skillsBatch.model, batchLog, { signal: batchCall.signal, lang: skillsBatch.lang })
-            // 注释只进侧车索引：文件零改动，正文哈希取当前内容（正文再变更即自动回到待补全）。
-            await serializeSkillsIndexWrite((current) => {
-              current[entry.path] = { bodyHash: bodyHashOf(raw, located?.bodyStart ?? 0), note: { description: draft.description, usage: draft.usage }, model: skillsBatch.provider + '/' + skillsBatch.model, at: Date.now() }
-              return {}
-            })
-            skillsBatch.done += 1
-          } catch (error) {
-            // 取消导致的失败不是条目失败：直接跳出，由循环外的 phase 落定。
-            if (skillsBatch.aborted || batchCall.signal.aborted) break
-            skillsBatch.failures.push({ name: item.name, reason: String(error?.message || error).slice(0, 160) })
-          } finally {
-            skillsBatch.current = null
-          }
-        }
-        batchCall.done()
-        skillsBatch.phase = skillsBatch.aborted || batchCall.signal.aborted ? 'cancelled' : 'done'
-        skillsBatch.running = false
-      })()
-      return { ok: true, value: { started: true, total: skillsBatch.total } }
-
-    } },
-    'skills-batch-status': { feature: 'skillManager', handle: async (payload, rpcEndpoint) => {
-      if (skillsBatch === null) return { ok: true, value: { phase: 'idle', total: 0, done: 0, failures: [] } }
-      return {
-        ok: true,
-        value: {
-          phase: skillsBatch.phase,
-          total: skillsBatch.total,
-          done: skillsBatch.done,
-          failures: [...skillsBatch.failures],
-          current: skillsBatch.current,
-          estBytes: skillsBatch.estBytes,
-          logs: skillsBatch.logs.slice(-30),
-        },
-      }
-
-    } },
-    'skills-batch-cancel': { feature: 'skillManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      if (skillsBatch !== null) skillsBatch.aborted = true
-      // 立即中断在途 LLM 调用：不等当前条目跑满 90s 超时/重试链。
-      for (const call of skillsActiveControllers) {
-        try { call.abort(new Error('batch-cancelled')) } catch (_) {}
-      }
-      return { ok: true, value: { phase: skillsBatch?.phase ?? 'idle' } }
-
-    } },
-    'quota': { feature: 'quotaLookup', handle: async (payload, rpcEndpoint) => {
-      try {
-        const providers = readQuotaProfiles(ctx.get('settings'), ctx.get('llm'))
-        quotaThrottle.prune(new Set(providers.map((profile) => profile.name)))
-        const config = await refreshQuotaConfigCache()
-        const allResetCards = Array.isArray(config.resetCards) ? config.resetCards : []
-        const resetCardsByProvider = new Map()
-        for (const card of allResetCards) {
-          const bucket = resetCardsByProvider.get(card.provider) ?? []
-          bucket.push(card)
-          resetCardsByProvider.set(card.provider, bucket)
-        }
-        const requestedProviders = Array.isArray(payload?.providers)
-          ? new Set(payload.providers.filter((provider) => typeof provider === 'string' && provider.length <= MAX_QUOTA_PROVIDER_NAME))
-          : null
-        const refreshAll = payload?.scope === 'all' || requestedProviders === null
-        const rows = []
-        for (const profile of providers) {
-          // kind 解析优先序：配置显式 kind > 配置 null（手动停用，永不外呼）> baseURL 自动推断。
-          const { adapter, kind, kindSource } = resolveQuotaKind(config, profile)
-          if (adapter === undefined || kind === undefined) {
-            // 未适配（无 kind/已停用/白名单外且不可推断）：灰色行，宿主绝不主动外呼。
-            rows.push({ provider: profile.name, displayName: profile.displayName, adapted: false })
-            continue
-          }
-          // 某些自动识别 Adapter 在凭据未配置时应整行静默隐藏；可见性属于 Adapter 凭据策略，
-          // index.js 只消费统一 policy，不再按 kind 写特例。显式适配仍照常显示填写入口。
-          const credentialPolicy = adapter.credentialPolicy(profile)
-          if (kindSource === 'auto' && credentialPolicy.autoVisibility === 'credential-gated'
-            && !(await quotaCredentialConfigured(ctx, kind, profile))) continue
-          if (refreshAll || requestedProviders.has(profile.name)) kickQuotaRefresh(profile, adapter, config)
-          const view = quotaThrottle.view(profile.name)
-          const windows = Array.isArray(view.windows) ? view.windows : []
-          // 「凭据类」错误 = 填/换一份凭据就能恢复的状态，客户端按 unconfigured 渲染填写表单。
-          // credential-rejected（v0.29 修复）：Cookie/key 被上游拒绝时恰恰最需要重新填入——
-          // 漏掉它会把卡片锁死在错误态，用户找不到任何入口（GUI 反馈「失效后无法再次填入」）。
-          const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable' || view.lastError === 'credential-rejected'
-          const providerResetCards = resetCardsByProvider.get(profile.name) ?? []
-          // 凭据填写窗口的数据源：仅对「缺凭据」的未配置行附带候选线索名的配置状态（describe 只回
-          // 配置与否/来源/可写，绝不带值）；凭据服务缺席时省略字段——客户端隐藏窗口退回文案指引。
-          let credentialHints
-          if (credentialClass && !view.refreshing && view.lastError !== 'no-base-url') {
-            const credentials = ctx.get('credentials')
-            if (credentials !== undefined && typeof credentials.describe === 'function') {
-              const described = []
-              for (const name of quotaCredentialHintNames(kind, profile)) {
-                try {
-                  const info = await Promise.resolve(credentials.describe(name))
-                  described.push({
-                    name,
-                    configured: info?.configured === true,
-                    ...(typeof info?.source === 'string' ? { source: info.source } : {}),
-                    ...(info?.writable === false ? { writable: false } : {}),
-                  })
-                } catch (_) {
-                  described.push({ name, configured: false })
-                }
-              }
-              credentialHints = described
-            }
-          }
-          rows.push({
-            provider: profile.name,
-            displayName: profile.displayName,
-            adapted: true,
-            kind,
-            ...(kindSource !== undefined ? { kindSource } : {}),
-            refreshing: view.refreshing,
-            status: credentialClass && !view.refreshing ? 'unconfigured' : view.lastError !== undefined && windows.length === 0 ? 'error' : 'ok',
-            ...(windows.length > 0 ? { windows, fetchedAt: view.fetchedAt } : {}),
-            ...(view.lastError !== undefined ? { errorCode: view.lastError } : {}),
-            ...(view.lastErrorDetail !== undefined ? { errorDetail: view.lastErrorDetail } : {}),
-            ...(view.lastErrorEndpoint !== undefined ? { errorEndpoint: view.lastErrorEndpoint } : {}),
-            ...(view.lastErrorAccount !== undefined ? { errorAccount: view.lastErrorAccount } : {}),
-            nextAllowedAt: view.nextAllowedAt,
-            ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
-            ...(credentialHints !== undefined ? { credentialHints } : {}),
-            // 凭据入口语义由 Adapter policy 下发稳定键，客户端只负责本地化，不再对 kind 重复分支。
-            credentialEntryKey: adapter.credentialPolicy(profile).entryKey,
-            // 官网用户页余额网址由具体 Adapter 持有（宿主常量白名单；无则缺省）。
-            ...(typeof quotaAdapterUsageUrl(adapter) === 'string' && quotaAdapterUsageUrl(adapter) !== '' ? { usageUrl: quotaAdapterUsageUrl(adapter) } : {}),
-          })
-        }
-        return { ok: true, value: { providers: rows, serverTime: Date.now() } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'quota-refresh': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
-        // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
-        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        const profile = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
-        if (profile === undefined) return { ok: false, error: 'unknown-provider' }
-        const config = await refreshQuotaConfigCache()
-        const { adapter } = resolveQuotaKind(config, profile)
-        if (adapter === undefined) return { ok: false, error: 'not-adapted' }
-        const forced = quotaThrottle.force(providerName)
-        if (!forced.ok) {
-          if (forced.reason === 'inflight') return { ok: true }
-          return { ok: false, error: forced.reason === 'cooldown' ? 'refresh-cooldown' : 'refresh-backoff', nextAllowedAt: forced.nextAllowedAt }
-        }
-        kickQuotaRefresh(profile, adapter, config)
-        return { ok: true }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'quota-config': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        // 三种写法，语义对齐配置文件解析（显式 kind > 显式 null 停用 > 自动推断）：
-        // {clear:true} 删掉覆盖键回退自动推断；{kind:null} 存显式停用（baseURL 可推断也不外呼）；{kind:<name>} 指定适配。
-        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
-        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
-        return await serializeQuotaConfigWrite(async (config) => {
-          if (payload?.clear === true) {
-            delete config.kinds[providerName]
-            delete config.allowedHosts[providerName]
-          } else {
-            const kind = payload?.kind
-            const adapter = kind === null ? undefined : QUOTA_ADAPTER_BY_KIND.get(kind)
-            if (kind !== null && adapter === undefined) return { save: false, value: { ok: false, error: 'unknown-kind' } }
-            if (adapter === undefined) {
-              // 显式停用不保留任何 Adapter 私有安全状态。
-              delete config.allowedHosts[providerName]
-            } else {
-              // 配置校验/钉住派生由具体 Adapter 决定；index.js 只应用统一结果。
-              const prepared = prepareQuotaAdapterConfig(adapter, profileForProvider)
-              if (prepared.ok !== true) return { save: false, value: { ok: false, error: prepared.error } }
-              if (Array.isArray(prepared.allowedHosts) && prepared.allowedHosts.length > 0) {
-                config.allowedHosts[providerName] = [...prepared.allowedHosts]
-              } else {
-                delete config.allowedHosts[providerName]
-              }
-            }
-            config.kinds[providerName] = kind
-          }
-          // 适配变更即清闸（v0.29 用户反馈：填完凭据/改完类型就该立刻重试，不继承旧失败的退避）。
-          quotaThrottle.resetGates(providerName)
-          return { value: { ok: true } }
-        })
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'quota-credential-set': { feature: 'quotaLookup', audit: true, handle: (payload, rpcEndpoint) => quotaCredentialEndpoint(ctx, refreshQuotaConfigCache, quotaThrottle, payload, rpcEndpoint) },
-    'quota-credential-unset': { feature: 'quotaLookup', audit: true, handle: (payload, rpcEndpoint) => quotaCredentialEndpoint(ctx, refreshQuotaConfigCache, quotaThrottle, payload, rpcEndpoint) },
-    'quota-reset-card': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
-      try {
-        // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
-        // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，
-        // 其余载荷为追加一条（label/expiresAt 截断限长），单 provider 上限 10 条防配置膨胀。
-        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
-        if (!readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).some((candidate) => candidate.name === providerName)) {
-          return { ok: false, error: 'unknown-provider' }
-        }
-        return await serializeQuotaConfigWrite(async (config) => {
-          const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
-          if (payload?.remove === true) {
-            const cardId = typeof payload?.id === 'string' ? payload.id : ''
-            config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
-          } else {
-            if (allCards.length >= MAX_QUOTA_RESET_CARDS || allCards.filter((card) => card.provider === providerName).length >= MAX_QUOTA_RESET_CARDS_PER_PROVIDER) {
-              return { save: false, value: { ok: false, error: 'too-many-cards' } }
-            }
-            const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
-            if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
-            if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
-            config.resetCards = [...allCards, card]
-          }
-          return { value: { ok: true } }
-        })
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
     'web': { audit: true, handle: async (payload, rpcEndpoint) => {
       const activity = collectActiveWork(ctx)
       if (activity.hasActive && payload?.force !== true) {
@@ -5736,383 +5232,6 @@ function apply(ctx) {
       }
 
     } },
-    'subagent-route': { feature: 'subagentRoute', handle: async (payload, rpcEndpoint) => {
-      try {
-        await subagentRouteLoadPromise
-        const llm = ctx.get('llm')
-        // 模型清单沿用 skills-models 的白名单口径（llm.listProviders × listModels，单渠道失败跳过），
-        // 并对每个精确模型附加 adapter 的 reasoning metadata（resolveModelInfo 缺席时保留原目录项）；
-        // llm 服务缺席时清单为空——自定义模式在保存端也会被拒（llm-unavailable），快照仍可下发。
-        let models = []
-        let current
-        if (llm !== undefined && typeof llm.listProviders === 'function') {
-          const catalog = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
-          models = catalog.models
-          current = catalog.current
-        }
-        const config = subagentRouteConfig
-        // 自定义路由草稿（v1.4.12）：三模式统一下发——客户端据此回填表单，切换模式不丢配置。
-        const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
-        return {
-          ok: true,
-          value: {
-            available: subagentSeamInstalled,
-            mode: config.mode,
-            ...(routePresent ? {
-              provider: config.provider,
-              model: config.model,
-              ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
-            } : {}),
-            ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}),
-            models,
-            ...(current !== undefined ? { current } : {}),
-          },
-        }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    // v1.2：子代理派发记录（对话页回合尾模型行的事实源）。只读快照，按父会话/回合过滤，
-    // newest-first 分页。记录随宿主进程存续，重启即清——客户端页面刷新不丢（记录在宿主内存）。
-    'subagent-dispatches': { feature: 'subagentRoute', handle: async (payload, rpcEndpoint) => {
-      try {
-        const records = listSubagentDispatches(dispatchRing, payload)
-        return { ok: true, value: { records } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'subagent-route-save': { feature: 'subagentRoute', audit: true, handle: async (payload, rpcEndpoint) => {
-      const mode = payload?.mode
-      if (!SUBAGENT_ROUTE_MODES.includes(mode)) return { ok: false, error: 'unknown-mode' }
-      try {
-        let whitelist
-        const loadWhitelist = async () => {
-          if (whitelist === undefined) {
-            const llm = ctx.get('llm')
-            if (llm === undefined || typeof llm.stream !== 'function') return null
-            whitelist = await listSubagentModels(llm, ctx.get('agentDefaultModel'))
-          }
-          return whitelist
-        }
-        const primary = { mode }
-        if (mode === 'custom') {
-          const provider = typeof payload?.provider === 'string' ? payload.provider.trim() : ''
-          const model = typeof payload?.model === 'string' ? payload.model.trim() : ''
-          if (provider === '' || model === '') return { ok: false, error: 'invalid-model-route' }
-          const catalog = await loadWhitelist()
-          if (catalog === null) return { ok: false, error: 'llm-unavailable' }
-          // 与 skills-describe 同一道闸：provider/model 必须命中运行时清单白名单；同时取该
-          // exact model 的 adapter reasoning metadata 用于校验 reasoningEffort 是否受支持。
-          const modelEntry = catalog.models.find((item) => item.provider === provider && item.id === model)
-          if (modelEntry === undefined) return { ok: false, error: 'invalid-model-route' }
-          const rawEffort = payload?.reasoningEffort
-          if (rawEffort !== undefined && rawEffort !== '') {
-            if (typeof rawEffort !== 'string') return { ok: false, error: 'invalid-reasoning-effort' }
-            const effort = rawEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
-            if (effort !== '') {
-              if (!(modelEntry.reasoning?.efforts ?? []).some((entry) => entry.id === effort)) return { ok: false, error: 'invalid-reasoning-effort' }
-              primary.reasoningEffort = effort
-            }
-          }
-          primary.provider = provider.slice(0, MAX_SUBAGENT_ROUTE_FIELD)
-          primary.model = model.slice(0, MAX_SUBAGENT_ROUTE_FIELD)
-        }
-        // 回退列表（v1.1）：custom 与 follow 共用；每条与主路由同一道白名单闸，条目非法整体拒绝。
-        const fallbacks = []
-        const rawFallbacks = Array.isArray(payload?.fallbacks) ? payload.fallbacks : []
-        if (rawFallbacks.length > 0 && mode !== 'inherit') {
-          const catalog = await loadWhitelist()
-          if (catalog === null) return { ok: false, error: 'llm-unavailable' }
-          for (const entry of rawFallbacks) {
-            if (fallbacks.length >= SUBAGENT_ROUTE_FALLBACK_MAX) break
-            if (entry === null || typeof entry !== 'object') return { ok: false, error: 'invalid-fallback-route' }
-            const provider = typeof entry.provider === 'string' ? entry.provider.trim() : ''
-            const model = typeof entry.model === 'string' ? entry.model.trim() : ''
-            const modelEntry = catalog.models.find((item) => item.provider === provider && item.id === model)
-            if (modelEntry === undefined) return { ok: false, error: 'invalid-fallback-route' }
-            let effort = ''
-            const rawEffort = entry.reasoningEffort
-            if (rawEffort !== undefined && rawEffort !== '') {
-              if (typeof rawEffort !== 'string') return { ok: false, error: 'invalid-fallback-route' }
-              const trimmed = rawEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
-              if (trimmed !== '' && !(modelEntry.reasoning?.efforts ?? []).some((candidate) => candidate.id === trimmed)) return { ok: false, error: 'invalid-fallback-route' }
-              effort = trimmed
-            }
-            const normalized = { provider: provider.slice(0, MAX_SUBAGENT_ROUTE_FIELD), model: model.slice(0, MAX_SUBAGENT_ROUTE_FIELD), ...(effort !== '' ? { reasoningEffort: effort } : {}) }
-            if (fallbacks.some((candidate) => candidate.provider === normalized.provider && candidate.model === normalized.model)) continue
-            fallbacks.push(normalized)
-          }
-        }
-        return await serializeSubagentRouteWrite(async (config) => {
-          config.mode = mode
-          if (mode === 'custom') {
-            config.provider = primary.provider
-            config.model = primary.model
-            // 先删旧值，只有新值非空时才写入：空/未提供代表「使用模型默认」。
-            delete config.reasoningEffort
-            if (primary.reasoningEffort !== undefined) config.reasoningEffort = primary.reasoningEffort
-          }
-          // follow / inherit（v1.4.12 草稿保留）：不携带 provider/model/reasoningEffort 时已保存的
-          // 自定义路由原样保留（此时不生效，切回 custom 即恢复），切换模式不再销毁配置。
-          // 回退列表：custom/follow 页面渲染完整编辑器、总是全量提交（缺省/空 = 清空）；inherit
-          // 页面没有回退编辑器、payload 不会携带 → 保留原值（resolveSubagentInjection 对 inherit
-          // 零消费，纯函数层纵深防御不变）。
-          if (mode !== 'inherit') {
-            if (fallbacks.length > 0) config.fallbacks = fallbacks
-            else delete config.fallbacks
-          }
-          const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
-          return { value: { ok: true, mode: config.mode, ...(routePresent ? {
-            provider: config.provider,
-            model: config.model,
-            ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
-          } : {}), ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}) } }
-        })
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-list': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
-      const scope = payload?.scope === 'archived' || payload?.scope === 'deleted' ? payload.scope : 'all'
-      try {
-        await sessionTitlesReady
-        const value = await listSessionsForManage(ctx, dshHome, scope, sessionTitleCache)
-        // 已删除记录独立下发（供「已删除」筛选）：字段只为展示，绝不包含内容。
-        return { ok: true, value }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-bytes': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
-      const raw = Array.isArray(payload?.ids) ? payload.ids : []
-      const ids = []
-      const seen = new Set()
-      for (const id of raw) {
-        if (typeof id !== 'string' || id === '' || seen.has(id)) continue
-        seen.add(id)
-        ids.push(id)
-        if (ids.length >= SESSIONS_BYTES_MAX_IDS) break
-      }
-      if (ids.length === 0) return { ok: false, error: 'invalid-session-ids' }
-      try {
-        // 安全教义：id 只用来在宿主 listSessions 结果里查找头信息，定位/统计路径全部来自
-        // 宿主侧记录（locate），浏览器不提供任何路径。
-        return { ok: true, value: { bytes: await resolveSessionBytesForIds(ctx, ids, sessionBytesCache) } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-view': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      const cursor = typeof payload?.cursor === 'number' && Number.isFinite(payload.cursor) ? payload.cursor : undefined
-      const center = typeof payload?.center === 'number' && Number.isSafeInteger(payload.center) ? payload.center : undefined
-      try {
-        return await viewSessionPage(ctx, id, cursor, sessionViewCache, SESSIONS_VIEW_PAGE_SIZE, center)
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-search': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
-      const query = typeof payload?.query === 'string' ? payload.query : ''
-      const scope = payload?.scope === 'archived' ? 'archived' : 'all'
-      try {
-        await sessionTitlesReady
-        return { ok: true, value: await searchSessionsContent(ctx, dshHome, query, scope, sessionTitleCache) }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-export': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      try {
-        if (!(await sessionExists(ctx, id))) return { ok: false, error: 'session-not-found' }
-        // 复用官方 ZIP 导出路由：浏览器半下载同源 URL（含子代理+附件），宿主不自己拼包。
-        const url = `/api/session.export?sessionId=${encodeURIComponent(id)}&includeDescendants=true`
-        return { ok: true, value: { url, includesDescendants: true } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-archive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      const workspaceRegistry = ctx.get('workspaceRegistry')
-      if (workspaceRegistry === undefined || typeof workspaceRegistry.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
-      try {
-        await workspaceRegistry.archiveSession(id)
-        return {
-          ok: true,
-          value: {
-            archived: true,
-            archivedSessionIds: Array.isArray(workspaceRegistry.archivedSessionIds) ? [...workspaceRegistry.archivedSessionIds] : [id],
-          },
-        }
-      } catch (error) {
-        if (error?.name === 'WorkspaceUnknownSessionError') return { ok: false, error: 'session-not-found' }
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-unarchive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      const workspaceRegistry = ctx.get('workspaceRegistry')
-      if (workspaceRegistry === undefined) return { ok: false, error: 'workspace-unavailable' }
-      if (typeof workspaceRegistry.unarchiveSession !== 'function') return { ok: false, error: 'unarchive-unsupported' }
-      try {
-        await workspaceRegistry.unarchiveSession(id)
-        return {
-          ok: true,
-          value: {
-            archived: false,
-            archivedSessionIds: Array.isArray(workspaceRegistry.archivedSessionIds) ? [...workspaceRegistry.archivedSessionIds] : [],
-          },
-        }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-delete-plan': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      try {
-        // 安全教义：只接受宿主列表返回的 id（白名单校验），且必须已归档、非 live。
-        // 只定位目标会话 + stat 目标目录，不做全量列表重扫（v0.35 用户反馈：此前
-        // 复用 listSessionsForManage 会对每个会话 readdir+stat，会话多时确认要等好几秒）。
-        const record = await resolveSessionForDelete(ctx, id)
-        if (record === undefined) return { ok: false, error: 'session-not-found' }
-        if (record.live) return { ok: false, error: 'live-session-rejected' }
-        if (!record.archived) return { ok: false, error: 'session-not-archived' }
-        const planId = randomUUID()
-        sessionDeletePlans.set(planId, { id, title: record.title, cwd: record.cwd, dir: record.dir, bytes: record.bytes, expires: Date.now() + SESSIONS_DELETE_PLAN_TTL_MS })
-        return {
-          ok: true,
-          value: {
-            planId,
-            session: {
-              id,
-              title: record.title,
-              cwd: record.cwd,
-              bytes: record.bytes,
-              archived: true,
-            },
-            // 归档会话早已从官方侧栏隐藏；删除只移除其日志，保留 archivedSessionIds 死 id。
-            consequences: ['deletes-session-log'],
-          },
-        }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-
-    } },
-    'sessions-delete': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const planId = typeof payload?.planId === 'string' ? payload.planId : ''
-      const plan = sessionDeletePlans.get(planId)
-      if (plan === undefined) return { ok: false, error: 'unknown-delete-plan' }
-      sessionDeletePlans.delete(planId)
-      if (Date.now() > plan.expires) return { ok: false, error: 'delete-plan-expired' }
-      try {
-        // 执行前复检：计划期间会话可能被拉起或从归档集合移除，两种情况都拒绝。
-        if (sessionIsLive(ctx, plan.id)) return { ok: false, error: 'live-session-rejected' }
-        const archivedIds = ctx.get('workspaceRegistry')?.archivedSessionIds
-        if (!Array.isArray(archivedIds) || !archivedIds.includes(plan.id)) return { ok: false, error: 'session-not-archived' }
-        // 先持久化删除记录，再执行不可逆 rm；侧车写失败时日志保持原样。
-        const deleted = await loadDeletedSessions(dshHome)
-        const previousDeleted = { version: deleted.version, items: [...deleted.items] }
-        deleted.items = deleted.items.filter((item) => item.id !== plan.id)
-        deleted.items.push({ id: plan.id, title: plan.title, cwd: plan.cwd ?? null, deletedAt: Date.now() })
-        await saveDeletedSessions(dshHome, deleted)
-        try {
-          await rm(plan.dir, { recursive: true, force: true })
-        } catch (error) {
-          try {
-            await saveDeletedSessions(dshHome, previousDeleted)
-          } catch (rollbackError) {
-            throw new Error(`${error?.message || String(error)}; deleted-record rollback failed: ${rollbackError?.message || String(rollbackError)}`)
-          }
-          throw error
-        }
-        sessionBytesCache.delete(plan.id)
-        if (sessionViewCache.id === plan.id) sessionViewCache.id = null
-        // 同步官方侧（不然要刷新浏览器才正确）：官方客户端会话列表只吃 session/disposed
-        // 派生的 api-session/removed（该事件在官方远程事件 allowlist 内），而插件是在官方
-        // API 之外 rm 日志目录——不补发这条事件，官方侧栏与「已归档会话」页会一直留着幽灵行。
-        // 旧版宿主没有对应监听器时纯等于空操作；监听器抛错也不能反过来把已落盘的删除报成失败
-        // （与 file-write 的 fs/observed 广播同口径）。
-        try { ctx.emit('api-session/removed', plan.id) } catch (_) {}
-        // 归档集合里的死 id 一并清掉：官方归档页把「集合里有、会话已不在」的条目渲染成
-        // 「这里没有可恢复的已归档会话」，死 id 留着会让该页永远停在不可恢复态。官方自己的
-        // 「取消归档」对死 id 也是移除（幂等、无存在性校验），语义一致；删不掉不影响删除结果。
-        const registry = ctx.get('workspaceRegistry')
-        if (registry !== undefined && typeof registry.unarchiveSession === 'function') {
-          try { await registry.unarchiveSession(plan.id) } catch (_) {}
-        }
-        return { ok: true, value: { deleted: true, id: plan.id } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-    } },
-    'sessions-clear-deleted': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const all = payload?.all === true
-      const raw = Array.isArray(payload?.ids) ? payload.ids : []
-      const ids = []
-      const seen = new Set()
-      for (const id of raw) {
-        if (typeof id !== 'string' || id.trim() === '') continue
-        const cleanId = id.trim()
-        if (seen.has(cleanId)) continue
-        seen.add(cleanId)
-        ids.push(cleanId)
-      }
-      if (!all && ids.length === 0) return rpcFailure(new Error('invalid-session-ids'))
-      try {
-        const deleted = await loadDeletedSessions(dshHome)
-        let removedCount = 0
-        const removedIds = []
-        if (all) {
-          removedCount = deleted.items.length
-          for (const item of deleted.items) removedIds.push(item.id)
-          deleted.items = []
-        } else {
-          const targetSet = new Set(ids)
-          const remaining = []
-          for (const item of deleted.items) {
-            if (targetSet.has(item.id)) {
-              removedCount++
-              removedIds.push(item.id)
-            } else {
-              remaining.push(item)
-            }
-          }
-          deleted.items = remaining
-        }
-        if (removedCount > 0) {
-          await saveDeletedSessions(dshHome, deleted)
-        }
-        if (sessionTitleCache !== null) {
-          for (const id of removedIds) sessionTitleCache.delete(id)
-        }
-        return { ok: true, value: { cleared: true, count: removedCount, ids: removedIds } }
-      } catch (error) {
-        return rpcTechnicalFailure(error)
-      }
-    } },
-    // 官方右栏文件编辑（v1.6 用户点名）：官方预览「编辑」档位的宿主半。
-    // 安全教义对齐：浏览器只送 dsh-resource:// 资源地址（**不接受自由路径、不接受工作区根**），
-    // 会话与 cwd 一律宿主侧解析；写盘走 ctx.fs + ctx.sandboxPolicy，与会话内 Agent 同一套
-    // 原子写与沙箱围栏，并带读取时的版本守卫防覆盖（冲突以 file-stale 回给客户端）。
     'file-read': { feature: 'fileEditor', handle: async (payload) => {
       const resolved = await resolveFileEditorTarget(ctx, payload?.address)
       if (resolved.ok !== true) return resolved.failure
@@ -6189,6 +5308,15 @@ function apply(ctx) {
       }
     } },
   }
+  const rpcEndpoints = mergeRouteTables([
+    coreRoutes,
+    createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
+    createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
+    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
+    createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
+    createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
+  ])
+
   const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
   try {
     ensureConnectionRpcWebServerSeam(ctx)
