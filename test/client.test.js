@@ -550,6 +550,12 @@ function createRenderer(rpcCall, options = {}) {
       for (const listener of sessionListeners) listener()
       renderAll()
     },
+    // 新版 DSH 运行时（0.1.6）：快照中无 current 字段，以 retainedBy.mainView 标识当前主会话。
+    setMainViewSession(sessionId, byId = { [sessionId]: { id: sessionId, retainedBy: { mainView: 1 } } }) {
+      sessionSnapshot = { ids: Object.keys(byId), byId, phase: 'ready' }
+      for (const listener of sessionListeners) listener()
+      renderAll()
+    },
     sessionSubscriptionCount() {
       return sessionListeners.size
     },
@@ -7079,18 +7085,23 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="toolbar" i\]/)
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="inputTriggers" i\]/)
     assert.match(styleTag.textContent, /\[class\*="composer" i\] \{ min-width: 0 !important; max-width: 100% !important; \}/)
-    // 统计条（2026-09-15 用户点名「不要换行、保持一行、空间利用最大化」）：0.1.5-rc.2
-    // 行容器是 bOPqQW_root、截断在每枚 pill 的 bOPqQW_label —— 收紧本行内边距（官方
-    // 左右各 32px→2px）+ 两枚 pill 按需分宽（flex:1 1 auto + min-width:0）共占满整行，
-    // 始终 nowrap；旧宿主 NDN2W_root 横滑规则必须保留。
+    // 统计条与外部上下文圆环（2026-09-15 / 2026-09-18 用户点名「保证一行可以显示完」）：
+    // 0.1.6 官方把上下文圆环移入输入框外部下方的 uV2eYG_dock，与统计胶囊并列。
+    // 收紧 uV2eYG_root/dock 间距与内边距，降字号至 11px（≤375px 降至 10px），始终 nowrap。
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_root"\] \{[^}]*padding-left: 8px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_dock"\] \{[^}]*gap: 3px !important/s)
     assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: nowrap !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*padding-left: 2px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*column-gap: 3px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*font-size: 11px !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: wrap !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{ flex: 1 1 auto !important; min-width: 0 !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*padding-left: 2px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*font-size: 11px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_label"\] \{[^}]*text-overflow: ellipsis !important/s)
+    assert.match(styleTag.textContent, /\[class\*="JObwrW_trigger"\] \{[^}]*font-size: 11px !important/s)
+    assert.match(styleTag.textContent, /@media \(max-width: 375px\) \{[^}]*font-size: 10px !important/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)
@@ -11546,6 +11557,61 @@ test('model provider icons: switching sessions re-resolves the icon even when th
 
     renderer.disposeFactory()
     assert.equal([...listeners.values()].reduce((n, s) => n + s.size, 0), 0, 'teardown must release every directory subscription')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: resolves session via retainedBy.mainView when snapshot has no current field (DSH 0.1.6)', async () => {
+  const attrs = new Map()
+  const styleProps = new Map()
+  const seat = {
+    setAttribute(name, value) { attrs.set(name, value) },
+    removeAttribute(name) { attrs.delete(name) },
+    hasAttribute(name) { return attrs.has(name) },
+    style: {
+      setProperty(name, value) { styleProps.set(name, value) },
+      removeProperty(name) { styleProps.delete(name) },
+    },
+  }
+  globalThis.document = {
+    createElement(tag) { return { tagName: tag.toUpperCase(), dataset: {}, textContent: '', remove() {} } },
+    head: { appendChild() {} },
+    querySelector(sel) { return sel === '[data-composer-seat]' ? seat : null },
+    querySelectorAll() { return [] },
+    documentElement: { hasAttribute: () => false },
+    contains: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  }
+  const directory = {
+    store: {
+      getSnapshot: () => ({ current: { provider: 'openrouter-f' } }),
+      subscribe() { return () => {} },
+    },
+    load: () => Promise.resolve(),
+  }
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    // DSH 0.1.6 真实运行时结构：快照无 current 字段，以 retainedBy.mainView: 1 标识主会话
+    renderer.setMainViewSession('session-v16', {
+      'session-v16': { id: 'session-v16', retainedBy: { mainView: 1 } },
+      'session-other': { id: 'session-other', retainedBy: { mainView: 0 } },
+    })
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'resolves icon from retainedBy.mainView session')
+    assert.equal(attrs.get('data-dshsvc-model-icon-seat'), 'mono')
+    renderer.disposeFactory()
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

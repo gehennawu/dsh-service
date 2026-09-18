@@ -10192,6 +10192,25 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
    装得下时零截断（≥~420px 视口），装不下时按比例各让一点（比官方的固定截断少一个
    数量级），不换行、不横向滚动。
    旧宿主（0.1.2-alpha.2 ~ 0.1.4）的单行横滑规则（NDN2W_root）原样保留。 */
+/* 统计条与外部上下文圆环（2026-09-18 用户点名「保证一行可以显示完」）：
+   0.1.6 官方把上下文圆环（JObwrW_root / JObwrW_trigger）移入输入框外部下方的
+   uV2eYG_dock，与统计胶囊（bOPqQW_root）并列，挤占了移动端可用宽度。
+   修法：
+   ① 收紧 uV2eYG_root 两侧内边距至 8px，uV2eYG_dock 间距收至 3px 并禁用换行；
+   ② 降低统计条与上下文圆环字号至 11px（≤375px 极窄视口阶梯降至 10px），行高 16px；
+   ③ 收紧 pill 内边距、sep 间隔及 svg 尺寸（11px），上下文圆环内边距收至 1px 3px；
+   保证从 360px 起所有移动端视口下统计与上下文圆环均零截断、单行排开。
+   旧宿主（0.1.2-alpha.2 ~ 0.1.4）的单行横滑规则（NDN2W_root）原样保留。 */
+html[data-dshsvc-mobile] [class*="uV2eYG_root"] {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+html[data-dshsvc-mobile] [class*="uV2eYG_dock"] {
+  gap: 3px !important;
+  max-width: 100% !important;
+  flex-wrap: nowrap !important;
+  justify-content: center !important;
+}
 html[data-dshsvc-mobile] [class*="NDN2W_root"] {
   overflow-x: auto !important;
   overflow-y: hidden !important;
@@ -10205,6 +10224,8 @@ html[data-dshsvc-mobile] [class*="bOPqQW_root"] {
   padding-left: 2px !important;
   padding-right: 2px !important;
   column-gap: 3px !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
 }
 html[data-dshsvc-mobile] [class*="bOPqQW_root"] > * { flex: 1 1 auto !important; min-width: 0 !important; }
 html[data-dshsvc-mobile] [class*="bOPqQW_pill"] {
@@ -10212,11 +10233,49 @@ html[data-dshsvc-mobile] [class*="bOPqQW_pill"] {
   padding-left: 2px !important;
   padding-right: 2px !important;
   gap: 2px !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+html[data-dshsvc-mobile] [class*="bOPqQW_pill"] svg {
+  width: 11px !important;
+  height: 11px !important;
+  flex: none !important;
+}
+html[data-dshsvc-mobile] [class*="bOPqQW_sep"] {
+  margin: 0 1px !important;
 }
 html[data-dshsvc-mobile] [class*="bOPqQW_label"] {
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
+}
+html[data-dshsvc-mobile] [class*="JObwrW_root"] {
+  flex: none !important;
+  min-width: 0 !important;
+}
+html[data-dshsvc-mobile] [class*="JObwrW_trigger"] {
+  font-size: 11px !important;
+  line-height: 16px !important;
+  padding: 1px 3px !important;
+  gap: 2px !important;
+}
+html[data-dshsvc-mobile] [class*="JObwrW_trigger"] svg {
+  width: 11px !important;
+  height: 11px !important;
+  flex: none !important;
+}
+html[data-dshsvc-mobile] [data-dsh-service-subagent-models-dock] {
+  font-size: 11px !important;
+  line-height: 16px !important;
+  padding: 1px 2px !important;
+}
+@media (max-width: 375px) {
+  html[data-dshsvc-mobile] [class*="bOPqQW_root"],
+  html[data-dshsvc-mobile] [class*="bOPqQW_pill"],
+  html[data-dshsvc-mobile] [class*="JObwrW_trigger"],
+  html[data-dshsvc-mobile] [data-dsh-service-subagent-models-dock] {
+    font-size: 10px !important;
+  }
 }
 /* Assistant 回合尾部的运行元信息行（MessageIconActions）使用官方目录属性
    data-chat-flow-kind="turn-tail" 定位，内层兜底走回合尾节点自带的稳定
@@ -11904,7 +11963,16 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
             const sessions = ctx.sessions
             if (sessions && sessions.list && typeof sessions.list.getSnapshot === 'function') {
               const snapshot = sessions.list.getSnapshot()
-              return snapshot && snapshot.current !== undefined ? snapshot.current : undefined
+              if (snapshot && typeof snapshot.current === 'string' && snapshot.current !== '') {
+                return snapshot.current
+              }
+              if (snapshot && snapshot.byId) {
+                const found = Object.values(snapshot.byId).find((s) => (s?.retainedBy?.mainView ?? 0) > 0)
+                if (found && typeof found.id === 'string' && found.id !== '') return found.id
+                if (found && typeof found.sessionId === 'string' && found.sessionId !== '') return found.sessionId
+                const ids = Object.keys(snapshot.byId)
+                if (ids.length === 1) return ids[0]
+              }
             }
           } catch (_) {}
           return undefined
