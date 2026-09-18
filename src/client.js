@@ -28,9 +28,51 @@ window.__ModuleLoader__.load({
     /** 把一张图标规格化成 data-URI（mask 用纯黑填充即可，mask 只看 alpha）。 */
     const modelIconDataUri = (spec, useMask) => {
       const viewBox = spec.v || MODEL_ICON_VIEWBOX
-      const paint = useMask ? ' fill="#000"' : ''
+      const paint = useMask ? ' fill="#000" color="#000"' : ''
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}"${paint}>${spec.m}</svg>`
       return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
+    }
+
+    // ── 额度查询（v0.18）：环与统计卡共用一份快照、一个轮询器；上游节流全部收敛在宿主。 ──
+    // 快照仓放在工厂作用域（而非 apply 内）：模型图标的「余额查询手动适配判定」
+    // 与自动化测试直视都需要在 apply 之外读到它；订阅方（圆环/额度页/图标引擎）
+    // 全部各自随 effect/Fiber 清理，仓本身无生命周期副作用。
+    const quotaStore = {
+      snapshot: { providers: [], serverTime: 0 },
+      listeners: new Set(),
+      subscribe(listener) {
+        this.listeners.add(listener)
+        return () => this.listeners.delete(listener)
+      },
+      getSnapshot() {
+        return this.snapshot
+      },
+      publish(next) {
+        this.snapshot = next
+        for (const listener of [...this.listeners]) {
+          try { listener() } catch (_) {}
+        }
+      },
+    }
+
+    /**
+     * 判定当前 provider 是否在余额查询（quotaStore）中手动适配过 CLIProxyAPI。
+     * 判定标准：快照中存在对应 provider 行，adapted 为 true 且 kind 为 'cliproxy'。
+     */
+    const isCliproxyAdaptedInQuota = (provider) => {
+      if (typeof provider !== 'string' || provider === '') return false
+      const key = provider.trim().toLowerCase()
+      try {
+        if (typeof quotaStore !== 'object' || quotaStore === null || typeof quotaStore.getSnapshot !== 'function') return false
+        const snapshot = quotaStore.getSnapshot()
+        const rows = Array.isArray(snapshot?.providers) ? snapshot.providers : []
+        return rows.some((row) => {
+          const name = typeof row?.provider === 'string' ? row.provider.trim().toLowerCase() : ''
+          return name === key && row.adapted === true && row.kind === 'cliproxy' && (row.kindSource === undefined || row.kindSource === 'config')
+        })
+      } catch (_) {
+        return false
+      }
     }
 
     /**
@@ -38,28 +80,85 @@ window.__ModuleLoader__.load({
      * （本机 7 条 provider 里 6 条是自定义名：opencode-goo → opencode、
      * openrouter-f → openrouter、zai-coding-cn → zhipu…）。命中不了返回 null，
      * 由调用方回落官方默认图标。
+     *
+     * 特殊判定：CLIProxyAPI（cliproxy）。
+     * 判定是否显示在对话框的条件是用户在余额查询里手动适配过 CLIProxyAPI。
      */
-    const resolveModelIcon = (provider) => {
+    const resolveModelIcon = (provider, options = {}) => {
       if (typeof provider !== 'string' || provider === '') return null
       const key = provider.trim().toLowerCase()
       if (key === '') return null
-      // ① 内置 provider 精确表
+
+      // ① 特殊判定：如果在余额查询里手动适配过 CLIProxyAPI，直接展示 CLIProxyAPI 图标
+      const cliproxyAdapted = typeof options.isCliproxyAdapted === 'boolean'
+        ? options.isCliproxyAdapted
+        : isCliproxyAdaptedInQuota(key)
+      if (cliproxyAdapted && MODEL_ICON_DATA['cliproxy'] !== undefined) {
+        return { slug: 'cliproxy', spec: MODEL_ICON_DATA['cliproxy'] }
+      }
+
+      // 未在余额查询中手动适配时：cpa 渠道不显示图标（保持未适配兜底）；
+      // 对话框场景下（options.forComposer === true），未在余额查询中手动适配的 cliproxy 同样不显示。
+      if (key === 'cpa') return null
+      if (key === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
+
+      // ② 内置 provider 精确表
       const exactSlug = MODEL_ICON_PROVIDERS[key]
       if (exactSlug !== undefined && MODEL_ICON_DATA[exactSlug] !== undefined) {
+        if (exactSlug === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
         return { slug: exactSlug, spec: MODEL_ICON_DATA[exactSlug] }
       }
-      // ② 前缀/别名（自定义渠道名）。表内长前缀排在前（opencode-go 先于 opencode），
+      // ③ 前缀/别名（自定义渠道名）。表内长前缀排在前（opencode-go 先于 opencode），
       //    命中即返回；分隔符限定为 - _ . ，避免 'openaiish' 这类误命中 'openai'。
       for (const [prefix, slug] of MODEL_ICON_PREFIXES) {
         if (key !== prefix && !key.startsWith(prefix + '-') && !key.startsWith(prefix + '_') && !key.startsWith(prefix + '.')) continue
+        if (slug === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) continue
         if (MODEL_ICON_DATA[slug] !== undefined) return { slug, spec: MODEL_ICON_DATA[slug] }
       }
-      // ③ 兜底：key 本身或其分段就是 slug
-      if (MODEL_ICON_DATA[key] !== undefined) return { slug: key, spec: MODEL_ICON_DATA[key] }
+      // ④ 兜底：key 本身或其分段就是 slug
+      if (MODEL_ICON_DATA[key] !== undefined) {
+        if (key === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
+        return { slug: key, spec: MODEL_ICON_DATA[key] }
+      }
       for (const part of key.split(/[-_.]/)) {
-        if (part !== '' && MODEL_ICON_DATA[part] !== undefined) return { slug: part, spec: MODEL_ICON_DATA[part] }
+        if (part !== '' && MODEL_ICON_DATA[part] !== undefined) {
+          if (part === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) continue
+          return { slug: part, spec: MODEL_ICON_DATA[part] }
+        }
       }
       return null
+    }
+
+    /**
+     * 渲染一枚内联厂家小图标（额度卡片渠道名前等 React 场景）。
+     * 与 composer 座同一套渲染路径：mono 档 mask + currentColor、彩色档 background-image；
+     * 未命中渠道返回 null（调用方不渲染，不占位）。显示门与对话框一致：
+     * CLIProxyAPI 图标只在余额查询里手动适配过时出现（forComposer 门语义复用）。
+     */
+    const modelIconNode = (provider, size = 14, extraStyle = {}, testId) => {
+      if (typeof provider !== 'string' || provider === '') return null
+      const resolved = resolveModelIcon(provider, { forComposer: true })
+      if (resolved === null) return null
+      const useMask = resolved.spec.c !== 1
+      const uri = modelIconDataUri(resolved.spec, useMask)
+      const base = { display: 'inline-block', width: `${size}px`, height: `${size}px`, flexShrink: 0, ...extraStyle }
+      const maskValue = `${uri} center / contain no-repeat`
+      if (useMask) {
+        base.backgroundColor = 'currentColor'
+        base.WebkitMask = maskValue
+        base.mask = maskValue
+      } else {
+        base.backgroundImage = uri
+        base.backgroundPosition = 'center'
+        base.backgroundSize = 'contain'
+        base.backgroundRepeat = 'no-repeat'
+      }
+      return React.createElement('span', {
+        ...(typeof testId === 'string' && testId !== '' ? { 'data-testid': testId } : {}),
+        'data-dshsvc-model-icon': resolved.slug,
+        'aria-hidden': true,
+        style: base,
+      })
     }
 
     /** 图标 CSS：宽态加在 label 前，窄态替换官方 svg。整组以属性为门，未命中渠道零规则。 */
@@ -3708,24 +3807,6 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
         )
       }
 
-      // ── 额度查询（v0.18）：环与统计卡共用一份快照、一个轮询器；上游节流全部收敛在宿主。 ──
-      const quotaStore = {
-        snapshot: { providers: [], serverTime: 0 },
-        listeners: new Set(),
-        subscribe(listener) {
-          this.listeners.add(listener)
-          return () => this.listeners.delete(listener)
-        },
-        getSnapshot() {
-          return this.snapshot
-        },
-        publish(next) {
-          this.snapshot = next
-          for (const listener of [...this.listeners]) {
-            try { listener() } catch (_) {}
-          }
-        },
-      }
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
       const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
@@ -7487,6 +7568,9 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
               : React.createElement('div', { 'data-testid': 'quota-card-list', style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
                 visibleCardRows.map((row, index) => {
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
+                    // 渠道名前的厂家小图标：与对话框同源解析（mono mask / 彩色 background），
+                    // 未命中渠道返回 null 不渲染、不占位；inline-block 参与行内排版，长名照常折行。
+                    modelIconNode(row.provider, 14, { verticalAlign: '-2px', marginRight: '5px' }, `quota-provider-icon-${row.provider}`),
                     // 官网用量页链接（用户点名）：宿主按 kind 下发 usageUrl 时，展示名本身即外链。
                     typeof row.usageUrl === 'string' && row.usageUrl !== ''
                       ? React.createElement('a', {
@@ -11727,7 +11811,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
        * composer 座上。会话切换/模型切换/主题切换都自然跟随（数据属性驱动 CSS）。
        */
       const createModelProviderIcons = () => {
-        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false }
+        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false }
 
         const currentSessionId = () => {
           try {
@@ -11783,7 +11867,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           const provider = currentProvider()
           if (provider === state.lastProvider && iconDomHasAttr(seat, MODEL_ICON_SEAT_ATTR)) return
           state.lastProvider = provider
-          const resolved = provider === null ? null : resolveModelIcon(provider)
+          const resolved = provider === null ? null : resolveModelIcon(provider, { forComposer: true })
           if (resolved === null) {
             // 未适配：摘掉属性和变量，官方默认图标完全照旧。
             iconDomRemoveAttr(seat, MODEL_ICON_ATTR)
@@ -11881,6 +11965,23 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           } catch (_) {}
         }
 
+        /**
+         * 订阅余额查询快照：用户在余额查询中手动适配/撤销适配 CLIProxyAPI 时，
+         * 对话框图标立即响应（设 state.lastProvider = null 触发重算）。
+         */
+        const subscribeQuota = () => {
+          if (state.unsubscribeQuota !== null) return
+          try {
+            if (typeof quotaStore === 'undefined' || typeof quotaStore.subscribe !== 'function') return
+            const stop = quotaStore.subscribe(() => {
+              if (state.disposed) return
+              state.lastProvider = null
+              apply()
+            })
+            state.unsubscribeQuota = typeof stop === 'function' ? stop : null
+          } catch (_) {}
+        }
+
         const start = () => {
           const doc = docOrNull()
           if (state.styleTag === null && doc !== null) {
@@ -11893,6 +11994,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
               state.styleTag = tag
             } catch (_) {}
           }
+          subscribeQuota()
           subscribeSessions()
           subscribe()
           apply()
@@ -11924,6 +12026,10 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
           if (state.unsubscribeSessions !== null) {
             try { state.unsubscribeSessions() } catch (_) {}
             state.unsubscribeSessions = null
+          }
+          if (state.unsubscribeQuota !== null) {
+            try { state.unsubscribeQuota() } catch (_) {}
+            state.unsubscribeQuota = null
           }
           if (state.observer !== null) {
             try { state.observer.disconnect() } catch (_) {}
@@ -11988,6 +12094,8 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
       css: MODEL_ICON_CSS,
       slugs: Object.keys(MODEL_ICON_DATA),
       providerCount: Object.keys(MODEL_ICON_PROVIDERS).length,
+      isCliproxyAdapted: isCliproxyAdaptedInQuota,
+      quotaStore,
     }
     return module.exports
   },

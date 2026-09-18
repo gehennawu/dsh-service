@@ -110,7 +110,7 @@ test('model icon catalog is regenerated from the generated data and covers every
 
   const html = read('docs/model-icons.html')
   const slugs = Object.keys(parsed.data)
-  assert.equal(slugs.length, 61, 'icon mark count changed — update the catalog expectations with it')
+  assert.equal(slugs.length, 62, 'icon mark count changed — update the catalog expectations with it')
   for (const slug of slugs) {
     assert.match(html, new RegExp(`data-slug="${slug}"`), `catalog is missing mark ${slug}`)
   }

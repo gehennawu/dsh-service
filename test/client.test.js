@@ -4895,6 +4895,17 @@ test('quota card falls back to type-level window labels and localizes stable err
   assert.doesNotMatch(text, /credit-limit-u2-n1/)
   assert.match(text, /网络不稳定（已自动重试）/)
 
+  // 卡片渠道名前有厂家小图标：与对话框同源解析，档位决定渲染路径。
+  // zhipu 是彩色档（background-image 原样上品牌色）；openrouter 是 mono 档（mask + currentColor）。
+  const zaiIcon = renderer.findByTestId('quota-provider-icon-zai-coding-cn')
+  assert.equal(zaiIcon.props['data-dshsvc-model-icon'], 'zhipu', 'card icon resolves the provider slug')
+  assert.ok(String(zaiIcon.props.style.backgroundImage).startsWith('url("data:image/svg+xml,'), 'color-tier card icon uses background-image')
+  assert.equal(zaiIcon.props.style.backgroundRepeat, 'no-repeat')
+  const openrouterIcon = renderer.findByTestId('quota-provider-icon-openrouter')
+  assert.equal(openrouterIcon.props['data-dshsvc-model-icon'], 'openrouter')
+  assert.ok(String(openrouterIcon.props.style.WebkitMask).startsWith('url("data:image/svg+xml,'), 'mono card icon uses the mask data-URI')
+  assert.equal(openrouterIcon.props.style.backgroundColor, 'currentColor', 'mono card icon follows the theme text colour')
+
   // quota-refresh 拒绝（not-adapted）也走词典，不再直出原始键名 quota.unadapted。
   renderer.findByTestId('quota-refresh-zai-coding-cn').props.onClick()
   await renderer.flush()
@@ -11085,6 +11096,22 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.equal(icons.resolve('Command-Code').slug, 'commandcode')
   // 手绘的是 ⌘ 符号线条（stroke，无填充）：mono 档靠 alpha 出形，必须是 0 档
   assert.equal(icons.resolve('command-goat').spec.c, 0, 'custom Command Code mark must be mono (stroke silhouette)')
+
+  // ③c CLIProxyAPI（CPA）手绘标：外框为内凹菱形，中心为水平镜像反转的 OpenAI 花瓣漩涡
+  assert.equal(icons.resolve('cliproxy').slug, 'cliproxy')
+  const cpaSpec = icons.resolve('cliproxy').spec
+  assert.equal(cpaSpec.c, 0, 'cliproxy mark must be mono tier (c: 0) following currentColor')
+  assert.ok(cpaSpec.m.includes('scale(-0.835, 0.835)'), 'cliproxy mark must mirror OpenAI swirl horizontally')
+  assert.ok(cpaSpec.m.includes('stroke="currentColor"') || cpaSpec.m.includes('stroke='), 'cliproxy mark must carry outer diamond stroke')
+
+  // 判定是否显示在对话框的条件是用户在余额查询里手动适配过 CLIProxyAPI：
+  // 未在余额查询中手动适配时，cpa 渠道解析为 null（不显示）；显式标记已适配时解析为 cliproxy
+  assert.equal(icons.resolve('cpa'), null, 'cpa without quota adaptation must resolve to null')
+  assert.equal(icons.resolve('cpa', { isCliproxyAdapted: true }).slug, 'cliproxy', 'cpa with quota adaptation resolves to cliproxy')
+  assert.equal(icons.resolve('cpa', { isCliproxyAdapted: false }), null, 'cpa with isCliproxyAdapted: false resolves to null')
+  assert.equal(icons.resolve('cliproxy', { forComposer: true }), null, 'bare cliproxy channel in composer without adaptation resolves to null')
+  assert.equal(icons.resolve('cliproxy', { forComposer: true, isCliproxyAdapted: true }).slug, 'cliproxy')
+  assert.equal(icons.resolve('my-custom-proxy', { isCliproxyAdapted: true }).slug, 'cliproxy', 'any custom provider adapted as cliproxy in quota resolves to cliproxy')
   // ⌘ 必须是真的 ⌘ 构造：四条边（<path>）+ 四个向外鼓出的环（<circle>）。
   // 这里刻意分别锁「边」与「环」两种图元——首版把环心放在方框角点上，用的是
   // <rect> + 四个 <circle>，几何上「有框有环」但读起来是「四环 + 中间一个 X」，
@@ -11434,6 +11461,136 @@ test('model provider icons: feature toggle off leaves the official icon untouche
     await renderer.setFeature('modelProviderIcons', false)
     await renderer.flush()
     assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'hot-disable removes the icon again')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: CLIProxyAPI icon displays on composer seat only when adapted in quota, and responds hot to quota changes', async () => {
+  const attrs = new Map()
+  const styleProps = new Map()
+  const seat = {
+    setAttribute(n, v) { attrs.set(n, v) },
+    removeAttribute(n) { attrs.delete(n) },
+    hasAttribute(n) { return attrs.has(n) },
+    style: {
+      setProperty(n, v) { styleProps.set(n, v) },
+      removeProperty(n) { styleProps.delete(n) },
+    },
+  }
+  class FakeMutationObserver {
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    documentElement: {},
+    head: { appendChild() {} },
+    createElement() { return { dataset: {}, remove() {} } },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: () => [],
+    contains: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+
+  let currentProvider = 'cpa'
+  const listeners = new Set()
+  const directory = {
+    store: {
+      getSnapshot: () => ({ current: { provider: currentProvider } }),
+      subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    },
+    load: () => Promise.resolve(),
+  }
+
+  let quotaResponse = { ok: true, value: { providers: [] } }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      if (endpoint === 'quota') return quotaResponse
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+      return { ok: true, value: {} }
+    }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    renderer.setCurrentSession('session-1')
+    await renderer.flush()
+
+    const icons = renderer.moduleExports().modelProviderIcons
+    assert.equal(typeof icons.quotaStore?.publish, 'function')
+
+    // 1. 用户未在余额查询中适配 cpa：对话框不显示 cliproxy 图标（回落官方默认图标）
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'cpa without quota adaptation must not display icon on composer seat')
+
+    // 2. 用户在余额查询中手动适配了 cpa（kind: cliproxy, kindSource: config）：
+    // 触发 quota 快照更新，对话框座立即响应挂上 cliproxy 图标
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+      ],
+    })
+    await renderer.flush()
+
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'cliproxy', 'cpa adapted as cliproxy in quota displays cliproxy icon')
+    assert.equal(attrs.get('data-dshsvc-model-icon-seat'), 'mono')
+    assert.ok(styleProps.get('--dshsvc-model-icon')?.startsWith('url("data:image/svg+xml,'))
+
+    // 2b. 余额查询卡片上：已适配的 cpa 渠道名前同样显示 cliproxy 厂家小图标
+    // （打开标签会触发一次全量 RPC，替身必须返回同一份适配快照，否则会把 store 覆盖回空）
+    quotaResponse = {
+      ok: true,
+      value: {
+        serverTime: Date.now(),
+        providers: [
+          { provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+        ],
+      },
+    }
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    assert.ok(renderer.hasTest('quota-provider-card-cpa'), 'adapted cpa renders a quota card')
+    const cardIcon = renderer.findByTestId('quota-provider-icon-cpa')
+    assert.equal(cardIcon.props['data-dshsvc-model-icon'], 'cliproxy', 'quota card title carries the cliproxy mark once adapted')
+    assert.ok(String(cardIcon.props.style.WebkitMask).startsWith('url("data:image/svg+xml,'), 'card icon renders via the mono mask path')
+    await renderer.findButton('概览').props.onClick()
+    await renderer.flush()
+
+    // 3. 任意自定义命名的渠道，只要在余额查询中手动适配过 CLIProxyAPI，也会在对话框中显示 cliproxy 图标
+    currentProvider = 'my-custom-proxy'
+    for (const fn of listeners) fn()
+    await renderer.flush()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'my-custom-proxy not yet in quota snapshot has no icon')
+
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+        { provider: 'my-custom-proxy', displayName: 'My Proxy', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+      ],
+    })
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'cliproxy', 'my-custom-proxy adapted as cliproxy displays cliproxy icon')
+
+    // 4. 用户在余额查询中取消了适配：对话框图标立即摘除
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'my-custom-proxy', displayName: 'My Proxy', adapted: false, windows: [] },
+      ],
+    })
+    await renderer.flush()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'unadapting removes the icon immediately')
+
+    // 5. 析构清理
+    renderer.disposeFactory()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false)
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

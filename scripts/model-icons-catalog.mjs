@@ -72,7 +72,7 @@ const CATEGORIES = [
     key: 'local',
     title: '本地与自托管',
     note: '跑在自己机器/内网上的推理服务。',
-    providers: ['ollama', 'vllm', 'lmstudio'],
+    providers: ['ollama', 'vllm', 'lmstudio', 'cliproxy'],
   },
   {
     key: 'coding',
