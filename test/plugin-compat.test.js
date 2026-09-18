@@ -295,15 +295,16 @@ test('collectPluginCompat scans enabled entries only, caches, and degrades witho
     assert.deepEqual(fresh.issues, [], 'noCache rescans and the code reference is gone')
     assert.deepEqual(fresh.declaredOnly, [{ moduleName: 'good-pkg', breaks: ['client-runtime'] }], 'the stale manifest declaration survives but is no longer a real hit')
 
-    assert.deepEqual(await collectPluginCompat(createFakeCtx(undefined)), { available: false, scanned: 0, issues: [], declaredOnly: [], unknown: [] })
+    assert.deepEqual(await collectPluginCompat(createFakeCtx(undefined)), { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('pluginCompatCheckItem derives warning status and four-segment detail', () => {
-  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [{ moduleName: 'x', breaks: ['chat-hash'] }], declaredOnly: [{ moduleName: 'y', breaks: ['client-runtime'] }], unknown: [] }), { id: 'plugin-compat', status: 'warning', detail: '4:1:1:0' })
-  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], declaredOnly: [{ moduleName: 'y', breaks: ['client-runtime'] }], unknown: [] }), { id: 'plugin-compat', status: 'ok', detail: '4:0:1:0' }, 'stale declarations alone do not warn')
-  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], declaredOnly: [], unknown: [{ moduleName: 'x', reason: 'too-large' }] }), { id: 'plugin-compat', status: 'ok', detail: '4:0:0:1' }, 'unscanned alone is not a compatibility warning')
-  assert.deepEqual(pluginCompatCheckItem({ scanned: 6, issues: [], declaredOnly: [], unknown: [] }), { id: 'plugin-compat', status: 'ok', detail: '6:0:0:0' })
+test('pluginCompatCheckItem derives warning status and five-segment detail', () => {
+  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [{ moduleName: 'x', breaks: ['chat-hash'] }], soft: [], declaredOnly: [{ moduleName: 'y', breaks: ['client-runtime'] }], unknown: [] }), { id: 'plugin-compat', status: 'warning', detail: '4:1:1:0:0' })
+  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], soft: [{ moduleName: 's', breaks: ['settings-plugin-item'] }], declaredOnly: [{ moduleName: 'y', breaks: ['client-runtime'] }], unknown: [] }), { id: 'plugin-compat', status: 'info', detail: '4:0:1:0:1' })
+  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], soft: [], declaredOnly: [{ moduleName: 'y', breaks: ['client-runtime'] }], unknown: [] }), { id: 'plugin-compat', status: 'ok', detail: '4:0:1:0:0' }, 'stale declarations alone do not warn')
+  assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], soft: [], declaredOnly: [], unknown: [{ moduleName: 'x', reason: 'too-large' }] }), { id: 'plugin-compat', status: 'ok', detail: '4:0:0:1:0' }, 'unscanned alone is not a compatibility warning')
+  assert.deepEqual(pluginCompatCheckItem({ scanned: 6, issues: [], soft: [], declaredOnly: [], unknown: [] }), { id: 'plugin-compat', status: 'ok', detail: '6:0:0:0:0' })
 })

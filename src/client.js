@@ -823,6 +823,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'health.detail.plugin-compat.unavailable': '插件兼容性检查不可用（宿主未暴露 Loader）',
       'health.detail.plugin-compat.ok': '已扫描 {total} 个插件，未发现对已变更接口的引用',
       'plugin.compat.issue.broken': '{count} 个插件可能不兼容',
+      'plugin.compat.issue.soft': '{count} 个插件注册了已退役接口',
       'plugin.compat.issue.declared': '{count} 个插件仅声明残留（代码未引用）',
       'plugin.compat.issue.unknown': '{count} 个插件未能扫描',
       'plugin.compat.declared': '声明了已移除的接口但代码未引用——官方加载器对缺失供应商静默跳过，当前无害，可提示作者清理',
@@ -831,7 +832,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'plugin.compat.break.code-runtime': '依赖已移除的代码执行后端 @deepseek-ai/dsh-code-runtime（0.1.6-alpha.1 起由 ptc-runtime 取代）',
       'plugin.compat.break.e2b-runtime': '依赖已移除的沙箱执行器 @deepseek-ai/dsh-e2b（0.1.6-alpha.1 起官方移除内置 E2B）',
       'plugin.compat.break.session-start-event': '监听已移除的会话生命周期事件 agent/session-start（0.1.6-alpha.1 起由 agent/created 携带 source 统一取代）',
-      'plugin.compat.break.settings-plugin-item': '注册已退役的设置页槽位 settings.plugin.item（0.1.6-alpha.2 起槽位移除，配置卡片不再显示，官方改由插件管理页 plugins.bundle.config 承载）',
+      'plugin.compat.break.settings-plugin-item': '注册了已退役的设置页槽位 settings.plugin.item（0.1.6-alpha.2 起槽位移除，配置卡片改由插件管理页 plugins.bundle.config 承载；插件本体照常运行，仅配置入口位置变化）',
       'plugin.compat.break.sessions-open-method': '调用已移除的命令式会话打开方法 sessions.open（0.1.6-alpha.2 起 ISessions 移除该方法，点击无响应，官方改由 ui-workspace 的 openSession 承载）',
       'plugin.compat.break.chat-hash': '引用已迁移的聊天界面旧样式前缀（Md3f7G_，0.1.2-alpha.2 起漂移至 EvIC1a_）',
       'plugin.compat.break.stats-hash': '引用已迁移的统计条旧样式前缀（FJxK0a_，0.1.2-alpha.2 起漂移至 -NDN2W_）',
@@ -1684,6 +1685,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'health.detail.plugin-compat.unavailable': 'Plugin compatibility check unavailable (host loader is not exposed)',
       'health.detail.plugin-compat.ok': 'Scanned {total} plugins; no references to changed interfaces',
       'plugin.compat.issue.broken': '{count} plugin(s) possibly incompatible',
+      'plugin.compat.issue.soft': '{count} plugin(s) register retired interfaces',
       'plugin.compat.issue.declared': '{count} plugin(s) with stale declarations only (not referenced in code)',
       'plugin.compat.issue.unknown': '{count} plugin(s) could not be scanned',
       'plugin.compat.declared': 'Declares a removed interface but never references it in code — the official loader silently skips missing suppliers, so this is harmless today and only signals the author to clean up',
@@ -1692,7 +1694,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'plugin.compat.break.code-runtime': 'Depends on the removed code runtime backend @deepseek-ai/dsh-code-runtime (replaced by ptc-runtime in 0.1.6-alpha.1)',
       'plugin.compat.break.e2b-runtime': 'Depends on the removed sandbox backend @deepseek-ai/dsh-e2b (built-in E2B removed in 0.1.6-alpha.1)',
       'plugin.compat.break.session-start-event': 'Listens to the removed lifecycle event agent/session-start (replaced by agent/created with source in 0.1.6-alpha.1)',
-      'plugin.compat.break.settings-plugin-item': 'Registers the retired settings page slot settings.plugin.item (slot removed in 0.1.6-alpha.2, the config card no longer renders; the plugins page now hosts it via plugins.bundle.config)',
+      'plugin.compat.break.settings-plugin-item': 'Registers the retired settings page slot settings.plugin.item (slot removed in 0.1.6-alpha.2, the config card is now hosted via plugins.bundle.config; plugin runs normally with only config entry relocated)',
       'plugin.compat.break.sessions-open-method': 'Calls the removed imperative session-open method sessions.open (removed from ISessions in 0.1.6-alpha.2, clicks do nothing; the official ui-workspace openSession replaces it)',
       'plugin.compat.break.chat-hash': 'References the old chat UI style prefix (Md3f7G_, migrated to EvIC1a_ since 0.1.2-alpha.2)',
       'plugin.compat.break.stats-hash': 'References the old status-line style prefix (FJxK0a_, migrated to -NDN2W_ since 0.1.2-alpha.2)',
@@ -8508,12 +8510,18 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
             return segments.join('，')
           }
           if (check.id === 'plugin-compat') {
-            // detail 四段 scanned:broken:declaredOnly:unknown（宿主 pluginCompatCheckItem）。
+            // detail 五段 scanned:broken:declaredOnly:unknown:soft（宿主 pluginCompatCheckItem；尾部追加以兼容旧版）。
             if (detail === 'unavailable') return translate('health.detail.plugin-compat.unavailable')
-            const [scanned, broken, declaredOnly, unknown] = detail.split(':')
-            if (check.status === 'ok' && (Number(declaredOnly) || 0) === 0) return translate('health.detail.plugin-compat.ok', { total: scanned })
+            const parts = detail.split(':')
+            const scanned = parts[0]
+            const broken = parts[1]
+            const declaredOnly = parts[2]
+            const unknown = parts[3]
+            const soft = parts[4] || '0'
+            if (check.status === 'ok' && (Number(declaredOnly) || 0) === 0 && (Number(soft) || 0) === 0) return translate('health.detail.plugin-compat.ok', { total: scanned })
             const segments = []
             if ((Number(broken) || 0) > 0) segments.push(translate('plugin.compat.issue.broken', { count: broken }))
+            if ((Number(soft) || 0) > 0) segments.push(translate('plugin.compat.issue.soft', { count: soft }))
             if ((Number(declaredOnly) || 0) > 0) segments.push(translate('plugin.compat.issue.declared', { count: declaredOnly }))
             if ((Number(unknown) || 0) > 0) segments.push(translate('plugin.compat.issue.unknown', { count: unknown }))
             return segments.join('，')
@@ -8748,14 +8756,16 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
               }))
         // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单扫描启用插件，命中才显示行
         // （字体说明见 plugin-compat.js 的 COMPAT_BREAKS；未扫成的插件单独提示原因）。
-        // 三档分级：真引用（可能不兼容，warning）→ 仅声明残留（代码未引用、官方 loader 静默
+        // 四档分级：真引用破坏（可能不兼容，warning）→ 退役接口（蓝色提示，info）→ 仅声明残留（代码未引用、官方 loader 静默
         // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。统一渲染为一行行条目。
         const pluginCompatScan = diagnostics?.pluginCompat !== null && typeof diagnostics?.pluginCompat === 'object' ? diagnostics.pluginCompat : null
         const pluginCompatIssues = Array.isArray(pluginCompatScan?.issues) ? pluginCompatScan.issues : []
+        const pluginCompatSoft = Array.isArray(pluginCompatScan?.soft) ? pluginCompatScan.soft : []
         const pluginCompatDeclared = Array.isArray(pluginCompatScan?.declaredOnly) ? pluginCompatScan.declaredOnly : []
         const pluginCompatUnknown = Array.isArray(pluginCompatScan?.unknown) ? pluginCompatScan.unknown : []
         const pluginCompatRows = [
           ...pluginCompatIssues.map((issue, index) => ({ key: `broken-${index}`, kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
+          ...pluginCompatSoft.map((item, index) => ({ key: `soft-${index}`, kind: 'soft', moduleName: item.moduleName, breaks: item.breaks })),
           ...pluginCompatDeclared.map((item, index) => ({ key: `declared-${index}`, kind: 'declared', moduleName: item.moduleName })),
           ...pluginCompatUnknown.map((item, index) => ({ key: `unknown-${index}`, kind: 'unknown', moduleName: item.moduleName, reason: item.reason })),
         ]
@@ -8765,7 +8775,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
               pluginCompatRows.map((row, index) => {
                 const warning = row.kind === 'broken'
                 const dotColor = warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)'
-                const line = warning
+                const line = warning || row.kind === 'soft'
                   ? row.breaks.map((id) => translate('plugin.compat.break.' + id)).join('；')
                   : row.kind === 'declared'
                     ? translate('plugin.compat.declared')
@@ -8777,9 +8787,11 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
                       React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
                       warning
                         ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-warning)' } }, translate('plugin.compat.issue.broken', { count: 1 }))
-                        : row.kind === 'declared'
-                          ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.declared', { count: 1 }))
-                          : null),
+                        : row.kind === 'soft'
+                          ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.soft', { count: 1 }))
+                          : row.kind === 'declared'
+                            ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.declared', { count: 1 }))
+                            : null),
                     React.createElement('div', { style: { fontSize: '11px', marginTop: '3px', lineHeight: 1.5, overflowWrap: 'anywhere', color: warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' } }, line)))
               }))
         const permissionAbnormal = permissions && permissions.supported === true

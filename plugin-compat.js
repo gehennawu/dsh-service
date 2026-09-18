@@ -54,6 +54,10 @@ function packageNameOf(moduleName) {
  * 已核实破坏面清单（每条 = 一个已被 DSH alpha 移除/迁移的旧标识）。
  * 客户端按 `plugin.compat.break.<id>` 取词典文案；layer 决定扫描目标（manifest=package.json
  * 依赖键与 dsh 字段，code=入口文件非注释文本）。
+ *
+ * `severity: 'info'`（可选，默认 warning）把该条降为提示档：命中的插件仍逐条列出，但走
+ * 蓝色提示行、不把检查项拉成 warning（也就不进概览可行动项）。只用于「旧标识仍被注册但
+ * 插件照常运行、对使用者无功能损失」的退役接口——如为旧宿主保留的退役槽位注册。
  */
 export const COMPAT_BREAKS = Object.freeze([
   {
@@ -99,11 +103,14 @@ export const COMPAT_BREAKS = Object.freeze([
   {
     // 0.1.6-alpha.2 退役设置页槽位：第三方注册它则配置卡片在新插件页不再渲染。
     // selfExempt：本插件为双版本兼容在自身保留该槽位注册（老宿主仍需），自证扫描豁免其命中；
-    // 第三方插件命中仍按「可能不兼容」报告（研究 §10：dsh-v0.1.6-alpha.2-plugin-impact.md）。
+    // 第三方插件命中仍逐条报告（研究 §10：dsh-v0.1.6-alpha.2-plugin-impact.md）。
+    // severity info：退役槽位只是配置入口搬迁——注入不生效、插件本体照常运行，既非代码错误
+    // 也非挂载风险，故走蓝色提示行且不把检查项拉成 warning（与「仅声明残留」同档）。
     id: 'settings-plugin-item',
     layer: 'code',
     match: 'settings.plugin.item',
     selfExempt: true,
+    severity: 'info',
   },
   {
     // 0.1.6-alpha.2 移除 ISessions 命令式打开方法：第三方调用它则详情页「打开」点击无响应
@@ -264,18 +271,19 @@ const SCAN_CACHE = new Map()
  * 里缺失的供应商是静默跳过（arriveGraphRow 对 graphRows.get() === undefined 直接 continue），
  * 因此 manifest 命中的危害取决于插件代码是否真的引用了该标识）：
  *   - hits：真引用（code 层命中，或 manifest 标识在入口代码中被引用）→ “可能不兼容”；
+ *   - softHits：命中来自 `severity: 'info'` 的条目 → 退役接口提示（蓝色、不拉高检查项）；
  *   - declaredOnly：manifest 声明了已移除标识、但入口代码零引用 → 无害残留，仅提醒作者清理；
  *   - unknown：包不可解析/入口缺失/超限。
  *
  * @param requireFn createRequire 替身（resolve `${pkg}/package.json`）
  * @param moduleName loader 条目模块说明符
  * @param options.maxFileBytes 单入口文件上限（默认 4 MiB）
- * @returns { hits: string[], declaredOnly: string[], unknown: string | null, files: number, bytes: number }
+ * @returns { hits: string[], softHits: string[], declaredOnly: string[], unknown: string | null, files: number, bytes: number }
  */
 export function scanPluginCompatibility(requireFn, moduleName, options = {}) {
   const maxFileBytes = options.maxFileBytes ?? 4 * 1024 * 1024
   const pkgName = packageNameOf(moduleName)
-  if (pkgName === null) return { hits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
+  if (pkgName === null) return { hits: [], softHits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
   let pkgPath
   try {
     pkgPath = requireFn(`${pkgName}/package.json`)
@@ -284,7 +292,7 @@ export function scanPluginCompatibility(requireFn, moduleName, options = {}) {
     try {
       pkgPath = join(dirname(requireFn(pkgName)), 'package.json')
     } catch (_) {
-      return { hits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
+      return { hits: [], softHits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
     }
   }
   const pkgDir = dirname(pkgPath)
@@ -292,19 +300,26 @@ export function scanPluginCompatibility(requireFn, moduleName, options = {}) {
   try {
     pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
   } catch (_) {
-    return { hits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
+    return { hits: [], softHits: [], declaredOnly: [], unknown: 'unresolved', files: 0, bytes: 0 }
   }
   const manifestBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'manifest')
   const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
+  // 提示档条目（severity info）单列：命中照旧逐条上报，只是不升级成「可能不兼容」。
+  const softIds = new Set(COMPAT_BREAKS.filter((b) => b.severity === 'info').map((b) => b.id))
   const declaredOnly = [...collectManifestHits(pkg, manifestBreaks)]
   const hits = []
+  const softHits = []
+  const record = (id) => {
+    const bucket = softIds.has(id) ? softHits : hits
+    if (bucket.indexOf(id) === -1) bucket.push(id)
+  }
   const files = packageEntryFiles(pkgDir, pkg)
   let bytes = 0
   for (const file of files) {
     let text
     try {
       const info = statSync(file)
-      if (info.size > maxFileBytes) return { hits, declaredOnly, unknown: 'too-large', files, bytes }
+      if (info.size > maxFileBytes) return { hits, softHits, declaredOnly, unknown: 'too-large', files, bytes }
       bytes += info.size
       text = readFileSync(file, 'utf8')
     } catch (_) {
@@ -314,17 +329,24 @@ export function scanPluginCompatibility(requireFn, moduleName, options = {}) {
     // 真引用；字符串化的 `require(\"...\")` 示例与文档提及留在 declaredOnly。
     if (declaredOnly.length > 0) {
       for (const id of manifestCallRefs(text, manifestBreaks)) {
-        if (hits.indexOf(id) === -1) hits.push(id)
+        record(id)
         const at = declaredOnly.indexOf(id)
         if (at !== -1) declaredOnly.splice(at, 1)
       }
     }
     // code 层照旧：状态机剥注释 + 引用形态判定（className/选择器在字符串内也算引用）。
     if (codeBreaks.some((b) => text.includes(b.match))) {
-      for (const id of scanCodeHits(text, codeBreaks)) if (hits.indexOf(id) === -1) hits.push(id)
+      for (const id of scanCodeHits(text, codeBreaks)) record(id)
     }
   }
-  return { hits, declaredOnly, unknown: hits.length === 0 && declaredOnly.length === 0 && files.length === 0 ? 'missing-entry' : null, files: files.length, bytes }
+  return {
+    hits,
+    softHits,
+    declaredOnly,
+    unknown: hits.length === 0 && softHits.length === 0 && declaredOnly.length === 0 && files.length === 0 ? 'missing-entry' : null,
+    files: files.length,
+    bytes,
+  }
 }
 
 function escapeRegex(text) {
@@ -351,11 +373,11 @@ export function manifestCallRefs(text, manifestBreaks) {
  * 收集启用插件的兼容性扫描结果（顺序 = loader 条目序，稳定可测）。
  * @param ctx 宿主插件上下文（ctx.get('loader')）
  * @param options 透传 scanPluginCompatibility 选项（requireFn/maxFileBytes）与缓存开关（noCache）
- * @returns { available, scanned, issues: [{moduleName, breaks[]}], declaredOnly: [{moduleName, breaks[]}], unknown: [{moduleName, reason}] }
+ * @returns { available, scanned, issues: [{moduleName, breaks[]}], soft: [{moduleName, breaks[]}], declaredOnly: [{moduleName, breaks[]}], unknown: [{moduleName, reason}] }
  */
 export async function collectPluginCompat(ctx, options = {}) {
   const loader = ctx.get('loader')
-  if (loader === undefined) return { available: false, scanned: 0, issues: [], declaredOnly: [], unknown: [] }
+  if (loader === undefined) return { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] }
   let requireFn = options.requireFn
   if (typeof requireFn !== 'function') {
     const baseUrl = typeof loader.ctx?.baseUrl === 'string' && loader.ctx.baseUrl.length > 0
@@ -368,6 +390,7 @@ export async function collectPluginCompat(ctx, options = {}) {
     requireFn = (specifier) => baseRequire.resolve(specifier)
   }
   const issues = []
+  const soft = []
   const declaredOnly = []
   const unknown = []
   let scanned = 0
@@ -399,21 +422,30 @@ export async function collectPluginCompat(ctx, options = {}) {
       unknown.push({ moduleName, reason: result.unknown })
     } else {
       if (result.hits.length > 0) issues.push({ moduleName, breaks: result.hits })
+      if (result.softHits.length > 0) soft.push({ moduleName, breaks: result.softHits })
       if (result.declaredOnly.length > 0) declaredOnly.push({ moduleName, breaks: result.declaredOnly })
     }
   }
-  return { available: true, scanned, issues, declaredOnly, unknown }
+  return { available: true, scanned, issues, soft, declaredOnly, unknown }
 }
 
 /**
- * 聚合为诊断检查项（追加在 checks 尾部）。detail 四段 `scanned:broken:declaredOnly:unknown`，
- * 客户端解析；broken>0 → warning（「可能不兼容」是风险提示，不是已损坏的 error）；
- * 仅 declaredOnly（声明残留、代码未引用，官方 loader fail-open 无害）不改变状态，只在摘要提及。
+ * 聚合为诊断检查项（追加在 checks 尾部）。detail 五段
+ * `scanned:broken:declaredOnly:unknown:soft`——前四段与旧口径逐字相同（旧客户端按四段读，
+ * 多出的第五段被忽略），soft 追加在尾部保证前后兼容；客户端解析。
+ *   - broken>0 → warning（「可能不兼容」是风险提示，不是已损坏的 error）；
+ *   - 仅 soft（退役接口，插件照常运行）→ info：蓝色提示行，不拉高 overall、不进概览可行动项；
+ *   - 仅 declaredOnly（声明残留、代码未引用，官方 loader fail-open 无害）与 unknown 不改变状态，
+ *     只在摘要提及。
  */
 export function pluginCompatCheckItem(report) {
+  const soft = report.soft ?? []
+  const issues = report.issues ?? []
+  const declaredOnly = report.declaredOnly ?? []
+  const unknown = report.unknown ?? []
   return {
     id: 'plugin-compat',
-    status: report.issues.length > 0 ? 'warning' : 'ok',
-    detail: `${report.scanned}:${report.issues.length}:${report.declaredOnly.length}:${report.unknown.length}`,
+    status: issues.length > 0 ? 'warning' : soft.length > 0 ? 'info' : 'ok',
+    detail: `${report.scanned}:${issues.length}:${declaredOnly.length}:${unknown.length}:${soft.length}`,
   }
 }

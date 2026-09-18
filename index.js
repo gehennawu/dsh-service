@@ -2620,12 +2620,13 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
 
   // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单（client-runtime 供应商移除、SQLite
   // persistence 移除、聊天/统计条 CSS 哈希漂移、data-time-hover-root 删除）扫描启用插件的
-  // 清单与入口代码；loader 缺席降级为 info 检查项、不带扫描结果。
+  // 清单与入口代码；loader 缺席降级为 info 检查项、不带扫描结果。退役接口（severity info）
+  // 单列 soft，只提示不拉高 overall。
   let compatReport
   try {
     compatReport = await collectPluginCompat(ctx)
   } catch (error) {
-    compatReport = { available: false, scanned: 0, issues: [], declaredOnly: [], unknown: [] }
+    compatReport = { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] }
   }
   if (!compatReport.available) add('plugin-compat', 'info', 'unavailable')
   else checks.push(pluginCompatCheckItem(compatReport))
@@ -2640,7 +2641,7 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
     checks,
     ...(pluginReport.available ? { pluginIssues: pluginReport.issues } : {}),
     ...(compatReport.available
-      ? { pluginCompat: { scanned: compatReport.scanned, issues: compatReport.issues, declaredOnly: compatReport.declaredOnly, unknown: compatReport.unknown } }
+      ? { pluginCompat: { scanned: compatReport.scanned, issues: compatReport.issues, soft: compatReport.soft, declaredOnly: compatReport.declaredOnly, unknown: compatReport.unknown } }
       : {}),
   }
 }

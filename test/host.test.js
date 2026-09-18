@@ -1570,13 +1570,14 @@ test('diagnostics scans plugin breakage fixtures and flags possibly incompatible
   assert.equal(result.ok, true)
   const compatCheck = result.value.checks.find((check) => check.id === 'plugin-compat')
   // scanned=4（a/b/clean/missing，group/disabled 跳过）：broken=2（a 的 chat-hash + b 的
-  // time-hover-root 真引用）、declaredOnly=1（a 的 client-runtime 仅声明）、unknown=1。
-  assert.deepEqual(compatCheck, { id: 'plugin-compat', status: 'warning', detail: '4:2:1:1' })
+  // time-hover-root 真引用）、declaredOnly=1（a 的 client-runtime 仅声明）、unknown=1、soft=0。
+  assert.deepEqual(compatCheck, { id: 'plugin-compat', status: 'warning', detail: '4:2:1:1:0' })
   assert.equal(result.value.status, 'warning', 'compatibility risk escalates the report to warning')
   assert.deepEqual(result.value.pluginCompat.issues, [
     { moduleName: 'hst-old-a', breaks: ['chat-hash'] },
     { moduleName: 'hst-old-b', breaks: ['time-hover-root'] },
   ])
+  assert.deepEqual(result.value.pluginCompat.soft, [])
   assert.deepEqual(result.value.pluginCompat.declaredOnly, [{ moduleName: 'hst-old-a', breaks: ['client-runtime'] }])
   assert.deepEqual(result.value.pluginCompat.unknown, [{ moduleName: 'hst-missing', reason: 'missing-entry' }])
   assert.equal(result.value.pluginCompat.scanned, 4)
@@ -1606,8 +1607,8 @@ test('diagnostics reports a healthy compatibility scan when every plugin is clea
     env: { DSH_HOME: dshHome },
   })
   const result = await handler('diagnostics', {})
-  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugin-compat'), { id: 'plugin-compat', status: 'ok', detail: '1:0:0:0' })
-  assert.deepEqual(result.value.pluginCompat, { scanned: 1, issues: [], declaredOnly: [], unknown: [] })
+  assert.deepEqual(result.value.checks.find((check) => check.id === 'plugin-compat'), { id: 'plugin-compat', status: 'ok', detail: '1:0:0:0:0' })
+  assert.deepEqual(result.value.pluginCompat, { scanned: 1, issues: [], soft: [], declaredOnly: [], unknown: [] })
 })
 
 test('plugin-restart endpoint reloads only failed fibers of listed entries', async () => {
