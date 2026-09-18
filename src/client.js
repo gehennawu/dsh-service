@@ -89,6 +89,8 @@ window.__ModuleLoader__.load({
       const key = provider.trim().toLowerCase()
       if (key === '') return null
 
+      const forComposer = options.forComposer === true
+
       // ① 特殊判定：如果在余额查询里手动适配过 CLIProxyAPI，直接展示 CLIProxyAPI 图标
       const cliproxyAdapted = typeof options.isCliproxyAdapted === 'boolean'
         ? options.isCliproxyAdapted
@@ -97,32 +99,34 @@ window.__ModuleLoader__.load({
         return { slug: 'cliproxy', spec: MODEL_ICON_DATA['cliproxy'] }
       }
 
-      // 未在余额查询中手动适配时：cpa 渠道不显示图标（保持未适配兜底）；
-      // 对话框场景下（options.forComposer === true），未在余额查询中手动适配的 cliproxy 同样不显示。
+      // 未在余额查询中手动适配时，对话框（含额度卡片）不显示 CLIProxyAPI 图标，回落官方默认图标。
+      // 下面四条解析路径都可能落到 cliproxy 这个 slug，故收敛成同一个谓词——逐路径手写容易改漏其中一条。
+      const cliproxyGatedOut = (slug) => slug === 'cliproxy' && forComposer && !cliproxyAdapted
+
+      // cpa 渠道没有公开品牌图形：未适配时显式不显示（官方默认图标照旧）。
       if (key === 'cpa') return null
-      if (key === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
 
       // ② 内置 provider 精确表
       const exactSlug = MODEL_ICON_PROVIDERS[key]
       if (exactSlug !== undefined && MODEL_ICON_DATA[exactSlug] !== undefined) {
-        if (exactSlug === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
+        if (cliproxyGatedOut(exactSlug)) return null
         return { slug: exactSlug, spec: MODEL_ICON_DATA[exactSlug] }
       }
       // ③ 前缀/别名（自定义渠道名）。表内长前缀排在前（opencode-go 先于 opencode），
       //    命中即返回；分隔符限定为 - _ . ，避免 'openaiish' 这类误命中 'openai'。
       for (const [prefix, slug] of MODEL_ICON_PREFIXES) {
         if (key !== prefix && !key.startsWith(prefix + '-') && !key.startsWith(prefix + '_') && !key.startsWith(prefix + '.')) continue
-        if (slug === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) continue
+        if (cliproxyGatedOut(slug)) continue
         if (MODEL_ICON_DATA[slug] !== undefined) return { slug, spec: MODEL_ICON_DATA[slug] }
       }
       // ④ 兜底：key 本身或其分段就是 slug
       if (MODEL_ICON_DATA[key] !== undefined) {
-        if (key === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) return null
+        if (cliproxyGatedOut(key)) return null
         return { slug: key, spec: MODEL_ICON_DATA[key] }
       }
       for (const part of key.split(/[-_.]/)) {
         if (part !== '' && MODEL_ICON_DATA[part] !== undefined) {
-          if (part === 'cliproxy' && options.forComposer === true && !cliproxyAdapted) continue
+          if (cliproxyGatedOut(part)) continue
           return { slug: part, spec: MODEL_ICON_DATA[part] }
         }
       }
@@ -7158,6 +7162,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
 
       function RemoteQuotaCard() {
         const translate = useTranslation()
+        const { value: features } = useFeatures()
         const [quotaNav, setQuotaNav] = quotaNavToggle.useEnabled()
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
@@ -7570,7 +7575,10 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
                   const nameNode = React.createElement('span', { style: { fontWeight: 600, fontSize: '12px', overflowWrap: 'anywhere' } },
                     // 渠道名前的厂家小图标：与对话框同源解析（mono mask / 彩色 background），
                     // 未命中渠道返回 null 不渲染、不占位；inline-block 参与行内排版，长名照常折行。
-                    modelIconNode(row.provider, 14, { verticalAlign: '-2px', marginRight: '5px' }, `quota-provider-icon-${row.provider}`),
+                    // 与对话框同受 modelProviderIcons 开关管辖（关闭即全量摘除，卡片不留半截装饰）。
+                    features.modelProviderIcons === false
+                      ? null
+                      : modelIconNode(row.provider, 14, { verticalAlign: '-2px', marginRight: '5px' }, `quota-provider-icon-${row.provider}`),
                     // 官网用量页链接（用户点名）：宿主按 kind 下发 usageUrl 时，展示名本身即外链。
                     typeof row.usageUrl === 'string' && row.usageUrl !== ''
                       ? React.createElement('a', {

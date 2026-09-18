@@ -127,3 +127,36 @@ test('model icon catalog is regenerated from the generated data and covers every
   const external = [...html.matchAll(/(?:src|href)="(https?:[^"]+)"/g)].map((m) => m[1])
   assert.deepEqual(external, [], `catalog must not reference external resources: ${external.join(', ')}`)
 })
+
+// 目录页的全部意义是「所见即运行期」。它的 data-URI 由 scripts/model-icons-catalog.mjs
+// 独立复刻一份（src/client.js 的 modelIconDataUri 在客户端工厂作用域内，无法直接 import），
+// 两侧一旦单向改动就会静默漂移——历史上就发生过：运行期补了 color="#000"、目录页没跟。
+// 这里用源码逐字比对，把「同算法」从注释里的承诺变成可执行断言。
+test('catalog data-URI builder stays byte-identical to the runtime modelIconDataUri', async () => {
+  const { dataUri } = await import('../scripts/model-icons-catalog.mjs')
+  const client = read('src/client.js')
+  const runtime = client.match(/const modelIconDataUri = \(spec, useMask\) => \{(.*?)\n    \}/s)
+  assert.notEqual(runtime, null, 'runtime modelIconDataUri not found in src/client.js')
+
+  // 两处都是 DATA-URI 模板：抽出各自的 svg 模板串，断言逐字相等。
+  const catalogSvg = read('scripts/model-icons-catalog.mjs').match(/const svg = `([^`]*)`/)
+  assert.notEqual(catalogSvg, null, 'catalog dataUri svg template not found')
+  const runtimeSvg = runtime[1].match(/const svg = `([^`]*)`/)
+  assert.notEqual(runtimeSvg, null, 'runtime modelIconDataUri svg template not found')
+  assert.equal(
+    runtimeSvg[1],
+    catalogSvg[1],
+    'catalog and runtime data-URI templates drifted; keep both in sync',
+  )
+
+  // 行为面复核：两侧对同一 spec 产出的 data-URI 必须完全相同（含 mask/color 两个分支）。
+  const spec = { v: '0 0 24 24', m: '<path d="M0 0h24v24H0z"/>', c: 0 }
+  for (const useMask of [true, false]) {
+    const fromCatalog = dataUri(spec, useMask)
+    const expectedPaint = useMask ? ' fill="#000" color="#000"' : ''
+    const expected = `url("data:image/svg+xml,${encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${spec.v}"${expectedPaint}>${spec.m}</svg>`,
+    )}")`
+    assert.equal(fromCatalog, expected, `catalog dataUri drifted (useMask=${useMask})`)
+  }
+})

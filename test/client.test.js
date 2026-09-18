@@ -4906,6 +4906,18 @@ test('quota card falls back to type-level window labels and localizes stable err
   assert.ok(String(openrouterIcon.props.style.WebkitMask).startsWith('url("data:image/svg+xml,'), 'mono card icon uses the mask data-URI')
   assert.equal(openrouterIcon.props.style.backgroundColor, 'currentColor', 'mono card icon follows the theme text colour')
 
+  // 卡片图标与对话框同受 modelProviderIcons 开关管辖：关闭即全量摘除（不留卡片半截装饰），
+  // 重新打开立即回来。这是验收标准「关闭即全量摘除」在卡片这条新增渲染路径上的落实。
+  await renderer.setFeature('modelProviderIcons', false)
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-provider-icon-zai-coding-cn'), false, 'disabling the feature removes the color-tier card icon')
+  assert.equal(renderer.hasTest('quota-provider-icon-openrouter'), false, 'disabling the feature removes the mono card icon')
+  assert.ok(renderer.hasTest('quota-provider-card-zai-coding-cn'), 'the card itself must stay rendered — only the icon is gated')
+  await renderer.setFeature('modelProviderIcons', true)
+  await renderer.flush()
+  assert.ok(renderer.hasTest('quota-provider-icon-zai-coding-cn'), 're-enabling restores the card icon')
+  assert.ok(renderer.hasTest('quota-provider-icon-openrouter'), 're-enabling restores the mono card icon')
+
   // quota-refresh 拒绝（not-adapted）也走词典，不再直出原始键名 quota.unadapted。
   renderer.findByTestId('quota-refresh-zai-coding-cn').props.onClick()
   await renderer.flush()

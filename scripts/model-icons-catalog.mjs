@@ -6,7 +6,7 @@
  * 铺开**给人看：每张图形、每个 provider 映射、每档渲染路径、每条匹配规则。
  *
  * 存在的理由：图标是「看着对不对」的东西。生成期只能断言数据形状，真机核验脚本
- * （scripts/verify-model-provider-icons.mjs）一次只跑几个渠道；要回答「61 张图形到底
+ * （scripts/verify-model-provider-icons.mjs）一次只跑几个渠道；要回答「每张图形到底
  * 长什么样、深浅色下哪几张是彩色哪几张是单色、某个渠道名会不会命中」，翻数据文件
  * 不如直接看一页。
  *
@@ -98,10 +98,14 @@ const escapeHtml = (value) =>
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
 
-/** 与客户端 `modelIconDataUri` 同算法：mask 档补 `fill="#000"`（mask 只看 alpha）。 */
-const dataUri = (spec, useMask) => {
+/**
+ * 与客户端 `modelIconDataUri` 同算法：mask 档补 `fill="#000" color="#000"`（mask 只看 alpha）。
+ * 两处必须逐字一致——目录页的用途就是「所见即运行期」，多一个属性少一个属性都会让这页骗人。
+ * 已导出：docs-static 测试逐字节比对两侧产物，防止再次单向漂移。
+ */
+export const dataUri = (spec, useMask) => {
   const viewBox = spec.v === undefined || spec.v === '' ? '0 0 24 24' : spec.v
-  const paint = useMask ? ' fill="#000"' : ''
+  const paint = useMask ? ' fill="#000" color="#000"' : ''
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}"${paint}>${spec.m}</svg>`
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
 }
@@ -162,7 +166,7 @@ export function renderCatalog({ data, providers, prefixes, sourceVersion }) {
     CATEGORIES.push({ key: 'other', title: '其他', note: '尚未归类。', providers: uncategorised })
   }
 
-  // ── 每张图形的 CSS 变量：一条规则一处 data-URI，61 份，页面里不重复 ──────────
+  // ── 每张图形的 CSS 变量：一条规则一处 data-URI，页面里不重复 ──────────
   const slugRules = slugs
     .map((slug) => {
       const spec = data[slug]
