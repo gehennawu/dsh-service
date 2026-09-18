@@ -1,9 +1,26 @@
-// 客户端半分片：模型厂家/渠道图标引擎。
-// 分片不是模块——按 scripts/client-source.mjs 清单与 src/client.js 等拼接成同一个
-// factory 作用域；静态面（MODEL_ICON_* 常量、modelIconDataUri、resolveModelIcon、
-// MODEL_ICON_CSS、iconDom* 助手、quotaStore）都在 client.js 工厂作用域，本分片直接
-// 引用；apply 作用域依赖以参数注入 { ctx, getModelDirectories }，调用点在 apply.js。
-
+// ─── 模型厂家/渠道图标（v1.8 新增）──────────────────────────────
+// 在官方 composer 模型钮上叠加「当前会话 provider」的厂家图标。官方那颗钮是
+// 独占槽（conversation.input.model，kind:single，官方 ModelSelect 占位），
+// 无法再注册第二个 occupant，故走纯 CSS 装饰：把 --dshsvc-model-icon 变量
+// 与 data-dshsvc-model-icon 属性挂在 composer 座上，用 ::before 画图标。
+//
+// 三态：
+//   ① 宽态（官方显示模型名）→ 模型名前加图标；
+//   ② 窄态（≤480px，官方/本插件把 label 藏成图标）→ 我方图标替换官方默认图标；
+//   ③ 未适配渠道 → 完全不动官方默认图标（既不加、也不换）。
+//
+// 渲染路径由数据里的 c 字段决定，全部实测过（scripts/probe-model-icon-dom.mjs）：
+//   c=0（mono）mask + background-color:currentColor —— 颜色交给主题文字色，
+//              浅色 rgb(97,102,107) / 暗色 rgb(207,211,214) 自动跟随，零特判；
+//   c=1（color）background-image 原样上品牌色。
+// data-URI 是独立文档上下文，**不继承 currentColor**，所以 mono 必须走 mask
+// （直接写 fill="currentColor" 的 data-URI 会渲染成全黑/全透明）。
+//
+// 客户端半分片：分片不是模块——按 scripts/client-source.mjs 清单与 src/client.js 等
+// 拼接成同一个 factory 作用域；静态面（MODEL_ICON_* 常量、modelIconDataUri、
+// resolveModelIcon、MODEL_ICON_CSS、iconDom* 助手、quotaStore）都在 client.js 工厂
+// 作用域，本分片直接引用；apply 作用域依赖以参数注入 { ctx, getModelDirectories }，
+// 调用点在 apply.js。
       /**
        * 图标引擎：订阅当前会话的 modelDirectory，把 provider 解析成图标并写到
        * composer 座上。会话切换/模型切换/主题切换都自然跟随（数据属性驱动 CSS）。
@@ -251,3 +268,4 @@
 
         return { start, stop, apply, clear }
       }
+

@@ -9,196 +9,6 @@
       // 恢复 details.detail）后全插件既有 `res.error` 字符串消费零改动。
       const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload)).then(normalizeRpcResult)
 
-      // ── v1.2 子代理派发记录缓存：按父会话聚合、turn 索引；TTL 10s 按会话单飞去重 ──
-      // 宿主记录在宿主内存（进程重启即清、页面刷新不丢）；拉取失败进冷却并保留旧缓存（fail-open，
-      // 渲染已有行不闪断）。同一会话连续回合尾行共享一次请求。
-      const DISPATCH_TTL_MS = 10 * 1000
-      // 与宿主 SUBAGENT_DISPATCH_PAGE_MAX 同步（= 环形容量）：一次请求取回环内全部记录。
-      const SUBAGENT_DISPATCH_LIMIT = 400
-      const dispatchByParent = new Map()
-      const dispatchFetchedAt = new Map()
-      const dispatchInflight = new Map()
-      // 缓存条目 = { byTurn: Map<turn, records[]>, records: 原始记录全量 }。records 保留
-      // 无 turn 的派发（宿主允许记录缺 turn）：回合尾行按 turn 索引取用，会话级累计行聚合全量。
-      const dispatchRecordsFor = (sessionId) => {
-        const entry = dispatchByParent.get(sessionId)
-        return entry === undefined ? new Map() : entry.byTurn
-      }
-      const refreshSubagentDispatches = (sessionId, force = false) => {
-        if (typeof sessionId !== 'string' || sessionId === '') return Promise.resolve(new Map())
-        const now = Date.now()
-        // force：会话级累计行的轮询刷新（绕过 TTL 去重，保证轮值总是实拉；回合尾行的
-        // 挂载首拉不受影响——第二次拉取仍受 TTL 保护）。
-        if (!force && now - (dispatchFetchedAt.get(sessionId) ?? 0) < DISPATCH_TTL_MS) return Promise.resolve(dispatchRecordsFor(sessionId))
-        let inflight = dispatchInflight.get(sessionId)
-        if (inflight === undefined) {
-          // limit = 宿主单次上限（= 环形容量）一次性取回：累计行按此拉全量，回合尾行按 turn 过滤。
-          inflight = rpcCall('subagent-dispatches', { parentId: sessionId, limit: SUBAGENT_DISPATCH_LIMIT }).then((result) => {
-            const records = result && result.ok === true && Array.isArray(result.value?.records) ? result.value.records : []
-            const byTurn = new Map()
-            const raw = []
-            for (const record of records) {
-              if (record === null || typeof record !== 'object') continue
-              raw.push(record)
-              const turn = typeof record.turn === 'number' && Number.isFinite(record.turn) ? record.turn : undefined
-              if (turn === undefined) continue
-              let list = byTurn.get(turn)
-              if (list === undefined) {
-                list = []
-                byTurn.set(turn, list)
-              }
-              list.push(record)
-            }
-            dispatchByParent.set(sessionId, { byTurn, records: raw })
-            dispatchFetchedAt.set(sessionId, Date.now())
-            return byTurn
-          }).catch(() => {
-            // 失败进冷却：避免一回合内同一会话渲染风暴；旧缓存原样保留。返回 null 区分「失败」，
-            // 会话级累计行的首拉据此决定是否启动轮询链（宿主不可用时静默、不常驻定时器）。
-            dispatchFetchedAt.set(sessionId, Date.now())
-            return null
-          })
-          dispatchInflight.set(sessionId, inflight)
-          inflight.finally(() => dispatchInflight.delete(sessionId)).catch(() => {})
-        }
-        return inflight
-      }
-      // 对话页回合尾行组件：
-      // 0.1.6-alpha.1 及之前：chain 槽位，matched 由链槽裁决注入（{turn, subagentCount}）；
-      // 0.1.6-alpha.2 起：list 槽位，props.matched 为空，由组件自身调用 selectSubagentModelsTurnTail(props) 兜底求值。
-      // 标准 props 含 sessionId；数据按 (sessionId, turn) 拉取后渲染一行小字。
-      function SubagentModelsTurnTail(props) {
-        const translate = useTranslation()
-        const [text, setText] = useState('')
-        const matched = (props.matched && typeof props.matched.turn === 'number')
-          ? props.matched
-          : selectSubagentModelsTurnTail(props)
-        const turn = matched && typeof matched.turn === 'number' ? matched.turn : undefined
-        useEffect(() => {
-          let cancelled = false
-          const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
-          if (turn === undefined || sessionId === undefined) {
-            setText('')
-            return undefined
-          }
-          refreshSubagentDispatches(sessionId).then((byTurn) => {
-            if (cancelled) return
-            // 拉取失败（null）沿用旧缓存：瞬时失败不把已正确的行替换成兜底文案；
-            // 从未成功过（无缓存条目）按设计静默（RPC 失败渲染 null），不编造计数。
-            const staleEntry = dispatchByParent.get(sessionId)
-            const byTurnSafe = byTurn === null
-              ? (staleEntry === undefined ? new Map() : staleEntry.byTurn)
-              : byTurn
-            const turnRecords = byTurnSafe.get(turn)
-            const entries = aggregateSubagentRoutes(turnRecords)
-            if (entries.length === 0) {
-              if (byTurn === null && staleEntry === undefined) {
-                setText('')
-                return
-              }
-              const count = Number.isFinite(matched?.subagentCount) && matched.subagentCount > 0 ? String(matched.subagentCount) : String(turnRecords?.length ?? 1)
-              const countKey = count === '1' ? 'subagent.turnTail.countOne' : 'subagent.turnTail.countMany'
-              setText(`${translate(countKey, { count })}${translate('subagent.turnTail.unknown')}`)
-              return
-            }
-            setText(`${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
-          }).catch(() => {
-            if (!cancelled) setText('')
-          })
-          return () => {
-            cancelled = true
-          }
-        }, [turn, props.sessionId])
-        if (text === '') return null
-        return React.createElement('div', {
-          'data-testid': 'subagent-models-turn-tail',
-          'data-dsh-service-subagent-models': true,
-          style: {
-            fontSize: '12px',
-            lineHeight: '18px',
-            color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
-            padding: '2px 0',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: '100%',
-          },
-        }, text)
-      }
-
-      // 会话级累计行（v1.2 补）：composer 下方常驻「本会话子代理模型」。
-      // 回合尾行依赖官方 turn-process 计数触发，compaction 折叠子代理工具调用后
-      // （官方自身也不再显示计数）回合尾行会静默消失——累计行由宿主派发记录驱动，
-      // 不受事件流折叠影响，任何视图/任意回合都能看到。轮询走 ctx.timer 自续链
-      // （20s，测试桩可推进、卸载即断）；与回合尾行共享同一份记录缓存。
-      const SUBAGENT_DOCK_POLL_MS = 20 * 1000
-      function SubagentModelsDock(props) {
-        const translate = useTranslation()
-        const [text, setText] = useState('')
-        useEffect(() => {
-          let cancelled = false
-          let pollDispose = undefined
-          const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
-          if (sessionId === undefined) {
-            setText('')
-            return undefined
-          }
-          // 展示一律从缓存条目读取（成功=新数据，失败=旧缓存原样）：瞬时 RPC 失败不闪断。
-          // 聚合用原始全量记录（含无 turn 的派发）——累计行就是「不依赖回合数据、任何视图
-          // 可见」的兜底面，不能把缺 turn 的记录丢掉。
-          const setFromCache = () => {
-            const entry = dispatchByParent.get(sessionId)
-            const records = entry === undefined ? [] : entry.records
-            const entries = aggregateSubagentRoutes(records)
-            setText(entries.length === 0 ? '' : `${translate('subagent.turnTail.label')}${subagentRouteListText(entries)}`)
-          }
-          const refresh = () => refreshSubagentDispatches(sessionId).then((byTurn) => {
-            if (cancelled) return false
-            setFromCache()
-            return byTurn !== null
-          }).catch(() => {
-            if (!cancelled) setText('')
-            return false
-          })
-          refresh()
-          // 首拉成功才启动轮询链：宿主不可用/RPC 失败时静默且不常驻定时器
-          // （重进会话或页面刷新后自愈）。轮询轮内失败保留链，下轮再试。
-          const tick = () => {
-            if (cancelled) return
-            refreshSubagentDispatches(sessionId, true).then((byTurn) => {
-              if (cancelled) return
-              setFromCache()
-            }).catch(() => {
-              if (!cancelled) setText('')
-            })
-            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
-          }
-          let pollChain = undefined
-          Promise.resolve(refresh()).then((ok) => {
-            if (cancelled || !ok) return
-            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
-          })
-          return () => {
-            cancelled = true
-            if (typeof pollChain === 'function') pollChain()
-          }
-        }, [props.sessionId])
-        if (text === '') return null
-        return React.createElement('div', {
-          'data-testid': 'subagent-models-dock',
-          'data-dsh-service-subagent-models-dock': true,
-          style: {
-            fontSize: '12px',
-            lineHeight: '18px',
-            color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
-            padding: '2px 4px',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: '100%',
-          },
-        }, text)
-      }
 
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
@@ -629,6 +439,11 @@
         useEffect(() => ctx.locale.subscribe(() => setSnapshot(ctx.locale.getSnapshot())), [])
         return t
       }
+      // ── v1.2 子代理派发记录缓存：正文与两组件已整段抽至 src/client/subagent-dispatch-ring.js
+      // （工厂作用域分片，清单见 scripts/client-source.mjs）。工厂调用在 useTranslation 定义
+      // 之后（见「Svc 视觉基元」段前），避免按值传参的 TDZ；每次 apply 调用产出一份新缓存状态，
+      // 与原 apply 作用域声明等命。
+      const { SubagentModelsDock, SubagentModelsTurnTail } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
       // ── Svc 视觉基元（统一视觉语言 v0.39）：按钮/展示面样式单一事实源 ────
       // ServicePanel 与 RestartSection 曾各自声明同名样式常量并已漂移，现收敛到工厂级。
       // variant 语义（安全教义对齐）：dangerGhost 危险描边 = 破坏动作初次出现；
@@ -7923,25 +7738,7 @@
         return () => userJump.stop()
       }, 'dsh-service user reply jump')
 
-      // ─── 模型厂家/渠道图标（v1.8 新增）──────────────────────────────
-      // 在官方 composer 模型钮上叠加「当前会话 provider」的厂家图标。官方那颗钮是
-      // 独占槽（conversation.input.model，kind:single，官方 ModelSelect 占位），
-      // 无法再注册第二个 occupant，故走纯 CSS 装饰：把 --dshsvc-model-icon 变量
-      // 与 data-dshsvc-model-icon 属性挂在 composer 座上，用 ::before 画图标。
-      //
-      // 三态：
-      //   ① 宽态（官方显示模型名）→ 模型名前加图标；
-      //   ② 窄态（≤480px，官方/本插件把 label 藏成图标）→ 我方图标替换官方默认图标；
-      //   ③ 未适配渠道 → 完全不动官方默认图标（既不加、也不换）。
-      //
-      // 渲染路径由数据里的 c 字段决定，全部实测过（scripts/probe-model-icon-dom.mjs）：
-      //   c=0（mono）mask + background-color:currentColor —— 颜色交给主题文字色，
-      //              浅色 rgb(97,102,107) / 暗色 rgb(207,211,214) 自动跟随，零特判；
-      //   c=1（color）background-image 原样上品牌色。
-      // data-URI 是独立文档上下文，**不继承 currentColor**，所以 mono 必须走 mask
-      // （直接写 fill="currentColor" 的 data-URI 会渲染成全黑/全透明）。
-      // 模型厂家/渠道图标引擎已整段抽至 src/client/model-icons.js（工厂作用域分片，
-      // 清单见 scripts/client-source.mjs）；调用点 createModelProviderIcons({ ... }) 在下方。
+      // ─── 模型厂家/渠道图标（v1.8 新增）：设计说明与引擎正文见 src/client/model-icons.js，调用点在下方 ───
 
       const modelIconEngine = createModelProviderIcons({ ctx, getModelDirectories })
       ctx.effect(() => {
@@ -7998,5 +7795,9 @@
     return module.exports
   },
 })
+
+
+
+
 
 
