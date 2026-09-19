@@ -75,8 +75,8 @@ test('omitted factory return is reported against the destructuring site', async 
   const result = await checkClientSource(mutated, { files: await clientSourceBounds(await clientSourceFiles(), mutated.length) })
   assert.equal(result.ok, false, 'destructuring a name the factory never returns must fail the check')
   assert.match(messages(result), /createQuotaCore\(\) never returns "fetchQuotaSnapshoX"/)
-  // 定位必须落在解构所在的真实分片与真实行号（src/client/apply.js 第 297 行）。
-  assert.match(messages(result), /src\/client\/apply\.js:297\b/, 'finding must report the fragment-local line number')
+  // 定位必须落在解构所在的真实分片与真实行号（src/client/apply.js 第 306 行）。
+  assert.match(messages(result), /src\/client\/apply\.js:306\b/, 'finding must report the fragment-local line number')
 })
 
 test('a fragment-local private name referenced elsewhere is located in its own fragment', async () => {

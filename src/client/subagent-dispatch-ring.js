@@ -183,14 +183,22 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           }
         }, [props.sessionId])
         if (text === '') return null
+        // 挂输入卡下方 dock 行（conversation.composer.dock 槽位）：svcStyle 的行级规则
+        //（:has 限定）让官方 dock 行开 wrap，本行 flex:0 0 100% 独占官方统计的下一行。
+        // order:1 必须有——官方 DOM 里槽位排在上下文圆环之前，100% 行会把圆环挤到
+        // 第三行；order 后移让统计胶囊+圆环共占第一行（官方原位），本行居第二行。
         return React.createElement('div', {
           'data-testid': 'subagent-models-dock',
           'data-dsh-service-subagent-models-dock': true,
           style: {
+            boxSizing: 'border-box',
+            flex: '0 0 100%',
+            order: 1,
+            textAlign: 'center',
             fontSize: '12px',
             lineHeight: '18px',
             color: 'var(--dsh-svc-text-muted, var(--dsw-alias-label-secondary, #6b7280))',
-            padding: '2px 4px',
+            padding: '0 4px',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',

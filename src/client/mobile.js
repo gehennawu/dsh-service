@@ -216,7 +216,9 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
    0.1.6 官方把上下文圆环（JObwrW_root / JObwrW_trigger）移入输入框外部下方的
    uV2eYG_dock，与统计胶囊（bOPqQW_root）并列，挤占了移动端可用宽度。
    修法：
-   ① 收紧 uV2eYG_root 两侧内边距至 8px，uV2eYG_dock 间距收至 3px 并禁用换行；
+   ① 收紧 uV2eYG_root 两侧内边距至 8px，uV2eYG_dock 间距收至 3px；换行保持开启——
+   圆环与统计胶囊共占第一行，插件的子代理累计行（flex-basis:100%，见 apply.js svcStyle）
+   独占第二行，官方条目之间仍不换行；
    ② 降低统计条与上下文圆环字号至 11px（≤375px 极窄视口阶梯降至 10px），行高 16px；
    ③ 收紧 pill 内边距、sep 间隔及 svg 尺寸（11px），上下文圆环内边距收至 1px 3px；
    保证从 360px 起所有移动端视口下统计与上下文圆环均零截断、单行排开。
@@ -226,9 +228,9 @@ html[data-dshsvc-mobile] [class*="uV2eYG_root"] {
   padding-right: 8px !important;
 }
 html[data-dshsvc-mobile] [class*="uV2eYG_dock"] {
-  gap: 3px !important;
+  gap: 0 3px !important;
   max-width: 100% !important;
-  flex-wrap: nowrap !important;
+  flex-wrap: wrap !important;
   justify-content: center !important;
 }
 html[data-dshsvc-mobile] [class*="NDN2W_root"] {

@@ -6725,7 +6725,7 @@ test('subagent turn-tail row: adaptive compatibility for 0.1.6-alpha.2 list slot
   renderer.mount('conversation.chat.turnTail')
   await renderer.flush()
   assert.equal(renderer.hasTest('subagent-models-turn-tail'), true, 'renders under 0.1.6-alpha.2 list slot where props.matched is absent')
-  assert.match(renderer.text('conversation.chat.turnTail'), /子代理模型：cpa\/gpt-5\.6-luna/)
+  assert.match(renderer.text('conversation.chat.turnTail'), /子代理：cpa\/gpt-5\.6-luna/)
 })
 
 test('plugins.bundle.config slot is registered for @gehennawu/dsh-service and renders on page view', async () => {
@@ -6786,8 +6786,8 @@ test('subagent turn-tail row: route aggregation and line text assembly', async (
   // 词典：zh/en 都有回合尾行词条。
   const zh = renderer.dictionaries('dsh-service').zh
   const en = renderer.dictionaries('dsh-service').en
-  assert.match(zh['subagent.turnTail.label'], /子代理模型/)
-  assert.match(en['subagent.turnTail.label'], /Subagent models/)
+  assert.match(zh['subagent.turnTail.label'], /子代理：/)
+  assert.match(en['subagent.turnTail.label'], /Subagents/)
   assert.equal(zh['subagent.turnTail.unknown'].includes('模型未记录'), true)
   // 未记录兜底行的英文单复数（v1.1.2 发布前评审修复）：1 subagent / N subagents，zh 同形。
   assert.equal(zh['subagent.turnTail.countOne'], '子代理 ×1')
@@ -6818,7 +6818,16 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   await renderer.flush()
   // 初始拉取 + 聚合文本（跨回合累计、×n 计数）。
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
-  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×2')
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×2')
+  // 布局契约：行挂输入卡下方 dock 行，flex:0 0 100% + order:1 独占官方统计（含上下文
+  // 圆环）行的下一行（svcStyle 行级规则开 wrap + row-gap:0 两行贴紧），不与官方条目
+  // 同行挤占、不把圆环挤到第三行；自身无顶部内边距。
+  const dockStyle = renderer.findByTestId('subagent-models-dock').props.style
+  assert.equal(dockStyle.flex, '0 0 100%')
+  assert.equal(dockStyle.order, 1)
+  assert.equal(dockStyle.textAlign, 'center')
+  assert.equal(dockStyle.maxWidth, '100%')
+  assert.equal(dockStyle.padding, '0 4px')
 
   // 轮询自续链：advanceTimer(20000) 推进一次（force 强刷绕过 TTL 去重）。
   await renderer.advanceTimer(20000)
@@ -6831,13 +6840,13 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   ]
   await renderer.advanceTimer(20000)
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 3)
-  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×3')
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×3')
 
   // 轮询轮内 RPC 失败：沿用旧缓存、已显示的行不闪断（v1.1.2 发布前评审修复）。
   fail = true
   await renderer.advanceTimer(20000)
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 4)
-  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理模型：cpa/gpt-5.6-luna (xhigh) ×3')
+  assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×3')
   fail = false
 
   // 记录无 → 空渲染（null），不再有文本。
@@ -6872,7 +6881,7 @@ test('subagent page: composer subagent-info toggle defaults on, flips the indepe
   // 默认开（DEFAULT_FEATURES subagentModelsDock: true）。
   assert.equal(renderer.hasTest('subagent-dock-toggle-row'), true)
   assert.equal(renderer.findByTestId('subagent-dock-toggle').props['aria-checked'], 'true')
-  assert.match(renderer.findByTestId('subagent-dock-toggle-row').children[0].children[0].children.join(''), /输入框底部显示子代理信息/)
+  assert.match(renderer.findByTestId('subagent-dock-toggle-row').children[0].children[0].children.join(''), /输入框下方显示子代理信息/)
   // 切换 → feature 落盘（harness featureScope.set）。
   renderer.findByTestId('subagent-dock-toggle').props.onClick()
   await renderer.flush()
@@ -7087,9 +7096,11 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="composer" i\] \{ min-width: 0 !important; max-width: 100% !important; \}/)
     // 统计条与外部上下文圆环（2026-09-15 / 2026-09-18 用户点名「保证一行可以显示完」）：
     // 0.1.6 官方把上下文圆环移入输入框外部下方的 uV2eYG_dock，与统计胶囊并列。
-    // 收紧 uV2eYG_root/dock 间距与内边距，降字号至 11px（≤375px 降至 10px），始终 nowrap。
+    // 收紧 uV2eYG_root/dock 间距与内边距，降字号至 11px（≤375px 降至 10px）；官方条目
+    // 仍共占一行（列距 3px），子代理累计行独占第二行且行距归零（row-gap 0）。
     assert.match(styleTag.textContent, /\[class\*="uV2eYG_root"\] \{[^}]*padding-left: 8px !important/s)
-    assert.match(styleTag.textContent, /\[class\*="uV2eYG_dock"\] \{[^}]*gap: 3px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_dock"\] \{[^}]*gap: 0 3px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_dock"\] \{[^}]*flex-wrap: wrap !important/s)
     assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: nowrap !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*padding-left: 2px !important/s)

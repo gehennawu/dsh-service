@@ -67,6 +67,15 @@
           '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
+          // 会话累计行独占 dock 行的下一行（v1.8.x 布局修订）：官方 dock 行（uV2eYG_dock，
+          // content-sized + nowrap 的 flex 行）默认把槽位内容与统计胶囊/上下文圆环挤在一行；
+          // 仅当累计行在场（:has 限定，功能关闭时官方行零影响）才开 wrap + 撑满整行。
+          // 累计行自身 flex:0 0 100% + order:1（组件内联样式）——order 后移是关键：官方 DOM
+          // 里槽位排在上下文圆环之前，不同后移会把圆环挤到第三行；后移后统计胶囊+圆环
+          // 共占第一行（官方原位），累计行居第二行。row-gap:0 把换行后的两行贴紧
+          // （官方 gap:12px 纵横同值，拆开只收纵向、横向列距不动）。
+          // 哈希词干随 DSH 版本漂移，与 mobile.css 同一口径按当前词干匹配、升级时复核。
+          '[class*="uV2eYG_dock"]:has([data-dsh-service-subagent-models-dock]){flex-wrap:wrap;width:100%;row-gap:0}',
           // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类，锚在 data-dshsvc-root 不外溢 ──
           // 线宽主、阴影次；动效 120/170ms；reduced-motion 归零；内容区灰画布 + 卡片分层。
           '[data-dshsvc-root]{color:var(--dsh-svc-text);font-size:14px;line-height:1.55;background:var(--dsh-svc-page-bg);border-radius:var(--dsh-svc-radius-card);padding:2px}',
@@ -5568,8 +5577,11 @@
         return () => { unsubscribe(); if (dispose !== null) dispose() }
       })
 
-      // 会话级累计行（composer 下方）：与回合尾行同 feature 门控；不依赖回合数据，
-      // compaction 折叠导致回合尾行缺席时兜底可见。顺序后置（order 60）不打扰官方内容。
+      // 会话级累计行（输入卡下方、官方统计行的下一行）：挂官方 conversation.composer.dock
+      // 槽位（与统计胶囊/上下文圆环同一 dock 行），但通过 svcStyle 的行级规则让该行启用
+      // 换行、累计行 flex-basis:100% 独占下一行——不再与官方条目同行挤占。
+      // 与回合尾行同 feature 门控；不依赖回合数据，compaction 折叠导致回合尾行缺席时
+      // 兜底可见。order 后置（60）排在同槽官方条目之后。
       ctx.slots.inject('conversation.composer.dock', () => {
         let dispose = null
         const sync = () => {
