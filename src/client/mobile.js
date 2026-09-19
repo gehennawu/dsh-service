@@ -414,6 +414,35 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      标题长短变化时芯片位置稳定不飘。 */
   html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }
 }
+/* Agent Team 弹窗右锚（2026-09-20，用户点名「移动端的 Agent Team 弹窗右侧超出屏幕」）。
+   面板 = 官方 @deepseek-ai/dsh-experimental-client-ui-agent-team 的 TeamAction，
+   注册在 conversation.session.header.actions（与任务/子代理芯片同槽）。它自己的
+   CSS 是 position:absolute; left:0; top:calc(100% + 5px);
+   width:min(560px,100vw - 32px)——**左锚在触发钮左缘**，而该槽位在移动端位于
+   头部右侧（右锚泊位之外），面板便整体右移越屏：真机实测 320~560px 越出
+   112~352px、768/1023 越出 198/140px（面板右缘 = 触发钮左缘 + 面板宽）。
+
+   修法（三条规则，均基于稳定属性而非类哈希）：
+   ① 面板的包含块要落在**头部**而不是触发钮：会话头部在 ≥561px 官方为 static，
+      而 .root{position:relative} 会让面板锚在触发钮上 → 引擎已打的
+      data-dshsvc-chat-header 上补 position:relative（≤560 档泊位组已设过，
+      这里把覆盖面扩到整个移动端，幂等），再把 TeamAction 根改 static 把
+      包含块让给头部；
+   ② 面板本身改右锚：left:auto + right:16px，与它自带的
+      100vw − 32px 宽度公式（两侧各 16px）对称，并补 max-width 封顶以防
+      官方改宽。桌面 ≥1024 引擎拆卸、标记与属性同时下线 → 官方几何逐字不变。
+
+   选右锚而非 fixed：沉浸态头部带 transform（translateY(-100%)），被变换的
+   祖先会成为 fixed 后代的包含块——本文件顶部记载的 containing-block 陷阱；
+   真机实测 fixed 变体在沉浸态随头部一起位移（top 84→-68），与 absolute 无异，
+   却另外硬编码了一份纵向几何。右锚复用头部包含块，两者行为一致且不写死 top。 */
+html[data-dshsvc-mobile] [data-dshsvc-chat-header] { position: relative !important; }
+html[data-dshsvc-mobile] [data-team-action] { position: static !important; }
+html[data-dshsvc-mobile] [data-team-action] [role="dialog"] {
+  left: auto !important;
+  right: 16px !important;
+  max-width: calc(100vw - 32px) !important;
+}
 /* 刘海安全区：viewport-fit=cover 后由 env() 补回遮挡区 */
 html[data-dshsvc-mobile] body {
   padding-top: env(safe-area-inset-top, 0px);

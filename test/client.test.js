@@ -6988,6 +6988,20 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 方案二：headerActions（预设芯片所在）必须保持官方在流，不得整体泊动
     assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] \{[^}]*position: absolute/, 'headerActions must stay in-flow so the preset chip remains in the title row')
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="QsffPG_root"\] \{ position: absolute/, 'ungated parking rule would also hit 561~1023px windows')
+    // Agent Team 弹窗右锚（2026-09-20）：官方 TeamAction 面板自带 left:0，
+    // 挂在头部右侧的 header.actions 槽上会整体右移越屏。三条断言锁死修法：
+    // ① 头部（引擎稳定标记）成为定位上下文；② 触发钮根让出包含块；
+    // ③ 面板改右锚 16px 并按 100vw−32px 封顶。
+    // 必须无 @media 门：≥561px 官方头部是 static，只在 ≤560 修会漏掉 561~1023。
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-dshsvc-chat-header\] \{ position: relative !important; \}/)
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-team-action\] \{ position: static !important; \}/)
+    assert.match(styleTag.textContent, /\[data-team-action\] \[role="dialog"\] \{[^}]*left: auto !important/s)
+    assert.match(styleTag.textContent, /\[data-team-action\] \[role="dialog"\] \{[^}]*right: 16px !important/s)
+    assert.match(styleTag.textContent, /\[data-team-action\] \[role="dialog"\] \{[^}]*max-width: calc\(100vw - 32px\) !important/s)
+    // 不得落进 ≤560 泊位门：561~1023 官方头部是 static，只有把 position:relative
+    // 覆盖到整个移动端，面板才不会落到页面流底部。泊位组里只应出现已有的
+    // header chip parking 规则，不应出现 data-team-action。
+    assert.doesNotMatch(parkingGroup[0], /data-team-action/, 'Agent Team panel rule must not be trapped inside the 560px parking gate')
     // 真机反馈第二轮根因：左右列 absolute 后退出 grid 流，三列必须显式钉位防中列掉进 0px 轨
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{ grid-column: 1 !important; grid-row: 1 !important; \}/)
     assert.match(styleTag.textContent, /\[data-dshsvc-center\] \{ grid-column: 2 !important; grid-row: 1 !important; \}/)
