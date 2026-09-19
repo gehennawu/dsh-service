@@ -1470,6 +1470,30 @@ test('overview status is informational when only update or empty-backup hints ex
   assert.match(clean.text('settings.section'), /所有系统运行正常/)
 })
 
+test('a reset card expiring today surfaces as an overview info item and disappears once the host drops it', async () => {
+  const healthPayload = { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0, resetCardsExpiringToday: [{ provider: 'zai-coding-cn', label: '周额度重置卡' }] }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true } } }
+    if (endpoint === 'health') return { ok: true, value: healthPayload }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b1' }], totalBytes: 1024 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 今日到期 → info 级可行动项，带上卡名（无卡名时回落 provider）。
+  assert.equal(renderer.hasTest('overview-actionables'), true)
+  assert.match(renderer.text('settings.section'), /重置卡今日到期：周额度重置卡/)
+  assert.match(renderer.text('settings.section'), /有 1 条提示/)
+
+  // 次日宿主已自动移除该卡 → health 不再带该字段，提示随之消失（无需前端再判时间）。
+  delete healthPayload.resetCardsExpiringToday
+  await renderer.advanceTimer(5000)
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'the reminder must clear once the host stops reporting it')
+  assert.match(renderer.text('settings.section'), /所有系统运行正常/)
+})
+
 test('a manual-launch runtime environment no longer occupies the overview actionable list', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'linux', supervisorKind: null, manualStartLikely: true } } }
@@ -3778,6 +3802,7 @@ test('ring keeps its panel open while refreshing and shows reset times once data
         status: 'ok',
         windows: [{ id: 'weekly', percent: 40, resetsAt: new Date(Date.now() + 7530_000).toISOString() }],
         fetchedAt: Date.now(),
+        resetCards: [{ id: 'rc-panel', provider: 'opencode-go', label: '周额度重置卡', expiresAt: '2099-06-01' }],
       }],
     },
   }
@@ -3812,6 +3837,15 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   assert.equal(renderer.hasTest('quota-ring-panel'), true)
   assert.match(renderer.text(), /本周.*40%/)
   assert.match(renderer.text(), /重置于 2 小时 5 分钟/)
+  // 圆环面板的重置卡：单张时直接显示那张卡（不再有汇总行），行首是卡片图标。
+  const panelCard = renderer.findByTestId('quota-panel-reset-card-0-0')
+  assert.equal(panelCard.children[0].type, 'svg')
+  assert.equal(panelCard.children[0].props['aria-hidden'], true)
+  // 弹窗与额度页同款：图标绿色锚点、文字中性。
+  assert.equal(panelCard.children[0].props.stroke, 'var(--dsw-alias-state-success-primary)')
+  assert.equal(panelCard.props.style.color, 'var(--dsw-alias-label-secondary)')
+  assert.match(String(panelCard.children[1].children), /重置卡 · 周额度重置卡/)
+  assert.equal(renderer.hasTest('quota-panel-reset-more-0'), false, 'single card needs no collapse toggle')
 
   // 关闭面板不再补发 quota RPC（此前开/关 toggle 都无条件拉一次）。
   const callsBeforeClose = quotaCalls
@@ -3820,6 +3854,153 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   assert.equal(renderer.hasTest('quota-ring-panel'), false)
   assert.equal(quotaCalls, callsBeforeClose)
 })
+
+test('the ring panel shows only each account\'s nearest reset card and collapses the rest', async () => {
+  // 复现多账号场景：CPA 下两个 codex 账号各有多张卡。每账号默认只显示最近要到期的那张，
+  // 其余折叠在「另有 N 张」后面（此前把所有卡混成一长串，多账号下分不清归属）。
+  const store = {
+    snapshot: { current: { provider: 'cpa' } },
+    subscribe: () => () => {},
+    getSnapshot() { return this.snapshot },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+            refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            windows: [
+              { id: 'g-0-codex-5h', kindKey: 'codex-5h', label: 'gehenna8888@gmail.com', percent: 0 },
+              { id: 'r-1-codex-5h', kindKey: 'codex-5h', label: 'relient8888@gmail.com', percent: 0 },
+            ],
+            // 刻意乱序：最近到期的排在中间，验证展示取「最近」而不是原序第一张。
+            resetCards: [
+              { id: 'g2', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-10-04T13:42' },
+              { id: 'g1', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-09-21T08:30' },
+              { id: 'g3', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-10-05T07:12' },
+              { id: 'r2', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: '2026-10-05T06:18' },
+              { id: 'r1', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: '2026-10-04T10:34' },
+            ],
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories: { directoryFor: () => ({ store, load: () => Promise.resolve() }) } })
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+
+  // 两个账号两组；每组只显示最近那一张（gehenna=09-21、relient=10-04），其余折叠。
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com')
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'relient8888@gmail.com')
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 08:30/)
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-1-0').children[1].children), /2026-10-04 10:34/)
+  // 弹窗侧同款配色：图标绿色锚点、文字中性（与额度页同一份 resetCardContent）。
+  assert.equal(renderer.findByTestId('quota-panel-reset-card-0-0').children[0].props.stroke, 'var(--dsw-alias-state-success-primary)')
+  assert.equal(renderer.findByTestId('quota-panel-reset-card-0-0').props.style.color, 'var(--dsw-alias-label-secondary)')
+  assert.equal(renderer.hasTest('quota-panel-reset-card-0-1'), false, 'only the nearest card is shown per account')
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-more-0').children), '另有 2 张')
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-more-1').children), '另有 1 张')
+
+  // 展开某账号 → 该账号全部卡按最近到期排序；其它账号不受影响。
+  renderer.findByTestId('quota-panel-reset-more-0').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-panel-reset-more-0'), false)
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-1').children[1].children), /2026-10-04 13:42/)
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-2').children[1].children), /2026-10-05 07:12/)
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-more-1').children), '另有 1 张', 'the other account stays collapsed')
+
+  // 收起恢复默认。
+  renderer.findByTestId('quota-panel-reset-less-0').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-panel-reset-card-0-1'), false)
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-more-0').children), '另有 2 张')
+})
+
+test('a provider-level reset card (no account) is grouped separately from account cards', async () => {
+  const store = {
+    snapshot: { current: { provider: 'cpa' } },
+    subscribe: () => () => {},
+    getSnapshot() { return this.snapshot },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+            refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            windows: [{ id: 'g-0-codex-5h', kindKey: 'codex-5h', label: 'gehenna8888@gmail.com', percent: 0 }],
+            resetCards: [
+              { id: 'whole', provider: 'cpa', expiresAt: '2026-09-21T23:47' },
+              { id: 'acct', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-10-05T07:12' },
+            ],
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories: { directoryFor: () => ({ store, load: () => Promise.resolve() }) } })
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  // 旧数据（无 account）归到独立的「重置卡」组，不混进任何账号。
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), '重置卡')
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 23:47/)
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'gehenna8888@gmail.com')
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-1-0').children[1].children), /2026-10-05 07:12/)
+})
+
+test('an expired reset card switches both its icon and its text to the warning color', async () => {
+  // 配色契约的过期分支：未过期 = 绿图标 + 中性文字；过期 = 图标与文字一起转警示色
+  // （与既有「过期标黄」口径一致，不再只靠「已过期」三字提示）。
+  const store = {
+    snapshot: { current: { provider: 'cpa' } },
+    subscribe: () => () => {},
+    getSnapshot() { return this.snapshot },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+            refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            windows: [{ id: 'g-0-codex-5h', kindKey: 'codex-5h', label: 'gehenna8888@gmail.com', percent: 0 }],
+            resetCards: [{ id: 'stale', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2020-01-01T00:00' }],
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories: { directoryFor: () => ({ store, load: () => Promise.resolve() }) } })
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+
+  const row = renderer.findByTestId('quota-panel-reset-card-0-0')
+  assert.equal(row.props.style.color, 'var(--dsw-alias-state-warn-primary)')
+  assert.equal(row.children[0].props.stroke, 'var(--dsw-alias-state-warn-primary)')
+  assert.match(String(row.children[1].children), /已过期/)
+})
+
 
 test('quota ring panel centers lower in the conversation area via body portal on mobile viewports and reverts when widened', async () => {
   const storeListeners = new Set()
@@ -4363,9 +4544,12 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
+  // 「配置」未展开时重置卡行不挂「移除」钮；展开后才出现（平时不出现破坏性按钮）。
+  assert.equal(renderer.hasTest('quota-remove-openrouter-or-1'), false)
   // v0.39：类型切换在折叠的「配置」区，先展开 openrouter 卡。
   renderer.findByTestId('quota-advanced-toggle-openrouter').props.onClick()
   await renderer.flush()
+  assert.ok(renderer.hasTest('quota-remove-openrouter-or-1'), 'expanding 配置 reveals the per-card remove button')
   // 已适配卡片脚部下拉预选当前 kind。
   assert.equal(renderer.findByTestId('quota-kind-select-openrouter').props.value, 'opencode-go')
   // 已适配行展示窗口与更新时间；每个窗口带独立进度条（无「已用」头条）。
@@ -4375,11 +4559,15 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.ok(renderer.hasTest('quota-auto-tag-openrouter'))
   assert.equal(renderer.findByTestId('quota-card-bar-openrouter-weekly').children[0].props.style.width, '14%')
   assert.equal(renderer.hasTest('quota-card-reset-openrouter-weekly'), false) // fixture 无 resetsAt → 不显示重置行
-  // 手录重置卡行（v0.20 免次数）：标题+到期两段，行尾带逐条「移除」按钮。
+  // 手录重置卡行（v0.20 免次数）：行首卡片 SVG + 标题/到期两段。
   const cardLine = renderer.findByTestId('quota-reset-card-openrouter-or-1')
-  assert.equal(String(cardLine.children[0].children[0].children), '重置卡 · 周额度重置卡')
-  assert.equal(String(cardLine.children[0].children[1].children), '2099-06-01 到期')
-  assert.ok(renderer.hasTest('quota-remove-openrouter-or-1'))
+  assert.equal(cardLine.children[0].type, 'svg', 'each reset card row starts with the card icon')
+  assert.equal(cardLine.children[0].props['aria-hidden'], true)
+  // 重置卡区域的可辨识度：图标染绿（类别锚点），文字保持中性可读，不再两者同色。
+  assert.equal(cardLine.children[0].props.stroke, 'var(--dsw-alias-state-success-primary)')
+  assert.equal(cardLine.props.style.color, 'var(--dsw-alias-label-secondary)')
+  assert.equal(String(cardLine.children[1].children[0].children), '重置卡 · 周额度重置卡')
+  assert.equal(String(cardLine.children[1].children[1].children), '2099-06-01 到期')
 
   // 手动适配行选 opencode-go → quota-config 双白名单校验后保存并刷新成卡。
   renderer.findByTestId('quota-add-provider').props.onChange({ target: { value: 'opencode-go' } })
@@ -4504,8 +4692,9 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-1'))
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-2'))
   const secondLineTexts = renderer.findByTestId('quota-reset-card-zai-coding-cn-rc-1').children.filter((child) => child != null)
-  assert.equal(String(secondLineTexts[0].children[0].children), '重置卡 · 周额度重置卡')
-  assert.equal(String(secondLineTexts[0].children[1].children), '2026-09-30 08:00 到期')
+  assert.equal(secondLineTexts[0].type, 'svg')
+  assert.equal(String(secondLineTexts[1].children[0].children), '重置卡 · 周额度重置卡')
+  assert.equal(String(secondLineTexts[1].children[1].children), '2026-09-30 08:00 到期')
 
   // 取消关闭表单。
   renderer.findByTestId('quota-reset-cancel').props.onClick()
@@ -5920,6 +6109,147 @@ test('cliproxy windows render as「账号 · 本地化窗口名」and management
   assert.ok(renderer.findByTestId('quota-card-family-cpa-codex'))
   assert.equal(renderer.findByTestId('quota-card-family-title-cpa-gemini').children.join(''), 'Gemini')
   assert.equal(renderer.findByTestId('quota-card-family-title-cpa-codex').children.join(''), 'Codex')
+})
+
+test('CLIProxyAPI codex accounts each get their own reset-card block with an add entry', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const cardCalls = []
+  // 假宿主持有卡状态：新增卡片后 quota RPC 要把新卡回传给客户端（复现真实往返，
+  // 否则「保存成功但卡片没出现在对应账号下」这类 bug 会被静态 fixture 掩盖）。
+  let savedCards = [
+    { id: 'rc-a', provider: 'cpa', account: 'codex-a@example.com', label: 'A 号周卡', expiresAt: '2099-01-01' },
+    { id: 'rc-b', provider: 'cpa', account: 'codex-b@example.com', label: 'B 号周卡', expiresAt: '2099-02-01' },
+  ]
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota-reset-card') {
+      cardCalls.push(payload)
+      if (payload?.remove === true) savedCards = savedCards.filter((card) => card.id !== payload.id)
+      else savedCards = [...savedCards, { id: `rc-new-${savedCards.length}`, ...payload }]
+      return { ok: true }
+    }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+            refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            // 两个 codex 账号（同 provider 内）+ 一个 gemini 账号；账号级重置卡按 account 归属。
+            windows: [
+              { id: 'a-0-codex-5h', kindKey: 'codex-5h', label: 'codex-a@example.com', percent: 43 },
+              { id: 'a-0-codex-week', kindKey: 'codex-week', label: 'codex-a@example.com', percent: 7 },
+              { id: 'b-1-codex-5h', kindKey: 'codex-5h', label: 'codex-b@example.com', percent: 12 },
+              { id: 'gm-2-gemini-pro', kindKey: 'gemini-2.5-pro', label: 'gm@gmail.com', percent: 10 },
+            ],
+            resetCards: savedCards,
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  // 每个 codex 账号一个块（testid 带账号 slug），gemini 不改结构（仍无账号块）。
+  assert.ok(renderer.findByTestId('quota-cpa-account-cpa-codex-a-example-com'))
+  assert.ok(renderer.findByTestId('quota-cpa-account-cpa-codex-b-example-com'))
+  assert.equal(renderer.hasTest('quota-cpa-account-cpa-gm-gmail-com'), false)
+  // 各账号块内只出现属于自己的重置卡。
+  const blockA = renderer.findByTestId('quota-cpa-account-cpa-codex-a-example-com')
+  const blockB = renderer.findByTestId('quota-cpa-account-cpa-codex-b-example-com')
+  const flatText = (node) => JSON.stringify(node)
+  assert.match(flatText(blockA), /A 号周卡/)
+  assert.doesNotMatch(flatText(blockA), /B 号周卡/)
+  assert.match(flatText(blockB), /B 号周卡/)
+  assert.doesNotMatch(flatText(blockB), /A 号周卡/)
+  // 追加时带 account 归属（否则两张卡都会挂到 provider 级）。
+  assert.deepEqual(renderer.findAllByTestIdPrefix('quota-reset-card-cpa-rc-').length, 2)
+
+  // 「添加重置卡」与 zai 同款：平时不出现，展开「配置」后每个账号各一个。
+  assert.equal(renderer.hasTest('quota-card-edit-cpa-codex-a-example-com'), false)
+  renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
+  await renderer.flush()
+  const addA = renderer.findByTestId('quota-card-edit-cpa-codex-a-example-com')
+  const addB = renderer.findByTestId('quota-card-edit-cpa-codex-b-example-com')
+  assert.match(String(addA.children[0]), /添加重置卡/)
+  assert.match(String(addB.children[0]), /添加重置卡/)
+
+  // 点 A 账号的入口 → 表单出现在 A 块内，保存载荷带 account=codex-a。
+  addA.props.onClick()
+  await renderer.flush()
+  assert.ok(renderer.hasTest('quota-reset-editor-cpa-codex-a-example-com'))
+  assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '')
+  renderer.findByTestId('quota-reset-input-date').props.onChange({ target: { value: '2099-03-01T00:00' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-reset-card-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(cardCalls, [{ provider: 'cpa', account: 'codex-a@example.com', expiresAt: '2099-03-01T00:00' }])
+  // 真实往返：新卡归属 A 账号（B 账号的块里不能出现它）。A 账号已有两张卡，
+  // 默认只展开最近那张，新的 2099-03-01 不是最近 → 落在折叠里，展开后可见。
+  const blockB2 = renderer.findByTestId('quota-cpa-account-cpa-codex-b-example-com')
+  assert.doesNotMatch(flatText(blockB2), /rc-new-2/, 'the new card must never land under another account')
+  renderer.findByTestId('quota-reset-more-cpa-codex-a-example-com').props.onClick()
+  await renderer.flush()
+  const blockA2 = renderer.findByTestId('quota-cpa-account-cpa-codex-a-example-com')
+  assert.match(flatText(blockA2), /rc-new-2/, 'the new card must render inside its own account block')
+})
+
+test('an account-scoped reset card stays visible while the row has no windows yet', async () => {
+  // 回归：保存后行会短暂回到 refreshing/无窗口（宿主重新查询中），查询失败的账号同样拿不到窗口。
+  // 账号块的成员若只由窗口推导，卡就会凭空消失（「添加成功但没按账号位置显示」）。
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const baseCards = [{ id: 'rc-a', provider: 'cpa', account: 'codex-a@example.com', label: 'A 号周卡' }]
+  const renderRow = ({ windows, refreshing, errorCode }) => ({
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+    refreshing: refreshing === true, status: errorCode !== undefined ? 'error' : 'ok', fetchedAt: Date.now(),
+    ...(errorCode !== undefined ? { errorCode } : {}),
+    ...(windows.length > 0 ? { windows } : {}),
+    resetCards: baseCards,
+  })
+  const codexWindow = { id: 'a-0-codex-5h', kindKey: 'codex-5h', label: 'codex-a@example.com', percent: 43 }
+  let scenario = 'refreshing'
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') {
+      const row = scenario === 'refreshing'
+        ? renderRow({ windows: [], refreshing: true })
+        : scenario === 'error'
+          ? renderRow({ windows: [], errorCode: 'upstream-status:401' })
+          : renderRow({ windows: [codexWindow] })
+      return { ok: true, value: { serverTime: Date.now(), providers: [row] } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const flat = (id) => JSON.stringify(renderer.findByTestId(id))
+  // refreshing + 无窗口：账号卡仍要出现（这是保存后立刻发生的状态）。
+  assert.ok(renderer.hasTest('quota-cpa-account-cpa-codex-a-example-com'), 'account block must exist while refreshing')
+  assert.match(flat('quota-cpa-account-cpa-codex-a-example-com'), /A 号周卡/)
+  // 查询失败 + 无窗口：同样不能丢卡。经该卡的「刷新」入口重发 quota（无自动轮询，手动触发）。
+  scenario = 'error'
+  renderer.findByTestId('quota-refresh-cpa').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.ok(renderer.hasTest('quota-cpa-account-cpa-codex-a-example-com'), 'account block must exist on a failed account query')
+  assert.match(flat('quota-cpa-account-cpa-codex-a-example-com'), /A 号周卡/)
 })
 
 test('quota error rows render one unified line: family copy, HTTP status, endpoint, account, upstream reason', async () => {

@@ -444,15 +444,30 @@
           }, translate(schedule.captionKey)) : null)
       }
 
+      /**
+       * 手录重置卡的到期时刻（毫秒）：与宿主 `resetCardExpiryMs` 同口径——
+       * 带时刻的串按真实时刻；纯日期（`YYYY-MM-DD`）顺延到当日 23:59:59.999（当天仍有效）；
+       * 缺失/无法解析 → null（永不过期）。
+       */
+      function resetCardExpiryMs(expiresAt) {
+        if (typeof expiresAt !== 'string') return null
+        const raw = expiresAt.trim()
+        if (raw === '') return null
+        const parsed = Date.parse(raw)
+        if (!Number.isFinite(parsed)) return null
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return parsed + 24 * 60 * 60 * 1000 - 1
+        return parsed
+      }
+
       /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。v0.20 起免次数。 */
       function resetCardContent(card, translate) {
         const rawExpiry = typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '' ? card.expiresAt.trim() : ''
-        const at = rawExpiry !== '' ? Date.parse(rawExpiry) : NaN
-        const expired = Number.isFinite(at) && at < Date.now()
+        const at = resetCardExpiryMs(rawExpiry)
+        const expired = at !== null && at < Date.now()
         let expiryPart = ''
         if (rawExpiry !== '') {
           let shown = rawExpiry
-          if (Number.isFinite(at)) {
+          if (at !== null) {
             shown = rawExpiry.length > 10 ? `${formatShortDate(at)} ${formatClockTime(at)}` : formatShortDate(at)
             shown = expired
               ? `${shown} ${translate('quota.resetCard.expired')}`
@@ -465,8 +480,51 @@
           expired,
           title: `${translate('quota.resetCard.title')}${labelSuffix}`,
           expiry: expiryPart,
+          // 重置卡是「类别」不是「状态」：图标染成绿色提示这是重置卡（视觉锚点），
+          // 文字保持中性可读；过期时图标随行文字一起转警示色。用令牌而非硬编码绿色，
+          // 深色模式自动跟随。
+          iconColor: expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)',
+          textColor: expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-secondary)',
         }
       }
+      /**
+       * 重置卡排序：**最近要到期的排最前**。未过期且能解析出时刻的按升序在前；
+       * 已过期 / 无到期时刻的排到末尾（各自内部保持原序，稳定）。「只显示最近一张」即取首个。
+       */
+      function orderResetCardsByNearest(resetCards, now = Date.now()) {
+        const list = Array.isArray(resetCards) ? resetCards : []
+        return list
+          .map((card, index) => {
+            const at = resetCardExpiryMs(card?.expiresAt)
+            return { card, index, key: at !== null && at >= now ? at : Number.POSITIVE_INFINITY }
+          })
+          .sort((a, b) => (a.key - b.key) || (a.index - b.index))
+          .map((entry) => entry.card)
+      }
+
+      /**
+       * 重置卡按账号归组（两处面板共用）：provider 级（无 account）归一组，账号级各归一组。
+       * 组序：provider 级在前，账号按首次出现序。组内按「最近要到期」排序。
+       */
+      function groupResetCards(resetCards, now = Date.now()) {
+        if (!Array.isArray(resetCards) || resetCards.length === 0) return []
+        const groups = []
+        const indexByKey = new Map()
+        for (const card of resetCards) {
+          const account = typeof card?.account === 'string' ? card.account.trim() : ''
+          const key = account === '' ? '\u0000provider' : account
+          let slot = indexByKey.get(key)
+          if (slot === undefined) {
+            slot = groups.length
+            indexByKey.set(key, slot)
+            groups.push({ account, cards: [] })
+          }
+          groups[slot].cards.push(card)
+        }
+        for (const group of groups) group.cards = orderResetCardsByNearest(group.cards, now)
+        return groups
+      }
+
       function quotaErrorMessage(code, translate) {
         const key = `quota.error.${code}`
         const text = translate(key)
@@ -637,6 +695,15 @@
         const translate = useTranslation()
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
         useEffect(() => quotaStore.subscribe(() => setQuota(quotaStore.getSnapshot())), [])
+        // 重置卡分区的展开态（v1.9.1）：默认收起，只显示每个账号最近要到期的那张。
+        // 键为 `panel:<组序>`，与额度页管理列表的展开态互不影响。
+        const [expandedResetGroups, setExpandedResetGroups] = useState(new Set())
+        const toggleResetGroup = (key) => setExpandedResetGroups((current) => {
+          const next = new Set(current)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
         // 自愈（v1.1.2）：真实渲染器把 inject 产物按 (entry,binding) 缓存——刷新/首进
         // 旧会话时 directoryFor 可能因会话作用域尚未热身抛错，空 props 被缓存后圆环静默。
         // 注入失败也携带 sessionId；store 缺席时组件内按 ctx.timer 退避重试解析目录，
@@ -876,19 +943,60 @@
           ...(panelPeakSchedule !== null
             ? [React.createElement(QuotaPeakTimeline, { key: 'panel-peak-timeline', showCaption: false, schedule: panelPeakSchedule })]
             : []),
-          ...(Array.isArray(row.resetCards) && row.resetCards.length > 0
-            ? [React.createElement('div', { key: 'panel-reset-cards', style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' } },
-                row.resetCards.map((card, cardIndex) => {
-                  const content = resetCardContent(card, translate)
-                  return React.createElement('div', {
-                    key: cardIndex,
-                    'data-testid': `quota-panel-reset-card-${cardIndex}`,
-                    style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
-                  },
-                  React.createElement('span', null, content.title),
-                  content.expiry !== '' ? React.createElement('span', null, content.expiry) : null)
-                }))]
-            : []),
+          ...(() => {
+            // 重置卡分区（弹窗）：按账号独立展示，**每账号默认只展开最近要到期的那张**，
+            // 其余折叠在「另有 N 张」后面（多账号下既分得清归属，也不会一屏铺满旧卡）。
+            const groups = groupResetCards(row.resetCards)
+            if (groups.length === 0) return []
+            return [React.createElement('div', {
+              key: 'panel-reset-cards',
+              'data-testid': 'panel-reset-cards',
+              style: { marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', flexDirection: 'column', gap: '6px' },
+            },
+            groups.map((group, groupIndex) => {
+              const expanded = expandedResetGroups.has(`panel:${groupIndex}`)
+              const shown = expanded ? group.cards : group.cards.slice(0, 1)
+              const hidden = group.cards.length - shown.length
+              // 账号名兜底：provider 级组用「重置卡」标题词条，账号组直接用账号标识（纯数据）。
+              const owner = group.account !== '' ? group.account : translate('quota.resetCard.title')
+              return React.createElement('div', {
+                key: `panel-reset-group-${groupIndex}`,
+                'data-testid': `quota-panel-reset-group-${groupIndex}`,
+                style: { display: 'flex', flexDirection: 'column', gap: '2px' },
+              },
+              groups.length > 1
+                ? React.createElement('div', { 'data-testid': `quota-panel-reset-owner-${groupIndex}`, title: owner, style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, owner)
+                : null,
+              shown.map((card, cardIndex) => {
+                const content = resetCardContent(card, translate)
+                return React.createElement('div', {
+                  key: `panel-reset-card-${cardIndex}`,
+                  'data-testid': `quota-panel-reset-card-${groupIndex}-${cardIndex}`,
+                  style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', lineHeight: '16px', color: content.textColor },
+                },
+                React.createElement('svg', { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: content.iconColor, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, style: { flexShrink: 0 } },
+                  React.createElement('rect', { x: 2, y: 5, width: 20, height: 14, rx: 2 }),
+                  React.createElement('line', { x1: 2, y1: 10, x2: 22, y2: 10 })),
+                React.createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, content.expiry !== '' ? `${content.title} · ${content.expiry}` : content.title))
+              }),
+              hidden > 0
+                ? React.createElement('button', {
+                    type: 'button',
+                    'data-testid': `quota-panel-reset-more-${groupIndex}`,
+                    onClick: () => toggleResetGroup(`panel:${groupIndex}`),
+                    style: { alignSelf: 'flex-start', fontSize: '11px', color: 'var(--dsw-alias-brand-primary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: '0 2px', textDecoration: 'underline' },
+                  }, translate('quota.resetCard.more', { count: hidden }))
+                : null,
+              expanded && group.cards.length > 1
+                ? React.createElement('button', {
+                    type: 'button',
+                    'data-testid': `quota-panel-reset-less-${groupIndex}`,
+                    onClick: () => toggleResetGroup(`panel:${groupIndex}`),
+                    style: { alignSelf: 'flex-start', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: '0 2px', textDecoration: 'underline' },
+                  }, translate('quota.resetCard.less'))
+                : null)
+            }))]
+          })(),
           errorNode,
           updatedNode) : null
         return React.createElement('span', { ref: rootRef, style: { position: 'relative', display: 'inline-flex' } },
@@ -3376,6 +3484,15 @@
           acquireQuotaLoop({ all: true })
           return () => releaseQuotaLoop({ all: true })
         }, [])
+        // 重置卡分区的展开态（v1.9.1）：默认收起，每个账号只显示最近要到期的那张。
+        // 键为 `card:<provider>:<slug>`，与圆环弹窗的展开态互不影响。
+        const [expandedResetGroups, setExpandedResetGroups] = useState(new Set())
+        const toggleResetGroup = (key) => setExpandedResetGroups((current) => {
+          const next = new Set(current)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
         // 排序与显隐的多端同步：进入额度页时拉一次后端权威值（拉取失败下次进入重试），
         // 并订阅本地/远端变更刷新管理列表。
         useEffect(() => {
@@ -3394,8 +3511,10 @@
         const [advancedOpen, setAdvancedOpen] = useState(null)
         // v0.20 免次数：草稿只有到期时间与名称；添加成功后清空并保持打开，方便连续追加多条。
         const [cardDraft, setCardDraft] = useState({ expiresAt: '', label: '' })
-        const openCardEditor = (row) => {
-          setCardEditor({ provider: row.provider })
+        // 重置卡编辑器按 (provider, account) 定位：CLIProxyAPI 一行多账号，每个 codex 账号各自记事。
+        // account 为 '' 表示 provider 级（zai-coding-cn 等既有渠道，行为与加 account 前一致）。
+        const openCardEditor = (row, account = '') => {
+          setCardEditor({ provider: row.provider, account })
           setCardDraft({ expiresAt: '', label: '' })
         }
         // 凭据填写窗口（v0.24）：未配置行的「填写 API 密钥」内联表单；宿主写入凭据库后立即强制
@@ -3460,6 +3579,7 @@
           setConfigError('')
           try {
             const payload = { provider: cardEditor.provider }
+            if (typeof cardEditor.account === 'string' && cardEditor.account !== '') payload.account = cardEditor.account
             if (cardDraft.expiresAt !== '') payload.expiresAt = cardDraft.expiresAt
             if (cardDraft.label !== '') payload.label = cardDraft.label
             const res = await rpcCall('quota-reset-card', payload)
@@ -3777,15 +3897,176 @@
                       : null)
                   const windows = Array.isArray(row.windows) ? row.windows : []
                   const isAdvanced = advancedOpen === row.provider
+                  // 账号 slug（CLIProxyAPI codex 账号块的 testid 后缀）：纯展示用稳定键，与宿主侧同规则。
+                  const accountSlugOf = (account, index) => String(account).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `acct-${index}`
                   // 每个窗口三段式：标签+百分比 / 进度条 / 重置单独一行；文本窗口（余额）只有一行（renderQuotaWindowRow 统一渲染）。
                   const windowBlocks = windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
+                                    // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，
+                  // 行首卡片图标 + 标题/到期两段；「移除」只在展开「配置」区后出现（平时不挂删除钮）。
+                  // 账号级（v1.9.1）：CLIProxyAPI 一行多账号，card.account 标明归属；缺省 = provider 级。
+                  const resetCardsAll = Array.isArray(row.resetCards) ? row.resetCards : []
+                  const providerLevelResetCards = resetCardsAll.filter((card) => typeof card.account !== 'string' || card.account === '')
+                  const renderResetCardRow = (card, cardIndex) => {
+                    const content = resetCardContent(card, translate)
+                    const cardId = typeof card.id === 'string' && card.id !== '' ? card.id : `idx-${cardIndex}`
+                    return React.createElement('div', {
+                      key: cardId,
+                      'data-testid': `quota-reset-card-${row.provider}-${cardId}`,
+                      style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', lineHeight: '16px', color: content.textColor },
+                    },
+                    // 行首卡片图标：与「刷新」同为 12px stroke 线性图标；染色成绿色（类别锚点，
+                    // 见 `resetCardContent`），过期时转警示色，与文字颜色解耦。
+                    React.createElement('svg', { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: content.iconColor, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, style: { flexShrink: 0 } },
+                      React.createElement('rect', { x: 2, y: 5, width: 20, height: 14, rx: 2 }),
+                      React.createElement('line', { x1: 2, y1: 10, x2: 22, y2: 10 })),
+                    React.createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                      React.createElement('span', null, content.title),
+                      content.expiry !== '' ? React.createElement('span', null, content.expiry) : null),
+                    // 移除钮只在「配置」展开时渲染：平时卡片行是纯展示，避免常驻破坏性按钮。
+                    isAdvanced
+                      ? React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-remove-${row.provider}-${cardId}`,
+                          onClick: () => removeResetCard(row.provider, cardId),
+                          style: { fontSize: '11px', padding: '2px 10px', ...fullRound(999), border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+                        }, translate('quota.resetCard.remove'))
+                      : null)
+                  }
+                  const resetCardNodes = providerLevelResetCards.map(renderResetCardRow)
+                  // 账号级卡按账号归集：账号块的成员是「窗口里的账号」∪「已有卡的账号」——
+                  // 只看窗口会让刚保存（行回到 refreshing、暂无窗口）或查询失败的账号卡无处可挂，
+                  // 表现为「添加成功但卡片不显示」。
+                  const accountScopedCards = resetCardsAll.filter((card) => typeof card.account === 'string' && card.account !== '')
+                  const accountCardKeys = []
+                  const accountCardsByKey = new Map()
+                  for (const card of accountScopedCards) {
+                    if (!accountCardsByKey.has(card.account)) {
+                      accountCardsByKey.set(card.account, [])
+                      accountCardKeys.push(card.account)
+                    }
+                    accountCardsByKey.get(card.account).push(card)
+                  }
+                  // 账号块里的重置卡：**默认只显示最近要到期的那张**，其余折叠在「另有 N 张」后面
+                  // （与圆环弹窗同款规则，避免多账号下每张卡的旧卡铺满页面）。
+                  const accountResetCardNodes = (account, slug) => {
+                    const cards = orderResetCardsByNearest(accountCardsByKey.get(account) ?? [])
+                    const key = `card:${row.provider}:${slug}`
+                    const expanded = expandedResetGroups.has(key)
+                    const shown = expanded ? cards : cards.slice(0, 1)
+                    const hidden = cards.length - shown.length
+                    return [
+                      ...shown.map(renderResetCardRow),
+                      hidden > 0
+                        ? React.createElement('button', {
+                            key: 'reset-more',
+                            type: 'button',
+                            'data-testid': `quota-reset-more-${row.provider}-${slug}`,
+                            onClick: () => toggleResetGroup(key),
+                            style: { alignSelf: 'flex-start', fontSize: '11px', color: 'var(--dsw-alias-brand-primary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: '0 2px', textDecoration: 'underline' },
+                          }, translate('quota.resetCard.more', { count: hidden }))
+                        : null,
+                      expanded && cards.length > 1
+                        ? React.createElement('button', {
+                            key: 'reset-less',
+                            type: 'button',
+                            'data-testid': `quota-reset-less-${row.provider}-${slug}`,
+                            onClick: () => toggleResetGroup(key),
+                            style: { alignSelf: 'flex-start', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: '0 2px', textDecoration: 'underline' },
+                          }, translate('quota.resetCard.less'))
+                        : null,
+                    ]
+                  }
+                  // 单个账号块的渲染：窗口行（可空）→ 该账号的重置卡 → 「添加重置卡」入口。
+                  const renderAccountBlock = (account, slug, windowNodes) => React.createElement('div', {
+                    key: `codex-account-${slug}`,
+                    'data-testid': `quota-cpa-account-${row.provider}-${slug}`,
+                    style: { display: 'flex', flexDirection: 'column', gap: '10px' },
+                  },
+                  windowNodes.length > 0
+                    ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, windowNodes)
+                    : null,
+                  ...accountResetCardNodes(account, slug),
+                  // 「添加重置卡」与 zai 同款：只在「配置」展开时出现，卡行本身常驻可见。
+                  isAdvanced
+                    ? React.createElement('div', { key: 'reset-add-row', style: { display: 'flex' } },
+                        React.createElement('button', {
+                          type: 'button',
+                          'data-testid': `quota-card-edit-${row.provider}-${slug}`,
+                          onClick: () => openCardEditor(row, account),
+                          style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                        }, translate('quota.resetCard.edit')))
+                    : null,
+                  resetEditorFor(account, slug))
+                  const inputStyle = { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '130px' }
+                  const resetField = (labelText, testId, type, keyName) => React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+                    labelText,
+                    React.createElement('input', {
+                      type,
+                      'data-testid': testId,
+                      value: cardDraft[keyName],
+                      onChange: (event) => setCardDraft({ ...cardDraft, [keyName]: event.target.value }),
+                      style: inputStyle,
+                    }))
+                  // 录入表单：按 (provider, account) 归属渲染——账号级卡的表单要出现在该账号块内，
+                  // 而不是整张卡底部（否则多账号下分不清正在给谁加卡）。testid 带账号 slug 后缀区分。
+                  const resetEditorFor = (account, slug) => {
+                    const target = typeof account === 'string' ? account : ''
+                    if (!isAdvanced || cardEditor === null || cardEditor.provider !== row.provider) return null
+                    if ((typeof cardEditor.account === 'string' ? cardEditor.account : '') !== target) return null
+                    const suffix = slug === undefined ? '' : `-${slug}`
+                    return React.createElement('div', { key: `reset-editor${suffix}`, 'data-testid': `quota-reset-editor-${row.provider}${suffix}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
+                      resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
+                      resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
+                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
+                    )
+                  }
+
                   let body
+                  // 无窗口可渲染时的兜底：账号级卡不能因为没有窗口就消失（刚保存的行会短暂处于
+                  // refreshing/无窗口状态；查询失败的行也拿不到窗口）。有账号卡则先渲染它们的块。
+                  const accountOnlyBody = () => {
+                    if (accountCardKeys.length === 0) return null
+                    return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                      accountCardKeys.map((account, accountIndex) => renderAccountBlock(account, accountSlugOf(account, accountIndex), [])))
+                  }
                   if (row.refreshing === true && windows.length === 0) {
-                    body = React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing'))
+                    body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                      React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.refreshing')),
+                      accountOnlyBody())
                   } else if (row.errorCode !== undefined && windows.length === 0) {
-                    body = React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
-                      quotaErrorLine(row, translate))
+                    body = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+                      React.createElement('span', { 'data-testid': `quota-error-${row.provider}`, style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
+                        quotaErrorLine(row, translate)),
+                      accountOnlyBody())
                   } else if (windows.length > 0) {
+                    // CLIProxyAPI 的 codex 分区按账号切块：块内先列该账号窗口，再列它的重置卡与
+                    // 「添加重置卡」入口。已有卡但当前没有窗口的账号（刚保存 / 查询失败）也要成块。
+                    const accountBlockFor = (group) => {
+                      const byAccount = []
+                      const indexByAccount = new Map()
+                      for (const window of group.windows) {
+                        const account = typeof window.label === 'string' ? window.label.trim() : ''
+                        let slot = indexByAccount.get(account)
+                        if (slot === undefined) {
+                          slot = byAccount.length
+                          indexByAccount.set(account, slot)
+                          byAccount.push({ account, windows: [] })
+                        }
+                        byAccount[slot].windows.push(window)
+                      }
+                      // 有卡无窗口的账号补在窗口账号之后（保持窗口序在前）。
+                      for (const account of accountCardKeys) {
+                        if (indexByAccount.has(account)) continue
+                        indexByAccount.set(account, byAccount.length)
+                        byAccount.push({ account, windows: [] })
+                      }
+                      return byAccount.map((entry, accountIndex) => renderAccountBlock(
+                        entry.account,
+                        accountSlugOf(entry.account, accountIndex),
+                        entry.windows.map((window) => renderQuotaWindowRow(window, translate, row.provider)),
+                      ))
+                    }
                     const cpaGroups = row.kind === 'cliproxy' ? groupWindowsByFamily(windows) : null
                     if (cpaGroups && cpaGroups.length > 0) {
                       body = React.createElement('div', {
@@ -3812,11 +4093,14 @@
                               color: 'var(--dsw-alias-label-primary)',
                             },
                           }, translate('quota.family.' + group.family)),
-                          React.createElement('div', {
-                            style: { display: 'flex', flexDirection: 'column', gap: '14px' },
-                          },
-                            group.windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
-                          )
+                          // codex：按账号切块（含账号级重置卡）；其余家族：原样窗口列表。
+                          group.family === 'codex'
+                            ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } }, accountBlockFor(group))
+                            : React.createElement('div', {
+                                style: { display: 'flex', flexDirection: 'column', gap: '14px' },
+                              },
+                                group.windows.map((window) => renderQuotaWindowRow(window, translate, row.provider))
+                              )
                         ))
                       )
                     } else {
@@ -3832,38 +4116,6 @@
                   const peakTimeline = peakSchedule !== null
                     ? React.createElement(QuotaPeakTimeline, { key: 'peak-timeline', showCaption: true, schedule: peakSchedule })
                     : null
-                                    // 手录重置卡（v0.19 过渡方案；v0.20 免次数、可多条）：每条一行，行尾自带「移除」。
-                  const resetCardNodes = Array.isArray(row.resetCards)
-                    ? row.resetCards.map((card, cardIndex) => {
-                        const content = resetCardContent(card, translate)
-                        const cardId = typeof card.id === 'string' && card.id !== '' ? card.id : `idx-${cardIndex}`
-                        return React.createElement('div', {
-                          key: cardId,
-                          'data-testid': `quota-reset-card-${row.provider}-${cardId}`,
-                          style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', lineHeight: '16px', color: content.expired ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-label-tertiary)' },
-                        },
-                        React.createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-                          React.createElement('span', null, content.title),
-                          content.expiry !== '' ? React.createElement('span', null, content.expiry) : null),
-                        React.createElement('button', {
-                          type: 'button',
-                          'data-testid': `quota-remove-${row.provider}-${cardId}`,
-                          onClick: () => removeResetCard(row.provider, cardId),
-                          style: { fontSize: '11px', padding: '2px 10px', ...fullRound(999), border: '1px solid var(--dsw-alias-state-error-primary)', background: 'transparent', color: 'var(--dsw-alias-state-error-primary)', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
-                        }, translate('quota.resetCard.remove')))
-                      })
-                    : []
-                  const editingThis = cardEditor !== null && cardEditor.provider === row.provider
-                  const inputStyle = { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '130px' }
-                  const resetField = (labelText, testId, type, keyName) => React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
-                    labelText,
-                    React.createElement('input', {
-                      type,
-                      'data-testid': testId,
-                      value: cardDraft[keyName],
-                      onChange: (event) => setCardDraft({ ...cardDraft, [keyName]: event.target.value }),
-                      style: inputStyle,
-                    }))
                   return React.createElement('div', { key: row.provider, 'data-testid': `quota-provider-card-${row.provider}`, style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px 12px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-card-bg)' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' } },
                       nameNode,
@@ -3939,13 +4191,8 @@
                         })()
                       : []),
                     ...resetCardNodes,
-                    ...(isAdvanced && editingThis ? [React.createElement('div', { key: 'reset-editor', 'data-testid': `quota-reset-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
-                      resetField(translate('quota.resetCard.dateLabel'), 'quota-reset-input-date', 'datetime-local', 'expiresAt'),
-                      resetField(translate('quota.resetCard.nameLabel'), 'quota-reset-input-name', 'text', 'label'),
-                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-card-save', onClick: saveResetCard, style: { minHeight: '28px', padding: '4px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: 'pointer', fontSize: '12px' } }, translate('quota.resetCard.add')),
-                      React.createElement('button', { type: 'button', 'data-testid': 'quota-reset-cancel', onClick: () => setCardEditor(null), style: svcRowActionStyle() }, translate('quota.resetCard.cancel')),
-                    )] : []),
-                    // 卡片脚部（高级配置区）：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡录入入口。
+                    resetEditorFor(''),
+                    // 卡片脚部（配置区）：类型下拉（当前选中 / 跟随自动识别 / 停用查询）+ 重置卡录入入口。
                     ...(isAdvanced ? [
                       React.createElement('div', { key: 'advanced-footer', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } },
                       React.createElement('select', {
@@ -3962,7 +4209,8 @@
                       QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`))),
                       React.createElement('option', { value: '__auto__' }, translate('quota.followAuto')),
                       React.createElement('option', { value: '' }, translate('quota.disable')))),
-                    // 重置卡手动录入目前仅智谱（zai-coding-cn）支持：其余供应商不显示入口。
+                    // provider 级重置卡录入仅智谱（zai-coding-cn）保留；CLIProxyAPI 的卡按账号走
+                    // codex 账号块内的「添加重置卡」，故这里不再给它一个语义不清的整体入口。
                     ...(row.kind === 'zai-coding-cn' ? [React.createElement('div', { key: 'reset-add-row', style: { display: 'flex' } },
                       React.createElement('button', {
                         type: 'button',
@@ -5284,6 +5532,15 @@
         if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
         if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
         if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })
+        // 重置卡今日到期（宿主经 health 下发，额度功能关闭时不带该字段）：
+        // 到期当天全天提示一次，次日宿主已自动移除该卡，提示随之消失。
+        const expiringResetCards = Array.isArray(health?.resetCardsExpiringToday) ? health.resetCardsExpiringToday : []
+        if (expiringResetCards.length > 0) {
+          const names = expiringResetCards
+            .map((card) => (typeof card.label === 'string' && card.label !== '' ? card.label : card.provider))
+            .filter((name) => typeof name === 'string' && name !== '')
+          statusItems.push({ level: 'info', text: translate('overview.resetCardExpiring', { cards: names.join('、') }) })
+        }
         const statusLevel = statusItems.some((item) => item.level === 'error') ? 'error'
           : statusItems.some((item) => item.level === 'warning') ? 'warning'
             : statusItems.some((item) => item.level === 'info') ? 'info' : 'normal'

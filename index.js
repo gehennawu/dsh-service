@@ -205,6 +205,9 @@ const MAX_QUOTA_PROVIDERS = 256
 const MAX_QUOTA_PROVIDER_NAME = 128
 const MAX_QUOTA_RESET_CARDS = 500
 const MAX_QUOTA_RESET_CARDS_PER_PROVIDER = 10
+// 账号级重置卡（v1.9.1）：CLIProxyAPI 一行多账号，重置卡可按「provider + account」细分。
+// account 是账号标识（邮箱/名称），沿用与卡片名同级的截断与计数约束。
+const MAX_QUOTA_RESET_CARD_ACCOUNT = 128
 // 子代理路由（v0.27）三态常量：inherit=不干预 / follow=读父会话最近请求路由注入 / custom=固定路由。
 const SUBAGENT_ROUTE_VERSION = 1
 const SUBAGENT_ROUTE_FILE = 'dsh-service-subagent-route.json'
@@ -1157,8 +1160,45 @@ function normalizeQuotaAllowedHosts(raw) {
   return out
 }
 
+/**
+ * 重置卡到期时刻（毫秒）：
+ *   - 带时刻的 ISO 串（`2026-09-30T08:00` / 含秒、时区）→ Date.parse 的真实时刻；
+ *   - 只到日的串（`2026-09-30`）→ **该自然日的 23:59:59.999**。裸日期被 Date.parse 当作当日
+ *     零点 UTC，会让「9-30 到期」的卡在 9-30 零点刚过就判过期，与用户「当天还有效」的直觉相反。
+ *   - 缺失/无法解析 → null（永不过期，只手动移除）。
+ */
+function resetCardExpiryMs(expiresAt) {
+  if (typeof expiresAt !== 'string') return null
+  const raw = expiresAt.trim()
+  if (raw === '') return null
+  const parsed = Date.parse(raw)
+  if (!Number.isFinite(parsed)) return null
+  // 纯日期形态（YYYY-MM-DD，无 T/时刻）：顺延到当日末尾。
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return parsed + 24 * 60 * 60 * 1000 - 1
+  return parsed
+}
+
+/** 已过期（到期时刻严格早于 now）的重置卡：宿主读配置时自动剔除。 */
+function isResetCardExpired(card, now = Date.now()) {
+  const at = resetCardExpiryMs(card?.expiresAt)
+  return at !== null && at < now
+}
+
+/**
+ * 自动移除已过期的重置卡。读路径（refreshQuotaConfigCache）在加载后调用：
+ * 有剔除才落盘，避免每次读都写文件。返回值同时告诉调用方「是否发生过变更」。
+ */
+function pruneExpiredResetCards(config, now = Date.now()) {
+  if (!Array.isArray(config?.resetCards) || config.resetCards.length === 0) return false
+  const kept = config.resetCards.filter((card) => !isResetCardExpired(card, now))
+  if (kept.length === config.resetCards.length) return false
+  config.resetCards = kept
+  return true
+}
+
 // 重置卡条目（v0.19 手填过渡方案：官方无 API Key 可查的端点）：provider 必填，label/expiresAt 可选；
 // id 缺失时按原始位置合成稳定 id（老数据兼容），写入口生成的 id 原样保留。
+// v1.9.1 起另可带 account（CLIProxyAPI 多账号细分），缺省 = 整 provider 共享的卡，老数据零迁移。
 function normalizeResetCards(raw) {
   if (!Array.isArray(raw)) return []
   const cards = []
@@ -1171,6 +1211,7 @@ function normalizeResetCards(raw) {
     const providerCount = perProvider.get(provider) ?? 0
     if (providerCount >= MAX_QUOTA_RESET_CARDS_PER_PROVIDER) continue
     const normalized = { id: typeof card.id === 'string' && card.id.trim() !== '' ? card.id.trim().slice(0, 64) : `legacy-${index}`, provider }
+    if (typeof card.account === 'string' && card.account.trim() !== '') normalized.account = card.account.trim().slice(0, MAX_QUOTA_RESET_CARD_ACCOUNT)
     if (typeof card.label === 'string' && card.label.trim() !== '') normalized.label = card.label.trim().slice(0, 40)
     if (typeof card.expiresAt === 'string' && card.expiresAt.trim() !== '') normalized.expiresAt = card.expiresAt.trim().slice(0, 32)
     cards.push(normalized)
@@ -2681,6 +2722,36 @@ async function collectHealth(ctx) {
     activeAgents: activity.items.filter((item) => item.type === 'agent').length,
     activeJobs: activity.items.filter((item) => item.type === 'job').length,
   }
+}
+
+/**
+ * 今日到期的重置卡清单（概览 info 提示的数据源）。取配置里到期时刻落在**本地当天**窗口内的卡：
+ * 纯日期卡按当日 23:59:59.999 算，故「9-30 到期」整日命中。已过期的卡读路径已被剔除，不会出现在这里。
+ * 返回 [{ provider, label }]；无命中返回空数组。
+ */
+async function collectResetCardsExpiringToday(refreshQuotaConfigCache, now = Date.now()) {
+  let config
+  try {
+    config = await refreshQuotaConfigCache()
+  } catch (_) {
+    return []
+  }
+  const cards = Array.isArray(config?.resetCards) ? config.resetCards : []
+  if (cards.length === 0) return []
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  const dayStart = start.getTime()
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000 - 1
+  const hits = []
+  for (const card of cards) {
+    const at = resetCardExpiryMs(card?.expiresAt)
+    if (at === null || at < dayStart || at > dayEnd) continue
+    hits.push({
+      provider: typeof card.provider === 'string' ? card.provider : '',
+      label: typeof card.label === 'string' ? card.label : '',
+    })
+  }
+  return hits
 }
 
 function collectActiveWork(ctx) {
@@ -4878,9 +4949,22 @@ function apply(ctx) {
   let quotaConfigLastCheckedAt = 0
   let quotaConfigMtimeMs = 0
   const quotaConfigPath = join(dshHome, QUOTA_CONFIG_FILE)
+  // 过期重置卡自动移除：剔除内存快照里的过期条目，有变更才落盘（避免每次读都写文件）。
+  // 读失败不影响本次结果——内存已剔除，下次读再试。TTL 快路径与重新加载两条路都要过这关，
+  // 否则「打开面板后一直停在同一页」时，运行期到点的卡不会被清掉。
+  const pruneExpiredQuotaResetCards = async () => {
+    if (!pruneExpiredResetCards(quotaConfig)) return
+    try {
+      await saveQuotaConfig(dshHome, quotaConfig)
+      quotaConfigMtimeMs = (await stat(quotaConfigPath)).mtimeMs
+    } catch (_) {}
+  }
   const refreshQuotaConfigCache = async (force = false) => {
     const now = Date.now()
-    if (!force && quotaConfigLoaded && now - quotaConfigLastCheckedAt < QUOTA_CONFIG_STAT_TTL_MS) return quotaConfig
+    if (!force && quotaConfigLoaded && now - quotaConfigLastCheckedAt < QUOTA_CONFIG_STAT_TTL_MS) {
+      await pruneExpiredQuotaResetCards()
+      return quotaConfig
+    }
     if (quotaConfigLoadPromise !== undefined) return quotaConfigLoadPromise
     quotaConfigLoadPromise = Promise.resolve().then(async () => {
       quotaConfigLastCheckedAt = now
@@ -4899,6 +4983,7 @@ function apply(ctx) {
         quotaConfig = await loadQuotaConfig(dshHome)
         quotaConfigLoaded = true
         quotaConfigMtimeMs = mtimeMs
+        await pruneExpiredQuotaResetCards()
       }
       return quotaConfig
     }).finally(() => { quotaConfigLoadPromise = undefined })
@@ -5162,7 +5247,13 @@ function apply(ctx) {
 
     } },
     'health': { handle: async (payload, rpcEndpoint) => {
-      return { ok: true, value: await collectHealth(ctx) }
+      const value = await collectHealth(ctx)
+      // 今日到期的重置卡（额度功能开启时才算）：概览「可行动项」的 info 提示数据源。
+      // 走 health 而非 quota，是因为概览不打开额度页也该看到提醒，而 health 是面板的常驻轮询。
+      if (featureEnabled('quotaLookup')) {
+        value.resetCardsExpiringToday = await collectResetCardsExpiringToday(refreshQuotaConfigCache)
+      }
+      return { ok: true, value }
 
     } },
     'diagnostics': { feature: 'healthDiagnostics', handle: async (payload, rpcEndpoint) => {
@@ -5312,7 +5403,7 @@ function apply(ctx) {
     coreRoutes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
-    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
+    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
   ])
@@ -5377,6 +5468,9 @@ export {
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  isResetCardExpired,
+  pruneExpiredResetCards,
+  resetCardExpiryMs,
   parseSessionFileAddress,
   parseSkillFrontmatterData,
   parseSubagentRouteText,
@@ -5457,6 +5551,9 @@ export default {
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   parseQuotaConfigText,
+  isResetCardExpired,
+  pruneExpiredResetCards,
+  resetCardExpiryMs,
   parseSessionFileAddress,
   parseSkillFrontmatterData,
   parseSubagentRouteText,

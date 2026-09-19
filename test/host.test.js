@@ -14,7 +14,7 @@ import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -2483,6 +2483,51 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
   ])
 })
 
+test('reset card expiry treats a bare date as end-of-day and a timestamp as its exact instant', () => {
+  // 纯日期：当日 23:59:59.999 —— 用户口径是「9-30 到期」整天还有效，不是当天零点一过就失效。
+  const dayEnd = Date.parse('2026-09-30T00:00:00Z') + 24 * 60 * 60 * 1000 - 1
+  assert.equal(resetCardExpiryMs('2026-09-30'), dayEnd)
+  // 带时刻：按真实时刻，不再顺延。
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00'), Date.parse('2026-09-30T08:00'))
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00:00Z'), Date.parse('2026-09-30T08:00:00Z'))
+  // 缺失/不可解析 → 永不过期。
+  assert.equal(resetCardExpiryMs(''), null)
+  assert.equal(resetCardExpiryMs('   '), null)
+  assert.equal(resetCardExpiryMs('not-a-date'), null)
+  assert.equal(resetCardExpiryMs(undefined), null)
+  assert.equal(resetCardExpiryMs(12345), null)
+
+  // 到期判定：严格早于 now 才算过期（正好等于到期时刻仍算有效）。
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd - 1), false)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd), false)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd + 1), true)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30T08:00' }, Date.parse('2026-09-30T08:00') + 1), true)
+  // 无到期时间：只手动移除，永不自动过期。
+  assert.equal(isResetCardExpired({}, Date.now()), false)
+})
+
+test('pruneExpiredResetCards drops only expired cards and reports whether anything changed', () => {
+  const config = {
+    version: 1,
+    kinds: {},
+    resetCards: [
+      { id: 'past', provider: 'zai-coding-cn', expiresAt: '2020-01-01' },
+      { id: 'future', provider: 'zai-coding-cn', expiresAt: '2099-01-01' },
+      { id: 'never', provider: 'opencode-go' },
+    ],
+  }
+  const changed = pruneExpiredResetCards(config)
+  assert.equal(changed, true)
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['future', 'never'])
+  // 第二次跑无过期项 → 报告「无变更」，调用方据此避免重复落盘。
+  assert.equal(pruneExpiredResetCards(config), false)
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['future', 'never'])
+  // 空/缺字段安全。
+  assert.equal(pruneExpiredResetCards({ resetCards: [] }), false)
+  assert.equal(pruneExpiredResetCards({}), false)
+  assert.equal(pruneExpiredResetCards(undefined), false)
+})
+
 test('readLlmProviders normalizes profiles and tolerates missing settings service', () => {
   assert.deepEqual(readLlmProviders(undefined), [])
   assert.deepEqual(readLlmProviders({ get: () => undefined }), [])
@@ -2770,6 +2815,71 @@ test('quota RPC lists all providers, adapts only whitelisted kinds, and calls up
   assert.deepEqual(zaiRow.resetCards, [{ id: 'card-1', provider: 'zai-coding-cn', label: '周额度重置卡', expiresAt: '2099-01-01' }])
   assert.deepEqual(zaiRow.windows.map((window) => window.id), ['tokens-limit-u3-n5', 'tokens-limit-u6-n1', 'time-limit-u5-n1'])
   assert.equal(row.resetCards, undefined)
+})
+
+test('quota RPC carries the account field of account-scoped reset cards through to the provider row', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-account-row-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [
+      { id: 'acct-a', provider: 'zai-coding-cn', account: 'codex-a@example.com', label: 'A 号周卡' },
+      { id: 'whole', provider: 'zai-coding-cn', label: '整体卡' },
+    ],
+  }))
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify(ZAI_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  const result = await host.handler('quota', {})
+  assert.equal(result.ok, true)
+  const zaiRow = result.value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  // account 必须原样经 quota RPC 下发（客户端据此把卡归到对应账号块）。
+  assert.deepEqual(zaiRow.resetCards, [
+    { id: 'acct-a', provider: 'zai-coding-cn', account: 'codex-a@example.com', label: 'A 号周卡' },
+    { id: 'whole', provider: 'zai-coding-cn', label: '整体卡' },
+  ])
+})
+
+test('a reset card saved through the RPC comes back on the quota row with its account intact', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-account-rt-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', JSON.stringify(ZAI_FIXTURE))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // 经 RPC 写卡（不是直接改磁盘），再读回来——覆盖「保存后卡片没出现在账号下」这条真实路径。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', account: 'codex-a@example.com', label: 'A 号周卡' })).ok, true)
+  const result = await host.handler('quota', {})
+  const zaiRow = result.value.providers.find((entry) => entry.provider === 'zai-coding-cn')
+  assert.equal(zaiRow.resetCards.length, 1)
+  assert.equal(zaiRow.resetCards[0].account, 'codex-a@example.com')
+  assert.equal(zaiRow.resetCards[0].label, 'A 号周卡')
 })
 
 test('quota RPC can refresh only an explicit host-known provider subset while still returning the full snapshot', async (t) => {
@@ -3585,6 +3695,87 @@ test('quota-reset-card validates provider, appends multiple cards, and removes b
   assert.deepEqual(await host.handler('quota-reset-card', { provider: 'zai-coding-cn', label: '第11张' }), { ok: false, error: 'too-many-cards' })
   config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
   assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
+})
+
+test('expired reset cards are pruned from disk on read, and today-expiring cards surface through health', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-expiry-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  // 今日到期（纯日期，按当日末尾算）+ 昨日已过期 + 远期未到期 + 无到期时间。
+  const today = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+  const yesterdayKey = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`
+  await writeFile(storedPath, JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [
+      { id: 'today', provider: 'zai-coding-cn', label: '今日卡', expiresAt: todayKey },
+      { id: 'stale', provider: 'zai-coding-cn', label: '昨日卡', expiresAt: yesterdayKey },
+      { id: 'future', provider: 'zai-coding-cn', label: '远期卡', expiresAt: '2099-01-01' },
+      { id: 'never', provider: 'zai-coding-cn', label: '永久卡' },
+    ],
+  }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // health 是概览的常驻轮询：额度功能开启时带上「今日到期」清单，且只有当天那一条。
+  const health = await host.handler('health', {})
+  assert.equal(health.ok, true)
+  assert.deepEqual(health.value.resetCardsExpiringToday, [{ provider: 'zai-coding-cn', label: '今日卡' }])
+  // 读配置即自动移除过期卡并落盘：昨日卡消失，今日/远期/永久卡保留。
+  const config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['today', 'future', 'never'])
+  // 再次 health：过期卡已在磁盘消失，今日提醒不再变化（今日卡仍在提示窗口内）。
+  const second = await host.handler('health', {})
+  assert.deepEqual(second.value.resetCardsExpiringToday, [{ provider: 'zai-coding-cn', label: '今日卡' }])
+})
+
+test('quota-reset-card stores an optional account scope so one CLIProxyAPI provider can hold per-account cards', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-account-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const cpaProviders = { cpa: { baseURL: 'https://cpa.example.com', apiKeyEnv: 'CPA_KEY' } }
+  const host = createHost(quotaHostOverrides(dshHome, cpaProviders, 'k'))
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  // 同一 provider 下为两个 codex 账号各建一张卡（外加一张 provider 级卡）。
+  assert.equal((await host.handler('quota-reset-card', { provider: 'cpa', account: 'codex-a@example.com', label: 'A 号周卡', expiresAt: '2099-01-01' })).ok, true)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'cpa', account: 'codex-b@example.com', label: 'B 号周卡' })).ok, true)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'cpa', label: '整体卡' })).ok, true)
+  let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config.resetCards.map((card) => ({ provider: card.provider, account: card.account, label: card.label })), [
+    { provider: 'cpa', account: 'codex-a@example.com', label: 'A 号周卡' },
+    { provider: 'cpa', account: 'codex-b@example.com', label: 'B 号周卡' },
+    { provider: 'cpa', account: undefined, label: '整体卡' },
+  ])
+  // account 与 label 同等对待：截断限长（128），不影响删除按 id 精确定位。
+  const longAccount = 'x'.repeat(200)
+  assert.equal((await host.handler('quota-reset-card', { provider: 'cpa', account: longAccount })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[3].account.length, 128)
+  const target = config.resetCards.find((card) => card.account === 'codex-a@example.com')
+  assert.equal((await host.handler('quota-reset-card', { provider: 'cpa', remove: true, id: target.id })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards.some((card) => card.account === 'codex-a@example.com'), false)
+  // 同 provider 的其余账号卡与整体卡不受影响（删除按 id，不按 account）。
+  assert.deepEqual(config.resetCards.map((card) => card.account), ['codex-b@example.com', undefined, 'x'.repeat(128)])
+})
+
+test('health omits the reset-card reminder when quota lookup is disabled', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-expiry-off-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const today = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [{ id: 'today', provider: 'zai-coding-cn', label: '今日卡', expiresAt: todayKey }],
+  }))
+  const overrides = quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k')
+  const host = createHost({ ...overrides, featureSettings: { quotaLookup: false } })
+  const health = await host.handler('health', {})
+  assert.equal(health.ok, true)
+  // 功能关闭：不带该字段（客户端据此不渲染概览提示），也不因读配置而触发额度相关副作用。
+  assert.equal('resetCardsExpiringToday' in health.value, false)
 })
 
 test('quota-refresh bypasses success TTL once but retains a hard manual cooldown', async (t) => {

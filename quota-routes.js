@@ -16,6 +16,7 @@ export function createQuotaRoutes({
   MAX_QUOTA_PROVIDER_NAME,
   MAX_QUOTA_RESET_CARDS,
   MAX_QUOTA_RESET_CARDS_PER_PROVIDER,
+  MAX_QUOTA_RESET_CARD_ACCOUNT,
   QUOTA_ADAPTER_BY_KIND,
   name,
   quotaCredentialConfigured,
@@ -183,20 +184,28 @@ export function createQuotaRoutes({
         // 手录重置卡（v0.19 过渡方案；v0.20 免次数、每 provider 可多条）的面板写入口：
         // provider 过宿主清单白名单；{remove:true,id} 删除宿主下发 id 对应的那一条，
         // 其余载荷为追加一条（label/expiresAt 截断限长），单 provider 上限 10 条防配置膨胀。
+        // v1.9.1：可带 account（CLIProxyAPI 多账号细分）——同一 provider 下按账号分别记事。
+        // 与 label 同等对待：只是随卡存下的展示标识，截断限长，绝不进命令/路径/URL，
+        // 因而无需（也不能）对着上游清单做白名单校验——那会在写路径上引入一次外呼。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         if (!readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).some((candidate) => candidate.name === providerName)) {
           return { ok: false, error: 'unknown-provider' }
         }
+        const accountName = typeof payload?.account === 'string' && payload.account.trim() !== ''
+          ? payload.account.trim().slice(0, MAX_QUOTA_RESET_CARD_ACCOUNT)
+          : ''
         return await serializeQuotaConfigWrite(async (config) => {
           const allCards = Array.isArray(config.resetCards) ? config.resetCards : []
           if (payload?.remove === true) {
             const cardId = typeof payload?.id === 'string' ? payload.id : ''
+            // 删除按 id 精确定位（同 provider 下 id 唯一），account 不参与匹配。
             config.resetCards = allCards.filter((card) => !(card.provider === providerName && card.id === cardId))
           } else {
             if (allCards.length >= MAX_QUOTA_RESET_CARDS || allCards.filter((card) => card.provider === providerName).length >= MAX_QUOTA_RESET_CARDS_PER_PROVIDER) {
               return { save: false, value: { ok: false, error: 'too-many-cards' } }
             }
             const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
+            if (accountName !== '') card.account = accountName
             if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
             if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
             config.resetCards = [...allCards, card]
