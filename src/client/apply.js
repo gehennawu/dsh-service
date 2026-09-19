@@ -4931,42 +4931,63 @@
         // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单扫描启用插件，命中才显示行
         // （字体说明见 plugin-compat.js 的 COMPAT_BREAKS；未扫成的插件单独提示原因）。
         // 四档分级：真引用破坏（可能不兼容，warning）→ 退役接口（蓝色提示，info）→ 仅声明残留（代码未引用、官方 loader 静默
-        // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。统一渲染为一行行条目。
+        // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。
+        // 展示契约：**一个插件一行**——同一插件可能同时落在多档（如既注册退役槽位又留了声明残留），
+        // 各档不再各占一行、不再重复插件名；行的圆点与徽标取该插件最重的一档，行内按严重度列出各档命中。
         const pluginCompatScan = diagnostics?.pluginCompat !== null && typeof diagnostics?.pluginCompat === 'object' ? diagnostics.pluginCompat : null
         const pluginCompatIssues = Array.isArray(pluginCompatScan?.issues) ? pluginCompatScan.issues : []
         const pluginCompatSoft = Array.isArray(pluginCompatScan?.soft) ? pluginCompatScan.soft : []
         const pluginCompatDeclared = Array.isArray(pluginCompatScan?.declaredOnly) ? pluginCompatScan.declaredOnly : []
         const pluginCompatUnknown = Array.isArray(pluginCompatScan?.unknown) ? pluginCompatScan.unknown : []
-        const pluginCompatRows = [
-          ...pluginCompatIssues.map((issue, index) => ({ key: `broken-${index}`, kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
-          ...pluginCompatSoft.map((item, index) => ({ key: `soft-${index}`, kind: 'soft', moduleName: item.moduleName, breaks: item.breaks })),
-          ...pluginCompatDeclared.map((item, index) => ({ key: `declared-${index}`, kind: 'declared', moduleName: item.moduleName })),
-          ...pluginCompatUnknown.map((item, index) => ({ key: `unknown-${index}`, kind: 'unknown', moduleName: item.moduleName, reason: item.reason })),
+        // 分档严重度序（小 = 重）。归并序取首次出现的档位，故 broken 插件整体排在退役接口/声明残留之前。
+        const pluginCompatKindOrder = { broken: 0, soft: 1, declared: 2, unknown: 3 }
+        const pluginCompatFindings = [
+          ...pluginCompatIssues.map((issue) => ({ kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
+          ...pluginCompatSoft.map((item) => ({ kind: 'soft', moduleName: item.moduleName, breaks: item.breaks })),
+          ...pluginCompatDeclared.map((item) => ({ kind: 'declared', moduleName: item.moduleName, breaks: item.breaks })),
+          ...pluginCompatUnknown.map((item) => ({ kind: 'unknown', moduleName: item.moduleName, reason: item.reason })),
         ]
+        const pluginCompatGrouped = new Map()
+        for (const finding of pluginCompatFindings) {
+          const bucket = pluginCompatGrouped.get(finding.moduleName)
+          if (bucket === undefined) pluginCompatGrouped.set(finding.moduleName, [finding])
+          else bucket.push(finding)
+        }
+        const pluginCompatFindingText = (finding) => finding.kind === 'broken' || finding.kind === 'soft'
+          ? finding.breaks.map((id) => translate('plugin.compat.break.' + id)).join('；')
+          : finding.kind === 'declared'
+            ? translate('plugin.compat.declared')
+            : translate(`plugin.compat.unknown.${finding.reason}`)
+        const pluginCompatRows = [...pluginCompatGrouped].map(([moduleName, findings], index) => {
+          const sorted = [...findings].sort((a, b) => pluginCompatKindOrder[a.kind] - pluginCompatKindOrder[b.kind])
+          return { key: `${sorted[0].kind}-${index}`, moduleName, findings: sorted }
+        })
         const pluginCompatBlock = pluginCompatScan === null || pluginCompatRows.length === 0
           ? null
           : React.createElement('div', { 'data-testid': 'plugin-compat-list', style: { marginTop: '6px', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
               pluginCompatRows.map((row, index) => {
-                const warning = row.kind === 'broken'
-                const dotColor = warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)'
-                const line = warning || row.kind === 'soft'
-                  ? row.breaks.map((id) => translate('plugin.compat.break.' + id)).join('；')
-                  : row.kind === 'declared'
-                    ? translate('plugin.compat.declared')
-                    : translate(`plugin.compat.unknown.${row.reason}`)
-                return React.createElement('div', { key: row.key, 'data-testid': `plugin-compat-${row.key}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
-                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '6px', background: dotColor } }),
+                const warning = row.findings[0].kind === 'broken'
+                const rowColor = warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)'
+                return React.createElement('div', { key: row.key, 'data-testid': `plugin-compat-row-${index}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
+                  // 圆点与插件名第一行光学居中：名称行高钉 17px；代码字体的字面盒中心比行盒中心
+                  // 实测低 2.5px（探针 getBoundingClientRect 实证），故上边距取 (17-7)/2 + 2.5 = 7.5px。
+                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '7.5px', background: rowColor } }),
                   React.createElement('div', { style: { minWidth: 0, flex: 1 } },
-                    React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' } },
-                      React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
-                      warning
-                        ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-warning)' } }, translate('plugin.compat.issue.broken', { count: 1 }))
-                        : row.kind === 'soft'
-                          ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.soft', { count: 1 }))
-                          : row.kind === 'declared'
-                            ? React.createElement('span', { style: { fontSize: '11px', fontWeight: 650, color: 'var(--dsh-svc-info)' } }, translate('plugin.compat.issue.declared', { count: 1 }))
-                            : null),
-                    React.createElement('div', { style: { fontSize: '11px', marginTop: '3px', lineHeight: 1.5, overflowWrap: 'anywhere', color: warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' } }, line)))
+                    React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, lineHeight: '17px', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
+                    // 分档标签独立成行排在插件名下方（颜色随档位：可能不兼容=警示黄，其余=信息蓝），
+                    // 正文段落跟在自己标签的下面——标签管「属于哪一档」，正文管「具体是什么」，不挤同一行。
+                    row.findings.flatMap((finding, findingIndex) => [
+                      React.createElement('div', {
+                        key: `${row.key}-${finding.kind}-kind`,
+                        'data-testid': `plugin-compat-kind-${index}-${findingIndex}`,
+                        style: { fontSize: '11px', fontWeight: 650, marginTop: findingIndex === 0 ? '3px' : '7px', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' },
+                      }, translate('plugin.compat.kind.' + finding.kind)),
+                      React.createElement('div', {
+                        key: `${row.key}-${finding.kind}-text`,
+                        'data-testid': `plugin-compat-line-${index}-${findingIndex}`,
+                        style: { fontSize: '11px', marginTop: '1px', lineHeight: 1.6, overflowWrap: 'anywhere', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' },
+                      }, pluginCompatFindingText(finding)),
+                    ])))
               }))
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length

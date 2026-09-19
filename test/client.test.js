@@ -2086,18 +2086,71 @@ test('health diagnostics lists plugins that reference alpha-changed interfaces w
   const text = renderer.text('settings.section')
   // 检查行内摘要：broken / declaredOnly / unknown 分段
   assert.match(text, /插件兼容性2 个插件可能不兼容，1 个插件仅声明残留（代码未引用），1 个插件未能扫描/)
-  // 命中行：名称 + 每条破坏面说明
-  assert.notEqual(renderer.findByTestId('plugin-compat-broken-0'), undefined)
+  // 命中行：一个插件一行（同一档内的多个命中并排一行）；名称 + 每条破坏面说明
+  assert.equal(renderer.findAllByTestIdPrefix('plugin-compat-row-').length, 4)
+  assert.notEqual(renderer.findByTestId('plugin-compat-row-0'), undefined)
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').children[0], '可能不兼容')
   assert.match(text, /dshmarket.*声明了已移除的客户端供应商.*引用已迁移的聊天界面旧样式前缀/)
   assert.match(text, /dsh-dream-skin.*依赖已移除的会话持久化后端/)
   // 仅声明残留行：info 提示（代码未引用、无害）
-  assert.notEqual(renderer.findByTestId('plugin-compat-declared-0'), undefined)
+  assert.notEqual(renderer.findByTestId('plugin-compat-row-2'), undefined)
+  assert.equal(renderer.findByTestId('plugin-compat-kind-2-0').children[0], '声明残留')
   assert.match(text, /stale-skin.*声明了已移除的接口但代码未引用.*静默跳过/)
   // unknown 行：名称 + 原因
-  assert.notEqual(renderer.findByTestId('plugin-compat-unknown-0'), undefined)
+  assert.notEqual(renderer.findByTestId('plugin-compat-row-3'), undefined)
+  assert.equal(renderer.findByTestId('plugin-compat-kind-3-0').children[0], '未能扫描')
   assert.match(text, /huge-pkg.*入口文件超过扫描上限/)
   // 不渲染运行状态 issues 行
   assert.equal(renderer.hasTest('plugin-issue-include:market'), false)
+})
+
+test('plugin compatibility merges different findings of the same plugin into a single row', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return {
+      ok: true,
+      value: {
+        status: 'info',
+        checkedAt: Date.now(),
+        checks: [{ id: 'plugin-compat', status: 'info', detail: '4:1:1:0:1' }],
+        pluginCompat: {
+          scanned: 4,
+          issues: [{ moduleName: 'dshmarket', breaks: ['chat-hash'] }],
+          soft: [{ moduleName: 'dshmarket', breaks: ['settings-plugin-item'] }],
+          declaredOnly: [{ moduleName: 'dshmarket', breaks: ['client-runtime'] }],
+          unknown: [],
+        },
+      },
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  // 三档命中（可能不兼容/退役接口/声明残留）收敛成一行，插件名只出现一次
+  const rows = renderer.findAllByTestIdPrefix('plugin-compat-row-')
+  assert.equal(rows.length, 1)
+  const sectionText = renderer.text('settings.section')
+  assert.equal(sectionText.match(/dshmarket/g).length, 1)
+  // 分档标签独立成行排在插件名下方：颜色随档位（可能不兼容=警示黄，其余=信息蓝）
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').children[0], '可能不兼容')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').props.style.color, 'var(--dsh-svc-warning)')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').children[0], '为兼容旧版保留')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').props.style.color, 'var(--dsh-svc-info)')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-2').children[0], '声明残留')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-2').props.style.color, 'var(--dsh-svc-info)')
+  // 正文段落跟在自己标签下方：三档各一段
+  assert.equal(renderer.findAllByTestIdPrefix('plugin-compat-line-0-').length, 3)
+  assert.match(renderer.findByTestId('plugin-compat-line-0-0').children[0], /引用已迁移的聊天界面旧样式前缀/)
+  assert.match(renderer.findByTestId('plugin-compat-line-0-1').children[0], /为兼容老版本宿主保留了已退役的设置页槽位/)
+  assert.match(renderer.findByTestId('plugin-compat-line-0-2').children[0], /声明了已移除的接口但代码未引用/)
 })
 
 test('plugin compatibility check shows a clean summary and no list when nothing references changed interfaces', async () => {
