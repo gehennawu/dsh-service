@@ -52,12 +52,39 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
 
       let navOrderRevision = 0
       const navOrderListeners = new Set()
+      const populateExistingSlotListeners = () => {
+        try {
+          const core = ctx.slots?._core
+          if (core && typeof core.record === 'function') {
+            const r = core.record('settings.section')
+            if (r && r.listeners) {
+              for (const fn of r.listeners) {
+                navOrderListeners.add(fn)
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      populateExistingSlotListeners()
+
       const notifyNavOrderChanged = () => {
         navOrderRevision++
+        populateExistingSlotListeners()
         for (const listener of navOrderListeners) {
           try { listener() } catch (_) {}
         }
-        // 通过公开 register/dispose 触发原生账本版本与订阅更新；不碰 SlotCore 私有实现。
+        // 唤醒底层 SlotCore 及其已注册订阅者（如 DSH 外壳 useSections）
+        try {
+          const core = ctx.slots?._core
+          if (core && typeof core.record === 'function') {
+            const r = core.record('settings.section')
+            if (r) {
+              if (typeof core.markDirty === 'function') core.markDirty('settings.section', r)
+              if (typeof core.flush === 'function') core.flush()
+            }
+          }
+        } catch (_) {}
+        // 兜底原生变动触发器
         try {
           if (typeof ctx.slots?.register === 'function') {
             const dispose = ctx.slots.register({ name: 'settings.section', id: '__dsh_nav_bump__' }, () => null)
@@ -192,23 +219,45 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
         }
 
         for (const button of buttons) {
-          let id = null
+          const readAttr = (name) => {
+            if (typeof button.getAttribute !== 'function') return null
+            try { return button.getAttribute(name) } catch (_) { return null }
+          }
           const hasAttr = (name) => {
             if (typeof button.hasAttribute === 'function') return button.hasAttribute(name)
             if (button.attrs && typeof button.attrs.has === 'function') return button.attrs.has(name)
             return false
           }
-          if (hasAttr('data-dsh-service-nav')) id = 'dsh-service'
-          else if (hasAttr('data-dsh-service-quota-nav')) id = 'dsh-service-quota'
-          else if (hasAttr('data-dsh-service-restart-nav')) id = 'dsh-service-restart'
-          else if (hasAttr('data-dsh-service-sessions-nav')) id = 'dsh-service-sessions'
+          let id = readAttr('data-dsh-section-id')
+          if (!id) {
+            if (hasAttr('data-dsh-service-nav')) id = 'dsh-service'
+            else if (hasAttr('data-dsh-service-quota-nav')) id = 'dsh-service-quota'
+            else if (hasAttr('data-dsh-service-restart-nav')) id = 'dsh-service-restart'
+            else if (hasAttr('data-dsh-service-sessions-nav')) id = 'dsh-service-sessions'
+          }
 
           if (!id) {
             const labelSpan = typeof button.querySelector === 'function' ? button.querySelector('span') : null
             const text = (labelSpan ? labelSpan.textContent : button.textContent || '').trim()
             id = labelToId.get(text)
+              || (readAttr('title') && labelToId.get(readAttr('title').trim()))
+              || (readAttr('aria-label') && labelToId.get(readAttr('aria-label').trim()))
           }
-          if (!id) continue
+          if (!id) {
+            // 行消失/换名：与 markSettingsNavRows 的摘标记对齐，归属标记与内联样式一并还原，
+            // 避免旧标记残留、被后续行复用时误伤（显隐/排序以后续 DOM 同步为准）。
+            if (hasAttr('data-dsh-section-id') && typeof button.removeAttribute === 'function') {
+              try { button.removeAttribute('data-dsh-section-id') } catch (_) {}
+            }
+            if (button.style) {
+              button.style.display = ''
+              button.style.order = ''
+            }
+            continue
+          }
+          if (readAttr('data-dsh-section-id') !== id && typeof button.setAttribute === 'function') {
+            try { button.setAttribute('data-dsh-section-id', id) } catch (_) {}
+          }
 
           if (button.style) {
             if (id === 'dsh-service') {
@@ -228,10 +277,11 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
           }
         }
 
-        const navList = typeof nav.querySelector === 'function' ? nav.querySelector('div') : null
+        const navList = typeof nav.querySelector === 'function'
+          ? (nav.querySelector('[class*="navList"]') || nav.children[1] || null)
+          : null
         if (navList && navList.style && customOrder && customOrder.length > 0) {
           navList.style.display = 'flex'
-          navList.style.flexDirection = 'column'
         }
       }
 

@@ -256,6 +256,7 @@
           enabled = value === true
           try { localStorage.setItem(storageKey, enabled ? 'true' : 'false') } catch (_) {}
           sync()
+          if (typeof notifyNavOrderChanged === 'function') notifyNavOrderChanged()
           for (const listener of listeners) listener()
         }
         const useEnabled = () => {

@@ -64,6 +64,14 @@ test('omitted factory return is reported against the destructuring site', async 
   // 分片工厂把内部名字交回 apply 的唯一通道是返回值：少一个键，apply 侧解构到 undefined。
   // 变异刻意**等长**（fetchQuotaSnapshot → fetchQuotaSnapshoX，均 18 字符），这样分片偏移表
   // 与真实文件逐一对应，报错定位可以被逐字验证。
+  // 期望行号由 test 独立读取 apply.js 数出来（与下一条用例同一思路），不写死数字——
+  // apply 分片上方增删行时不至于每次都误报换算失效。
+  const { files } = await readClientSource()
+  assert.ok(files.includes('src/client/apply.js'), 'apply fragment must be in the manifest')
+  const applyText = await readFile(resolve(root, 'src/client/apply.js'), 'utf8')
+  const applyLines = applyText.split('\n')
+  const destructureLineIndex = applyLines.findIndex((line) => line.includes('fetchQuotaSnapshot } = createQuotaCore'))
+  assert.notEqual(destructureLineIndex, -1, 'expected the createQuotaCore destructuring line to stay in apply.js')
   const source = await clientSource()
   const mutated = mutate(
     source,
@@ -75,8 +83,12 @@ test('omitted factory return is reported against the destructuring site', async 
   const result = await checkClientSource(mutated, { files: await clientSourceBounds(await clientSourceFiles(), mutated.length) })
   assert.equal(result.ok, false, 'destructuring a name the factory never returns must fail the check')
   assert.match(messages(result), /createQuotaCore\(\) never returns "fetchQuotaSnapshoX"/)
-  // 定位必须落在解构所在的真实分片与真实行号（src/client/apply.js 第 306 行）。
-  assert.match(messages(result), /src\/client\/apply\.js:306\b/, 'finding must report the fragment-local line number')
+  // 定位必须落在解构所在的真实分片与真实行号（1 起，与编辑器行号一致）。
+  assert.match(
+    messages(result),
+    new RegExp(`src/client/apply\\.js:${destructureLineIndex + 1}\\b`),
+    `finding must report the fragment-local line apply.js:${destructureLineIndex + 1}`,
+  )
 })
 
 test('a fragment-local private name referenced elsewhere is located in its own fragment', async () => {
