@@ -1,7 +1,7 @@
 // 客户端半分片：额度核心——卡片排序/显隐后端、轮询分钟档、快照合并去重、额度循环
 // （acquire/release/settle/cycle）、窗口文案与时间格式化工具。
-// 分片不是模块——按 scripts/client-source.mjs 清单拼接成同一个 factory 作用域；正文与
-// 拆分前逐字节一致。quotaCardListeners 为只变异不重赋值的 Set（按引用返回）。
+// 分片不是模块——按 scripts/client-source.mjs 清单拼接成同一个 factory 作用域。
+// 卡片配置经订阅/提交/重置接口访问，监听器与写入协议留在核心内部。
 function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount }) {
   const { useState, useEffect } = React
       const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
@@ -52,7 +52,7 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
           else localStorage.setItem(QUOTA_CARD_HIDDEN_KEY, JSON.stringify(hidden.slice(0, SETTINGS_NAV_MAX_ITEMS)))
         } catch (_) {}
       }
-      let quotaCardListeners = new Set()
+      const quotaCardListeners = new Set()
       const notifyQuotaCardsChanged = () => {
         for (const listener of quotaCardListeners) {
           try { listener() } catch (_) {}
@@ -69,6 +69,24 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
           notifyQuotaCardsChanged()
         },
       })
+      // 卡片配置的写入协议由核心持有，调用方不接触监听器集合或后端同步对象。
+      const subscribeQuotaCards = (listener) => {
+        quotaCardListeners.add(listener)
+        return () => quotaCardListeners.delete(listener)
+      }
+      const commitQuotaCards = (order, hidden) => {
+        writeQuotaCardOrder(order)
+        writeQuotaCardHidden(hidden)
+        notifyQuotaCardsChanged()
+        quotaCardsBackend.persist(order, hidden)
+      }
+      const resetQuotaCards = () => {
+        writeQuotaCardOrder(null)
+        writeQuotaCardHidden(null)
+        notifyQuotaCardsChanged()
+        quotaCardsBackend.persistReset()
+      }
+      const ensureQuotaCardsSynced = () => quotaCardsBackend.ensureSynced()
       /** 快照序 → 记忆序：名单内的按存储位次在前，名单外的保持快照相对顺序追加在后。 */
       function applyQuotaCardOrder(rows, order) {
         const rank = new Map(order.map((name, index) => [name, index]))
@@ -285,5 +303,5 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
-  return { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, notifyQuotaCardsChanged, notifyQuotaPollChanged, quotaCardListeners, quotaCardsBackend, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaCardHidden, writeQuotaCardOrder, writeQuotaPollMinutes, readQuotaPollMinutes , fetchQuotaSnapshot }
+  return { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, notifyQuotaPollChanged, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot }
 }

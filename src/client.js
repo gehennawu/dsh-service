@@ -2345,4 +2345,3 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       const message = typeof result.error.message === 'string' ? result.error.message : result.error.code
       return { ...result, error: message || 'unknown', ...(detail !== undefined ? { detail } : {}) }
     }
-

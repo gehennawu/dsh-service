@@ -294,7 +294,7 @@
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
-      const { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, notifyQuotaCardsChanged, notifyQuotaPollChanged, quotaCardListeners, quotaCardsBackend, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaCardHidden, writeQuotaCardOrder, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
+      const { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, notifyQuotaPollChanged, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
       createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS, scheduleQuotaCycle })
 
       // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
@@ -3383,13 +3383,12 @@
         // 排序与显隐的多端同步：进入额度页时拉一次后端权威值（拉取失败下次进入重试），
         // 并订阅本地/远端变更刷新管理列表。
         useEffect(() => {
-          quotaCardsBackend.ensureSynced()
+          ensureQuotaCardsSynced()
           const update = () => {
             setCardOrder(readQuotaCardOrder())
             setCardHidden(readQuotaCardHidden())
           }
-          quotaCardListeners.add(update)
-          return () => quotaCardListeners.delete(update)
+          return subscribeQuotaCards(update)
         }, [])
         const [pollMinutes, setPollMinutes] = useState(readQuotaPollMinutes())
         const [configError, setConfigError] = useState('')
@@ -3553,10 +3552,7 @@
         const commitCards = (order, hidden) => {
           setCardOrder(order)
           setCardHidden(hidden)
-          writeQuotaCardOrder(order)
-          writeQuotaCardHidden(hidden)
-          notifyQuotaCardsChanged()
-          quotaCardsBackend.persist(order, hidden)
+          commitQuotaCards(order, hidden)
         }
         // 管理列表的展示项：记忆序在前，快照里新出现的按快照相对顺序追加在后。
         const managedCardItems = applyQuotaCardOrder(adaptedRows, cardOrder).map((row) => ({ id: row.provider, label: row.displayName || row.provider }))
@@ -3582,10 +3578,7 @@
         const resetCardsConfig = () => {
           setCardOrder([])
           setCardHidden([])
-          writeQuotaCardOrder(null)
-          writeQuotaCardHidden(null)
-          notifyQuotaCardsChanged()
-          quotaCardsBackend.persistReset()
+          resetQuotaCards()
           showCardsSavedTip()
         }
 
@@ -6499,16 +6492,3 @@
     return module.exports
   },
 })
-
-
-
-
-
-
-
-
-
-
-
-
-

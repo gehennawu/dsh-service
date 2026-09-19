@@ -141,7 +141,7 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_clos
   corner-shape: round !important;
   box-shadow: var(--dsw-shadow-lv2, 0 4px 12px rgba(0, 0, 0, .12)) !important;
 }
-/* 设置内容列利用率（2026-09-19 用户点名「窗口利用率太低」）：手机全屏后内容仍被
+/* 设置内容列利用率：手机全屏后内容仍被
    宿主 options 24px → 插件看板卡 12px → 汇总小卡 10px 的多层内边距套娃收窄
    （单侧 ~46px、约一成屏宽）。只收紧间距不动物料：options 是宿主滚动容器、
    全分区生效（24→14）；看板/图表卡按 testid 收紧；汇总行禁折行——label/value
@@ -212,7 +212,7 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
    装得下时零截断（≥~420px 视口），装不下时按比例各让一点（比官方的固定截断少一个
    数量级），不换行、不横向滚动。
    旧宿主（0.1.2-alpha.2 ~ 0.1.4）的单行横滑规则（NDN2W_root）原样保留。 */
-/* 统计条与外部上下文圆环（2026-09-18 用户点名「保证一行可以显示完」）：
+/* 统计条与外部上下文圆环的单行布局：
    0.1.6 官方把上下文圆环（JObwrW_root / JObwrW_trigger）移入输入框外部下方的
    uV2eYG_dock，与统计胶囊（bOPqQW_root）并列，挤占了移动端可用宽度。
    修法：

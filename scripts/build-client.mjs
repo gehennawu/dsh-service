@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { minify } from 'terser'
 
+import { checkClientSource, clientSourceBounds } from './check-client-source.mjs'
 import { INLINE_ANCHOR as ANCHOR, readClientSource } from './client-source.mjs'
 
 // 模型厂家/渠道图标数据（src/model-icons.generated.js，由 scripts/generate-model-icons.mjs
@@ -17,6 +18,20 @@ import { INLINE_ANCHOR as ANCHOR, readClientSource } from './client-source.mjs'
 
 const generated = await readFile(new URL('../src/model-icons.generated.js', import.meta.url), 'utf8')
 const { source, files } = await readClientSource()
+
+// 拼接后的源码先过词法检查，**再**写产物：少了工厂返回值或引用了分片私有名的源码
+// 拼接后依然语法合法，terser 会一路压缩成「能加载但运行期炸」的包，所以闸门必须在
+// 这里，而不是发布后靠运行期发现。检查只读 AST，不改源码；失败即中止构建。
+{
+  const bounds = await clientSourceBounds(files, source.length)
+  const { ok, errors } = await checkClientSource(source, { files: bounds })
+  if (!ok) {
+    throw new Error(
+      `client source lexical check failed (${errors.length} finding${errors.length === 1 ? '' : 's'}); ` +
+      `client.js was NOT written:\n  - ${errors.join('\n  - ')}`,
+    )
+  }
+}
 
 // generated 文件自带 leading 注释行，取其声明本体即可。
 const declarations = generated

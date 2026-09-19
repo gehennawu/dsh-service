@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
+    "check:client": "node scripts/check-client-source.mjs",
     "pretest": "npm run build:client",
     "test": "node --test",
     "prepack": "npm run build:client"
