@@ -352,6 +352,68 @@ html[data-dshsvc-mobile] [class*="wSkVaW_headerUtilities"] { margin-left: 4px !i
 html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 6px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
+/* 动作芯片泊位 v2（方案二，2026-09-19 用户定稿：模式回标题行，子代理+任务下标签行
+   右锚成对；官方标签行没有第三方挂载点，泊位=自有 CSS absolute 定位）：
+   · 标签行官方 gap 36→20（用户点名「间隔改小一点」），标签内容尾 ≈126px；
+   · 任务芯片（QsffPG_root，运行中带箭头自然宽 ~151.5px）right:106 —— 右侧 90px
+     让给子代理芯片（带箭头 81.5~87.5px，「1~99 个」，间隔 8.5~2.5px），右锚成
+     「[任务][子代理]」两枚一排（第三方插件将来若也泊到此带，右缘 16px 起排不受影响）；
+     max-width calc(100vw − 240px) 封顶（右距 106 + 标签尾 126 + 8 缓冲），
+     ≤360 档计数文字按省略优雅降级（320 档省 ~71px）、绝不压到对话/轨迹；
+   · 子代理芯片（ZKlsPq_root）right:16 最贴右；泊离标题后分隔符「/」失去对象，隐藏；
+   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留（2026-09-19 用户点名恢复：
+     初版为塞 320~360 档隐藏过，恢复后该两档省略加深，换开合指示不丢）；
+   · 两枚芯片的下拉菜单（锚在各自 root 上 top:100%+5、left:0）改右锚展开并按
+     视口封顶（max-width 100vw−104 = 任务右距 88 + 16 边距），否则贴右泊位时
+     336px 菜单会越出屏幕（390 档实测左越 46px）；
+   · 预设芯片（SVAs4q_label）不再泊动——随官方 headerActions 留在标题行
+     （「模式=会话身份」与标题同级），第三方动作芯片同样留官方原位不受泊位管辖；
+     子代理计数离开 crumbs 后标题吃满整行（390 档 198px）；
+   · ≤560 门：561~1023 行宽足够（标题 ≥115px），保持官方在流。blank 空头部
+     :not 守卫不泊。类哈希 QsffPG_ 取自 dsh-client-ui-jobs JobListAction.module.css
+     （0.1.6-alpha.2），升级需复核。 */
+@media (max-width: 560px) {
+  html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
+  html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_root"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
+    position: absolute !important;
+    bottom: 4px !important;
+    z-index: 2;
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_root"] {
+    right: 106px !important;
+    max-width: calc(100vw - 240px) !important;
+  }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
+    right: 16px !important;
+  }
+  /* 分隔符/箭头/收缩只作用于已泊出的子代理根；带 lineage 切换器而留在
+     crumbs 里的根（:has 守卫排除的那支）保持官方形态不受影响。 */
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_separator"] { display: none !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { min-width: 0 !important; max-width: 100% !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg:last-child,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg:last-child { flex: none !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_count"] {
+    min-width: 0 !important;
+    flex: 0 1 auto !important;
+    margin: 0 2px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_menu"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_menu"] {
+    left: auto !important;
+    right: 0 !important;
+    max-width: calc(100vw - 122px) !important;
+  }
+  /* 预设芯片右靠（用户点名「靠近右边三个点」）：margin-left:auto 把 crumbs 与
+     动作组之间的全部富余收到中间——标题贴左、模式芯片贴住更多钮（间距 4px），
+     标题长短变化时芯片位置稳定不飘。 */
+  html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }
+}
 /* 刘海安全区：viewport-fit=cover 后由 env() 补回遮挡区 */
 html[data-dshsvc-mobile] body {
   padding-top: env(safe-area-inset-top, 0px);
