@@ -70,6 +70,19 @@ function createRenderer(rpcCall, options = {}) {
   }
   let notificationPermission = options.notificationPermission
   let sessionSnapshot = { ids: [], byId: {}, current: undefined, phase: 'ready' }
+  const statusListeners = new Set()
+  const statusPending = new Map()
+  const statusRunning = new Map()
+  let statusSnapshot = new Map()
+  // publishStatus 同构：ids = byId ∪ running ∪ pending，每个会话都有条目，
+  // 无待审时会话的 pendingInteraction 为 undefined（而非条目缺席）。
+  const publishStatusSnapshot = () => {
+    const ids = new Set([...statusRunning.keys(), ...statusPending.keys()])
+    const next = new Map()
+    for (const id of ids) next.set(id, { running: statusRunning.get(id), pendingInteraction: statusPending.get(id) })
+    statusSnapshot = next
+    for (const listener of statusListeners) listener()
+  }
   let activeLocale = 'zh'
   let localeRevision = 0
   let currentComponent
@@ -483,6 +496,20 @@ function createRenderer(rpcCall, options = {}) {
             },
           },
         },
+        // 真实运行时拓扑（dsh 0.1.6）：pendingInteraction 只在 uiSession.sessionStatus 的
+        // ReadonlyMap 上，list 行（SessionSummary）从不携带该字段——两者必须分开喂。
+        // options.legacyRuntime 模拟无此服务的旧运行时。
+        ...(options.legacyRuntime ? {} : {
+          uiSession: {
+            sessionStatus: {
+              getSnapshot: () => statusSnapshot,
+              subscribe(listener) {
+                statusListeners.add(listener)
+                return () => statusListeners.delete(listener)
+              },
+            },
+          },
+        }),
       }
       activeCtx = ctx
       plugin.apply(ctx)
@@ -541,7 +568,20 @@ function createRenderer(rpcCall, options = {}) {
     },
     setSessions(byId) {
       sessionSnapshot = { ids: Object.keys(byId), byId, current: undefined, phase: 'ready' }
+      // reconcileStatus 同构：list 快照播种/回收 running 事实；待审事实独立于 list 快照，
+      // 不因行刷新清除（真实运行时里 pending 只随 publishPendingInteractions 变化）。
+      for (const [id, row] of Object.entries(byId)) statusRunning.set(id, row.running === true)
+      for (const id of [...statusRunning.keys()]) if (!(id in byId)) statusRunning.delete(id)
       for (const listener of sessionListeners) listener()
+      publishStatusSnapshot()
+      renderAll()
+    },
+    // 待审事实（publishPendingInteractions 同构）：entries 为 [sessionId, {pendingInteraction}]，
+    // pendingInteraction 是交互对象（{kind, key, sessionId}）或 undefined；传全量即整体替换。
+    setSessionStatus(entries) {
+      statusPending.clear()
+      for (const [id, status] of entries) statusPending.set(id, status?.pendingInteraction)
+      publishStatusSnapshot()
       renderAll()
     },
     // 选定当前会话（引擎按 list.current 找 modelDirectory）：会话切换用例需要它。
@@ -2903,16 +2943,22 @@ test('session edges notify for task completion and pending interaction with kind
     { title: '任务完成', body: '重构面板 已完成本轮任务' },
   ])
 
-  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false, pendingInteraction: 'question' } })
+  // 待审状态按真实拓扑走 sessionStatus 快照（list 行永远没有 pendingInteraction 字段）
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'question', key: 'q1', sessionId: 's1' } }]])
   assert.deepEqual(renderer.notifications().slice(1), [
     { title: '需要你的确认', body: '重构面板（等待选择答案）' },
   ])
 
-  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false } })
-  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false, pendingInteraction: 'approval' } })
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: undefined }]])
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a1', sessionId: 's1' } }]])
   assert.deepEqual(renderer.notifications().slice(2), [
     { title: '需要你的确认', body: '重构面板（等待授权）' },
   ])
+
+  // 回归钉：list 行上残留 pendingInteraction（旧测试的假形状）不得驱动任何通知
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: undefined }]])
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '重构面板', running: false, pendingInteraction: 'approval' } })
+  assert.equal(renderer.notifications().length, 3, 'pendingInteraction on list rows must never ring')
 })
 
 test('subagent completion stays silent while root completion and subagent interactions notify', async () => {
@@ -2945,24 +2991,23 @@ test('subagent completion stays silent while root completion and subagent intera
 
   renderer.setSessions({
     root: { id: 'root', displayTitle: '主会话', running: false },
-    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'approval' },
-  })
-  renderer.setSessions({
-    root: { id: 'root', displayTitle: '主会话', running: false },
     child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false },
   })
-  renderer.setSessions({
-    root: { id: 'root', displayTitle: '主会话', running: false },
-    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'plan-review' },
-  })
-  renderer.setSessions({
-    root: { id: 'root', displayTitle: '主会话', running: false },
-    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false },
-  })
-  renderer.setSessions({
-    root: { id: 'root', displayTitle: '主会话', running: false },
-    child: { id: 'child', displayTitle: '子代理', parentId: 'root', origin: 'subagent', running: false, pendingInteraction: 'question' },
-  })
+  renderer.setSessionStatus([
+    ['child', { running: false, pendingInteraction: { kind: 'approval', key: 'a1', sessionId: 'child' } }],
+  ])
+  renderer.setSessionStatus([
+    ['child', { running: false, pendingInteraction: undefined }],
+  ])
+  renderer.setSessionStatus([
+    ['child', { running: false, pendingInteraction: { kind: 'plan-review', key: 'p1', sessionId: 'child' } }],
+  ])
+  renderer.setSessionStatus([
+    ['child', { running: false, pendingInteraction: undefined }],
+  ])
+  renderer.setSessionStatus([
+    ['child', { running: false, pendingInteraction: { kind: 'question', key: 'q1', sessionId: 'child' } }],
+  ])
   assert.deepEqual(renderer.notifications().slice(1), [
     { title: '需要你的确认', body: '子代理（等待授权）' },
     { title: '需要你的确认', body: '子代理（等待审阅计划）' },
@@ -2989,13 +3034,14 @@ test('notification kinds are gated by the master and per-kind switches', async (
   master().props.onClick()
   await renderer.flush()
   renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
-  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false, pendingInteraction: 'approval' } })
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a0', sessionId: 's1' } }]])
   assert.deepEqual(renderer.notifications(), [], 'master off gates both kinds')
 
   master().props.onClick()
   await renderer.flush()
   renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
-  renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true, pendingInteraction: 'plan-review' } })
+  renderer.setSessionStatus([['s1', { running: true, pendingInteraction: undefined }]])
+  renderer.setSessionStatus([['s1', { running: true, pendingInteraction: { kind: 'plan-review', key: 'p0', sessionId: 's1' } }]])
   assert.deepEqual(renderer.notifications(), [
     { title: '需要你的确认', body: 'A（等待审阅计划）' },
   ], 'master back on lets the input edge ring with the plan-review label')
@@ -3030,6 +3076,38 @@ test('connection reset rebuilds the baseline so replayed frames ring nothing', a
   renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: true } })
   renderer.setSessions({ 's1': { id: 's1', displayTitle: 'A', running: false } })
   assert.equal(renderer.notifications().length, 1, 'edges after re-baseline ring again')
+
+  // 状态源基线同样随连接重置重建：重置后首个快照只记录，不响铃
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a2', sessionId: 's1' } }]])
+  assert.equal(renderer.notifications().length, 2, 'pending edge rings before reset bookkeeping')
+
+  renderer.emitConnectionReset()
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a3', sessionId: 's1' } }]])
+  assert.equal(renderer.notifications().length, 2, 'first status snapshot after reset only rebuilds the baseline')
+
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: undefined }]])
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a4', sessionId: 's1' } }]])
+  assert.equal(renderer.notifications().length, 3, 'pending edges after status re-baseline ring again')
+})
+
+test('legacy runtime without uiSession keeps completion notifications and stays silent on interaction', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted', legacyRuntime: true })
+
+  await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '旧运行时', running: true } })
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '旧运行时', running: false } })
+  assert.deepEqual(renderer.notifications(), [
+    { title: '任务完成', body: '旧运行时 已完成本轮任务' },
+  ], 'completion path works without the status service')
 })
 
 test('upgrade failure surfaces the host error detail instead of only the generic message', async () => {
