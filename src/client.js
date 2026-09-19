@@ -626,12 +626,9 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'subagent.fallback.empty': '未添加回退：第一路由不可用时子代理回落到原生继承。',
       'subagent.fallback.limit': '已达上限（{max} 个）',
       'subagent.error.invalid-fallback-route': '回退条目不在宿主清单内，请重新选择',
-      'subagent.turnTail.label': '子代理：',
-      'subagent.turnTail.countOne': '子代理 ×1',
-      'subagent.turnTail.countMany': '子代理 ×{count}',
-      'subagent.turnTail.unknown': '（模型未记录）',
+      'subagent.dock.label': '子代理：',
       'subagent.dock.title': '输入框下方显示子代理信息',
-      'subagent.dock.desc': '在对话页输入框下方常驻一行本会话子代理实际使用的模型（20 秒刷新，不受事件折叠影响），单独排在官方统计的下一行。关闭后仅保留回合尾部小字行。',
+      'subagent.dock.desc': '在对话页输入框下方常驻一行本会话子代理实际使用的模型（20 秒刷新，不受事件折叠影响），单独排在官方统计的下一行。关闭后对话页不再显示子代理行。',
       'skills.error': '操作失败：{error}',
       'skills.error.feature-disabled': '技能管理功能已在设置中关闭',
       'skills.error.network': '网络错误，请稍后重试',
@@ -1491,12 +1488,9 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'subagent.fallback.empty': 'No fallbacks: delegations fall back to native inheritance when the primary route is unavailable.',
       'subagent.fallback.limit': 'Limit reached ({max})',
       'subagent.error.invalid-fallback-route': 'Fallback entry is not in the host catalog, please choose again',
-      'subagent.turnTail.label': 'Subagents: ',
-      'subagent.turnTail.countOne': '1 subagent',
-      'subagent.turnTail.countMany': '{count} subagents',
-      'subagent.turnTail.unknown': ' (models not recorded)',
+      'subagent.dock.label': 'Subagents: ',
       'subagent.dock.title': 'Show subagent info under the composer',
-      'subagent.dock.desc': 'Keeps a session-level line under the composer listing the models your subagents actually used (20s refresh, unaffected by compaction) — on its own line below the official stats. When off, only the per-turn tail line remains.',
+      'subagent.dock.desc': 'Keeps a session-level line under the composer listing the models your subagents actually used (20s refresh, unaffected by compaction) — on its own line below the official stats. When off, no subagent line is shown on the conversation page.',
       'skills.error': 'Operation failed: {error}',
       'skills.error.feature-disabled': 'Skill manager is switched off in settings',
       'skills.error.network': 'Network error, try again later',
@@ -2280,30 +2274,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
 
     const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
 
-    // ── v1.2 子代理模型可见性：回合尾行的纯逻辑（模块级便于单测）──────────────
-    // selector 只读官方 turn-process 数据，subagentCount>0 才认领回合——避免在无子代理
-    // 的回合抢占链槽（better-sidebar 的 produced-files 行 priority -1 先到先得，本条目让位）。
-    // 双形态（0.1.5 影响报告）：0.1.3-alpha.2 起官方为对象直存
-    // {turn,…,subagentCount}；更早版本是编码签名串 `turn|…|subagentCount`（第 9 段
-    // subagentCount、第 1 段 turn）。对象分支缺失字段/非有限数一律拒绝认领。
-    function selectSubagentModelsTurnTail(owner) {
-      const data = owner?.turn?.data?.get?.('turn-process')
-      if (data !== null && typeof data === 'object') {
-        const turn = Number(data.turn)
-        const subagentCount = Number(data.subagentCount)
-        if (!Number.isFinite(turn) || !Number.isFinite(subagentCount) || subagentCount <= 0) return null
-        return { turn, subagentCount }
-      }
-      if (typeof data !== 'string') return null
-      const parts = data.split('|')
-      // 空首段（畸形签名）视为不可信：Number('')===0 会误认领 turn 0。
-      if (parts[0] === '') return null
-      const turn = Number(parts[0])
-      const subagentCount = Number(parts[8])
-      if (!Number.isFinite(turn) || !Number.isFinite(subagentCount) || subagentCount <= 0) return null
-      return { turn, subagentCount }
-    }
-
+    // ── 子代理行纯逻辑（模块级便于单测）──────────────────────────────────
     /** 按 provider/model/effort 聚合记录为展示条目（保持首个出现的顺序，同名路由计数）。 */
     function aggregateSubagentRoutes(records) {
       if (!Array.isArray(records)) return []

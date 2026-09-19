@@ -6655,79 +6655,6 @@ test('subagent reasoning effort: invalid-reasoning-effort 显示正确中文/英
   assert.match(renderer.findByTestId('subagent-error').children.join(''), /not supported by the selected model/)
 })
 
-test('subagent turn-tail row: registered under the subagentRoute feature, selector claims only subagent turns', async () => {
-  const calls = []
-  const renderer = createRenderer(async (channel, endpoint) => {
-    calls.push(endpoint)
-    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
-    throw new Error(`unexpected endpoint ${endpoint}`)
-  })
-  await renderer.load()
-  const entries = renderer.registrations()['conversation.chat.turnTail']
-  assert.ok(entries.some((entry) => entry.id === 'dsh-service-subagent-models'))
-  const entry = entries.find((entry) => entry.id === 'dsh-service-subagent-models')
-  assert.equal(typeof entry.select, 'function')
-  // 链槽条目以 select 认领：官方 turn-process 签名第 1 段 = turn、第 9 段 = subagentCount。
-  const claim = { turn: { turn: 3, data: { get: (key) => (key === 'turn-process' ? '3|1|2|4|5|0|2|2|2' : undefined) } } }
-  assert.deepEqual(entry.select(claim), { turn: 3, subagentCount: 2 })
-  // 放弃：无签名 / subagentCount=0 / 坏签名 / 无 owner。
-  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => undefined } } }), null)
-  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => '3|1|2|4|5|0|2|2|0' } } }), null)
-  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => 'oops' } } }), null)
-  assert.equal(entry.select({ turn: { turn: 3, data: { get: () => '|1|2|4|5|0|2|2|2' } } }), null)
-  assert.equal(entry.select({ turn: {} }), null)
-  assert.equal(entry.select(null), null)
-  // 0.1.3-alpha.2 起官方 turn-process 为对象直存（0.1.5 影响报告）：字段缺失/非有限数/
-  // 零计数一律拒绝认领，与旧串形态同口径。
-  assert.deepEqual(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 5, subagentCount: 3 }) } } }), { turn: 5, subagentCount: 3 })
-  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 5, subagentCount: 0 }) } } }), null)
-  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ subagentCount: 3 }) } } }), null)
-  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => ({ turn: 'x', subagentCount: 3 }) } } }), null)
-  assert.equal(entry.select({ turn: { turn: 5, data: { get: () => 42 } } }), null)
-  // 功能关闭：条目注销；开启：重新注册（hasSlot 在替身里不回落，按注册表断言）。
-  await renderer.setFeature('subagentRoute', false)
-  assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models').length, 0)
-  await renderer.setFeature('subagentRoute', true)
-  assert.equal((renderer.registrations()['conversation.chat.turnTail'] ?? []).some((item) => item.id === 'dsh-service-subagent-models'), true)
-  // 槽位挂载（无 matched 时组件渲染 null）不应触发任何 subagent-dispatches 拉取
-  // （累计行组件随槽自动挂载会产生 1 次拉取，这里对比挂载前后的差值）。
-  const before = calls.filter((entry) => entry === 'subagent-dispatches').length
-  renderer.mount('conversation.chat.turnTail')
-  await renderer.flush()
-  assert.equal(renderer.text('conversation.chat.turnTail'), '')
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, before)
-})
-
-test('subagent turn-tail row: adaptive compatibility for 0.1.6-alpha.2 list slot without props.matched', async () => {
-  const calls = []
-  const renderer = createRenderer(async (channel, endpoint) => {
-    calls.push(endpoint)
-    if (endpoint === 'subagent-dispatches') {
-      return {
-        ok: true,
-        value: {
-          records: [
-            { parentSessionId: 'session-1', childSessionId: 'child-1', turn: 3, provider: 'cpa', model: 'gpt-5.6-luna', source: 'routed' },
-          ],
-        },
-      }
-    }
-    throw new Error(`unexpected endpoint ${endpoint}`)
-  }, {
-    slotProps: {
-      'conversation.chat.turnTail': {
-        turn: { turn: 3, data: { get: (key) => (key === 'turn-process' ? { turn: 3, subagentCount: 1 } : undefined) } },
-        sessionId: 'session-1',
-      },
-    },
-  })
-  await renderer.load()
-  renderer.mount('conversation.chat.turnTail')
-  await renderer.flush()
-  assert.equal(renderer.hasTest('subagent-models-turn-tail'), true, 'renders under 0.1.6-alpha.2 list slot where props.matched is absent')
-  assert.match(renderer.text('conversation.chat.turnTail'), /子代理：cpa\/gpt-5\.6-luna/)
-})
-
 test('plugins.bundle.config slot is registered for @gehennawu/dsh-service and renders on page view', async () => {
   const renderer = createRenderer(async () => ({ ok: true, value: {} }), {
     initiallyUnmounted: ['settings.section'],
@@ -6755,13 +6682,13 @@ test('plugins.bundle.config slot is registered for @gehennawu/dsh-service and re
   assert.equal(summaryRenderer.text('plugins.bundle.config'), '', 'renders null on summary view')
 })
 
-test('subagent turn-tail row: route aggregation and line text assembly', async () => {
+test('subagent line: route aggregation and line text assembly', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
-  const utils = renderer.moduleExports().subagentTurnTail
+  const utils = renderer.moduleExports().subagentLine
   assert.equal(typeof utils.aggregateSubagentRoutes, 'function')
   assert.equal(typeof utils.subagentRouteListText, 'function')
   // 聚合：按 provider/model/effort 去键、保持首个出现顺序、同名计数。
@@ -6783,17 +6710,14 @@ test('subagent turn-tail row: route aggregation and line text assembly', async (
   // 行文本：effort 括号、×n 仅计数>1、条目间「 · 」。
   assert.equal(utils.subagentRouteListText(entries), 'cpa/gpt-5.6-luna (xhigh) ×2 · opencode-go/deepseek-v4-flash (max) · cpa/gpt-5.6-luna (low)')
   assert.equal(utils.subagentRouteListText([]), '')
-  // 词典：zh/en 都有回合尾行词条。
+  // 词典：zh/en 都有累计行词条；回合尾行移除后旧键（unknown/countOne/countMany）不得残留。
   const zh = renderer.dictionaries('dsh-service').zh
   const en = renderer.dictionaries('dsh-service').en
-  assert.match(zh['subagent.turnTail.label'], /子代理：/)
-  assert.match(en['subagent.turnTail.label'], /Subagents/)
-  assert.equal(zh['subagent.turnTail.unknown'].includes('模型未记录'), true)
-  // 未记录兜底行的英文单复数（v1.1.2 发布前评审修复）：1 subagent / N subagents，zh 同形。
-  assert.equal(zh['subagent.turnTail.countOne'], '子代理 ×1')
-  assert.match(zh['subagent.turnTail.countMany'], /子代理 ×\{count\}/)
-  assert.equal(en['subagent.turnTail.countOne'], '1 subagent')
-  assert.equal(en['subagent.turnTail.countMany'], '{count} subagents')
+  assert.match(zh['subagent.dock.label'], /子代理：/)
+  assert.match(en['subagent.dock.label'], /Subagents/)
+  assert.equal('subagent.turnTail.label' in zh, false)
+  assert.equal('subagent.turnTail.unknown' in zh, false)
+  assert.equal('subagent.turnTail.countOne' in en, false)
   assert.ok(Object.keys(zh).every((key) => key in en), 'zh/en key sets must match')
 })
 

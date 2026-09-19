@@ -151,7 +151,7 @@
       // （工厂作用域分片，清单见 scripts/client-source.mjs）。工厂调用在 useTranslation 定义
       // 之后（见「Svc 视觉基元」段前），避免按值传参的 TDZ；每次 apply 调用产出一份新缓存状态，
       // 与原 apply 作用域声明等命。
-      const { SubagentModelsDock, SubagentModelsTurnTail } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
+      const { SubagentModelsDock } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
       // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
       // 可见性/顺序/回退全部收敛为纯函数（可独立测试）；ServicePanel 只持状态与业务块。
       const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'diagnostics', 'maintenance', 'configuration']
@@ -1505,8 +1505,8 @@
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
           React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
-          // v1.2：输入框底部累计行开关（独立于路由配置，feature 热生效；关闭仅隐藏累计行，
-          // 回合尾行不受影响）。
+          // v1.2：输入框下方累计行开关（独立于路由配置，feature 热生效；关闭即隐藏累计行，
+          // 对话页不再有其他子代理显示面）。
           React.createElement('div', { 'data-testid': 'subagent-dock-toggle-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', padding: '10px 12px', border: '1px solid var(--dsh-svc-border)', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
             React.createElement('div', { style: { flex: 1, minWidth: 0 } },
               React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.dock.title')),
@@ -5558,30 +5558,10 @@
         return () => { unsubscribe(); if (dispose !== null) dispose() }
       })
 
-      // ─── v1.2 子代理模型可见性：对话页回合尾模型行 ─────────────────────────
-      // chain 槽（conversation.chat.turnTail）priority 0：selector 只在官方 turn-process
-      // 数据声明 subagentCount>0 时认领，无子代理回合零开销；better-sidebar 的 produced-files
-      // 行（priority -1）同回合先到先得，模型行让位不冲突。条目随 subagentRoute 开关热注销。
-      ctx.slots.inject('conversation.chat.turnTail', () => {
-        let dispose = null
-        const sync = () => {
-          if (dispose !== null) { dispose(); dispose = null }
-          if (!featureEnabled('subagentRoute')) return
-          dispose = ctx.slots.register(
-            { name: 'conversation.chat.turnTail', id: 'dsh-service-subagent-models', select: selectSubagentModelsTurnTail },
-            (props) => React.createElement(SubagentModelsTurnTail, props),
-          )
-        }
-        sync()
-        const unsubscribe = featureScope.subscribe(sync)
-        return () => { unsubscribe(); if (dispose !== null) dispose() }
-      })
-
       // 会话级累计行（输入卡下方、官方统计行的下一行）：挂官方 conversation.composer.dock
       // 槽位（与统计胶囊/上下文圆环同一 dock 行），但通过 svcStyle 的行级规则让该行启用
       // 换行、累计行 flex-basis:100% 独占下一行——不再与官方条目同行挤占。
-      // 与回合尾行同 feature 门控；不依赖回合数据，compaction 折叠导致回合尾行缺席时
-      // 兜底可见。order 后置（60）排在同槽官方条目之后。
+      // 对话页唯一显示面；不依赖回合数据，任何视图可见。order 后置（60）排在同槽官方条目之后。
       ctx.slots.inject('conversation.composer.dock', () => {
         let dispose = null
         const sync = () => {
@@ -5592,7 +5572,7 @@
             name: 'conversation.composer.dock',
             id: 'dsh-service-subagent-models-dock',
             order: 60,
-            label: () => t('subagent.turnTail.label'),
+            label: () => t('subagent.dock.label'),
             inject: (sessionId) => ({ sessionId }),
           }, (props) => React.createElement(SubagentModelsDock, props))
         }
@@ -6483,8 +6463,8 @@
 
     exports.inject = inject
     exports.apply = apply
-    // v1.2 回合尾模型行的纯逻辑出口：仅供自动化测试直达，运行时无消费者。
-    exports.subagentTurnTail = { aggregateSubagentRoutes, selectSubagentModelsTurnTail, subagentRouteListText }
+    // 子代理行纯逻辑出口：仅供自动化测试直达，运行时无消费者。
+    exports.subagentLine = { aggregateSubagentRoutes, subagentRouteListText }
     // 右栏文件编辑（v1.6/v1.6.1）：档位 id、可编辑后缀表与入口引擎的纯函数面，供测试与排障复用。
     exports.fileEditor = { id: FILE_EDITOR_ID, extensions: FILE_EDITOR_EXTENSION_TABLE, selectViewerItem, editorExtensionMatches, attr: EDITOR_ENTRY_ATTR, menuItemAttr: EDITOR_MENU_ITEM_ATTR }
     // v1.8 模型厂家/渠道图标：纯解析面 + 图标数据规模，供自动化测试与排障直视。

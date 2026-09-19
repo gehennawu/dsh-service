@@ -215,7 +215,7 @@ const MAX_SUBAGENT_ROUTE_FIELD = 256
 // 「已知现在不能用」；network/timeout/5xx 等瞬态不在此列（回退要的是确定性故障而非一次抖动）。
 const SUBAGENT_ROUTE_FALLBACK_MAX = 10
 // 子代理派发记录（v1.2）：内存环形上限与端点单页上限。记录不落盘——宿主进程重启即清，
-// 页面刷新不丢（记录在宿主内存）；客户端按 (parentSessionId, turn) 匹配回合尾行。
+// 页面刷新不丢（记录在宿主内存）；客户端按父会话聚合成输入框下方累计行。
 // 单页上限 = 环形容量：一次请求即可取回环内全部记录，客户端无需分页
 // （超出环容量的记录本就被环形淘汰，不存在「静默少计」窗口）。
 const SUBAGENT_DISPATCH_MAX = 400
@@ -4736,7 +4736,7 @@ function apply(ctx) {
     //   proposal 阶段补入。绑定是一次性的：首个请求结算后即消费（无论补标成功与否），之后交给
     //   请求自身/会话内状态，避免官方模型选择装配层刻意剥离继承值后我们在后续请求上反复复活旧等级。
     // - 派发记录：childId → {provider, model, reasoningEffort?, source, turn, at} 环形快照，
-    //   供客户端对话页「回合尾子代理模型行」读取（subagent-dispatches 端点）。
+    //   供客户端对话页「子代理累计行」读取（subagent-dispatches 端点）。
     const pendingDispatchStorage = new AsyncLocalStorage()
     const managedEfforts = new WeakMap()
     const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && managedEfforts.has(agent)
@@ -4779,7 +4779,7 @@ function apply(ctx) {
       })
       // 显式路由（本插件不干预的派生，如官方 subagent-model-selection 开启时 LLM 主动选的模型）
       // 也带进派发记录：source='explicit'，显示时不误标「继承」；显式携带的思考等级一并记录，
-      // 否则回合尾行会漏掉 (effort)。
+      // 否则累计行会漏掉 (effort)。
       const explicitProvider = typeof request?.agentOptions?.provider === 'string' && request.agentOptions.provider !== '' ? request.agentOptions.provider : undefined
       const explicitModel = typeof request?.agentOptions?.model === 'string' && request.agentOptions.model !== '' ? request.agentOptions.model : undefined
       const explicitEffort = typeof request?.agentOptions?.reasoningEffort === 'string' && request.agentOptions.reasoningEffort !== '' ? request.agentOptions.reasoningEffort : undefined
