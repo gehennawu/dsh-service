@@ -6955,7 +6955,14 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.notEqual(styleTag, undefined)
     // 真机反馈两处：抽屉钮钉左上角（头部预留位），设置标签条横滑
     assert.match(styleTag.textContent, /data-dshsvc-fab\]:hover/)
-    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding-left: 46px/)
+    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding: 10px 20px 0 46px/)
+    // 顶栏移动端适配（2026-09-19）：右内边距 28→20、utilities 左距 20→4、
+    // titleCluster 列距 10→6、计数组列距 10→4 且 flex:none 不可挤压
+    // （:not(:has(switcherTrigger)) 守卫 lineage 切换器根），标题吃掉全部富余
+    assert.match(styleTag.textContent, /\[class\*="wSkVaW_headerUtilities"\] \{ margin-left: 4px !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="wSkVaW_titleCluster"\] \{ gap: 6px !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\] \{ gap: 4px !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{ flex: none !important; \}/)
     // 真机反馈第二轮根因：左右列 absolute 后退出 grid 流，三列必须显式钉位防中列掉进 0px 轨
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{ grid-column: 1 !important; grid-row: 1 !important; \}/)
     assert.match(styleTag.textContent, /\[data-dshsvc-center\] \{ grid-column: 2 !important; grid-row: 1 !important; \}/)

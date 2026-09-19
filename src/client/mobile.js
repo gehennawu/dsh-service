@@ -331,7 +331,27 @@ html[data-dshsvc-mobile] [data-dshsvc-user-jump] {
 /* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */
 html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
 html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
-html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding-left: 46px !important; }
+html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding: 10px 20px 0 46px !important; }
+/* 会话顶栏移动端适配（2026-09-19 用户点名「顶部的几个信息适配移动端」）：
+   titleRow 里 标题crumb / 「N 个子代理」计数芯片 / 预设芯片（创造模式）互相挤压——
+   官方 crumbs 自带 overflow:hidden，放不下的尾部被**硬裁**：计数芯片拦腰截断
+   （真机 390px 实测裁掉 49px，视觉即「1 个子代…」），标题缩到 ~119px。
+   只收紧固定几何 + 改收缩优先级，不重挂 DOM、不藏任何信息：
+   ① 头部右内边距 28→20：corner 钮自带 margin-right:-16px 悬出，20 仍留 4px 边距；
+   ② 更多操作钮的 utilities 左距 20→4（blank 空头部该层 :empty 隐藏，不受影响）；
+   ③ titleCluster 列距 10→6；
+   ④ 计数组（分隔符+计数触发钮）列距 10→4，并 flex:none 不可挤压——标题按钮
+      自带 overflow:hidden + ellipsis（min-content=0）天生是收缩担当，让省出的
+      宽度全部归标题；计数文案与触发钮 aria-label（「N 个子代理」）原样保留。
+      :not(:has(switcherTrigger)) 守卫带 lineage 切换器的根（其内部自有
+      min-width:0 收缩链，钉死会溢出）；:has 不支持时整条失效，退回官方行为。
+   类哈希 wSkVaW_ 取自 dsh-client-ui-conversation ConversationRoot.module.css、
+   ZKlsPq_ 取自 dsh-client-ui-subagent SubagentHeaderLineage.module.css
+   （均 0.1.6-alpha.2），升级需复核。 */
+html[data-dshsvc-mobile] [class*="wSkVaW_headerUtilities"] { margin-left: 4px !important; }
+html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 6px !important; }
+html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
+html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
 /* 刘海安全区：viewport-fit=cover 后由 env() 补回遮挡区 */
 html[data-dshsvc-mobile] body {
   padding-top: env(safe-area-inset-top, 0px);
