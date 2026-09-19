@@ -455,27 +455,31 @@ function createRenderer(rpcCall, options = {}) {
             }
           },
         },
-        // 圆环路径专用：提供 modelDirectories 时模拟 cordis 的嵌套 inject 等待语义 +
-        // ctx.get 惰性取值（插件 apply 时已挂载则立即注册）；
-        // 不提供时两者都不存在，插件应保持无圆环（老版本 DSH 兼容分支）。
-        // options.services：其他可选服务桩（如移动端适配的 layout 服务、右栏编辑的
-        // documentPreviews）走同一惰性 get / scoped inject。
-        ...(options.modelDirectories || options.services ? {
-          inject(deps, callback) {
-            const scope = {}
-            for (const dep of Array.isArray(deps) ? deps : [deps]) {
-              scope[dep] = dep === 'modelDirectories' ? activeModelDirectories : options.services?.[dep]
+        // 真实 Cordis 运行时标准方法：随时可用。
+        // options.services / options.modelDirectories / 动态服务均经 get / inject 读取。
+        inject(deps, callback) {
+          const scope = {}
+          for (const dep of Array.isArray(deps) ? deps : [deps]) {
+            scope[dep] = this.get(dep)
+          }
+          const disposer = callback(scope)
+          return () => { if (typeof disposer === 'function') disposer() }
+        },
+        get(service) {
+          if (service === 'modelDirectories') return activeModelDirectories
+          if (service === 'uiSession') {
+            return options.legacyRuntime ? undefined : {
+              sessionStatus: {
+                getSnapshot: () => statusSnapshot,
+                subscribe(listener) {
+                  statusListeners.add(listener)
+                  return () => statusListeners.delete(listener)
+                },
+              },
             }
-            // 与 cordis 的 scoped inject 同语义：回调返回的 disposer 由返回的句柄负责释放
-            // （服务卸载时 cordis 也会跑它；这里只建模宿主主动 dispose 的一条路）。
-            const disposer = callback(scope)
-            return () => { if (typeof disposer === 'function') disposer() }
-          },
-          get(service) {
-            if (service === 'modelDirectories') return activeModelDirectories
-            return options.services?.[service]
-          },
-        } : {}),
+          }
+          return options.services?.[service]
+        },
         effect(callback) {
           const dispose = callback()
           if (typeof dispose === 'function') factoryDisposers.push(dispose)
@@ -496,23 +500,23 @@ function createRenderer(rpcCall, options = {}) {
             },
           },
         },
-        // 真实运行时拓扑（dsh 0.1.6）：pendingInteraction 只在 uiSession.sessionStatus 的
-        // ReadonlyMap 上，list 行（SessionSummary）从不携带该字段——两者必须分开喂。
-        // options.legacyRuntime 模拟无此服务的旧运行时。
-        ...(options.legacyRuntime ? {} : {
-          uiSession: {
-            sessionStatus: {
-              getSnapshot: () => statusSnapshot,
-              subscribe(listener) {
-                statusListeners.add(listener)
-                return () => statusListeners.delete(listener)
-              },
-            },
-          },
-        }),
       }
-      activeCtx = ctx
-      plugin.apply(ctx)
+      // 真实 Cordis 运行时行为守卫：对未在 inject 声明的服务进行直接属性访问必须抛错，
+      // 防止写出看似安全却在真机触发 cannot get property without inject 的代码。
+      const declaredInjectedServices = new Set([
+        'slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope',
+        'effect', 'on', 'inject', 'get', 'baseUrl', 'logger',
+      ])
+      const guardedCtx = new Proxy(ctx, {
+        get(target, prop, receiver) {
+          if (typeof prop === 'string' && !declaredInjectedServices.has(prop) && !(prop in Object.prototype)) {
+            throw new Error(`cannot get property "${prop}" without inject`)
+          }
+          return Reflect.get(target, prop, receiver)
+        },
+      })
+      activeCtx = guardedCtx
+      plugin.apply(guardedCtx)
       moduleExports = plugin
       renderAll()
       await this.flush()

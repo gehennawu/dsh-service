@@ -6,18 +6,34 @@
 // pendingInteraction 只在 uiSession.sessionStatus 的 ReadonlyMap<SessionId, SessionStatus>
 // 上——list 行从不携带该字段（projectList 的三条行构造路径都不写），待审边沿只能从
 // 状态源取。两路各自维护基线与边沿，连接重置时各自重建（首快照只建基线，均不响铃）。
-// 旧运行时没有 uiSession 服务时状态路整体缺席，任务完成通知照常。
+//
+// 架构约束：uiSession 是宿主会话 UI 扩展服务，未在插件声明 inject 中；在 Cordis 运行时中
+// 严禁直接访问 ctx.uiSession（会触发 Proxy 抛出 cannot get property without inject 导致客户端崩溃），
+// 必须通过 ctx.get('uiSession') 或 ctx.inject(['uiSession']) 安全感知。旧运行时无此服务时状态路优雅降级。
 function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS }) {
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()
         let baselined = false
         let sessionsDispose = null
         let resetDispose = null
-        const hasStatusSource = ctx.uiSession && typeof ctx.uiSession.sessionStatus?.subscribe === 'function'
+
+        const getUiSession = (scope) => {
+          if (scope != null && scope.uiSession !== undefined) return scope.uiSession
+          try {
+            if (typeof ctx.get === 'function') return ctx.get('uiSession')
+          } catch (_) {}
+          return undefined
+        }
+
+        let injectedUiSession = undefined
+        let uninjectUiSession = null
         const statusObserved = new Map()
         let statusBaselined = false
         let statusDispose = null
         let statusResetDispose = null
+
+        const resolveUiSession = () => injectedUiSession ?? getUiSession()
+
         const observeSessions = () => {
           const snapshot = ctx.sessions.list.getSnapshot()
           if (!snapshot || !snapshot.byId) return
@@ -41,9 +57,11 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
             if (!(id in snapshot.byId)) observed.delete(id)
           }
         }
+
         const observeStatus = () => {
-          if (!hasStatusSource) return
-          const snapshot = ctx.uiSession.sessionStatus.getSnapshot()
+          const uiSession = resolveUiSession()
+          if (!uiSession || typeof uiSession.sessionStatus?.subscribe !== 'function') return
+          const snapshot = uiSession.sessionStatus.getSnapshot()
           if (!snapshot || typeof snapshot.entries !== 'function') return
           if (!statusBaselined) {
             statusBaselined = true
@@ -67,6 +85,7 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
             if (!snapshot.has(id)) statusObserved.delete(id)
           }
         }
+
         const stopSessionObservation = () => {
           if (sessionsDispose !== null) { sessionsDispose(); sessionsDispose = null }
           if (resetDispose !== null) { resetDispose(); resetDispose = null }
@@ -78,6 +97,24 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
           statusBaselined = false
           sessionActivity.runningSessionIds = new Set()
         }
+
+        const syncStatusObservation = () => {
+          const uiSession = resolveUiSession()
+          if (uiSession && typeof uiSession.sessionStatus?.subscribe === 'function' && featureEnabled('taskNotifications')) {
+            if (statusDispose === null) {
+              statusDispose = uiSession.sessionStatus.subscribe(() => observeStatus())
+              statusResetDispose = ctx.on('connection/reset', () => { statusObserved.clear(); statusBaselined = false })
+              observeStatus()
+            }
+          } else if (statusDispose !== null) {
+            statusDispose()
+            statusDispose = null
+            if (statusResetDispose !== null) { statusResetDispose(); statusResetDispose = null }
+            statusObserved.clear()
+            statusBaselined = false
+          }
+        }
+
         const syncSessionObservation = () => {
           const needed = featureEnabled('taskNotifications') || featureEnabled('quotaLookup')
           if (!needed) { stopSessionObservation(); return }
@@ -86,23 +123,21 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
             resetDispose = ctx.on('connection/reset', () => { observed.clear(); baselined = false })
             observeSessions()
           }
-          if (hasStatusSource && featureEnabled('taskNotifications')) {
-            if (statusDispose === null) {
-              statusDispose = ctx.uiSession.sessionStatus.subscribe(() => observeStatus())
-              statusResetDispose = ctx.on('connection/reset', () => { statusObserved.clear(); statusBaselined = false })
-              observeStatus()
-            }
-          } else if (statusDispose !== null) {
-            statusDispose(); statusDispose = null
-            statusResetDispose(); statusResetDispose = null
-            statusObserved.clear()
-            statusBaselined = false
-          }
+          syncStatusObservation()
         }
+
+        if (typeof ctx.inject === 'function') {
+          uninjectUiSession = ctx.inject(['uiSession'], (scope) => {
+            injectedUiSession = getUiSession(scope)
+            syncStatusObservation()
+          })
+        }
+
         syncSessionObservation()
         const unsubscribeFeatures = featureScope.subscribe(syncSessionObservation)
         ctx.effect(() => () => {
           unsubscribeFeatures()
+          if (typeof uninjectUiSession === 'function') { try { uninjectUiSession() } catch (_) {} }
           stopSessionObservation()
         }, 'dsh-service: shared session observation')
       }
