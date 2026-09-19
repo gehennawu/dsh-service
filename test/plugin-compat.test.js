@@ -31,6 +31,9 @@ test('COMPAT_BREAKS lists only verified alpha breakage with unique ids', () => {
     assert.equal(typeof entry.match, 'string')
     assert.ok(['manifest', 'code'].includes(entry.layer), `${entry.id} layer`)
     assert.ok(entry.match.length > 0)
+    assert.equal(typeof entry.since, 'string', `${entry.id} has valid since string`)
+    assert.ok(entry.since.length > 0)
+    assert.ok(['package-removed', 'slot-retired', 'method-removed', 'hash-migrated', 'event-removed', 'attribute-removed'].includes(entry.kind), `${entry.id} has known kind ${entry.kind}`)
     assert.equal(ids.has(entry.id), false, `duplicate id ${entry.id}`)
     ids.add(entry.id)
   }
@@ -40,6 +43,14 @@ test('COMPAT_BREAKS lists only verified alpha breakage with unique ids', () => {
   assert.ok(ids.has('code-runtime'))
   assert.ok(ids.has('e2b-runtime'))
   assert.ok(ids.has('session-start-event'))
+})
+
+test('compareSemver accurately determines whether a breakage is active under a given DSH version', async () => {
+  const { compareSemver } = await import('../plugin-compat.js')
+  assert.equal(compareSemver('0.1.6-alpha.2', '0.1.6-alpha.2'), 0)
+  assert.equal(compareSemver('0.1.6-alpha.2', '0.1.2-alpha.2'), 1)
+  assert.equal(compareSemver('0.1.1-rc.2', '0.1.6-alpha.2'), -1)
+  assert.equal(compareSemver('0.1.5', '0.1.6-alpha.2'), -1)
 })
 
 const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')

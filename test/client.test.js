@@ -2220,6 +2220,14 @@ test('plugin compatibility merges different findings of the same plugin into a s
   assert.match(renderer.findByTestId('plugin-compat-line-0-0').children[0], /引用已迁移的聊天界面旧样式前缀/)
   assert.match(renderer.findByTestId('plugin-compat-line-0-1').children[0], /为兼容老版本宿主保留了已退役的设置页槽位/)
   assert.match(renderer.findByTestId('plugin-compat-line-0-2').children[0], /声明了已移除的接口但代码未引用/)
+  // 结构化版本变化与迁移说明卡片
+  assert.notEqual(renderer.findByTestId('plugin-compat-detail-0-0-0'), undefined)
+  assert.notEqual(renderer.findByTestId('plugin-compat-detail-0-1-0'), undefined)
+  const detail00 = renderer.text('settings.section')
+  assert.match(detail00, /DSH ≥ 0.1.2-alpha.2/)
+  assert.match(detail00, /DSH ≥ 0.1.6-alpha.2/)
+  assert.match(detail00, /变更背景/)
+  assert.match(detail00, /适配建议/)
 })
 
 test('plugin compatibility check shows a clean summary and no list when nothing references changed interfaces', async () => {

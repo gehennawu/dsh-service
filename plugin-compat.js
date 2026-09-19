@@ -50,10 +50,65 @@ function packageNameOf(moduleName) {
   return pkg
 }
 
+function isSemverIdentifier(value) {
+  if (value.length === 0) return false
+  return [...value].every((char) => (char >= '0' && char <= '9') || (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || char === '-')
+}
+
+function isNumericSemverIdentifier(value) {
+  return value.length > 0 && [...value].every((char) => char >= '0' && char <= '9')
+}
+
+export function parseSemver(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  const buildParts = trimmed.split('+')
+  if (buildParts.length > 2 || (buildParts.length === 2 && !buildParts[1].split('.').every((part) => isSemverIdentifier(part)))) return null
+  const versionPart = buildParts[0]
+  const dashIndex = versionPart.indexOf('-')
+  const corePart = dashIndex === -1 ? versionPart : versionPart.slice(0, dashIndex)
+  const prereleasePart = dashIndex === -1 ? '' : versionPart.slice(dashIndex + 1)
+  if (dashIndex !== -1 && prereleasePart.length === 0) return null
+  const core = corePart.split('.')
+  if (core.length !== 3 || !core.every((part) => isNumericSemverIdentifier(part) && (part.length === 1 || !part.startsWith('0')))) return null
+  const prerelease = prereleasePart === '' ? [] : prereleasePart.split('.')
+  if (!prerelease.every((part) => isSemverIdentifier(part) && !(isNumericSemverIdentifier(part) && part.length > 1 && part.startsWith('0')))) return null
+  return { major: Number(core[0]), minor: Number(core[1]), patch: Number(core[2]), prerelease }
+}
+
+export function compareSemver(left, right) {
+  const a = parseSemver(left)
+  const b = parseSemver(right)
+  if (!a || !b) return 0
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1
+  }
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0
+  if (a.prerelease.length === 0) return 1
+  if (b.prerelease.length === 0) return -1
+  const length = Math.max(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index += 1) {
+    if (index >= a.prerelease.length) return -1
+    if (index >= b.prerelease.length) return 1
+    const leftPart = a.prerelease[index]
+    const rightPart = b.prerelease[index]
+    if (leftPart === rightPart) continue
+    const leftNumeric = /^[0-9]+$/.test(leftPart)
+    const rightNumeric = /^[0-9]+$/.test(rightPart)
+    if (leftNumeric && rightNumeric) return Number(leftPart) > Number(rightPart) ? 1 : -1
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    return leftPart > rightPart ? 1 : -1
+  }
+  return 0
+}
+
 /**
  * 已核实破坏面清单（每条 = 一个已被 DSH alpha 移除/迁移的旧标识）。
  * 客户端按 `plugin.compat.break.<id>` 取词典文案；layer 决定扫描目标（manifest=package.json
  * 依赖键与 dsh 字段，code=入口文件非注释文本）。
+ *
+ * since: 该破坏面首次生效的 DSH 版本。
+ * kind: 破坏类型（package-removed / slot-retired / method-removed / hash-migrated / event-removed / attribute-removed）。
  *
  * `severity: 'info'`（可选，默认 warning）把该条降为提示档：命中的插件仍逐条列出，但走
  * 蓝色提示行、不把检查项拉成 warning（也就不进概览可行动项）。只用于「旧标识仍被注册但
@@ -64,41 +119,57 @@ export const COMPAT_BREAKS = Object.freeze([
     id: 'client-runtime',
     layer: 'manifest',
     match: '@deepseek-ai/dsh-client-runtime',
+    since: '0.1.2-alpha.2',
+    kind: 'package-removed',
   },
   {
     id: 'sqlite-persistence',
     layer: 'manifest',
     match: '@deepseek-ai/dsh-session-persistence-sqlite',
+    since: '0.1.2-alpha.3',
+    kind: 'package-removed',
   },
   {
     id: 'code-runtime',
     layer: 'manifest',
     match: '@deepseek-ai/dsh-code-runtime',
+    since: '0.1.6-alpha.1',
+    kind: 'package-removed',
   },
   {
     id: 'e2b-runtime',
     layer: 'manifest',
     match: '@deepseek-ai/dsh-e2b',
+    since: '0.1.6-alpha.1',
+    kind: 'package-removed',
   },
   {
     id: 'session-start-event',
     layer: 'code',
     match: 'agent/session-start',
+    since: '0.1.6-alpha.1',
+    kind: 'event-removed',
   },
   {
     id: 'chat-hash',
     layer: 'code',
     match: 'Md3f7G_',
+    since: '0.1.2-alpha.2',
+    kind: 'hash-migrated',
   },
   {
     id: 'stats-hash',
     layer: 'code',
     match: 'FJxK0a_',
+    since: '0.1.2-alpha.2',
+    kind: 'hash-migrated',
   },
   {
     id: 'time-hover-root',
     layer: 'code',
     match: 'data-time-hover-root',
+    since: '0.1.2-alpha.2',
+    kind: 'attribute-removed',
   },
   {
     // 0.1.6-alpha.2 退役设置页槽位：第三方注册它则配置卡片在新插件页不再渲染。
@@ -109,6 +180,8 @@ export const COMPAT_BREAKS = Object.freeze([
     id: 'settings-plugin-item',
     layer: 'code',
     match: 'settings.plugin.item',
+    since: '0.1.6-alpha.2',
+    kind: 'slot-retired',
     selfExempt: true,
     severity: 'info',
   },
@@ -121,6 +194,8 @@ export const COMPAT_BREAKS = Object.freeze([
     layer: 'code',
     match: 'sessions.open',
     call: true,
+    since: '0.1.6-alpha.2',
+    kind: 'method-removed',
   },
 ])
 
@@ -369,15 +444,42 @@ export function manifestCallRefs(text, manifestBreaks) {
   return found
 }
 
+export function enrichBreak(breakId, dshVersion) {
+  const meta = COMPAT_BREAKS.find((b) => b.id === breakId)
+  if (!meta) return { id: breakId, since: 'unknown', kind: 'unknown', severity: 'warning', active: true }
+  const active = dshVersion && dshVersion !== 'unknown' ? compareSemver(dshVersion, meta.since) >= 0 : true
+  return {
+    id: meta.id,
+    since: meta.since,
+    kind: meta.kind,
+    severity: meta.severity || 'warning',
+    active,
+  }
+}
+
 /**
  * 收集启用插件的兼容性扫描结果（顺序 = loader 条目序，稳定可测）。
  * @param ctx 宿主插件上下文（ctx.get('loader')）
- * @param options 透传 scanPluginCompatibility 选项（requireFn/maxFileBytes）与缓存开关（noCache）
- * @returns { available, scanned, issues: [{moduleName, breaks[]}], soft: [{moduleName, breaks[]}], declaredOnly: [{moduleName, breaks[]}], unknown: [{moduleName, reason}] }
+ * @param options 透传 scanPluginCompatibility 选项（requireFn/maxFileBytes/dshVersion）与缓存开关（noCache）
+ * @returns { available, scanned, dshVersion, issues: [{moduleName, breaks[], details[]}], soft: [{moduleName, breaks[], details[]}], declaredOnly: [{moduleName, breaks[], details[]}], unknown: [{moduleName, reason}] }
  */
 export async function collectPluginCompat(ctx, options = {}) {
   const loader = ctx.get('loader')
   if (loader === undefined) return { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] }
+  let currentDshVersion = options.dshVersion ?? ctx.dshVersion
+  if (!currentDshVersion) {
+    try {
+      const { createRequire } = await import('node:module')
+      currentDshVersion = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
+    } catch (_) {
+      try {
+        const { readFileSync } = await import('node:fs')
+        currentDshVersion = JSON.parse(readFileSync('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json', 'utf8')).version
+      } catch (__) {
+        currentDshVersion = 'unknown'
+      }
+    }
+  }
   let requireFn = options.requireFn
   if (typeof requireFn !== 'function') {
     const baseUrl = typeof loader.ctx?.baseUrl === 'string' && loader.ctx.baseUrl.length > 0

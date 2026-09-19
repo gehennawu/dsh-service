@@ -5155,6 +5155,18 @@
         const pluginCompatUnknown = Array.isArray(pluginCompatScan?.unknown) ? pluginCompatScan.unknown : []
         // 分档严重度序（小 = 重）。归并序取首次出现的档位，故 broken 插件整体排在退役接口/声明残留之前。
         const pluginCompatKindOrder = { broken: 0, soft: 1, declared: 2, unknown: 3 }
+        const COMPAT_BREAK_METAS = {
+          'client-runtime': { since: '0.1.2-alpha.2', kind: 'package-removed' },
+          'sqlite-persistence': { since: '0.1.2-alpha.3', kind: 'package-removed' },
+          'code-runtime': { since: '0.1.6-alpha.1', kind: 'package-removed' },
+          'e2b-runtime': { since: '0.1.6-alpha.1', kind: 'package-removed' },
+          'session-start-event': { since: '0.1.6-alpha.1', kind: 'event-removed' },
+          'chat-hash': { since: '0.1.2-alpha.2', kind: 'hash-migrated' },
+          'stats-hash': { since: '0.1.2-alpha.2', kind: 'hash-migrated' },
+          'time-hover-root': { since: '0.1.2-alpha.2', kind: 'attribute-removed' },
+          'settings-plugin-item': { since: '0.1.6-alpha.2', kind: 'slot-retired' },
+          'sessions-open-method': { since: '0.1.6-alpha.2', kind: 'method-removed' },
+        }
         const pluginCompatFindings = [
           ...pluginCompatIssues.map((issue) => ({ kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
           ...pluginCompatSoft.map((item) => ({ kind: 'soft', moduleName: item.moduleName, breaks: item.breaks })),
@@ -5190,18 +5202,98 @@
                     React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, lineHeight: '17px', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
                     // 分档标签独立成行排在插件名下方（颜色随档位：可能不兼容=警示黄，其余=信息蓝），
                     // 正文段落跟在自己标签的下面——标签管「属于哪一档」，正文管「具体是什么」，不挤同一行。
-                    row.findings.flatMap((finding, findingIndex) => [
-                      React.createElement('div', {
-                        key: `${row.key}-${finding.kind}-kind`,
-                        'data-testid': `plugin-compat-kind-${index}-${findingIndex}`,
-                        style: { fontSize: '11px', fontWeight: 650, marginTop: findingIndex === 0 ? '3px' : '7px', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' },
-                      }, translate('plugin.compat.kind.' + finding.kind)),
-                      React.createElement('div', {
-                        key: `${row.key}-${finding.kind}-text`,
-                        'data-testid': `plugin-compat-line-${index}-${findingIndex}`,
-                        style: { fontSize: '11px', marginTop: '1px', lineHeight: 1.6, overflowWrap: 'anywhere', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' },
-                      }, pluginCompatFindingText(finding)),
-                    ])))
+                    row.findings.flatMap((finding, findingIndex) => {
+                      const detailBlocks = Array.isArray(finding.breaks) && finding.breaks.length > 0
+                        ? finding.breaks.map((breakId, dIdx) => {
+                            const meta = COMPAT_BREAK_METAS[breakId]
+                            const since = meta?.since
+                            const kind = meta?.kind
+                            const active = since && version ? compareSemver(version, since) >= 0 : true
+                            const catKey = 'plugin.compat.category.' + kind
+                            const catLabel = translate(catKey) !== catKey ? translate(catKey) : kind
+                            const badgeLabel = active
+                              ? translate('plugin.compat.badge.active')
+                              : translate('plugin.compat.badge.future', { since: since || '' })
+                            const reasonKey = 'plugin.compat.reason.' + breakId
+                            const impactKey = 'plugin.compat.impact.' + breakId
+                            const adviceKey = 'plugin.compat.advice.' + breakId
+                            const hasReason = translate(reasonKey) !== reasonKey
+                            const hasImpact = translate(impactKey) !== impactKey
+                            const hasAdvice = translate(adviceKey) !== adviceKey
+
+                            return React.createElement('div', {
+                              key: `${row.key}-${finding.kind}-detail-${dIdx}`,
+                              'data-testid': `plugin-compat-detail-${index}-${findingIndex}-${dIdx}`,
+                              style: {
+                                marginTop: '5px',
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                background: active ? 'rgba(230, 162, 60, 0.05)' : 'rgba(64, 158, 255, 0.05)',
+                                border: `1px solid ${active ? 'rgba(230, 162, 60, 0.25)' : 'rgba(64, 158, 255, 0.25)'}`,
+                                fontSize: '11px',
+                                lineHeight: 1.6,
+                              },
+                            },
+                              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' } },
+                                catLabel ? React.createElement('span', {
+                                  style: {
+                                    fontWeight: 650,
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    background: active ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
+                                    color: '#fff',
+                                    fontSize: '10px',
+                                  }
+                                }, catLabel) : null,
+                                since ? React.createElement('span', {
+                                  style: {
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    background: 'var(--dsh-svc-border)',
+                                    color: 'var(--dsw-alias-label-primary)',
+                                    fontSize: '10px',
+                                    fontFamily: 'var(--ds-font-family-code, monospace)',
+                                    fontWeight: 600,
+                                  }
+                                }, `DSH ≥ ${since}`) : null,
+                                React.createElement('span', {
+                                  style: {
+                                    color: active ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
+                                    fontSize: '10px',
+                                    fontWeight: 600,
+                                  }
+                                }, badgeLabel),
+                              ),
+                              hasReason ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.reason') + '：'),
+                                translate(reasonKey),
+                              ) : null,
+                              hasImpact ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.impact') + '：'),
+                                translate(impactKey),
+                              ) : null,
+                              hasAdvice ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.advice') + '：'),
+                                translate(adviceKey),
+                              ) : null,
+                            )
+                          })
+                        : []
+
+                      return [
+                        React.createElement('div', {
+                          key: `${row.key}-${finding.kind}-kind`,
+                          'data-testid': `plugin-compat-kind-${index}-${findingIndex}`,
+                          style: { fontSize: '11px', fontWeight: 650, marginTop: findingIndex === 0 ? '3px' : '7px', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' },
+                        }, translate('plugin.compat.kind.' + finding.kind)),
+                        React.createElement('div', {
+                          key: `${row.key}-${finding.kind}-text`,
+                          'data-testid': `plugin-compat-line-${index}-${findingIndex}`,
+                          style: { fontSize: '11px', marginTop: '1px', lineHeight: 1.6, overflowWrap: 'anywhere', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' },
+                        }, pluginCompatFindingText(finding)),
+                        ...detailBlocks,
+                      ]
+                    })))
               }))
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length
