@@ -75,8 +75,8 @@ test('omitted factory return is reported against the destructuring site', async 
   const source = await clientSource()
   const mutated = mutate(
     source,
-    'readQuotaPollMinutes, fetchQuotaSnapshot } = createQuotaCore',
-    'readQuotaPollMinutes, fetchQuotaSnapshoX } = createQuotaCore',
+    'fetchQuotaSnapshot } = createQuotaCore',
+    'fetchQuotaSnapshoX } = createQuotaCore',
     'rename the destructured fetchQuotaSnapshot key',
   )
   assert.equal(mutated.length, source.length, 'this mutation must preserve length so the fragment offset table stays valid')
@@ -224,7 +224,7 @@ test('a factory returning through an object constant is tracked', async () => {
   const quotaCore = result.stats.factories.find((factory) => factory.name === 'createQuotaCore')
   assert.ok(quotaCore, 'createQuotaCore should be recognised as a fragment factory')
   assert.notEqual(quotaCore.returns, null, 'createQuotaCore return surface should be statically known')
-  assert.ok(quotaCore.returns >= 20, `createQuotaCore should expose its full surface, saw ${quotaCore.returns}`)
+  assert.ok(quotaCore.returns >= 15, `createQuotaCore should expose its full surface, saw ${quotaCore.returns}`)
 })
 
 test('dynamically-shaped returns are treated as opaque rather than reported', async () => {

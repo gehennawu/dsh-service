@@ -112,8 +112,8 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
-- Provider cards keep the existing window presentation (label + percent / independent bar / reset countdown); **advanced configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
-- Card **order and visibility**: "Reorder & visibility" on the quota page expands a management list where cards can be dragged or nudged with ↑/↓, and a toggle hides cards you rarely need (hiding only affects display, not querying or polling); the config shares one backend with the Settings Nav tabs, stored in the `quotaCards` section of the unified server-side config `$DSH_HOME/dsh-service-config.json` (cross-device sync with a local-cache fallback, sections never affect each other)
+- Provider cards keep the existing window presentation (label + percent / independent bar / reset countdown); **configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
+- Card **order and visibility**: "Reorder & visibility" on the quota page expands a management list where cards can be dragged or nudged with ↑/↓, and a toggle hides cards you rarely need (hiding only affects display, not querying); the config shares one backend with the Settings Nav tabs, stored in the `quotaCards` section of the unified server-side config `$DSH_HOME/dsh-service-config.json` (cross-device sync with a local-cache fallback, sections never affect each other)
 - A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
 - Built-in adaptations:
 
@@ -131,7 +131,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 | CLIProxyAPI deployment | Official remaining quota of each OAuth upstream account |
 
 - Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry); the Command Code quota plane reuses the inference key, so no extra credential is needed
-- Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); auto-query can be set to manual-only / 1 / 2 / 5 / 10 minutes
+- Anti-rate-limit pacing: 60 s result cache, exponential backoff (30 s doubling, capped at 15 min); querying is fully manual — a snapshot is fetched when you open the quota page, expand the ring, or hit refresh, and the client never arms a periodic poll (upstream throttling still lives entirely in the host)
 - CLIProxyAPI: when an account's live query fails, its last cached snapshot windows are shown with a "cached" badge; snapshot windows whose reset time has already passed (the window they described has ended) are dropped, avoiding the illusion of quota stuck on yesterday
 - Failures state their real reason: cards and the ring show "error copy (HTTP status · failing endpoint · failing account · upstream message) · next automatic retry" — a wrong key, an unpaid balance, rate limiting, and a moved endpoint each read differently instead of one generic notice; an upstream 401/403 is classified as "credential rejected by upstream" and the card keeps its credential form available, and business error codes inside an HTTP 200 envelope are classified the same way (auth failure → credential rejected, expired plan → no active subscription, vendor-side failure → upstream service error) instead of being reported as "unexpected response format"
 - API keys are resolved only inside the host process; the browser receives normalized window data only; unadapted providers are never requested

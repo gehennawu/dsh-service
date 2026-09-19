@@ -180,9 +180,8 @@
         { id: 'navOrder', labelKey: 'tabs.navOrder' },
       ]
       // v0.39 页面元数据：每页一行描述（标题复用 tabs.* 词条）。
-      // 用户复核：概览/模型统计/维护 的描述取消（undefined = 不渲染）；额度描述并入圆环/节流说明。
+      // 用户复核：概览/模型统计/维护/额度 的描述取消（undefined = 不渲染）。
       const PAGE_DESCRIPTIONS = {
-        quota: 'page.quota.desc',
         diagnostics: 'page.diagnostics.desc',
         configuration: 'page.configuration.desc',
       }
@@ -291,11 +290,10 @@
         } catch (_) {}
         return undefined
       }
-      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：任务通知和后台额度轮询共享这一事实源。
+      // 会话活跃态（sessions.list 快照派生，订阅推送更新）：任务通知与额度圆环的活跃供应商集合共享这一事实源。
       // 两项都关闭时彻底摘除订阅；任一重新开启时重新建立当前快照基线，不补发关闭期间的旧边沿。
-      const sessionActivity = { anyRunning: false, runningSessionIds: new Set() }
-      // 会话活跃观察已抽至 src/client/session-activity.js；调用点在额度核心解构之后
-      // （观察回调引用 scheduleQuotaCycle，按值传入需其先解构）。
+      const sessionActivity = { runningSessionIds: new Set() }
+      // 会话活跃观察已抽至 src/client/session-activity.js。
 
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，
       // 清单见 scripts/client-source.mjs）。返回值解构回原名供 ServicePanel/导航入口/覆盖层消费；
@@ -304,8 +302,8 @@
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
-      const { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, notifyQuotaPollChanged, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
-      createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS, scheduleQuotaCycle })
+      const { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
+      createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS })
 
       // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
       // 各家计费口径同族：非高峰时段按高峰价格的一半计/抵扣。北京时间固定 UTC+8 无夏令时：
@@ -1083,8 +1081,7 @@
           style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
         },
         React.createElement('div', { style: { minWidth: 0, flex: '1 1 260px' } },
-          React.createElement('div', { 'data-testid': 'nav-order-title', style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('config.navOrder.title')),
-          React.createElement('div', { style: { marginTop: '4px', fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, translate('config.navOrder.dragHint'))),
+          React.createElement('div', { 'data-testid': 'nav-order-title', style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)' } }, translate('config.navOrder.title'))),
         React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
           savedTip ? React.createElement('span', {
             'data-testid': 'nav-order-saved-tip',
@@ -1102,17 +1099,6 @@
             onClick: handleSave,
             style: svcButtonStyle('primary'),
           }, translate('config.navOrder.save')))),
-        React.createElement('div', {
-          style: {
-            padding: '10px 14px',
-            borderRadius: 'var(--dsh-svc-radius-control, 8px)',
-            background: 'var(--dsh-svc-card-bg)',
-            border: '1px solid var(--dsw-alias-border-l1)',
-            fontSize: '12px',
-            lineHeight: 1.6,
-            color: 'var(--dsw-alias-label-secondary)',
-          },
-        }, translate('config.navOrder.dragHint')),
         displayItems.length === 0
           ? React.createElement('div', { style: { padding: '16px', textAlign: 'center', color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px' } }, translate('config.navOrder.empty'))
           : React.createElement('div', {
@@ -3400,12 +3386,11 @@
           }
           return subscribeQuotaCards(update)
         }, [])
-        const [pollMinutes, setPollMinutes] = useState(readQuotaPollMinutes())
         const [configError, setConfigError] = useState('')
         const providers = quota.providers || []
         const [cardEditor, setCardEditor] = useState(null)
-        // v0.39 卡片分区（确认规格：身份 → 核心余额 → 最紧窗口 → 重置 → 折叠高级配置）。
-        // 高级配置（凭据入口/类型切换/手动重置录入）按卡折叠，一次只开一张。
+        // v0.39 卡片分区（确认规格：身份 → 核心余额 → 最紧窗口 → 重置 → 折叠配置）。
+        // 配置区（凭据入口/类型切换/手动重置录入）按卡折叠，一次只开一张。
         const [advancedOpen, setAdvancedOpen] = useState(null)
         // v0.20 免次数：草稿只有到期时间与名称；添加成功后清空并保持打开，方便连续追加多条。
         const [cardDraft, setCardDraft] = useState({ expiresAt: '', label: '' })
@@ -3596,38 +3581,21 @@
         const [addProvider, setAddProvider] = useState('')
         const [addKind, setAddKind] = useState('')
         return React.createElement('div', { 'data-testid': 'remote-quota-card', style: { marginTop: '18px' } },
-          React.createElement('div', { style: sectionTitle }, translate('quota.cardTitle')),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' } },
-            React.createElement('label', { htmlFor: 'dsh-service-quota-poll-select', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('quota.poll')),
-            React.createElement('select', {
-              id: 'dsh-service-quota-poll-select',
-              'data-testid': 'quota-poll-select',
-              value: String(pollMinutes),
-              onChange: (event) => {
-                const value = Number.parseInt(event.target.value, 10)
-                if (QUOTA_POLL_CHOICES.includes(value)) {
-                  setPollMinutes(value)
-                  writeQuotaPollMinutes(value)
-                  notifyQuotaPollChanged()
-                }
-              },
-              style: { fontSize: '12px', padding: '3px 6px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)' },
-            },
-            [{ value: 0, label: translate('quota.poll.manual') }].concat(QUOTA_POLL_CHOICES.filter((choice) => choice > 0).map((choice) => ({ value: choice, label: translate('quota.poll.minute', { count: choice }) }))).map((option) =>
-              React.createElement('option', { key: option.value, value: String(option.value) }, option.label)))),
-          // 左列入口开关：样式沿用「重启」标签的同款 switch（34×20 胶囊 + 圆点滑块）。
-          React.createElement('div', { style: { marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
-            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-              React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('quota.navToggle')),
-              React.createElement('span', { style: hint }, translate('quota.navToggleHint'))),
-            React.createElement('button', {
-              type: 'button',
-              role: 'switch',
-              'data-testid': 'quota-nav-switch',
-              'aria-checked': String(quotaNav),
-              onClick: () => setQuotaNav(!quotaNav),
-              style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
-            }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } }))),
+          // 标题行：左「额度查询」，右「说明 + 左列入口胶囊开关」；开关与标题同一行，说明紧贴开关之前。
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' } },
+            React.createElement('div', { style: Object.assign({}, sectionTitle, { margin: 0 }) }, translate('quota.cardTitle')),
+            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 } },
+              React.createElement('span', { style: { fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', textAlign: 'right' } }, translate('quota.navToggleHint')),
+              React.createElement('button', {
+                type: 'button',
+                role: 'switch',
+                'data-testid': 'quota-nav-switch',
+                'aria-checked': String(quotaNav),
+                'aria-label': translate('quota.navToggle'),
+                title: translate('quota.navToggle'),
+                onClick: () => setQuotaNav(!quotaNav),
+                style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: quotaNav ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
+              }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: quotaNav ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: quotaNav ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))),
           configError !== '' ? React.createElement('p', { 'data-testid': 'quota-config-error', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, configError) : null,
           // 「调整排序」开关（形状照搬设置栏标签管理页：展开列表 + 拖拽/↑↓/显隐 + 恢复默认/保存）。
           ...(adaptedRows.length >= 2
@@ -3917,7 +3885,7 @@
                           : null)),
                     body,
                     ...(peakTimeline !== null ? [peakTimeline] : []),
-                    // 高级配置折叠钮（凭据/类型切换/手录重置都收进折叠区）。
+                    // 配置折叠钮（凭据/类型切换/手录重置都收进折叠区）。
                     React.createElement('div', { key: 'advanced-toggle-row', style: { display: 'flex', marginTop: '2px' } },
                       React.createElement('button', {
                         type: 'button',
@@ -4757,8 +4725,6 @@
                   React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
                 React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message))))
         const usageBlock = React.createElement('div', { key: 'usage-section', 'data-testid': 'usage-card', style: card },
-          React.createElement('div', { style: sectionTitle }, translate('usage.structure')),
-          React.createElement('p', { style: Object.assign({}, hint, { marginTop: '-4px' }) }, translate('usage.structureHint')),
           usage && Array.isArray(usage.projects) && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
                 React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),

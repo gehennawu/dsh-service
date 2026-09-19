@@ -4,21 +4,8 @@
 // 卡片配置经订阅/提交/重置接口访问，监听器与写入协议留在核心内部。
 function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount }) {
   const { useState, useEffect } = React
-      const QUOTA_POLL_KEY = 'dsh-service-quota-poll'
-      const QUOTA_POLL_CHOICES = [0, 1, 2, 5, 10]
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
       const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat']
-      function readQuotaPollMinutes() {
-        try {
-          const raw = Number.parseInt(localStorage.getItem(QUOTA_POLL_KEY), 10)
-          return QUOTA_POLL_CHOICES.includes(raw) ? raw : 0
-        } catch (_) {
-          return 0
-        }
-      }
-      function writeQuotaPollMinutes(minutes) {
-        try { localStorage.setItem(QUOTA_POLL_KEY, String(minutes)) } catch (_) {}
-      }
       const QUOTA_CARD_ORDER_KEY = 'dsh-service-quota-card-order'
       const QUOTA_CARD_HIDDEN_KEY = 'dsh-service-quota-card-hidden'
       // 供应商名由 settings / llm 渠道清单派生，可能含中文、空格、`@`（用户自定义键），
@@ -143,8 +130,8 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         return [...new Set(providers)]
       }
       // 落定接续：快照里仍有「刷新中」的已适配行时，客户端按拉长的间隔自动补拉，
-      // 直到上游落定或用尽轮次——否则首次打开只会看到「刷新中…」，要等下一个轮询周期
-      // 或再次点开才能看到更新时间。补拉仍是普通 quota RPC，宿主节流闸
+      // 直到上游落定或用尽轮次——否则首次打开只会看到「刷新中…」，要再次点开才能看到更新时间。
+      // 这是唯一残留的自动补拉（无周期轮询），仍走普通 quota RPC，宿主节流闸
       // （单飞/TTL/退避）照常兜底，不会产生额外上游调用。
       const quotaSettle = { pulls: 0, dispose: null }
       const QUOTA_SETTLE_DELAYS_MS = [800, 2400, 4800, 8000, 12000]
@@ -167,74 +154,39 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         }, QUOTA_SETTLE_DELAYS_MS[quotaSettle.pulls])
         quotaSettle.pulls += 1
       }
-      const quotaLoop = { refs: 0, allRefs: 0, nextDispose: null, running: false, onVisible: undefined }
-      const isTabHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
-      function scheduleQuotaCycle() {
-        if (!featureEnabled('quotaLookup') || quotaLoop.refs === 0 || quotaLoop.nextDispose !== null || readQuotaPollMinutes() <= 0) return
-        const minutes = readQuotaPollMinutes()
-        quotaLoop.nextDispose = ctx.timer.timeout(() => {
-          quotaLoop.nextDispose = null
-          runQuotaCycle()
-        }, minutes * 60000)
-      }
+      const quotaLoop = { refs: 0, allRefs: 0, running: false }
       function runQuotaCycle() {
-        if (!featureEnabled('quotaLookup') || quotaLoop.refs === 0 || quotaLoop.running) return
-        // 额度页打开时全量；其余自动/后台轮询只刷新 running 会话供应商。
+        if (!featureEnabled('quotaLookup') || quotaLoop.refs === 0 || quotaLoop.running === true) return
+        // 额度页打开时全量；圆环表面只刷新 running 会话供应商。手动刷新入口与
+        // 落定补拉直接走 fetchQuotaSnapshot，不经过这里。
         const payload = quotaLoop.allRefs > 0 ? { scope: 'all' } : { providers: runningQuotaProviders() }
         if (payload.scope !== 'all' && payload.providers.length === 0) return
         quotaLoop.running = true
         Promise.resolve(fetchQuotaSnapshot(payload)).catch(() => false).then(() => {
           quotaLoop.running = false
-          scheduleQuotaCycle()
         })
       }
       function acquireQuotaLoop(options = {}) {
         if (!featureEnabled('quotaLookup')) return
         quotaLoop.refs += 1
         if (options.all === true) quotaLoop.allRefs += 1
-        // 额度页显式全量；圆环等其他表面由当前交互/后台活跃集合决定目标。
+        // 无自动轮询：挂载即拉一次当前口径的快照，之后完全由手动刷新/交互触发。
         if (options.all === true) fetchQuotaSnapshot({ scope: 'all' })
         else runQuotaCycle()
-        scheduleQuotaCycle()
-        // visibilitychange 只在首个表面挂载时挂一次、最后一个卸载时摘掉——
-        // 之前每次挂载都 addEventListener 且只留最后一个引用，先挂的监听器会泄漏到 Fiber 之外。
-        if (quotaLoop.refs === 1 && quotaLoop.onVisible === undefined && typeof document !== 'undefined') {
-          quotaLoop.onVisible = () => {
-            if (!isTabHidden()) runQuotaCycle()
-          }
-          document.addEventListener('visibilitychange', quotaLoop.onVisible)
-        }
       }
       function releaseQuotaLoop(options = {}) {
         if (!featureEnabled('quotaLookup') && quotaLoop.refs === 0) return
         quotaLoop.refs = Math.max(0, quotaLoop.refs - 1)
         if (options.all === true) quotaLoop.allRefs = Math.max(0, quotaLoop.allRefs - 1)
         if (quotaLoop.refs > 0) return
-        if (quotaLoop.nextDispose !== null) {
-          quotaLoop.nextDispose()
-          quotaLoop.nextDispose = null
-        }
         if (quotaSettle.dispose !== null) {
           quotaSettle.dispose()
           quotaSettle.dispose = null
         }
-        if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') {
-          document.removeEventListener('visibilitychange', quotaLoop.onVisible)
-          quotaLoop.onVisible = undefined
-        }
-      }
-      function notifyQuotaPollChanged() {
-        if (quotaLoop.nextDispose !== null) {
-          quotaLoop.nextDispose()
-          quotaLoop.nextDispose = null
-        }
-        scheduleQuotaCycle()
       }
       ctx.effect(() => () => {
-        if (quotaLoop.nextDispose !== null) quotaLoop.nextDispose()
         if (quotaSettle.dispose !== null) quotaSettle.dispose()
-        if (quotaLoop.onVisible !== undefined && typeof document !== 'undefined') document.removeEventListener('visibilitychange', quotaLoop.onVisible)
-      }, 'dsh-service quota poller disposal')
+      }, 'dsh-service quota snapshot disposal')
 
       function quotaWindowLabel(id, translate) {
         // 解析链：完整 id（rolling / tokens-limit-u3-n5…）→ 类型前缀（tokens-limit/time-limit/credit-limit）→ 原始 id。
@@ -303,5 +255,5 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
-  return { QUOTA_KIND_OPTIONS, QUOTA_POLL_CHOICES, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, notifyQuotaPollChanged, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, runQuotaCycle, scheduleQuotaCycle, writeQuotaPollMinutes, readQuotaPollMinutes, fetchQuotaSnapshot }
+  return { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, fetchQuotaSnapshot }
 }

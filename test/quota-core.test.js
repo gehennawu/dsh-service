@@ -112,7 +112,7 @@ test('quota core fragment loads without RPC and wires exactly one disposal effec
 
   // ctx.effect 的注册与销毁都要能被 Fiber 生命周期复用。
   assert.equal(effects.length, 1)
-  assert.equal(effects[0].label, 'dsh-service quota poller disposal')
+  assert.equal(effects[0].label, 'dsh-service quota snapshot disposal')
   const dispose = effects[0].fn()
   assert.equal(typeof dispose, 'function')
   dispose()

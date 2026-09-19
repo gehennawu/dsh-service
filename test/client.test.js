@@ -948,7 +948,8 @@ test('service panel puts versions first and renders switchable provider-prefixed
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
   const text = renderer.text('settings.section')
-  assert.match(text, /token 结构/)
+  // 统计卡不再有「token 结构」标题与「按日期展示…」说明行，直接进入项目分页与图表。
+  assert.doesNotMatch(text, /token 结构|按日期展示输入、输出和缓存 token。/)
   const projectTabs = renderer.findByTestId('usage-project-tabs')
   const activeProjectTab = renderer.findButton('全部项目')
   const usageChart = renderer.findByTestId('usage-chart')
@@ -4075,8 +4076,11 @@ test('xiaomi token plan card shows console buckets with absolute figures and the
   // 有效期作为 resetsAt → 重置倒计时行（时长随执行耗时漂移，只断行存在与文案前缀）。
   const resetLine = renderer.findByTestId('quota-card-reset-mimo-total_token')
   assert.match(String(resetLine.children[0]), /^重置于 /)
-  // v0.39：凭据入口收进折叠的「高级配置」，先展开 mimo2 卡。
-  renderer.findByTestId('quota-advanced-toggle-mimo2').props.onClick()
+  // v0.39：凭据入口收进折叠的「配置」，先展开 mimo2 卡。
+  const advancedToggle = renderer.findByTestId('quota-advanced-toggle-mimo2')
+  // 折叠钮文案就是「配置」（不再叫「高级配置」）。
+  assert.equal(String(advancedToggle.children[0]).endsWith('配置'), true)
+  advancedToggle.props.onClick()
   await renderer.flush()
   // 未配置行的凭据入口文案按 kind 分流为 Cookie 版。
   assert.ok(renderer.hasTest('quota-cred-edit-mimo2'))
@@ -4150,7 +4154,7 @@ test('stepfun cards show money text windows and the credit-pool plan windows wit
   assert.equal(renderer.hasTest('quota-card-reset-sfplan-topup-credit'), false)
   assert.match(text, /加油包 Credit/)
   assert.match(text, /1%/)
-  // v0.39：凭据入口在折叠的「高级配置」区，先展开 sfplan2 卡。
+  // v0.39：凭据入口在折叠的「配置」区，先展开 sfplan2 卡。
   renderer.findByTestId('quota-advanced-toggle-sfplan2').props.onClick()
   await renderer.flush()
   // 未配置订阅行的凭据入口分流为「控制台令牌（Oasis-Token）」版。
@@ -4359,7 +4363,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
-  // v0.39：类型切换在折叠的「高级配置」区，先展开 openrouter 卡。
+  // v0.39：类型切换在折叠的「配置」区，先展开 openrouter 卡。
   renderer.findByTestId('quota-advanced-toggle-openrouter').props.onClick()
   await renderer.flush()
   // 已适配卡片脚部下拉预选当前 kind。
@@ -4409,21 +4413,10 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.match(renderer.text('settings.section'), /未知供应商/)
   assert.ok(renderer.hasTest('quota-add-adapt')) // 失败后 zai 仍是候选
 
-  // 轮询档位：默认仅手动且不写 localStorage；改 2 分钟开始排程，切回仅手动立即清表。
-  assert.equal(localStorage.getItem('dsh-service-quota-poll'), null) // 从未改过 → 不写入，读侧回落仅手动
-  const pollSelect = renderer.findByTestId('quota-poll-select')
-  assert.equal(pollSelect.props.value, '0')
-  pollSelect.props.onChange({ target: { value: '2' } })
-  await renderer.flush()
-  assert.equal(localStorage.getItem('dsh-service-quota-poll'), '2')
-  assert.ok(renderer.pendingTimerDelays().includes(120000))
-  pollSelect.props.onChange({ target: { value: '0' } })
-  await renderer.flush()
-  assert.equal(localStorage.getItem('dsh-service-quota-poll'), '0')
-  assert.equal(renderer.pendingTimerDelays().includes(120000), false)
-  pollSelect.props.onChange({ target: { value: '1' } })
-  await renderer.flush()
-  assert.ok(renderer.pendingTimerDelays().includes(60000))
+  // 自动查询已整块移除：卡片顶部不再有轮询档位下拉，也不写旧 localStorage 键。
+  assert.equal(renderer.hasTest('quota-poll-select'), false)
+  assert.equal(localStorage.getItem('dsh-service-quota-poll'), null)
+  assert.equal(renderer.pendingTimerDelays().some((delay) => delay === 60000 || delay === 120000 || delay === 300000), false)
 
   // 「额度查询」是独立标签：切回「模型统计」不再出现额度卡。
   await renderer.findButton('模型统计').props.onClick()
@@ -4433,9 +4426,20 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
 
   // 左列入口开关：默认关；开启注册 settings.section 条目（order 498），再关即注销。
-  // 左列入口开关（与重启同款 role=switch）：默认关；开启注册 settings.section 条目（order 498），再关即注销。
+  // 开关与「额度查询」标题同一行，说明行（去掉「默认关闭；」前缀）紧贴开关之前。
   const navSwitch = renderer.findByTestId('quota-nav-switch')
   assert.equal(navSwitch.props['aria-checked'], 'false')
+  assert.equal(navSwitch.props['aria-label'], '设置页左列显示「额度查询」入口')
+  assert.match(renderer.text('settings.section'), /开启后在设置页左侧标签列底部显示「额度查询」快捷入口/)
+  assert.doesNotMatch(renderer.text('settings.section'), /默认关闭；/)
+  // 开关与标题同一行：两者是同一个 flex 行的直接子节点。
+  const titleRow = renderer.findByTestId('remote-quota-card').children.find(
+    (child) => child.props?.style?.display === 'flex'
+      && String(child.props.style.justifyContent) === 'space-between'
+      && JSON.stringify(child).includes('设置页左列显示「额度查询」入口'),
+  )
+  assert.ok(titleRow, 'the quota nav switch must sit on the card title row')
+  assert.equal(titleRow.props.style.alignItems, 'center')
   assert.equal(renderer.registrations()['settings.section'].some((entry) => entry.id === 'dsh-service-quota'), false)
   navSwitch.props.onClick()
   await renderer.flush()
@@ -4464,7 +4468,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   await renderer.flush()
   assert.ok(renderer.hasTest('quota-provider-card-zai-coding-cn'))
-  // v0.39：手录重置入口在折叠的「高级配置」区，先展开 zai 卡。
+  // v0.39：手录重置入口在折叠的「配置」区，先展开 zai 卡。
   renderer.findByTestId('quota-advanced-toggle-zai-coding-cn').props.onClick()
   await renderer.flush()
   const addCardTrigger = renderer.findByTestId('quota-card-edit-zai-coding-cn')
@@ -4953,87 +4957,6 @@ test('quota card header has a refresh icon that forces per-provider refresh', as
   assert.equal(renderer.findByTestId('quota-refresh-zai-coding-cn').props.disabled, false)
 })
 
-test('quota surfaces share one visibilitychange listener instead of one per mount', async () => {
-  const listenerCount = { visibilitychange: 0 }
-  class FakeMutationObserver {
-    constructor() {}
-    observe() {}
-    disconnect() {}
-  }
-  globalThis.MutationObserver = FakeMutationObserver
-  globalThis.document = {
-    body: {},
-    head: { appendChild() {} },
-    createElement: () => ({ dataset: {} }),
-    visibilityState: 'visible',
-    querySelector: () => null,
-    querySelectorAll: () => [],
-    addEventListener(type) { listenerCount[type] = (listenerCount[type] || 0) + 1 },
-    removeEventListener(type) { listenerCount[type] = (listenerCount[type] || 0) - 1 },
-  }
-  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
-  const quotaOk = async (channel, endpoint) => {
-    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
-    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
-    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
-    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
-    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
-    if (endpoint === 'usage') return { ok: true, value: usageFixture }
-    if (endpoint === 'quota') {
-      return { ok: true, value: { serverTime: Date.now(), providers: [{ provider: 'opencode-go', displayName: 'opencode-go', adapted: true, kind: 'opencode-go', refreshing: false, status: 'ok', windows: [], fetchedAt: Date.now() }] } }
-    }
-    throw new Error(`unexpected endpoint ${endpoint}`)
-  }
-  try {
-    // 场景一：只有设置页额度卡。开到额度标签 → 1 个监听；整槽卸载（真实 Fiber 销毁路径）→ 0。
-    const renderer = createRenderer(quotaOk)
-    await renderer.load()
-    assert.equal(listenerCount.visibilitychange, 0)
-    await renderer.findButton('额度查询').props.onClick()
-    await renderer.flush()
-    assert.equal(listenerCount.visibilitychange, 1)
-    renderer.unmount('settings.section')
-    await renderer.flush()
-    assert.equal(listenerCount.visibilitychange, 0)
-    renderer.mount('settings.section')
-    await renderer.flush()
-    await renderer.findButton('额度查询').props.onClick()
-    await renderer.flush()
-    assert.equal(listenerCount.visibilitychange, 1)
-    renderer.unmount('settings.section')
-    await renderer.flush()
-    assert.equal(listenerCount.visibilitychange, 0)
-
-    // 场景二：圆环 + 额度卡两个表面并存 → 仍然只有 1 个监听（此前每次挂载都 add 且只摘最后一个）。
-    const storeListeners = new Set()
-    const store = {
-      snapshot: { current: { provider: 'opencode-go' } },
-      subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
-      getSnapshot() { return this.snapshot },
-    }
-    const modelDirectories = {
-      directoryFor: () => ({ store, load: () => Promise.resolve() }),
-    }
-    const renderer2 = createRenderer(quotaOk, { modelDirectories })
-    await renderer2.load()
-    await renderer2.flush()
-    await renderer2.flush()
-    // 圆环已挂载（refs=1）：1 个监听。
-    assert.equal(listenerCount.visibilitychange, 1)
-    await renderer2.findButton('额度查询').props.onClick()
-    await renderer2.flush()
-    // 第二个表面挂载（refs=2）不叠加监听。
-    assert.equal(listenerCount.visibilitychange, 1)
-    renderer2.unmount('settings.section')
-    await renderer2.flush()
-    // 圆环仍挂载（refs 回到 1）：监听保留，最后一个表面卸载才摘。
-    assert.equal(listenerCount.visibilitychange, 1)
-  } finally {
-    delete globalThis.document
-    delete globalThis.MutationObserver
-  }
-})
-
 test('quota card falls back to type-level window labels and localizes stable error codes', async () => {
   const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
   const renderer = createRenderer(async (channel, endpoint) => {
@@ -5154,7 +5077,7 @@ test('quota auto and hidden polling request only running-session providers while
   assert.ok(quotaPayloads.some((payload) => payload.scope === 'all'))
 })
 
-test('quota polling continues on a hidden page while a session is running and re-arms when one starts after auto polling is enabled', async () => {
+test('quota queries are manual-only: no periodic timer is ever armed, and a running session does not start one', async () => {
   class FakeMutationObserver {
     constructor() {}
     observe() {}
@@ -5185,36 +5108,25 @@ test('quota polling continues on a hidden page while a session is running and re
   try {
     await renderer.load()
     await renderer.flush()
-    // 默认仅手动：先打开额度页并显式启用 5 分钟自动查询，再验证隐藏页活跃豁免。
     await renderer.findButton('额度查询').props.onClick()
     await renderer.flush()
-    renderer.findByTestId('quota-poll-select').props.onChange({ target: { value: '5' } })
-    await renderer.flush()
-    // 关闭设置页，只留下会话圆环表面，进入“非额度页”的后台查询策略。
+    // 页面挂载只拉一次快照，不排任何周期定时器。
+    const afterOpen = quotaCalls
+    assert.ok(afterOpen >= 1, 'opening the quota page must fetch a snapshot once')
+    assert.equal(renderer.pendingTimerDelays().some((delay) => delay >= 60000), false, 'no polling timer may be armed')
+
+    // 关闭设置页，只留下会话圆环表面：不排周期表，时间流逝也没有任何外呼。
     renderer.unmount('settings.section')
     await renderer.flush()
     const callsBeforeHiddenIdle = quotaCalls
-    assert.ok(renderer.pendingTimerDelays().includes(300000))
-    await renderer.advanceTimer(300000)
-    assert.equal(quotaCalls, callsBeforeHiddenIdle)
-    assert.equal(renderer.pendingTimerDelays().includes(300000), false)
+    assert.equal(renderer.pendingTimerDelays().some((delay) => delay >= 60000), false, 'unmounting must not arm a polling timer')
+    assert.equal(quotaCalls, callsBeforeHiddenIdle, 'no background period may fire')
 
-    // agent 在隐藏期间启动：会话订阅边沿重新拉起轮询链。
+    // agent 启动也不会拉起周期：会话活跃只服务任务通知与活跃供应商集合。
     renderer.setSessions({ s1: { id: 's1', displayTitle: '后台 agent', running: true } })
     await renderer.flush()
-    assert.ok(renderer.pendingTimerDelays().includes(300000))
-    // 隐藏页 + 活跃会话：豁免暂停，周期照常打 quota RPC，且链条继续排下一轮。
-    await renderer.advanceTimer(300000)
-    assert.ok(quotaCalls >= 1)
-    assert.ok(renderer.pendingTimerDelays().includes(300000))
-
-    // 会话结束回到隐藏：下一周期恢复暂停语义（不再外呼，链条死亡等回可见）。
-    renderer.setSessions({ s1: { id: 's1', displayTitle: '后台 agent', running: false } })
-    await renderer.flush()
-    const callsBeforeIdle = quotaCalls
-    await renderer.advanceTimer(300000)
-    assert.equal(quotaCalls, callsBeforeIdle)
-    assert.equal(renderer.pendingTimerDelays().includes(300000), false)
+    assert.equal(renderer.pendingTimerDelays().some((delay) => delay >= 60000), false, 'a running session must not arm a polling timer')
+    assert.equal(quotaCalls, callsBeforeHiddenIdle, 'a running session must not trigger a quota RPC')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
@@ -6152,7 +6064,7 @@ test('unconfigured quota rows offer an inline credential form that writes via th
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  // v0.39：凭据入口在折叠的「配置」区，先展开 cpa 卡。
   renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
   await renderer.flush()
   // 未配置行：错误文案旁出现表单入口；cliproxy 行的按钮文案是「管理密钥」而非「API 密钥」
@@ -6198,7 +6110,7 @@ test('credential form defaults to the configured alias and marks the primary nam
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  // v0.39：凭据入口在折叠的「配置」区，先展开 cpa 卡。
   renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
   await renderer.flush()
   renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
@@ -6229,7 +6141,7 @@ test('classic-kind credential rows keep the API-key label while cliproxy uses th
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  // v0.39：凭据入口在折叠的「高级配置」区，先展开 or 卡。
+  // v0.39：凭据入口在折叠的「配置」区，先展开 or 卡。
   renderer.findByTestId('quota-advanced-toggle-or').props.onClick()
   await renderer.flush()
   // 经典 kind 的凭据确实是 API key，文案保持「填写 API 密钥」。
@@ -6261,7 +6173,7 @@ test('clearing a stored credential requires a second confirming click', async ()
   await renderer.load()
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
-  // v0.39：凭据入口在折叠的「高级配置」区，先展开 cpa 卡。
+  // v0.39：凭据入口在折叠的「配置」区，先展开 cpa 卡。
   renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
   await renderer.flush()
   renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
@@ -10976,7 +10888,9 @@ test('settings nav order: management page allows reordering, toggling visibility
   assert.equal(renderer.findByTestId('config-tab-navOrder').props['aria-selected'], 'true')
   assert.ok(renderer.hasTest('config-nav-order-page'))
   assert.equal(renderer.findByTestId('nav-order-title').children[0], '设置栏标签排序与显隐')
-  assert.match(renderer.text('settings.section'), /设置栏标签排序与显隐.*可通过拖拽或点击上下箭头调整标签顺序.*恢复默认排序.*保存排序/)
+  assert.match(renderer.text('settings.section'), /设置栏标签排序与显隐.*恢复默认排序.*保存排序/)
+  // 管理页不再出现操作说明行（拖拽/箭头/显隐提示），页头只留标题 + 操作按钮。
+  assert.doesNotMatch(renderer.text('settings.section'), /可通过拖拽|调整标签顺序|隐藏不常用标签/)
 
   // All entries present
   assert.ok(renderer.hasTest('nav-order-item-general'))
