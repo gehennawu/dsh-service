@@ -5251,6 +5251,7 @@ test('settings nav rows get icon markers by localized label and follow text chan
       assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
       assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
     }
+    assert.ok(sheet.includes('%3Crect width=%2720%27 height=%278%27'), 'service nav icon must serialize server rack rect')
     // 撤销入口的选择器不残留。
     assert.equal(sheet.includes('data-dsh-service-skills-nav'), false, 'skills nav selector must be gone')
     assert.equal(sheet.includes('data-dsh-service-subagent-nav'), false, 'subagent nav selector must be gone')

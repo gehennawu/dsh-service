@@ -2154,8 +2154,8 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
     // 元素清单，两处消费——① 顶栏胶囊内联 React SVG；② 左列导航 mask 的 data URI 序列化。
     // 换图标只改这一处，两处永远同步。风格统一 lucide：24 viewBox、stroke 2、圆角线帽。
     const SVG_ICONS = {
-      // 服务控制（左列 mask 专用）= 滑杆组
-      service: [['path', { d: 'M4 8h16' }], ['path', { d: 'M4 16h16' }], ['circle', { cx: '9', cy: '8', r: '2.5', fill: 'black' }], ['circle', { cx: '15', cy: '16', r: '2.5', fill: 'black' }]],
+      // 服务控制（左列 mask 专用）= 机架服务器（lucide server）
+      service: [['rect', { width: '20', height: '8', x: '2', y: '2', rx: '2' }], ['rect', { width: '20', height: '8', x: '2', y: '14', rx: '2' }], ['line', { x1: '6', x2: '6.01', y1: '6', y2: '6' }], ['line', { x1: '6', x2: '6.01', y1: '18', y2: '18' }]],
       // 概览 = 仪表盘四宫格
       overview: [['rect', { x: '3', y: '3', width: '7', height: '9', rx: '1' }], ['rect', { x: '14', y: '3', width: '7', height: '5', rx: '1' }], ['rect', { x: '14', y: '12', width: '7', height: '9', rx: '1' }], ['rect', { x: '3', y: '16', width: '7', height: '5', rx: '1' }]],
       // 通知 = 铃铛（取 BellIcon 铃体三笔，不带对钩/斜线变体）
@@ -2178,7 +2178,7 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       restart: [['path', { d: 'M12 2v10' }], ['path', { d: 'M18.4 6.6a9 9 0 1 1-12.77.04' }]],
       // 维护 = 扳手（v0.39 六页导航新 id）
       maintenance: [['path', { d: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' }]],
-      // 配置 = settings-2 双滑杆组（区别于「服务控制」的横杆滑杆组）
+      // 配置 = settings-2 双滑杆组
       configuration: [['path', { d: 'M20 7h-9' }], ['path', { d: 'M14 17H5' }], ['circle', { cx: '17', cy: '17', r: '3' }], ['circle', { cx: '7', cy: '7', r: '3' }]],
     }
     // 左列 mask 的 data URI 体序列化：`<tag attr='val'/>` → %3Ctag%20attr=%27val%27/%3E。
