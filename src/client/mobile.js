@@ -332,7 +332,7 @@ html[data-dshsvc-mobile] [data-dshsvc-user-jump] {
 html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
 html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
 html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding: 10px 20px 0 46px !important; }
-/* 会话顶栏移动端适配（2026-09-19 用户点名「顶部的几个信息适配移动端」）：
+/* 会话顶栏移动端适配：
    titleRow 里 标题crumb / 「N 个子代理」计数芯片 / 预设芯片（创造模式）互相挤压——
    官方 crumbs 自带 overflow:hidden，放不下的尾部被**硬裁**：计数芯片拦腰截断
    （真机 390px 实测裁掉 49px，视觉即「1 个子代…」），标题缩到 ~119px。
@@ -352,19 +352,19 @@ html[data-dshsvc-mobile] [class*="wSkVaW_headerUtilities"] { margin-left: 4px !i
 html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 6px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
-/* 动作芯片泊位 v2（方案二，2026-09-19 用户定稿：模式回标题行，子代理+任务下标签行
+/* 动作芯片泊位 v2（模式回标题行，子代理+任务下标签行
    右锚成对；官方标签行没有第三方挂载点，泊位=自有 CSS absolute 定位）：
-   · 标签行官方 gap 36→20（用户点名「间隔改小一点」），标签内容尾 ≈126px；
+   · 标签行官方 gap 36→20，标签内容尾 ≈126px；
    · 任务芯片（QsffPG_root，运行中带箭头自然宽 ~151.5px）right:106 —— 右侧 90px
      让给子代理芯片（带箭头 81.5~87.5px，「1~99 个」，间隔 8.5~2.5px），右锚成
      「[任务][子代理]」两枚一排（第三方插件将来若也泊到此带，右缘 16px 起排不受影响）；
      max-width calc(100vw − 240px) 封顶（右距 106 + 标签尾 126 + 8 缓冲），
      ≤360 档计数文字按省略优雅降级（320 档省 ~71px）、绝不压到对话/轨迹；
    · 子代理芯片（ZKlsPq_root）right:16 最贴右；泊离标题后分隔符「/」失去对象，隐藏；
-   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留（2026-09-19 用户点名恢复：
-     初版为塞 320~360 档隐藏过，恢复后该两档省略加深，换开合指示不丢）；
+   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留，320~360 档文字省略加深，
+     但开合指示不丢；
    · 两枚芯片的下拉菜单（锚在各自 root 上 top:100%+5、left:0）改右锚展开并按
-     视口封顶（max-width 100vw−104 = 任务右距 88 + 16 边距），否则贴右泊位时
+     视口封顶（max-width 100vw−122 = 任务右距 106 + 16 边距），否则贴右泊位时
      336px 菜单会越出屏幕（390 档实测左越 46px）；
    · 预设芯片（SVAs4q_label）不再泊动——随官方 headerActions 留在标题行
      （「模式=会话身份」与标题同级），第三方动作芯片同样留官方原位不受泊位管辖；
@@ -409,7 +409,7 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     right: 0 !important;
     max-width: calc(100vw - 122px) !important;
   }
-  /* 预设芯片右靠（用户点名「靠近右边三个点」）：margin-left:auto 把 crumbs 与
+  /* 预设芯片右靠：margin-left:auto 把 crumbs 与
      动作组之间的全部富余收到中间——标题贴左、模式芯片贴住更多钮（间距 4px），
      标题长短变化时芯片位置稳定不飘。 */
   html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }

@@ -51,37 +51,60 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
       }
 
       let navOrderRevision = 0
+      // 长期集合只登记「本插件自己接管」的订阅者：包装 subscribe 转发进来的回调（各自
+      // disposer 精确摘除，见 restoreSlots）与管理页组件的监听。原生账本里的既有订阅者
+      // 绝不复制进来——复制品没有对应 disposer，原生退订后仍会滞留到插件卸载，并在
+      // 此期间被每轮通知直呼。
       const navOrderListeners = new Set()
-      const populateExistingSlotListeners = () => {
+      // 私有 SlotCore 属兼容探测面（不在公开契约内，不能增强依赖）：只用于「现读当前记录与
+      // 订阅者快照」，读到的对象当轮用完即弃；宿主没有该私有面时自动退化为公开路径
+      // （包装订阅者 + __dsh_nav_bump__ 哨兵），不抛错、不留残留。
+      const readSettingsSectionRecord = () => {
         try {
           const core = ctx.slots?._core
-          if (core && typeof core.record === 'function') {
-            const r = core.record('settings.section')
-            if (r && r.listeners) {
-              for (const fn of r.listeners) {
-                navOrderListeners.add(fn)
-              }
+          if (core && typeof core.record === 'function') return core.record('settings.section') || null
+        } catch (_) {}
+        return null
+      }
+      const collectNativeSlotListeners = (record) => {
+        const snapshot = new Set()
+        try {
+          const listeners = record && record.listeners
+          if (listeners && typeof listeners[Symbol.iterator] === 'function') {
+            for (const fn of listeners) {
+              if (typeof fn === 'function') snapshot.add(fn)
             }
           }
         } catch (_) {}
+        return snapshot
       }
-      populateExistingSlotListeners()
 
       const notifyNavOrderChanged = () => {
         navOrderRevision++
-        populateExistingSlotListeners()
-        for (const listener of navOrderListeners) {
+        // 每轮现读现取：先于插件加载的原生订阅者只活在本次调用的局部快照里，绝不长期持有。
+        const record = readSettingsSectionRecord()
+        const roundCandidates = new Set()
+        for (const listener of navOrderListeners) roundCandidates.add(listener)
+        for (const listener of collectNativeSlotListeners(record)) roundCandidates.add(listener)
+        // 调用前逐项复核「此刻仍被订阅」：同一轮里前面的回调注销掉别的 fn（React 卸载清理、
+        // 包装订阅 disposer）后，后面的快照枚举不得把它复活；长期集合里没有、当前原生账本里
+        // 也没有即视为已注销，跳过。（集合本身是当轮的 Set，天然对两个来源去重。）
+        const isStillSubscribed = (listener) => {
+          if (navOrderListeners.has(listener)) return true
+          const latest = readSettingsSectionRecord()
+          return collectNativeSlotListeners(latest).has(listener)
+        }
+        for (const listener of roundCandidates) {
+          if (typeof listener !== 'function') continue
+          if (!isStillSubscribed(listener)) continue
           try { listener() } catch (_) {}
         }
-        // 唤醒底层 SlotCore 及其已注册订阅者（如 DSH 外壳 useSections）
+        // 唤醒底层 SlotCore 及其已注册订阅者（如 DSH 外壳 useSections）：私有面探测后才调。
         try {
-          const core = ctx.slots?._core
-          if (core && typeof core.record === 'function') {
-            const r = core.record('settings.section')
-            if (r) {
-              if (typeof core.markDirty === 'function') core.markDirty('settings.section', r)
-              if (typeof core.flush === 'function') core.flush()
-            }
+          if (record) {
+            const core = ctx.slots?._core
+            if (core && typeof core.markDirty === 'function') core.markDirty('settings.section', record)
+            if (core && typeof core.flush === 'function') core.flush()
           }
         } catch (_) {}
         // 兜底原生变动触发器
@@ -228,23 +251,16 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
             if (button.attrs && typeof button.attrs.has === 'function') return button.attrs.has(name)
             return false
           }
-          let id = readAttr('data-dsh-section-id')
+          const labelSpan = typeof button.querySelector === 'function' ? button.querySelector('span') : null
+          const text = (labelSpan ? labelSpan.textContent : button.textContent || '').trim()
+          const title = (readAttr('title') || '').trim()
+          const ariaLabel = (readAttr('aria-label') || '').trim()
+          // 每次按「当前标签与当前 raw 账本」重新识别，不信任任何自身历史标记：行被 React 复用时
+          // 旧 data-dsh-section-id（或本插件自打的四个归属标记）会指向已消失/已换名的条目，
+          // 照它下发显隐与排序就是 stale 误伤。识别不出即按未知行清理。
+          const id = labelToId.get(text) || labelToId.get(title) || labelToId.get(ariaLabel) || null
           if (!id) {
-            if (hasAttr('data-dsh-service-nav')) id = 'dsh-service'
-            else if (hasAttr('data-dsh-service-quota-nav')) id = 'dsh-service-quota'
-            else if (hasAttr('data-dsh-service-restart-nav')) id = 'dsh-service-restart'
-            else if (hasAttr('data-dsh-service-sessions-nav')) id = 'dsh-service-sessions'
-          }
-
-          if (!id) {
-            const labelSpan = typeof button.querySelector === 'function' ? button.querySelector('span') : null
-            const text = (labelSpan ? labelSpan.textContent : button.textContent || '').trim()
-            id = labelToId.get(text)
-              || (readAttr('title') && labelToId.get(readAttr('title').trim()))
-              || (readAttr('aria-label') && labelToId.get(readAttr('aria-label').trim()))
-          }
-          if (!id) {
-            // 行消失/换名：与 markSettingsNavRows 的摘标记对齐，归属标记与内联样式一并还原，
+            // 行消失/换名/无法识别：与 markSettingsNavRows 的摘标记对齐，归属标记与内联样式一并还原，
             // 避免旧标记残留、被后续行复用时误伤（显隐/排序以后续 DOM 同步为准）。
             if (hasAttr('data-dsh-section-id') && typeof button.removeAttribute === 'function') {
               try { button.removeAttribute('data-dsh-section-id') } catch (_) {}
@@ -277,8 +293,10 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
           }
         }
 
+        // 老版本外壳的 nav 可能没有 children（或不足两项）：先探测再取，避免可选链之外的下标直取报错。
+        const navChildren = nav.children
         const navList = typeof nav.querySelector === 'function'
-          ? (nav.querySelector('[class*="navList"]') || nav.children[1] || null)
+          ? (nav.querySelector('[class*="navList"]') || (navChildren && navChildren[1]) || null)
           : null
         if (navList && navList.style && customOrder && customOrder.length > 0) {
           navList.style.display = 'flex'
