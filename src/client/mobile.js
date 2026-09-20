@@ -414,7 +414,7 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      标题长短变化时芯片位置稳定不飘。 */
   html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }
 }
-/* Agent Team 弹窗右锚（2026-09-20，用户点名「移动端的 Agent Team 弹窗右侧超出屏幕」）。
+/* Agent Team 弹窗右锚：修复移动端面板右侧超出视口。
    面板 = 官方 @deepseek-ai/dsh-experimental-client-ui-agent-team 的 TeamAction，
    注册在 conversation.session.header.actions（与任务/子代理芯片同槽）。它自己的
    CSS 是 position:absolute; left:0; top:calc(100% + 5px);
