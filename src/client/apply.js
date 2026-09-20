@@ -1331,7 +1331,10 @@
                 'data-testid': `quota-panel-reset-group-${groupIndex}`,
                 style: { display: 'flex', flexDirection: 'column', gap: '2px' },
               },
-              groups.length > 1
+              // 账号名行：多组时各组都要归属；只有一组但它是账号组时同样要标——CPA 禁用
+              // 账号后块里只剩一张无窗口的卡，不标名就分不出是哪个 codex 号的。
+              // provider 级单组不标（卡行标题本就是「重置卡」，没有归属可言）。
+              groups.length > 1 || group.account !== ''
                 ? React.createElement('div', { 'data-testid': `quota-panel-reset-owner-${groupIndex}`, title: owner, style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, owner)
                 : null,
               shown.map((card, cardIndex) => {
@@ -4273,6 +4276,11 @@
                   const renderResetCardRow = (card, cardIndex) => {
                     const content = resetCardContent(card, translate)
                     const cardId = typeof card.id === 'string' && card.id !== '' ? card.id : `idx-${cardIndex}`
+                    // 账号归属直接标在卡行上：CPA 在 codex 账号额度用尽时会自动禁用账号，
+                    // 适配器随之跳过 disabled/unavailable 账号——该账号没有窗口，账号块里
+                    // 只剩卡、无从辨认是谁的。卡行自带账号名（纯数据），禁用期也认得出归属；
+                    // provider 级卡无 account，行文不变。账号在前、自定义名称殿后。
+                    const accountSuffix = typeof card.account === 'string' && card.account !== '' ? ` · ${card.account}` : ''
                     return React.createElement('div', {
                       key: cardId,
                       'data-testid': `quota-reset-card-${row.provider}-${cardId}`,
@@ -4284,7 +4292,7 @@
                       React.createElement('rect', { x: 2, y: 5, width: 20, height: 14, rx: 2 }),
                       React.createElement('line', { x1: 2, y1: 10, x2: 22, y2: 10 })),
                     React.createElement('span', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-                      React.createElement('span', null, content.title),
+                      React.createElement('span', null, `${content.title}${accountSuffix}`),
                       content.expiry !== '' ? React.createElement('span', null, content.expiry) : null),
                     // 移除钮只在「配置」展开时渲染：平时卡片行是纯展示，避免常驻破坏性按钮。
                     isAdvanced

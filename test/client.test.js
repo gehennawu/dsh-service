@@ -4143,6 +4143,46 @@ test('a provider-level reset card (no account) is grouped separately from accoun
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-1-0').children[1].children), /2026-10-05 07:12/)
 })
 
+test('a lone account-scoped reset-card group still names its account in the ring panel', async () => {
+  // CPA 在 codex 账号额度用尽时会自动禁用账号（适配器跳过 disabled/unavailable）：
+  // 该账号没有窗口，分区里只剩它的一张卡。账号名行若只在多组时才渲染，这张卡就
+  // 完全没有归属可读——单账号组同样要标账号名。
+  const store = {
+    snapshot: { current: { provider: 'cpa' } },
+    subscribe: () => () => {},
+    getSnapshot() { return this.snapshot },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+            refreshing: false, status: 'ok', fetchedAt: Date.now(),
+            // 只有另一个账号还有窗口；被禁用的 gehenna 账号零窗口、只剩重置卡。
+            windows: [{ id: 'r-1-codex-5h', kindKey: 'codex-5h', label: 'relient8888@gmail.com', percent: 12 }],
+            resetCards: [{ id: 'only', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2099-06-01' }],
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories: { directoryFor: () => ({ store, load: () => Promise.resolve() }) } })
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  // CPA 分区默认折叠：先点标题展开。
+  renderer.findByTestId('quota-panel-reset-title').props.onClick()
+  await renderer.flush()
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com', 'a lone account group still shows the account name')
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2099-06-01/)
+})
+
 test('an expired reset card switches both its icon and its text to the warning color', async () => {
   // 配色契约的过期分支：未过期 = 绿图标 + 中性文字；过期 = 图标与文字一起转警示色
   // （与既有「过期标黄」口径一致，不再只靠「已过期」三字提示）。
@@ -6587,6 +6627,9 @@ test('CLIProxyAPI codex accounts each get their own reset-card block with an add
   assert.doesNotMatch(flatText(blockB), /A 号周卡/)
   // 追加时带 account 归属（否则两张卡都会挂到 provider 级）。
   assert.deepEqual(renderer.findAllByTestIdPrefix('quota-reset-card-cpa-rc-').length, 2)
+  // 卡行自带账号名：账号被 CPA 禁用（额度用尽）后没有窗口，块里只剩卡也要认得出归属。
+  assert.match(String(renderer.findByTestId('quota-reset-card-cpa-rc-a').children[1].children[0].children), /codex-a@example\.com/)
+  assert.match(String(renderer.findByTestId('quota-reset-card-cpa-rc-b').children[1].children[0].children), /codex-b@example\.com/)
 
   // 「添加重置卡」与 zai 同款：平时不出现，展开「配置」后每个账号各一个。
   assert.equal(renderer.hasTest('quota-card-edit-cpa-codex-a-example-com'), false)
