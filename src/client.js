@@ -55,34 +55,61 @@ window.__ModuleLoader__.load({
       },
     }
 
+    // ── 余额查询「手动适配」→ 厂家图标（识别的兜底来源）────────────────────
+    // 渠道名匹配不中时（自定义中转名：cpa、relay-xxx…），识别退而参考用户在余额查询里
+    // 给该渠道手动适配的类型：适配成哪个 kind，就显示哪个 kind 的厂家图标。
+    // CPA 因此只是本表的一行，不再是 `resolveModelIcon` 里的特例——旧行为
+    // （只有手动适配成 cliproxy 才显示 CPA 标、且与渠道名无关）逐字保留。
+    //
+    // 两个前提缺一不可：
+    //   ① 显式适配（kindSource === 'config'）：仅由 baseURL 自动推断出来的类型不算
+    //      「用户手动适配过」，否则任何命中主机白名单的渠道都会凭空长出图标；
+    //   ② 只作兜底：渠道名能识别时**以名字为准**（叫 cpa 却适配成 openrouter 时，
+    //      仍按名字规则回落官方默认图标，不冒充 OpenRouter）。
+    // 映射值必须是 MODEL_ICON_DATA 里真实存在的 slug（单测逐条断言）。
+    const MODEL_ICON_QUOTA_KINDS = {
+      'opencode-go': 'opencode',
+      'zai-coding-cn': 'zhipu',
+      'openrouter': 'openrouter',
+      'kimi': 'kimi',
+      'siliconflow': 'siliconcloud',
+      'deepseek': 'deepseek',
+      'cliproxy': 'cliproxy',
+      'xiaomi-token-plan-cn': 'xiaomi',
+      'stepfun': 'stepfun',
+      'stepfun-step-plan': 'stepfun',
+      'command-goat': 'commandcode',
+    }
+
     /**
-     * 判定当前 provider 是否在余额查询（quotaStore）中手动适配过 CLIProxyAPI。
-     * 判定标准：快照中存在对应 provider 行，adapted 为 true 且 kind 为 'cliproxy'。
+     * 取该 provider 在余额查询（quotaStore）中手动适配成的 kind；没有则 null。
+     * 判定标准：快照中存在对应 provider 行，adapted 为 true，且 kindSource 为显式配置
+     * （undefined 视作显式——老宿主快照不带该字段）。
      */
-    const isCliproxyAdaptedInQuota = (provider) => {
-      if (typeof provider !== 'string' || provider === '') return false
+    const quotaAdaptedKindInStore = (provider) => {
+      if (typeof provider !== 'string' || provider === '') return null
       const key = provider.trim().toLowerCase()
       try {
-        if (typeof quotaStore !== 'object' || quotaStore === null || typeof quotaStore.getSnapshot !== 'function') return false
+        if (typeof quotaStore !== 'object' || quotaStore === null || typeof quotaStore.getSnapshot !== 'function') return null
         const snapshot = quotaStore.getSnapshot()
         const rows = Array.isArray(snapshot?.providers) ? snapshot.providers : []
-        return rows.some((row) => {
-          const name = typeof row?.provider === 'string' ? row.provider.trim().toLowerCase() : ''
-          return name === key && row.adapted === true && row.kind === 'cliproxy' && (row.kindSource === undefined || row.kindSource === 'config')
+        const row = rows.find((candidate) => {
+          const name = typeof candidate?.provider === 'string' ? candidate.provider.trim().toLowerCase() : ''
+          return name === key && candidate.adapted === true && (candidate.kindSource === undefined || candidate.kindSource === 'config')
         })
+        return row !== undefined && typeof row.kind === 'string' ? row.kind : null
       } catch (_) {
-        return false
+        return null
       }
     }
 
     /**
      * provider 名 → 图标 slug。先精确命中内置表，再按前缀/别名规则匹配自定义渠道
      * （本机 7 条 provider 里 6 条是自定义名：opencode-goo → opencode、
-     * openrouter-f → openrouter、zai-coding-cn → zhipu…）。命中不了返回 null，
-     * 由调用方回落官方默认图标。
+     * openrouter-f → openrouter、zai-coding-cn → zhipu…）。
      *
-     * 特殊判定：CLIProxyAPI（cliproxy）。
-     * 判定是否显示在对话框的条件是用户在余额查询里手动适配过 CLIProxyAPI。
+     * 名字识别不到时，退而参考余额查询里的手动适配类型（MODEL_ICON_QUOTA_KINDS）。
+     * 两者都命中不了返回 null，由调用方回落官方默认图标。
      */
     const resolveModelIcon = (provider, options = {}) => {
       if (typeof provider !== 'string' || provider === '') return null
@@ -91,20 +118,17 @@ window.__ModuleLoader__.load({
 
       const forComposer = options.forComposer === true
 
-      // ① 特殊判定：如果在余额查询里手动适配过 CLIProxyAPI，直接展示 CLIProxyAPI 图标
-      const cliproxyAdapted = typeof options.isCliproxyAdapted === 'boolean'
-        ? options.isCliproxyAdapted
-        : isCliproxyAdaptedInQuota(key)
-      if (cliproxyAdapted && MODEL_ICON_DATA['cliproxy'] !== undefined) {
-        return { slug: 'cliproxy', spec: MODEL_ICON_DATA['cliproxy'] }
-      }
+      // 手动适配类型：options.quotaKind（字符串=覆盖 / null=显式无）优先，缺省读快照仓。
+      const quotaKind = typeof options.quotaKind === 'string'
+        ? options.quotaKind
+        : options.quotaKind === null
+          ? null
+          : quotaAdaptedKindInStore(key)
+      const cliproxyAdapted = quotaKind === 'cliproxy'
 
       // 未在余额查询中手动适配时，对话框（含额度卡片）不显示 CLIProxyAPI 图标，回落官方默认图标。
       // 下面四条解析路径都可能落到 cliproxy 这个 slug，故收敛成同一个谓词——逐路径手写容易改漏其中一条。
       const cliproxyGatedOut = (slug) => slug === 'cliproxy' && forComposer && !cliproxyAdapted
-
-      // cpa 渠道没有公开品牌图形：未适配时显式不显示（官方默认图标照旧）。
-      if (key === 'cpa') return null
 
       // ② 内置 provider 精确表
       const exactSlug = MODEL_ICON_PROVIDERS[key]
@@ -129,6 +153,14 @@ window.__ModuleLoader__.load({
           if (cliproxyGatedOut(part)) continue
           return { slug: part, spec: MODEL_ICON_DATA[part] }
         }
+      }
+      // ⑤ 兜底：渠道名认不出来，但用户在余额查询里手动适配过 → 用所适配类型的厂家图形
+      //    （cpa 这类没有公开品牌图形、名字也无从匹配的中转，正是这条存在的理由）。
+      //    注意排在任何名字规则之后：名字能识别时以名字为准（见文件头注释）。
+      const adaptedSlug = quotaKind === null ? undefined : MODEL_ICON_QUOTA_KINDS[quotaKind]
+      if (adaptedSlug !== undefined && MODEL_ICON_DATA[adaptedSlug] !== undefined) {
+        if (cliproxyGatedOut(adaptedSlug)) return null
+        return { slug: adaptedSlug, spec: MODEL_ICON_DATA[adaptedSlug] }
       }
       return null
     }

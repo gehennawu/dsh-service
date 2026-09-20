@@ -11993,11 +11993,29 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   // 判定是否显示在对话框的条件是用户在余额查询里手动适配过 CLIProxyAPI：
   // 未在余额查询中手动适配时，cpa 渠道解析为 null（不显示）；显式标记已适配时解析为 cliproxy
   assert.equal(icons.resolve('cpa'), null, 'cpa without quota adaptation must resolve to null')
-  assert.equal(icons.resolve('cpa', { isCliproxyAdapted: true }).slug, 'cliproxy', 'cpa with quota adaptation resolves to cliproxy')
-  assert.equal(icons.resolve('cpa', { isCliproxyAdapted: false }), null, 'cpa with isCliproxyAdapted: false resolves to null')
+  assert.equal(icons.resolve('cpa', { quotaKind: 'cliproxy' }).slug, 'cliproxy', 'cpa adapted as cliproxy in quota resolves to cliproxy')
+  assert.equal(icons.resolve('cpa', { quotaKind: null }), null, 'cpa with no quota adaptation resolves to null')
   assert.equal(icons.resolve('cliproxy', { forComposer: true }), null, 'bare cliproxy channel in composer without adaptation resolves to null')
-  assert.equal(icons.resolve('cliproxy', { forComposer: true, isCliproxyAdapted: true }).slug, 'cliproxy')
-  assert.equal(icons.resolve('my-custom-proxy', { isCliproxyAdapted: true }).slug, 'cliproxy', 'any custom provider adapted as cliproxy in quota resolves to cliproxy')
+  assert.equal(icons.resolve('cliproxy', { forComposer: true, quotaKind: 'cliproxy' }).slug, 'cliproxy')
+  assert.equal(icons.resolve('my-custom-proxy', { quotaKind: 'cliproxy' }).slug, 'cliproxy', 'any custom provider adapted as cliproxy in quota resolves to cliproxy')
+
+  // ③d 余额查询手动适配作为识别的**兜底来源**（渠道名匹配不中时）：适配成哪个 kind，
+  // 就显示哪个 kind 的厂家图标——CPA 只是这张通用表里的一行。
+  assert.equal(icons.resolve('my-relay', { quotaKind: 'openrouter' }).slug, 'openrouter')
+  assert.equal(icons.resolve('my-relay', { quotaKind: 'zai-coding-cn' }).slug, 'zhipu')
+  assert.equal(icons.resolve('my-relay', { quotaKind: 'command-goat' }).slug, 'commandcode')
+  assert.equal(icons.resolve('my-relay', { quotaKind: 'stepfun-step-plan' }).slug, 'stepfun')
+  assert.equal(icons.resolve('my-relay', { quotaKind: 'mystery-kind' }), null, 'unknown adapted kind must not invent an icon')
+  // 名字能识别时以名字为准：适配类型不得覆盖渠道名识别结果。
+  assert.equal(icons.resolve('openrouter-f', { quotaKind: 'cliproxy' }).slug, 'openrouter', 'channel-name match outranks the quota adaptation')
+  assert.equal(icons.resolve('deepseek', { quotaKind: 'cliproxy' }).slug, 'deepseek', 'channel-name match outranks the quota adaptation')
+  // 显式停用（kind: null）不算适配，仍是 null；覆盖钮显式给 null 同样压制兜底。
+  assert.equal(icons.resolve('cpa-2', { quotaKind: null }), null)
+  // 每个 kind 映射都必须指向真实存在的图形（防表格与数据漂移）。
+  for (const [kind, slug] of Object.entries(icons.quotaKindSlugs)) {
+    assert.ok(icons.slugs.includes(slug), `quota kind ${kind} maps to unknown slug ${slug}`)
+    assert.equal(icons.resolve('unknown-relay', { quotaKind: kind }).slug, slug, `quota kind ${kind} must fall back to ${slug}`)
+  }
   // ⌘ 必须是真的 ⌘ 构造：四条边（<path>）+ 四个向外鼓出的环（<circle>）。
   // 这里刻意分别锁「边」与「环」两种图元——首版把环心放在方框角点上，用的是
   // <rect> + 四个 <circle>，几何上「有框有环」但读起来是「四环 + 中间一个 X」，
@@ -12519,7 +12537,43 @@ test('model provider icons: CLIProxyAPI icon displays on composer seat only when
     await renderer.flush()
     assert.equal(attrs.get('data-dshsvc-model-icon'), 'cliproxy', 'my-custom-proxy adapted as cliproxy displays cliproxy icon')
 
+    // 3b. 同名渠道改成别的适配类型：图标跟着适配类型换（余额查询手动适配是识别的兜底来源）。
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'my-custom-proxy', displayName: 'My Proxy', adapted: true, kind: 'openrouter', kindSource: 'config', windows: [] },
+      ],
+    })
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'switching the adapted kind switches the fallback icon')
+
+    // 3c. 仅由 baseURL 自动推断出来的类型（kindSource: auto）不算「手动适配」，不显示图标。
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'my-custom-proxy', displayName: 'My Proxy', adapted: true, kind: 'openrouter', kindSource: 'auto', windows: [] },
+      ],
+    })
+    await renderer.flush()
+    assert.equal(attrs.has('data-dshsvc-model-icon'), false, 'auto-inferred kind is not a manual adaptation')
+
+    // 3d. 名字能识别的渠道以名字为准：openrouter-f 即使被适配成 cliproxy，也仍显示 OpenRouter 标
+    //     （适配类型是识别的兜底来源，不覆盖渠道名识别结果）。
+    currentProvider = 'openrouter-f'
+    for (const fn of listeners) fn()
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [
+        { provider: 'my-custom-proxy', displayName: 'My Proxy', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+        { provider: 'openrouter-f', displayName: 'OpenRouter F', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] },
+      ],
+    })
+    await renderer.flush()
+    assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'channel-name match outranks quota adaptation on the live seat')
+
     // 4. 用户在余额查询中取消了适配：对话框图标立即摘除
+    currentProvider = 'my-custom-proxy'
+    for (const fn of listeners) fn()
     icons.quotaStore.publish({
       serverTime: Date.now(),
       providers: [

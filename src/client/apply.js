@@ -7188,7 +7188,9 @@
       css: MODEL_ICON_CSS,
       slugs: Object.keys(MODEL_ICON_DATA),
       providerCount: Object.keys(MODEL_ICON_PROVIDERS).length,
-      isCliproxyAdapted: isCliproxyAdaptedInQuota,
+      // 余额查询手动适配（识别兜底来源）：kind 取值器 + kind→slug 表，供测试与排障直视。
+      quotaAdaptedKind: quotaAdaptedKindInStore,
+      quotaKindSlugs: MODEL_ICON_QUOTA_KINDS,
       quotaStore,
     }
     return module.exports

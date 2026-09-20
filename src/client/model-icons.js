@@ -190,8 +190,8 @@
         }
 
         /**
-         * 订阅余额查询快照：用户在余额查询中手动适配/撤销适配 CLIProxyAPI 时，
-         * 对话框图标立即响应（设 state.lastProvider = null 触发重算）。
+         * 订阅余额查询快照：用户在余额查询中改/撤销手动适配类型时，
+         * 图标（识别的兜底来源）立即响应——设 state.lastProvider = null 触发重算，不重载页面。
          */
         const subscribeQuota = () => {
           if (state.unsubscribeQuota !== null) return
