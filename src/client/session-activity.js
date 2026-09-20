@@ -32,6 +32,15 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         let statusDispose = null
         let statusResetDispose = null
 
+        // 状态路的统一拆除：订阅、连接重置监听、基线一起清。注入 disposer、
+        // 功能开关同步与 fiber 收尾三处共用，避免只走其中一条路径时漏拆。
+        const stopStatusObservation = () => {
+          if (statusDispose !== null) { statusDispose(); statusDispose = null }
+          if (statusResetDispose !== null) { statusResetDispose(); statusResetDispose = null }
+          statusObserved.clear()
+          statusBaselined = false
+        }
+
         const resolveUiSession = () => injectedUiSession ?? getUiSession()
 
         const observeSessions = () => {
@@ -89,12 +98,9 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         const stopSessionObservation = () => {
           if (sessionsDispose !== null) { sessionsDispose(); sessionsDispose = null }
           if (resetDispose !== null) { resetDispose(); resetDispose = null }
-          if (statusDispose !== null) { statusDispose(); statusDispose = null }
-          if (statusResetDispose !== null) { statusResetDispose(); statusResetDispose = null }
+          stopStatusObservation()
           observed.clear()
           baselined = false
-          statusObserved.clear()
-          statusBaselined = false
           sessionActivity.runningSessionIds = new Set()
         }
 
@@ -107,11 +113,7 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
               observeStatus()
             }
           } else if (statusDispose !== null) {
-            statusDispose()
-            statusDispose = null
-            if (statusResetDispose !== null) { statusResetDispose(); statusResetDispose = null }
-            statusObserved.clear()
-            statusBaselined = false
+            stopStatusObservation()
           }
         }
 
@@ -127,9 +129,17 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         }
 
         if (typeof ctx.inject === 'function') {
+          // 订阅归属 inject 子 Fiber：服务撤销时先清理，再为新服务重建订阅和基线。
+          // 只在外层插件收尾会让旧 statusDispose 挡住新源接管。
           uninjectUiSession = ctx.inject(['uiSession'], (scope) => {
+            // 防御性先拆：若运行时未先 unload 就以新服务重入回调，旧订阅先释放再重建。
+            stopStatusObservation()
             injectedUiSession = getUiSession(scope)
             syncStatusObservation()
+            return () => {
+              injectedUiSession = undefined
+              stopStatusObservation()
+            }
           })
         }
 
