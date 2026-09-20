@@ -1128,9 +1128,34 @@
               row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
           : null
         // 面板先构造、再决定挂载方式：移动视口 portal 到 document.body 后 fixed，
-        // 水平居中、垂直中心下移到屏幕高度 75%；宽视口或 react-dom 缺席时锚定圆环上方。
+        // 以底部为基准向上展开（水平居中、下边缘锁定在触发区上方）；宽视口或 react-dom 缺席时锚定圆环上方。
         const centered = open && narrow && quotaCreatePortal !== null
           && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
+        const [bottomOffset, setBottomOffset] = useState(null)
+        useEffect(() => {
+          if (!open || !centered) return undefined
+          const updatePos = () => {
+            if (rootRef.current && typeof rootRef.current.getBoundingClientRect === 'function' && typeof window !== 'undefined') {
+              try {
+                const rect = rootRef.current.getBoundingClientRect()
+                if (rect && typeof rect.top === 'number' && Number.isFinite(rect.top)) {
+                  setBottomOffset(Math.max(16, Math.round(window.innerHeight - rect.top + 8)))
+                }
+              } catch (_) {}
+            }
+          }
+          updatePos()
+          if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', updatePos)
+            window.addEventListener('scroll', updatePos, true)
+          }
+          return () => {
+            if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+              window.removeEventListener('resize', updatePos)
+              window.removeEventListener('scroll', updatePos, true)
+            }
+          }
+        }, [open, centered])
         const panelPeakSchedule = quotaPeakScheduleFor(row, allWindows)
         const triggerNode = React.createElement('button', {
             type: 'button',
@@ -1142,6 +1167,14 @@
             onClick: () => {
               // 只在打开时补拉快照；关闭面板的那次请求没有意义（宿主闸门本就会兜住）。
               const next = !open
+              if (next && rootRef.current && typeof rootRef.current.getBoundingClientRect === 'function' && typeof window !== 'undefined') {
+                try {
+                  const rect = rootRef.current.getBoundingClientRect()
+                  if (rect && typeof rect.top === 'number' && Number.isFinite(rect.top)) {
+                    setBottomOffset(Math.max(16, Math.round(window.innerHeight - rect.top + 8)))
+                  }
+                } catch (_) {}
+              }
               setOpen(next)
               if (next) fetchQuotaSnapshot({ providers: provider === null ? [] : [provider] })
             },
@@ -1195,7 +1228,7 @@
           'aria-label': translate('quota.panel.title'),
           'data-testid': 'quota-ring-panel',
           style: centered
-            ? { position: 'fixed', left: '50%', top: '75%', transform: 'translate(-50%, -50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: 'min(560px, calc(100dvh - 176px))', overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
+            ? { position: 'fixed', left: '50%', bottom: (bottomOffset !== null ? bottomOffset : 80) + 'px', transform: 'translateX(-50%)', zIndex: 1000, boxSizing: 'border-box', width: 'min(280px, calc(100vw - 32px))', maxHeight: `min(560px, calc(100dvh - ${(bottomOffset !== null ? bottomOffset : 80) + 16}px))`, overflowY: 'auto', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' }
             : { position: 'absolute', bottom: 'calc(100% + 8px)', right: 0, zIndex: 100, boxSizing: 'border-box', width: 'max-content', minWidth: '240px', maxWidth: 'min(480px, calc(100vw - 32px))', padding: '12px', borderRadius: '12px', background: 'var(--dsw-specific-menu)', border: '1px solid var(--dsw-alias-border-inverted)', boxShadow: 'var(--dsw-shadow-lv3)' },
         },
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },

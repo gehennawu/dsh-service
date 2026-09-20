@@ -4188,15 +4188,15 @@ test('quota ring panel centers lower in the conversation area via body portal on
     await renderer.flush()
     renderer.findByTestId('quota-ring-trigger').props.onClick()
     await renderer.flush()
-    // 手机几何：跟整体移动端统一到 1023px 断点；水平居中，垂直中心位于屏幕高度 75%。
+    // 手机几何：跟整体移动端统一到 1023px 断点；水平居中，以底部为基准向上展开。
     const panel = renderer.findByTestId('quota-ring-panel')
     assert.ok(mediaQueries.includes('(max-width: 1023px)'))
     assert.equal(panel.props.style.position, 'fixed')
     assert.equal(panel.props.style.left, '50%')
-    assert.equal(panel.props.style.top, '75%')
-    assert.equal(panel.props.style.transform, 'translate(-50%, -50%)')
+    assert.equal(panel.props.style.bottom, '80px')
+    assert.equal(panel.props.style.transform, 'translateX(-50%)')
     assert.match(panel.props.style.width, /^min\(280px/)
-    assert.equal(panel.props.style.maxHeight, 'min(560px, calc(100dvh - 176px))')
+    assert.equal(panel.props.style.maxHeight, 'min(560px, calc(100dvh - 96px))')
     // portal 生效：面板经 #portal 节点挂到 document.body，脱离圆环 span 子树。
     const portal = findPortal()
     assert.ok(portal, 'panel should render through a portal node')
