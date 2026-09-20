@@ -1196,6 +1196,8 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'quota.family.codex': 'Codex',
       'quota.family.other': '其他',
       'quota.resetCard.title': '重置卡',
+      // 弹窗重置卡分区的归属标题（仅 CPA）：卡都是 codex 账号的，不标注会被误读成 Gemini 的重置卡。
+      'quota.resetCard.codexTitle': 'Codex 重置卡',
       'quota.resetCard.expires': '{date} 到期',
       'quota.resetCard.expired': '已过期',
       'quota.resetCard.edit': '添加重置卡',
@@ -2097,6 +2099,9 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'quota.family.codex': 'Codex',
       'quota.family.other': 'Other',
       'quota.resetCard.title': 'Reset card',
+      // Attribution title of the ring-panel reset section (CPA only): these cards all belong
+      // to codex accounts; without the label they read as Gemini's reset cards.
+      'quota.resetCard.codexTitle': 'Codex reset cards',
       'quota.resetCard.expires': 'expires {date}',
       'quota.resetCard.expired': 'expired',
       'quota.resetCard.edit': 'Add reset card',

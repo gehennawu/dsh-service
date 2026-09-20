@@ -3936,6 +3936,8 @@ test('ring keeps its panel open while refreshing and shows reset times once data
   assert.equal(panelCard.props.style.color, 'var(--dsw-alias-label-secondary)')
   assert.match(String(panelCard.children[1].children), /重置卡 · 周额度重置卡/)
   assert.equal(renderer.hasTest('quota-panel-reset-more-0'), false, 'single card needs no collapse toggle')
+  // 非 CPA 行没有「Codex 重置卡」分区标题：这张卡是 provider 级的，与 codex 无关。
+  assert.equal(renderer.hasTest('quota-panel-reset-title'), false)
 
   // 关闭面板不再补发 quota RPC（此前开/关 toggle 都无条件拉一次）。
   const callsBeforeClose = quotaCalls
@@ -3988,6 +3990,8 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
   await renderer.flush()
 
   // 两个账号两组；每组只显示最近那一张（gehenna=09-21、relient=10-04），其余折叠。
+  // 分区标题标明 codex：CPA 的卡全是 codex 账号的，不标注会被误读成 Gemini 的重置卡。
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-title').children), 'Codex 重置卡')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'relient8888@gmail.com')
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 08:30/)
@@ -4046,7 +4050,8 @@ test('a provider-level reset card (no account) is grouped separately from accoun
   await renderer.flush()
   renderer.findByTestId('quota-ring-trigger').props.onClick()
   await renderer.flush()
-  // 旧数据（无 account）归到独立的「重置卡」组，不混进任何账号。
+  // 旧数据（无 account）归到独立的「重置卡」组，不混进任何账号；分区仍标 codex（CPA 常驻标题）。
+  assert.equal(String(renderer.findByTestId('quota-panel-reset-title').children), 'Codex 重置卡')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), '重置卡')
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 23:47/)
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'gehenna8888@gmail.com')

@@ -1020,6 +1020,15 @@
               'data-testid': 'panel-reset-cards',
               style: { marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', flexDirection: 'column', gap: '6px' },
             },
+            // CPA 的卡都归属 codex 账号：弹窗窗口区已按 Codex/Gemini 分族展示，分区若不标
+            // codex，只看 Gemini 窗口时极易把这张卡读成 Gemini 的重置卡（与分族标题同款字级）。
+            row?.kind === 'cliproxy'
+              ? React.createElement('div', {
+                  key: 'panel-reset-title',
+                  'data-testid': 'quota-panel-reset-title',
+                  style: { fontSize: '11px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
+                }, translate('quota.resetCard.codexTitle'))
+              : null,
             groups.map((group, groupIndex) => {
               const expanded = expandedResetGroups.has(`panel:${groupIndex}`)
               const shown = expanded ? group.cards : group.cards.slice(0, 1)
