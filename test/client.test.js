@@ -88,6 +88,7 @@ function createRenderer(rpcCall, options = {}) {
   let currentComponent
   let currentSlot
   let hookCursor = 0
+  const hookCounts = new Map()
   let roots = new Map()
   let reloads = 0
   // React #31 语义（真实 react-dom 行为）：children 里出现「裸对象」——不是本替身
@@ -199,6 +200,16 @@ function createRenderer(rpcCall, options = {}) {
       currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name + epochSuffix
       hookCursor = 0
       const output = node.type(node.props)
+      // React 规则：同一组件实例每次渲染的 hook 数必须恒定。软替身此前不校验，
+      // 「提前 return 之后才声明 hook」的组件（QuotaRing 的 bottomOffset）在
+      // 「无数据 → 数据落地」的同挂载重渲染里 hook 数变化，真机 React 直接抛错、
+      // 圆环被槽位错误边界吞掉，测试却全绿。产物是压缩过的，组件名不可靠，
+      // 因此按渲染键（与 hookState 同一套键）对全部函数组件强制恒定。
+      if (typeof currentComponent === 'string') {
+        const previousCount = hookCounts.get(currentComponent)
+        if (previousCount !== undefined) assert.equal(hookCursor, previousCount, `hook count changed between renders for ${currentComponent}`)
+        hookCounts.set(currentComponent, hookCursor)
+      }
       currentComponent = previousComponent
       hookCursor = previousCursor
       return evaluate(output)
@@ -260,6 +271,7 @@ function createRenderer(rpcCall, options = {}) {
         effectCleanups.delete(key)
         effectState.delete(key)
         hookState.delete(key)
+        hookCounts.delete(key)
       }
       renderedComponents.delete(slot)
     }
@@ -3850,6 +3862,62 @@ test('quota ring recovers when the first strict-session injection missed the dir
   renderer.disposeFactory()
 })
 
+test('quota ring appears in place when directory data lands without a model switch (stable hook order)', async () => {
+  // 用户症状：余额圆环只能通过切换模型才出现，不能始终保持。根因假设：
+  // QuotaRing 在 row===null 提前返回之后才声明 bottomOffset 的 useState/useEffect——
+  // 「目录未就绪（0 hooks）→ 数据落地同挂载重渲染（+2 hooks）」触发 React
+  // “Rendered more hooks than during the previous render”，真机槽位错误边界吞掉后圆环
+  // 消失；切换模型是重挂载，hooks 从第一次就一致，所以看起来“切一下就好了”。
+  // harness 的 hookCounts 校验（QuotaRing 专属）正是这个症状的红灯。
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: null },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() {
+      return {
+        store,
+        load() {
+          return Promise.resolve()
+        },
+      }
+    },
+  }
+  const renderer = quotaRingRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'deepseek-official', displayName: 'DeepSeek', adapted: true, kind: 'deepseek',
+            refreshing: false, status: 'ok',
+            windows: [{ id: 'balance-cny', text: '¥35.50', label: 'CNY', kindKey: 'balance' }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, modelDirectories, { strictSessionSlots: true, initialSessionId: 'session-1' })
+
+  await renderer.load()
+  await renderer.flush()
+  // 目录未就绪：环不渲染（正常），此时组件已按“空数据”形态记录 hook 数。
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+
+  // 数据原地落地（不切模型、不重挂载）：环必须在同一 binding 内出现。
+  store.snapshot = { current: { provider: 'deepseek-official', model: 'deepseek-v4' } }
+  for (const fn of [...storeListeners]) fn()
+  await renderer.flush()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), true)
+  renderer.disposeFactory()
+})
+
 test('ring keeps its panel open while refreshing and shows reset times once data lands', async () => {
   const storeListeners = new Set()
   const store = {
@@ -4377,6 +4445,75 @@ test('balance-only provider renders fuel gauge and responds to manual calibratio
   const panelText = renderer.text()
   assert.match(panelText, /余量 100%/)
   assert.match(panelText, /基准满额: ¥35\.50/)
+})
+
+test('manual calibration must not freeze recharge detection on later snapshots', async () => {
+  // 规格（#todo-77 参数 2）：充值检测无条件生效；校准按钮只是「设当前为满额」的标定入口。
+  // 旧实现用 customBaseline ?? resolveBalanceBaseline(...) 短路——校准后直到换 provider
+  // 之前都不再进充值检测：¥35.50 校准后充值到 ¥100 再花到 ¥40，表盘仍钉死 100%/F ¥35.50。
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'deepseek-official' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() { return { store, load() { return Promise.resolve() } } },
+  }
+  let balanceText = '¥35.50'
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.25.0', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'deepseek-official',
+            displayName: 'DeepSeek',
+            adapted: true,
+            kind: 'deepseek',
+            refreshing: false,
+            status: 'ok',
+            windows: [{ id: 'balance-cny', text: balanceText, label: 'CNY', kindKey: 'balance' }],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  const trigger = renderer.findByTestId('quota-ring-trigger')
+
+  // 校准：35.50 即满额。
+  trigger.props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-gauge-calibrate-btn').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text(), /基准满额: ¥35\.50/)
+
+  // 充值到 ¥100：基准必须自动抬到 100（充值检测继续工作，不被校准冻结）。
+  balanceText = '¥100.00'
+  trigger.props.onClick() // 收起
+  await renderer.flush()
+  trigger.props.onClick() // 再展开（open 态点击会按当前 provider 补拉快照）
+  await renderer.flush()
+  await renderer.flush()
+  assert.match(renderer.text(), /基准满额: ¥100\.00/)
+
+  // 消费到 ¥40：相对新基准 100 显示 40%，而不是钉死 100%。
+  balanceText = '¥40.00'
+  trigger.props.onClick()
+  await renderer.flush()
+  trigger.props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.match(renderer.text(), /余量 40%/)
+  assert.match(renderer.text(), /基准满额: ¥100\.00/)
 })
 
 test('xiaomi token plan card shows console buckets with absolute figures and the cookie credential entry', async () => {

@@ -1052,20 +1052,18 @@
         // 余额型渠道判定（v1.9.1+ #todo-77）：无百分比窗口，但包含数字金额文本窗口
         const balanceInfo = tightest === null ? quotaExtractBalance(activeWindows) : null
         const isBalanceMode = balanceInfo !== null
-        const [customBaseline, setCustomBaseline] = useState(null)
-        useEffect(() => {
-          setCustomBaseline(null)
-        }, [provider])
+        // 校准只落持久基准并触发重渲染；后续渲染一律走 resolveBalanceBaseline——
+        // 规格参数 2 的充值检测无条件生效，不能被内存值短路冻结（校准后充值仍会抬基准）。
+        const [, bumpCalibration] = useState(0)
         const currentBaseline = isBalanceMode
-          ? (customBaseline ?? resolveBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency))
+          ? resolveBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency)
           : 0
         const gaugeState = isBalanceMode
           ? computeBalanceGaugeState(balanceInfo.amount, currentBaseline, balanceInfo.currency)
           : null
         const handleCalibrate = () => {
           if (!isBalanceMode || !provider || !balanceInfo) return
-          const nextBaseline = setManualBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency)
-          if (nextBaseline !== null) setCustomBaseline(nextBaseline)
+          if (setManualBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency) !== null) bumpCalibration((tick) => tick + 1)
         }
 
         useEffect(() => {
@@ -1102,33 +1100,12 @@
             document.removeEventListener('keydown', onKeyDown)
           }
         }, [open])
-        if (row === undefined || row === null) return null
-        const percent = tightest === null ? 0 : tightest.percent
-        // 纯文本窗口（余额类：DeepSeek/Kimi/硅基流动）没有百分比可「已用」，头部按剩余口径显示；
-        // 百分比窗口仍按方言的 remaining 标记切换已用/剩余。
-        const hasPercentWindow = tightest !== null
-        const remainingBasis = !hasPercentWindow || tightest.remaining === true
-        const usedWord = remainingBasis ? translate('quota.panel.remaining') : translate('quota.panel.used')
-        const color = isBalanceMode
-          ? gaugeState.color
-          : ((remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)')
-        const radius = 5.5
-        const circumference = 2 * Math.PI * radius
-        const providerDisplayName = row?.displayName || provider
-        const providerTag = familyLabel ? `${providerDisplayName} · ${familyLabel}` : providerDisplayName
-        const ariaText = hasPercentWindow
-          ? `${translate('quota.ring.label')} · ${providerTag} · ${usedWord} ${percent}%`
-          : `${translate('quota.ring.label')} · ${providerTag}`
-        const errorNode = row.errorCode !== undefined
-          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' } },
-              quotaErrorLine(row, translate))
-          : null
-        const updatedNode = row.refreshing === true || typeof row.fetchedAt === 'number'
-          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
-              row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
-          : null
-        // 面板先构造、再决定挂载方式：移动视口 portal 到 document.body 后 fixed，
-        // 以底部为基准向上展开（水平居中、下边缘锁定在触发区上方）；宽视口或 react-dom 缺席时锚定圆环上方。
+        // 面板挂载几何：移动视口 portal 到 document.body 后 fixed，以底部为基准向上展开
+        // （水平居中、下边缘锁定在触发区上方）；宽视口或 react-dom 缺席时锚定圆环上方。
+        // 这两个 hook 必须在下面的 row 空判提前返回之前声明：组件「目录未就绪（返回 null）
+        // → 数据落地同挂载重渲染」时 hook 数必须恒定，否则真实 React 抛
+        // “Rendered more hooks than during the previous render”，圆环被槽位错误边界吞掉，
+        // 表现为「切换模型（重挂载）后圆环才出现」。
         const centered = open && narrow && quotaCreatePortal !== null
           && typeof document !== 'undefined' && document.body !== null && document.body !== undefined
         const [bottomOffset, setBottomOffset] = useState(null)
@@ -1156,6 +1133,33 @@
             }
           }
         }, [open, centered])
+        if (row === undefined || row === null) return null
+        const percent = tightest === null ? 0 : tightest.percent
+        // 纯文本窗口（余额类：DeepSeek/Kimi/硅基流动）没有百分比可「已用」，头部按剩余口径显示；
+        // 百分比窗口仍按方言的 remaining 标记切换已用/剩余。
+        const hasPercentWindow = tightest !== null
+        const remainingBasis = !hasPercentWindow || tightest.remaining === true
+        const usedWord = remainingBasis ? translate('quota.panel.remaining') : translate('quota.panel.used')
+        const color = isBalanceMode
+          ? gaugeState.color
+          : ((remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)')
+        const radius = 5.5
+        const circumference = 2 * Math.PI * radius
+        const providerDisplayName = row?.displayName || provider
+        const providerTag = familyLabel ? `${providerDisplayName} · ${familyLabel}` : providerDisplayName
+        const ariaText = hasPercentWindow
+          ? `${translate('quota.ring.label')} · ${providerTag} · ${usedWord} ${percent}%`
+          : `${translate('quota.ring.label')} · ${providerTag}`
+        const errorNode = row.errorCode !== undefined
+          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' } },
+              quotaErrorLine(row, translate))
+          : null
+        const updatedNode = row.refreshing === true || typeof row.fetchedAt === 'number'
+          ? React.createElement('div', { style: { marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
+              row.refreshing === true ? translate('quota.refreshing') : translate('quota.updated', { time: formatClockTime(row.fetchedAt) }))
+          : null
+        // 面板先构造、再决定挂载方式（centered/bottomOffset 的 hook 声明在 row 空判之前）：
+        // 移动视口 portal 到 document.body 后 fixed；宽视口或 react-dom 缺席时锚定圆环上方。
         const panelPeakSchedule = quotaPeakScheduleFor(row, allWindows)
         const triggerNode = React.createElement('button', {
             type: 'button',
