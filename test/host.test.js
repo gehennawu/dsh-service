@@ -3697,37 +3697,52 @@ test('quota-reset-card validates provider, appends multiple cards, and removes b
   assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
 })
 
-test('expired reset cards are pruned from disk on read, and today-expiring cards surface through health', async (t) => {
+test('expired reset cards are pruned from disk on read, and soon-expiring cards surface through health', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-expiry-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const storedPath = join(dshHome, 'dsh-service-quota.json')
-  // 今日到期（纯日期，按当日末尾算）+ 昨日已过期 + 远期未到期 + 无到期时间。
-  const today = new Date()
   const pad = (value) => String(value).padStart(2, '0')
+  // datetime-local 串（本地时区，无时区后缀）：resetCardExpiryMs 对非纯日期串按原样解析。
+  const localStamp = (ms) => {
+    const at = new Date(ms)
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+  }
+  const now = Date.now()
+  const today = new Date(now)
   const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
-  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+  const yesterday = new Date(now - 24 * 60 * 60 * 1000)
   const yesterdayKey = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`
   await writeFile(storedPath, JSON.stringify({
     version: 1,
     kinds: { 'zai-coding-cn': 'zai-coding-cn' },
     resetCards: [
+      // 今日纯日期卡（到期=今日末尾，剩余必 <24h）+ 2 小时后到期的精确时刻卡 → 都在窗口内。
       { id: 'today', provider: 'zai-coding-cn', label: '今日卡', expiresAt: todayKey },
+      { id: 'soon', provider: 'zai-coding-cn', label: '临期卡', expiresAt: localStamp(now + 2 * 60 * 60 * 1000) },
+      // 25 小时后到期 → 超出 24h 窗口，不提示（旧「当天」口径同样不命中，锁窗口上限）。
+      { id: 'horizon', provider: 'zai-coding-cn', label: '远期卡', expiresAt: localStamp(now + 25 * 60 * 60 * 1000) },
       { id: 'stale', provider: 'zai-coding-cn', label: '昨日卡', expiresAt: yesterdayKey },
-      { id: 'future', provider: 'zai-coding-cn', label: '远期卡', expiresAt: '2099-01-01' },
+      { id: 'future', provider: 'zai-coding-cn', label: '远期纯日期卡', expiresAt: '2099-01-01' },
       { id: 'never', provider: 'zai-coding-cn', label: '永久卡' },
     ],
   }))
   const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
-  // health 是概览的常驻轮询：额度功能开启时带上「今日到期」清单，且只有当天那一条。
+  // health 是概览的常驻轮询：额度功能开启时带上「24 小时内到期」清单，且只有窗口内那两条。
   const health = await host.handler('health', {})
   assert.equal(health.ok, true)
-  assert.deepEqual(health.value.resetCardsExpiringToday, [{ provider: 'zai-coding-cn', label: '今日卡' }])
-  // 读配置即自动移除过期卡并落盘：昨日卡消失，今日/远期/永久卡保留。
+  assert.deepEqual(health.value.resetCardsExpiringSoon, [
+    { provider: 'zai-coding-cn', label: '今日卡' },
+    { provider: 'zai-coding-cn', label: '临期卡' },
+  ])
+  // 读配置即自动移除过期卡并落盘：昨日卡消失，窗口内/远期/永久卡保留。
   const config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
-  assert.deepEqual(config.resetCards.map((card) => card.id), ['today', 'future', 'never'])
-  // 再次 health：过期卡已在磁盘消失，今日提醒不再变化（今日卡仍在提示窗口内）。
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['today', 'soon', 'horizon', 'future', 'never'])
+  // 再次 health：过期卡已在磁盘消失，窗口内提醒不再变化。
   const second = await host.handler('health', {})
-  assert.deepEqual(second.value.resetCardsExpiringToday, [{ provider: 'zai-coding-cn', label: '今日卡' }])
+  assert.deepEqual(second.value.resetCardsExpiringSoon, [
+    { provider: 'zai-coding-cn', label: '今日卡' },
+    { provider: 'zai-coding-cn', label: '临期卡' },
+  ])
 })
 
 test('quota-reset-card stores an optional account scope so one CLIProxyAPI provider can hold per-account cards', async (t) => {
@@ -3775,7 +3790,7 @@ test('health omits the reset-card reminder when quota lookup is disabled', async
   const health = await host.handler('health', {})
   assert.equal(health.ok, true)
   // 功能关闭：不带该字段（客户端据此不渲染概览提示），也不因读配置而触发额度相关副作用。
-  assert.equal('resetCardsExpiringToday' in health.value, false)
+  assert.equal('resetCardsExpiringSoon' in health.value, false)
 })
 
 test('quota-refresh bypasses success TTL once but retains a hard manual cooldown', async (t) => {

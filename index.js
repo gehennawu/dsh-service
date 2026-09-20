@@ -2725,11 +2725,18 @@ async function collectHealth(ctx) {
 }
 
 /**
- * 今日到期的重置卡清单（概览 info 提示的数据源）。取配置里到期时刻落在**本地当天**窗口内的卡：
- * 纯日期卡按当日 23:59:59.999 算，故「9-30 到期」整日命中。已过期的卡读路径已被剔除，不会出现在这里。
- * 返回 [{ provider, label }]；无命中返回空数组。
+ * 概览重置卡到期提示的窗口（设计定稿参数，只写这一处）：到期时刻距今 **≤24 小时** 即提示。
+ * 用剩余时长而不是「当天」日历窗：纯日期卡本就顺延到当日 23:59:59.999、当天窗 ≈24h，
+ * 但精确时刻卡（datetime-local）在当天窗下只剩 0:00 到到期时刻的一截（可能仅几十分钟），
+ * 错过即被读路径自动清理、再无补看机会；剩余时长窗让两种录入方式都保证 ≥24h 曝光。
  */
-async function collectResetCardsExpiringToday(refreshQuotaConfigCache, now = Date.now()) {
+const QUOTA_RESET_CARD_EXPIRING_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 剩余 ≤24h 到期的重置卡清单（概览 info 提示的数据源）。已过期的卡读路径已被剔除，
+ * 不会出现在这里。返回 [{ provider, label }]；无命中返回空数组。
+ */
+async function collectResetCardsExpiringSoon(refreshQuotaConfigCache, now = Date.now()) {
   let config
   try {
     config = await refreshQuotaConfigCache()
@@ -2738,14 +2745,11 @@ async function collectResetCardsExpiringToday(refreshQuotaConfigCache, now = Dat
   }
   const cards = Array.isArray(config?.resetCards) ? config.resetCards : []
   if (cards.length === 0) return []
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  const dayStart = start.getTime()
-  const dayEnd = dayStart + 24 * 60 * 60 * 1000 - 1
+  const horizon = now + QUOTA_RESET_CARD_EXPIRING_WINDOW_MS
   const hits = []
   for (const card of cards) {
     const at = resetCardExpiryMs(card?.expiresAt)
-    if (at === null || at < dayStart || at > dayEnd) continue
+    if (at === null || at > horizon) continue
     hits.push({
       provider: typeof card.provider === 'string' ? card.provider : '',
       label: typeof card.label === 'string' ? card.label : '',
@@ -5248,10 +5252,10 @@ function apply(ctx) {
     } },
     'health': { handle: async (payload, rpcEndpoint) => {
       const value = await collectHealth(ctx)
-      // 今日到期的重置卡（额度功能开启时才算）：概览「可行动项」的 info 提示数据源。
+      // 剩余 24 小时内到期的重置卡（额度功能开启时才算）：概览「可行动项」的 info 提示数据源。
       // 走 health 而非 quota，是因为概览不打开额度页也该看到提醒，而 health 是面板的常驻轮询。
       if (featureEnabled('quotaLookup')) {
-        value.resetCardsExpiringToday = await collectResetCardsExpiringToday(refreshQuotaConfigCache)
+        value.resetCardsExpiringSoon = await collectResetCardsExpiringSoon(refreshQuotaConfigCache)
       }
       return { ok: true, value }
 

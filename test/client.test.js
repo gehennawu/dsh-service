@@ -1514,8 +1514,8 @@ test('overview status is informational when only update or empty-backup hints ex
   assert.match(clean.text('settings.section'), /所有系统运行正常/)
 })
 
-test('a reset card expiring today surfaces as an overview info item and disappears once the host drops it', async () => {
-  const healthPayload = { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0, resetCardsExpiringToday: [{ provider: 'zai-coding-cn', label: '周额度重置卡' }] }
+test('a soon-expiring reset card surfaces as an overview info item and disappears once the host drops it', async () => {
+  const healthPayload = { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0, resetCardsExpiringSoon: [{ provider: 'zai-coding-cn', label: '周额度重置卡' }] }
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
     if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true } } }
@@ -1526,13 +1526,13 @@ test('a reset card expiring today surfaces as an overview info item and disappea
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
-  // 今日到期 → info 级可行动项，带上卡名（无卡名时回落 provider）。
+  // 24 小时内到期 → info 级可行动项，带上卡名（无卡名时回落 provider）。
   assert.equal(renderer.hasTest('overview-actionables'), true)
-  assert.match(renderer.text('settings.section'), /重置卡今日到期：周额度重置卡/)
+  assert.match(renderer.text('settings.section'), /重置卡 24 小时内到期：周额度重置卡/)
   assert.match(renderer.text('settings.section'), /有 1 条提示/)
 
-  // 次日宿主已自动移除该卡 → health 不再带该字段，提示随之消失（无需前端再判时间）。
-  delete healthPayload.resetCardsExpiringToday
+  // 宿主自动移除该卡后 health 不再带该字段，提示随之消失（无需前端再判时间）。
+  delete healthPayload.resetCardsExpiringSoon
   await renderer.advanceTimer(5000)
   assert.equal(renderer.hasTest('overview-actionables'), false, 'the reminder must clear once the host stops reporting it')
   assert.match(renderer.text('settings.section'), /所有系统运行正常/)

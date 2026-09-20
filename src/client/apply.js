@@ -5704,9 +5704,10 @@
         if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
         if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
         if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })
-        // 重置卡今日到期（宿主经 health 下发，额度功能关闭时不带该字段）：
-        // 到期当天全天提示一次，次日宿主已自动移除该卡，提示随之消失。
-        const expiringResetCards = Array.isArray(health?.resetCardsExpiringToday) ? health.resetCardsExpiringToday : []
+        // 重置卡即将到期（宿主经 health 下发，额度功能关闭时不带该字段）：
+        // 剩余 ≤24h 即提示（纯日期卡与精确时刻卡的曝光时长统一），过期后宿主读路径
+        // 自动移除该卡、字段随之消失，提示不再渲染。
+        const expiringResetCards = Array.isArray(health?.resetCardsExpiringSoon) ? health.resetCardsExpiringSoon : []
         if (expiringResetCards.length > 0) {
           const names = expiringResetCards
             .map((card) => (typeof card.label === 'string' && card.label !== '' ? card.label : card.provider))
