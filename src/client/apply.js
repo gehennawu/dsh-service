@@ -771,6 +771,9 @@
           else next.add(key)
           return next
         })
+        // CPA 重置卡分区整体默认折叠：卡是手录的次要信息，弹窗里只留一行标题，
+        // 点开标题才显示账号分组内容（非 CPA 行无标题，不折叠）。
+        const [panelResetOpen, setPanelResetOpen] = useState(false)
         // 自愈（v1.1.2）：真实渲染器把 inject 产物按 (entry,binding) 缓存——刷新/首进
         // 旧会话时 directoryFor 可能因会话作用域尚未热身抛错，空 props 被缓存后圆环静默。
         // 注入失败也携带 sessionId；store 缺席时组件内按 ctx.timer 退避重试解析目录，
@@ -1021,15 +1024,20 @@
               style: { marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', display: 'flex', flexDirection: 'column', gap: '6px' },
             },
             // CPA 的卡都归属 codex 账号：弹窗窗口区已按 Codex/Gemini 分族展示，分区若不标
-            // codex，只看 Gemini 窗口时极易把这张卡读成 Gemini 的重置卡（与分族标题同款字级）。
+            // codex，只看 Gemini 窗口时极易把这张卡读成 Gemini 的重置卡。标题即折叠钮
+            // （默认收起，点开才是账号分组内容，与「配置」钮同款 ▸/▾ 前缀）；非 CPA 行
+            // 无标题、不折叠，行为不变。
             row?.kind === 'cliproxy'
-              ? React.createElement('div', {
+              ? React.createElement('button', {
                   key: 'panel-reset-title',
+                  type: 'button',
                   'data-testid': 'quota-panel-reset-title',
-                  style: { fontSize: '11px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
-                }, translate('quota.resetCard.codexTitle'))
+                  'aria-expanded': String(panelResetOpen),
+                  onClick: () => setPanelResetOpen(!panelResetOpen),
+                  style: { display: 'flex', alignItems: 'center', alignSelf: 'flex-start', fontSize: '11px', fontWeight: 600, color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' },
+                }, `${panelResetOpen ? '▾' : '▸'} ${translate('quota.resetCard.codexTitle')}`)
               : null,
-            groups.map((group, groupIndex) => {
+            ...(row?.kind === 'cliproxy' && !panelResetOpen ? [] : groups.map((group, groupIndex) => {
               const expanded = expandedResetGroups.has(`panel:${groupIndex}`)
               const shown = expanded ? group.cards : group.cards.slice(0, 1)
               const hidden = group.cards.length - shown.length
@@ -1071,7 +1079,7 @@
                     style: { alignSelf: 'flex-start', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', background: 'transparent', border: 'none', cursor: 'pointer', padding: '0 2px', textDecoration: 'underline' },
                   }, translate('quota.resetCard.less'))
                 : null)
-            }))]
+            })))]
           })(),
           errorNode,
           updatedNode) : null

@@ -3989,9 +3989,17 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
   renderer.findByTestId('quota-ring-trigger').props.onClick()
   await renderer.flush()
 
-  // 两个账号两组；每组只显示最近那一张（gehenna=09-21、relient=10-04），其余折叠。
-  // 分区标题标明 codex：CPA 的卡全是 codex 账号的，不标注会被误读成 Gemini 的重置卡。
-  assert.equal(String(renderer.findByTestId('quota-panel-reset-title').children), 'Codex 重置卡')
+  // 两个账号两组；分区默认折叠，只渲染「▸ Codex 重置卡」标题，点开才是账号分组内容。
+  const resetTitle = renderer.findByTestId('quota-panel-reset-title')
+  assert.match(String(resetTitle.children), /Codex 重置卡/)
+  assert.equal(resetTitle.props['aria-expanded'], 'false')
+  assert.equal(renderer.hasTest('quota-panel-reset-owner-0'), false, 'the section starts collapsed')
+  assert.equal(renderer.hasTest('quota-panel-reset-card-0-0'), false, 'no card rows while collapsed')
+  resetTitle.props.onClick()
+  await renderer.flush()
+
+  // 展开后：每组只显示最近那一张（gehenna=09-21、relient=10-04），其余折叠。
+  assert.equal(renderer.findByTestId('quota-panel-reset-title').props['aria-expanded'], 'true')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'relient8888@gmail.com')
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 08:30/)
@@ -4016,6 +4024,13 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-panel-reset-card-0-1'), false)
   assert.equal(String(renderer.findByTestId('quota-panel-reset-more-0').children), '另有 2 张')
+
+  // 再点分区标题整体收起：回到只留标题行的初始态。
+  renderer.findByTestId('quota-panel-reset-title').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-panel-reset-title').props['aria-expanded'], 'false')
+  assert.equal(renderer.hasTest('quota-panel-reset-owner-0'), false)
+  assert.equal(renderer.hasTest('quota-panel-reset-card-0-0'), false)
 })
 
 test('a provider-level reset card (no account) is grouped separately from account cards', async () => {
@@ -4050,8 +4065,10 @@ test('a provider-level reset card (no account) is grouped separately from accoun
   await renderer.flush()
   renderer.findByTestId('quota-ring-trigger').props.onClick()
   await renderer.flush()
-  // 旧数据（无 account）归到独立的「重置卡」组，不混进任何账号；分区仍标 codex（CPA 常驻标题）。
-  assert.equal(String(renderer.findByTestId('quota-panel-reset-title').children), 'Codex 重置卡')
+  // 旧数据（无 account）归到独立的「重置卡」组，不混进任何账号；分区先点标题展开。
+  renderer.findByTestId('quota-panel-reset-title').props.onClick()
+  await renderer.flush()
+  assert.match(String(renderer.findByTestId('quota-panel-reset-title').children), /Codex 重置卡/)
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), '重置卡')
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 23:47/)
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'gehenna8888@gmail.com')
@@ -4088,6 +4105,9 @@ test('an expired reset card switches both its icon and its text to the warning c
   await renderer.flush()
   await renderer.flush()
   renderer.findByTestId('quota-ring-trigger').props.onClick()
+  await renderer.flush()
+  // CPA 分区默认折叠：先点标题展开才看得到卡行。
+  renderer.findByTestId('quota-panel-reset-title').props.onClick()
   await renderer.flush()
 
   const row = renderer.findByTestId('quota-panel-reset-card-0-0')
