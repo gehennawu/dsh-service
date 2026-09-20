@@ -180,9 +180,8 @@
         { id: 'navOrder', labelKey: 'tabs.navOrder' },
       ]
       // v0.39 页面元数据：每页一行描述（标题复用 tabs.* 词条）。
-      // 用户复核：概览/模型统计/维护/额度 的描述取消（undefined = 不渲染）。
+      // 概览/模型统计/维护/额度/诊断页 的描述取消（undefined = 不渲染），仅配置页保留一行。
       const PAGE_DESCRIPTIONS = {
-        diagnostics: 'page.diagnostics.desc',
         configuration: 'page.configuration.desc',
       }
       /** 页面头部基元：非吸附轻量标题 + 一行描述；主操作位由各页逐步接入（action prop）。 */
@@ -1688,8 +1687,7 @@
           // 对话页不再有其他子代理显示面）。
           React.createElement('div', { 'data-testid': 'subagent-dock-toggle-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', padding: '10px 12px', border: '1px solid var(--dsh-svc-border)', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
             React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.dock.title')),
-              React.createElement('p', { style: { ...hintStyle, marginTop: '2px', marginBottom: 0 } }, translate('subagent.dock.desc'))),
+              React.createElement('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.dock.title'))),
             React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': String(dockEnabled), 'data-testid': 'subagent-dock-toggle', onClick: () => { featureScope.set('subagentModelsDock', !dockEnabled).catch(() => {}) }, style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: dockEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 } },
               React.createElement('span', { style: { position: 'absolute', top: '1px', left: dockEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: dockEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)', transition: 'left 150ms ease' } }))),
           snapshot !== null && snapshot.available === false ? React.createElement('p', { 'data-testid': 'subagent-unavailable', style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.unavailable')) : null,
@@ -3485,14 +3483,12 @@
 
         return React.createElement('div', null,
           React.createElement('div', { style: sectionTitle }, translate('sessions.title')),
-          React.createElement('p', { style: hint }, translate('sessions.hint')),
           // v0.35 用户点名：设置页左列入口开关放在面板靠上、筛选标签之前。
           // v0.39 统一：与重启/额度同款胶囊开关（此前是复选框，与其他入口开关不一致）。
           React.createElement('div', { 'data-testid': 'sessions-nav-toggle', style: { margin: '2px 0 8px' } },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
               React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-                React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('sessions.navToggle')),
-                React.createElement('span', { style: hint }, translate('sessions.navToggleHint'))),
+                React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, translate('sessions.navToggle'))),
               React.createElement('button', {
                 type: 'button',
                 role: 'switch',
