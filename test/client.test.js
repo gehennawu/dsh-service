@@ -4315,6 +4315,70 @@ test('balance-only providers show remaining wording and skip the fake percent in
   assert.match(text, /¥110\.00/)
 })
 
+test('balance-only provider renders fuel gauge and responds to manual calibration button', async () => {
+  const storeListeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'deepseek-official' } },
+    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = {
+    directoryFor() { return { store, load() { return Promise.resolve() } } },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.25.0', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          serverTime: Date.now(),
+          providers: [{
+            provider: 'deepseek-official',
+            displayName: 'DeepSeek',
+            adapted: true,
+            kind: 'deepseek',
+            refreshing: false,
+            status: 'ok',
+            windows: [
+              { id: 'balance-cny', text: '¥35.50', label: 'CNY', kindKey: 'balance' },
+              { id: 'granted-cny', text: '¥10.00', label: 'CNY', kindKey: 'granted-balance' },
+            ],
+            fetchedAt: Date.now(),
+          }],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+
+  await renderer.load()
+  await renderer.flush()
+  await renderer.flush()
+  const trigger = renderer.findByTestId('quota-ring-trigger')
+  assert.ok(trigger, 'trigger must exist')
+
+  // 打开面板
+  trigger.props.onClick()
+  await renderer.flush()
+
+  // 断言大号油表与当前余额文本存在
+  const bigGauge = renderer.findByTestId('quota-big-fuel-gauge')
+  assert.ok(bigGauge, 'big fuel gauge must be rendered in panel')
+  const balanceText = renderer.findByTestId('quota-gauge-balance-text')
+  assert.equal(balanceText.children[0], '¥35.50')
+
+  // 校准按钮存在并可点击
+  const calibrateBtn = renderer.findByTestId('quota-gauge-calibrate-btn')
+  assert.ok(calibrateBtn, 'calibrate button must exist')
+  calibrateBtn.props.onClick()
+  await renderer.flush()
+
+  // 校准后余量达到 100%
+  const panelText = renderer.text()
+  assert.match(panelText, /余量 100%/)
+  assert.match(panelText, /基准满额: ¥35\.50/)
+})
+
 test('xiaomi token plan card shows console buckets with absolute figures and the cookie credential entry', async () => {
   // 小米 Token Plan（v0.29）：套餐名文本窗口置顶 + 额度桶带 used/limit 原始数值（客户端缩写）；
   // 未配置行的凭据入口必须是「控制台 Cookie」文案——错标签会诱导把 tp- 推理密钥填进 Cookie 槽位。

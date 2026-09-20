@@ -218,3 +218,89 @@ test('returned interface exposes the card API without raw listeners, writers or 
     assert.equal(name in api, false, `${name} must stay private to the fragment`)
   }
 })
+
+test('quotaExtractBalance extracts amount, currency, symbol and window for balance-only providers', async () => {
+  const { api } = await loadQuotaCore()
+  // DeepSeek CNY
+  const dsWindows = [
+    { id: 'balance-cny', text: '¥35.50', label: 'CNY', kindKey: 'balance' },
+    { id: 'granted-cny', text: '¥10.00', label: 'CNY', kindKey: 'granted-balance' },
+  ]
+  const ds = api.quotaExtractBalance(dsWindows)
+  assert.equal(ds.amount, 35.5)
+  assert.equal(ds.currency, 'CNY')
+  assert.equal(ds.symbol, '¥')
+  assert.equal(ds.rawText, '¥35.50')
+  assert.equal(ds.window.id, 'balance-cny')
+
+  // USD
+  const usdWindows = [{ id: 'balance', text: '$12.80', kindKey: 'balance' }]
+  const usd = api.quotaExtractBalance(usdWindows)
+  assert.equal(usd.amount, 12.8)
+  assert.equal(usd.currency, 'USD')
+  assert.equal(usd.symbol, '$')
+
+  // Empty or invalid
+  assert.equal(api.quotaExtractBalance([]), null)
+  assert.equal(api.quotaExtractBalance(null), null)
+  assert.equal(api.quotaExtractBalance([{ id: 'percent-only', percent: 50 }]), null)
+})
+
+test('resolveBalanceBaseline applies floor, detects recharge, and persists in localStorage', async () => {
+  const storage = createStorageMock()
+  const { api } = await loadQuotaCore({ storage })
+
+  // 首次进入：余额 ¥7.38，保底 ¥20.00
+  const b1 = api.resolveBalanceBaseline('deepseek-official', 7.38, 'CNY')
+  assert.equal(b1, 20)
+  const snap1 = JSON.parse(storage.getItem('dsh-service-quota-balance-baseline'))
+  assert.equal(snap1['deepseek-official'].baseline, 20)
+  assert.equal(snap1['deepseek-official'].lastBalance, 7.38)
+
+  // 正常消耗：余额降到 ¥5.00，基准保持 ¥20.00
+  const b2 = api.resolveBalanceBaseline('deepseek-official', 5.00, 'CNY')
+  assert.equal(b2, 20)
+
+  // 充值：余额充到 ¥50.00（> 基准 20），基准自动上调为 ¥50.00
+  const b3 = api.resolveBalanceBaseline('deepseek-official', 50.00, 'CNY')
+  assert.equal(b3, 50)
+  const snap3 = JSON.parse(storage.getItem('dsh-service-quota-balance-baseline'))
+  assert.equal(snap3['deepseek-official'].baseline, 50)
+  assert.equal(snap3['deepseek-official'].lastBalance, 50)
+
+  // 手动标定：用户点击设当前为满额（例如当前 ¥35.00）
+  const bManual = api.setManualBalanceBaseline('deepseek-official', 35.00, 'CNY')
+  assert.equal(bManual, 35)
+  const snapManual = JSON.parse(storage.getItem('dsh-service-quota-balance-baseline'))
+  assert.equal(snapManual['deepseek-official'].baseline, 35)
+})
+
+test('computeBalanceGaugeState derives ratio, gear, needleAngle and safety floors', async () => {
+  const { api } = await loadQuotaCore()
+
+  // 满额（100%）：gear high, needle +90°
+  const full = api.computeBalanceGaugeState(50, 50, 'CNY')
+  assert.equal(full.ratio, 100)
+  assert.equal(full.gear, 'high')
+  assert.equal(full.needleAngle, 90)
+
+  // 半箱（40%）：gear mid, needle -18°
+  const mid = api.computeBalanceGaugeState(20, 50, 'CNY')
+  assert.equal(mid.ratio, 40)
+  assert.equal(mid.gear, 'mid')
+  assert.equal(mid.needleAngle, -18)
+
+  // 见底（10%）：gear low, needle -72°
+  const low = api.computeBalanceGaugeState(5, 50, 'CNY')
+  assert.equal(low.ratio, 10)
+  assert.equal(low.gear, 'low')
+
+  // 绝对值极低护栏（余额 <= 2 CNY）：强制 low 报警
+  const extremeLow = api.computeBalanceGaugeState(1.5, 30, 'CNY')
+  assert.equal(extremeLow.gear, 'low')
+
+  // 绝对值充裕护栏（余额 >= 50 CNY）：即使比例 < 20% 也不亮红灯，保持 mid
+  const comfortable = api.computeBalanceGaugeState(60, 500, 'CNY')
+  assert.equal(comfortable.ratio, 12)
+  assert.equal(comfortable.gear, 'mid')
+})

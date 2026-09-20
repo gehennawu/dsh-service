@@ -255,5 +255,141 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
-  return { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, fetchQuotaSnapshot }
+
+      // ─── 余额型油表基准管理与状态计算（#todo-77）───────────────
+      const QUOTA_BALANCE_BASELINE_KEY = 'dsh-service-quota-balance-baseline'
+
+      function readQuotaBalanceBaselines() {
+        try {
+          const raw = localStorage.getItem(QUOTA_BALANCE_BASELINE_KEY)
+          if (!raw) return {}
+          const parsed = JSON.parse(raw)
+          return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+        } catch (_) {
+          return {}
+        }
+      }
+
+      function writeQuotaBalanceBaselines(data) {
+        try {
+          if (!data || Object.keys(data).length === 0) {
+            localStorage.removeItem(QUOTA_BALANCE_BASELINE_KEY)
+          } else {
+            localStorage.setItem(QUOTA_BALANCE_BASELINE_KEY, JSON.stringify(data))
+          }
+        } catch (_) {}
+      }
+
+      /**
+       * 提取余额窗口的主要金额与币种信息。
+       * 纯文本窗口（DeepSeek/Kimi/硅基流动/StepFun 等）且无百分比窗口时使用。
+       */
+      function quotaExtractBalance(windows) {
+        if (!Array.isArray(windows) || windows.length === 0) return null
+        const candidate = windows.find((w) => w.kindKey === 'balance')
+          || windows.find((w) => typeof w.id === 'string' && w.id.startsWith('balance'))
+          || windows.find((w) => typeof w.text === 'string' && /^[¥$€£]|\b(CNY|USD|EUR|GBP)\b/.test(w.text))
+        if (!candidate || typeof candidate.text !== 'string') return null
+        const text = candidate.text.trim()
+        let currency = 'CNY'
+        let symbol = '¥'
+        if (text.startsWith('$') || candidate.label === 'USD' || text.toUpperCase().includes('USD')) {
+          currency = 'USD'
+          symbol = '$'
+        } else if (text.startsWith('€') || candidate.label === 'EUR' || text.toUpperCase().includes('EUR')) {
+          currency = 'EUR'
+          symbol = '€'
+        } else if (text.startsWith('£') || candidate.label === 'GBP' || text.toUpperCase().includes('GBP')) {
+          currency = 'GBP'
+          symbol = '£'
+        }
+        const numStr = text.replace(/[^0-9.]/g, '')
+        const amount = Number(numStr)
+        if (!Number.isFinite(amount)) return null
+        return { amount, currency, symbol, rawText: text, window: candidate }
+      }
+
+      /**
+       * 获取或更新特定 provider 的动态满额基准。
+       * - 保底基准：USD 为 5，其他（CNY）为 20。
+       * - 首次读取：Math.max(currentAmount, floor)。
+       * - 充值判定：当前金额明显大于上次记录余额（> lastBalance + 0.5）或超过基准时，更新基准为当前金额与保底值之较大者。
+       */
+      function resolveBalanceBaseline(provider, currentAmount, currency) {
+        if (typeof provider !== 'string' || provider === '' || !Number.isFinite(currentAmount)) return null
+        const floor = currency === 'USD' ? 5 : 20
+        const baselines = readQuotaBalanceBaselines()
+        const record = baselines[provider]
+        let baseline = floor
+
+        if (!record || typeof record.baseline !== 'number' || !Number.isFinite(record.baseline)) {
+          baseline = Math.max(currentAmount, floor)
+          baselines[provider] = { baseline, lastBalance: currentAmount, updatedAt: Date.now() }
+          writeQuotaBalanceBaselines(baselines)
+        } else {
+          baseline = record.baseline
+          const prevLast = typeof record.lastBalance === 'number' ? record.lastBalance : baseline
+          if (currentAmount > baseline || currentAmount > prevLast + 0.5) {
+            baseline = Math.max(currentAmount, floor)
+            baselines[provider] = { baseline, lastBalance: currentAmount, updatedAt: Date.now() }
+            writeQuotaBalanceBaselines(baselines)
+          } else if (Math.abs(currentAmount - prevLast) > 0.001) {
+            baselines[provider] = { ...record, lastBalance: currentAmount, updatedAt: Date.now() }
+            writeQuotaBalanceBaselines(baselines)
+          }
+        }
+
+        return baseline
+      }
+
+      /**
+       * 手动将当前金额标定为满额基准。
+       * 人工显式标定时以当前数值为准（仅防非正数），不强制叠加自动保底，确保点击即生效。
+       */
+      function setManualBalanceBaseline(provider, manualAmount, currency) {
+        if (typeof provider !== 'string' || provider === '' || !Number.isFinite(manualAmount) || manualAmount <= 0) return null
+        const baseline = Math.round(manualAmount * 100) / 100
+        const baselines = readQuotaBalanceBaselines()
+        baselines[provider] = { baseline, lastBalance: manualAmount, updatedAt: Date.now() }
+        writeQuotaBalanceBaselines(baselines)
+        return baseline
+      }
+
+      /**
+       * 计算油表状态（比例、档位、颜色、角度）。
+       */
+      function computeBalanceGaugeState(amount, baseline, currency) {
+        const safeBaseline = Number.isFinite(baseline) && baseline > 0 ? baseline : (currency === 'USD' ? 5 : 20)
+        const rawRatio = (amount / safeBaseline) * 100
+        const ratio = Math.min(100, Math.max(0, Math.round(rawRatio)))
+        const isExtremeLow = currency === 'USD' ? amount <= 0.5 : amount <= 2.0
+        const isComfortableHigh = currency === 'USD' ? amount >= 10.0 : amount >= 50.0
+
+        let gear = 'high'
+        let color = 'var(--dsw-alias-state-success-primary)'
+
+        if (amount <= 0 || isExtremeLow) {
+          gear = 'low'
+          color = 'var(--dsw-alias-state-error-primary)'
+        } else if (ratio < 20) {
+          if (isComfortableHigh) {
+            gear = 'mid'
+            color = 'var(--dsw-alias-state-warn-primary)'
+          } else {
+            gear = 'low'
+            color = 'var(--dsw-alias-state-error-primary)'
+          }
+        } else if (ratio < 50) {
+          gear = 'mid'
+          color = 'var(--dsw-alias-state-warn-primary)'
+        } else {
+          gear = 'high'
+          color = 'var(--dsw-alias-state-success-primary)'
+        }
+
+        const needleAngle = -90 + (ratio / 100) * 180
+
+        return { ratio, gear, color, needleAngle, baseline: safeBaseline, isExtremeLow, isComfortableHigh }
+      }
+  return { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot }
 }

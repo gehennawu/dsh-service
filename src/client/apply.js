@@ -301,7 +301,7 @@
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
-      const { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
+      const { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
       createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS })
 
       // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
@@ -757,6 +757,188 @@
         return groups
       }
 
+      // ─── 大号精细带指针油表（展开面板用，#todo-77）─────────────────
+      function QuotaBigFuelGauge(props) {
+        const { balanceInfo, gaugeState, onCalibrate, translate } = props
+        const [hoverCalibrate, setHoverCalibrate] = useState(false)
+        const angle = gaugeState.needleAngle
+        const symbol = balanceInfo.symbol
+        const baselineText = `${symbol}${gaugeState.baseline.toFixed(2)}`
+        const balanceText = balanceInfo.rawText
+
+        return React.createElement('div', {
+          'data-testid': 'quota-big-fuel-gauge',
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            marginTop: '8px',
+            marginBottom: '8px',
+            padding: '10px 4px 8px',
+            borderRadius: '10px',
+            background: 'var(--dsw-alias-surface-l1, rgba(127, 127, 127, 0.05))',
+            border: '1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.1))',
+          },
+        },
+          React.createElement('svg', {
+            viewBox: '0 0 180 96',
+            width: '180',
+            height: '96',
+            style: { overflow: 'visible', display: 'block' },
+            'aria-hidden': true,
+          },
+            // 底轨（全段背景）
+            React.createElement('path', {
+              d: 'M 25 82 A 65 65 0 0 1 155 82',
+              fill: 'none',
+              stroke: 'var(--dsw-alias-border-l2)',
+              strokeWidth: '7',
+              strokeLinecap: 'round',
+            }),
+            // 红色区段 (0% ~ 20%): 180° 到 144°
+            React.createElement('path', {
+              d: 'M 25 82 A 65 65 0 0 1 37.4 43.8',
+              fill: 'none',
+              stroke: 'var(--dsw-alias-state-error-primary)',
+              strokeWidth: '7',
+              strokeLinecap: 'round',
+            }),
+            // 黄色区段 (20% ~ 50%): 144° 到 90°
+            React.createElement('path', {
+              d: 'M 37.4 43.8 A 65 65 0 0 1 90 17',
+              fill: 'none',
+              stroke: 'var(--dsw-alias-state-warn-primary)',
+              strokeWidth: '7',
+            }),
+            // 绿色区段 (50% ~ 100%): 90° 到 0°
+            React.createElement('path', {
+              d: 'M 90 17 A 65 65 0 0 1 155 82',
+              fill: 'none',
+              stroke: 'var(--dsw-alias-state-success-primary)',
+              strokeWidth: '7',
+              strokeLinecap: 'round',
+            }),
+            // E 标
+            React.createElement('text', {
+              x: '18',
+              y: '86',
+              fontSize: '11',
+              fontWeight: '700',
+              fill: 'var(--dsw-alias-state-error-primary)',
+              textAnchor: 'end',
+            }, 'E'),
+            // F 标
+            React.createElement('text', {
+              x: '162',
+              y: '86',
+              fontSize: '11',
+              fontWeight: '700',
+              fill: 'var(--dsw-alias-state-success-primary)',
+              textAnchor: 'start',
+            }, 'F'),
+            // 50% 顶部中点刻度线
+            React.createElement('line', {
+              x1: '90', y1: '17', x2: '90', y2: '23',
+              stroke: 'var(--dsw-specific-menu)', strokeWidth: '1.5',
+            }),
+            // 轴心底座
+            React.createElement('circle', {
+              cx: '90',
+              cy: '82',
+              r: '7',
+              fill: 'var(--dsw-alias-label-secondary)',
+            }),
+            // 指针组（以 90px 82px 为中心平滑旋转）
+            React.createElement('g', {
+              style: {
+                transformOrigin: '90px 82px',
+                transform: `rotate(${angle}deg)`,
+                transition: 'transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1)',
+              },
+            },
+              React.createElement('line', {
+                x1: '90',
+                y1: '82',
+                x2: '90',
+                y2: '26',
+                stroke: 'var(--dsw-alias-label-primary)',
+                strokeWidth: '2.4',
+                strokeLinecap: 'round',
+              }),
+              React.createElement('circle', {
+                cx: '90',
+                cy: '27',
+                r: '1.8',
+                fill: gaugeState.color,
+              })
+            ),
+            // 轴心中心圆点
+            React.createElement('circle', {
+              cx: '90',
+              cy: '82',
+              r: '3.5',
+              fill: 'var(--dsw-specific-menu)',
+            })
+          ),
+          // 数值与满额基准
+          React.createElement('div', {
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              marginTop: '-6px',
+              gap: '2px',
+            },
+          },
+            React.createElement('div', {
+              'data-testid': 'quota-gauge-balance-text',
+              style: {
+                fontSize: '20px',
+                fontWeight: 700,
+                color: 'var(--dsw-alias-label-primary)',
+                lineHeight: '26px',
+              },
+            }, balanceText),
+            React.createElement('div', {
+              style: {
+                fontSize: '11px',
+                color: gaugeState.color,
+                fontWeight: 600,
+              },
+            }, translate('quota.gauge.ratio', { percent: gaugeState.ratio })),
+            React.createElement('div', {
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginTop: '4px',
+                fontSize: '11px',
+                color: 'var(--dsw-alias-label-tertiary)',
+              },
+            },
+              React.createElement('span', null, `${translate('quota.gauge.baseline')}: ${baselineText}`),
+              React.createElement('button', {
+                type: 'button',
+                'data-testid': 'quota-gauge-calibrate-btn',
+                title: translate('quota.gauge.calibrateTip', { amount: balanceText }),
+                onClick: onCalibrate,
+                onMouseEnter: () => setHoverCalibrate(true),
+                onMouseLeave: () => setHoverCalibrate(false),
+                style: {
+                  background: 'none',
+                  border: 'none',
+                  padding: '1px 4px',
+                  fontSize: '11px',
+                  color: 'var(--dsw-alias-brand-primary)',
+                  cursor: 'pointer',
+                  textDecoration: hoverCalibrate ? 'underline' : 'none',
+                },
+              }, `[${translate('quota.gauge.calibrate')}]`)
+            )
+          )
+        )
+      }
+
       function QuotaRing(props) {
         const translate = useTranslation()
         const [quota, setQuota] = useState(quotaStore.getSnapshot())
@@ -867,6 +1049,25 @@
         const pressureOf = (window) => (window.remaining === true ? 100 - window.percent : window.percent)
         const tightest = percentWindows.length > 0 ? percentWindows.reduce((best, current) => (pressureOf(current) > pressureOf(best) ? current : best), percentWindows[0]) : null
 
+        // 余额型渠道判定（v1.9.1+ #todo-77）：无百分比窗口，但包含数字金额文本窗口
+        const balanceInfo = tightest === null ? quotaExtractBalance(activeWindows) : null
+        const isBalanceMode = balanceInfo !== null
+        const [customBaseline, setCustomBaseline] = useState(null)
+        useEffect(() => {
+          setCustomBaseline(null)
+        }, [provider])
+        const currentBaseline = isBalanceMode
+          ? (customBaseline ?? resolveBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency))
+          : 0
+        const gaugeState = isBalanceMode
+          ? computeBalanceGaugeState(balanceInfo.amount, currentBaseline, balanceInfo.currency)
+          : null
+        const handleCalibrate = () => {
+          if (!isBalanceMode || !provider || !balanceInfo) return
+          const nextBaseline = setManualBalanceBaseline(provider, balanceInfo.amount, balanceInfo.currency)
+          if (nextBaseline !== null) setCustomBaseline(nextBaseline)
+        }
+
         useEffect(() => {
           setShowAll(false)
         }, [provider, currentModel, open])
@@ -908,7 +1109,9 @@
         const hasPercentWindow = tightest !== null
         const remainingBasis = !hasPercentWindow || tightest.remaining === true
         const usedWord = remainingBasis ? translate('quota.panel.remaining') : translate('quota.panel.used')
-        const color = (remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)'
+        const color = isBalanceMode
+          ? gaugeState.color
+          : ((remainingBasis ? percent <= 20 : percent >= 80) ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)')
         const radius = 5.5
         const circumference = 2 * Math.PI * radius
         const providerDisplayName = row?.displayName || provider
@@ -944,13 +1147,48 @@
             },
             style: { width: '28px', height: '28px', border: 'none', ...fullRound('999px'), background: 'transparent', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0, color: 'var(--dsw-alias-label-secondary)' },
           },
-          React.createElement('svg', { viewBox: '0 0 14 14', width: '14', height: '14', 'aria-hidden': true },
-            React.createElement('circle', { cx: '7', cy: '7', r: radius, fill: 'none', stroke: 'var(--dsw-alias-border-l3)', strokeWidth: '2' }),
-            React.createElement('circle', {
-              cx: '7', cy: '7', r: radius, fill: 'none', stroke: color, strokeWidth: '2', strokeLinecap: 'round',
-              strokeDasharray: `${(circumference * percent) / 100} ${circumference}`,
-              transform: 'rotate(-90 7 7)',
-            })))
+          isBalanceMode
+            ? React.createElement('svg', { viewBox: '0 0 20 20', width: '17', height: '17', 'aria-hidden': true, style: { display: 'block' } },
+                React.createElement('path', {
+                  d: 'M 3.8 15 A 7.5 7.5 0 1 1 16.2 15',
+                  fill: 'none',
+                  stroke: 'var(--dsw-alias-border-l3)',
+                  strokeWidth: '2.2',
+                  strokeLinecap: 'round',
+                }),
+                React.createElement('path', {
+                  d: gaugeState.gear === 'high'
+                    ? 'M 3.8 15 A 7.5 7.5 0 1 1 16.2 15'
+                    : gaugeState.gear === 'mid'
+                    ? 'M 3.8 15 A 7.5 7.5 0 0 1 10 3.0'
+                    : 'M 3.8 15 A 7.5 7.5 0 0 1 2.6 9.2',
+                  fill: 'none',
+                  stroke: gaugeState.color,
+                  strokeWidth: '2.2',
+                  strokeLinecap: 'round',
+                }),
+                React.createElement('circle', {
+                  cx: '10',
+                  cy: '10.5',
+                  r: '2.0',
+                  fill: gaugeState.color,
+                }),
+                React.createElement('line', {
+                  x1: '10',
+                  y1: '10.5',
+                  x2: gaugeState.gear === 'high' ? '13.9' : gaugeState.gear === 'mid' ? '10' : '6.1',
+                  y2: gaugeState.gear === 'high' ? '8.25' : gaugeState.gear === 'mid' ? '5.5' : '12.8',
+                  stroke: gaugeState.color,
+                  strokeWidth: '2.0',
+                  strokeLinecap: 'round',
+                }))
+            : React.createElement('svg', { viewBox: '0 0 14 14', width: '14', height: '14', 'aria-hidden': true },
+                React.createElement('circle', { cx: '7', cy: '7', r: radius, fill: 'none', stroke: 'var(--dsw-alias-border-l3)', strokeWidth: '2' }),
+                React.createElement('circle', {
+                  cx: '7', cy: '7', r: radius, fill: 'none', stroke: color, strokeWidth: '2', strokeLinecap: 'round',
+                  strokeDasharray: `${(circumference * percent) / 100} ${circumference}`,
+                  transform: 'rotate(-90 7 7)',
+                })))
         const panelNode = open ? React.createElement('div', {
           ref: panelRef,
           role: 'dialog',
@@ -963,7 +1201,16 @@
           React.createElement('div', { style: { display: 'flex', alignItems: 'baseline', gap: '6px' } },
             React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, usedWord),
             React.createElement('span', { style: { marginLeft: 'auto', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, providerTag)),
-          React.createElement('div', { style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
+          ...(isBalanceMode
+            ? [React.createElement(QuotaBigFuelGauge, {
+                key: 'panel-big-fuel-gauge',
+                balanceInfo,
+                gaugeState,
+                onCalibrate: handleCalibrate,
+                translate,
+              })]
+            : []),
+          React.createElement('div', { style: { marginTop: isBalanceMode ? '4px' : '10px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             (() => {
               const ringGroups = (row?.kind === 'cliproxy' && (showAll || family === null)) ? groupWindowsByFamily(activeWindows) : null
               if (ringGroups && ringGroups.length > 1) {
