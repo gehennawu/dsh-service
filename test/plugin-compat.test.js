@@ -326,3 +326,43 @@ test('pluginCompatCheckItem derives warning status and five-segment detail', () 
   assert.deepEqual(pluginCompatCheckItem({ scanned: 4, issues: [], soft: [], declaredOnly: [], unknown: [{ moduleName: 'x', reason: 'too-large' }] }), { id: 'plugin-compat', status: 'ok', detail: '4:0:0:1:0' }, 'unscanned alone is not a compatibility warning')
   assert.deepEqual(pluginCompatCheckItem({ scanned: 6, issues: [], soft: [], declaredOnly: [], unknown: [] }), { id: 'plugin-compat', status: 'ok', detail: '6:0:0:0:0' })
 })
+test('collectPluginCompat tolerates real-host strict ctx where undeclared property access throws', async () => {
+  // 真机 Cordis ctx 是服务代理：未提供服务的属性直读（如 ctx.dshVersion）会抛
+  // cannot get property "<prop>" without inject。v1.9.1 曾在 collectPluginCompat 里
+  // 直读 ctx.dshVersion，真机上整个检查被降级为 unavailable（「宿主未暴露 Loader」），
+  // 而单测的普通对象 ctx 读到 undefined 不抛错——漏掉了这条真机语义。
+  const createHostLikeCtx = (loader) => {
+    const base = {
+      get(service) { return service === 'loader' ? loader : undefined },
+      baseUrl: undefined, // Context 实体字段：恒存在，读到 undefined 不抛错
+    }
+    return new Proxy(base, {
+      get(target, prop) {
+        if (typeof prop === 'symbol' || prop in target) return Reflect.get(target, prop)
+        throw new Error(`cannot get property "${String(prop)}" without inject`)
+      },
+    })
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), 'plugin-compat-strict-ctx-'))
+  try {
+    await mkdir(join(dir, 'node_modules', 'good-pkg'), { recursive: true })
+    await writeFile(join(dir, 'node_modules', 'good-pkg', 'package.json'), JSON.stringify({
+      name: 'good-pkg',
+      main: './index.js',
+    }))
+    await writeFile(join(dir, 'node_modules', 'good-pkg', 'index.js'), 'export const ok = true')
+    const requireFn = (specifier) => join(dir, 'node_modules', specifier)
+    const loader = {
+      ctx: { baseUrl: `file://${dir}/` },
+      entries: () => [{ id: 'e1', disabled: false, options: { name: 'good-pkg' }, fiber: { state: 2 } }],
+    }
+    // noCache：进程级 SCAN_CACHE 以 moduleName 为键，前面的用例已缓存同名 good-pkg 的命中结果。
+    const report = await collectPluginCompat(createHostLikeCtx(loader), { requireFn, noCache: true })
+    assert.equal(report.available, true)
+    assert.equal(report.scanned, 1)
+    assert.deepEqual(report.issues, [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

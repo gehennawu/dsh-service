@@ -460,26 +460,15 @@ export function enrichBreak(breakId, dshVersion) {
 /**
  * 收集启用插件的兼容性扫描结果（顺序 = loader 条目序，稳定可测）。
  * @param ctx 宿主插件上下文（ctx.get('loader')）
- * @param options 透传 scanPluginCompatibility 选项（requireFn/maxFileBytes/dshVersion）与缓存开关（noCache）
- * @returns { available, scanned, dshVersion, issues: [{moduleName, breaks[], details[]}], soft: [{moduleName, breaks[], details[]}], declaredOnly: [{moduleName, breaks[], details[]}], unknown: [{moduleName, reason}] }
+ * @param options 透传 scanPluginCompatibility 选项（requireFn/maxFileBytes）与缓存开关（noCache）
+ * @returns { available, scanned, issues: [{moduleName, breaks[]}], soft: [{moduleName, breaks[]}], declaredOnly: [{moduleName, breaks[]}], unknown: [{moduleName, reason}] }
  */
 export async function collectPluginCompat(ctx, options = {}) {
   const loader = ctx.get('loader')
   if (loader === undefined) return { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] }
-  let currentDshVersion = options.dshVersion ?? ctx.dshVersion
-  if (!currentDshVersion) {
-    try {
-      const { createRequire } = await import('node:module')
-      currentDshVersion = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
-    } catch (_) {
-      try {
-        const { readFileSync } = await import('node:fs')
-        currentDshVersion = JSON.parse(readFileSync('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json', 'utf8')).version
-      } catch (__) {
-        currentDshVersion = 'unknown'
-      }
-    }
-  }
+  // 真机 ctx 是服务代理：未提供服务的属性直读（ctx.dshVersion 之类）会抛
+  // cannot get property "<prop>" without inject，让整个检查被降级 unavailable。
+  // 本函数只允许 ctx.get('loader') 与 ctx.baseUrl（Context 实体字段，恒存在）。
   let requireFn = options.requireFn
   if (typeof requireFn !== 'function') {
     const baseUrl = typeof loader.ctx?.baseUrl === 'string' && loader.ctx.baseUrl.length > 0
