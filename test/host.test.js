@@ -3745,6 +3745,51 @@ test('expired reset cards are pruned from disk on read, and soon-expiring cards 
   ])
 })
 
+test('health prunes an expired reset card when the config TTL elapses without an mtime change', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-ttl-expiry-home-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  const base = Date.now()
+  await writeFile(storedPath, JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [
+      // 4 秒后到期的精确时刻卡（完整 ISO 串，避开 datetime-local 的分钟截断）：
+      // 首次加载未过期且在 24h 窗口内 → 提醒；mock 时间推进 6 秒后既过期、又跨过 5s 配置 TTL。
+      { id: 'dying', provider: 'zai-coding-cn', label: '临期卡', expiresAt: new Date(base + 4000).toISOString() },
+      // 远期卡：prune 后必须继续留在磁盘与配置里。
+      { id: 'keep', provider: 'zai-coding-cn', label: '远期卡', expiresAt: '2099-01-01' },
+    ],
+  }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // mock 时钟：缓存的 TTL 判定与到期判定都在调用点读 Date.now，推进 mock 即可跨过两者，
+  // 文件 mtime 保持不变——这正是「TTL 到期但配置没被改写」的读路径。
+  const realNow = Date.now
+  let mockNow = base
+  Date.now = () => mockNow
+  try {
+    // 第一次 health：TTL 首载（或快路径），卡未过期 → 提醒含临期卡。
+    const first = await host.handler('health', {})
+    assert.equal(first.ok, true)
+    assert.deepEqual(first.value.resetCardsExpiringSoon, [{ provider: 'zai-coding-cn', label: '临期卡' }])
+    // 推进 6 秒（> 5s TTL 且已跨过到期时刻）：慢路径 stat 后 mtime 未变、不重新加载，
+    // 该分支同样要 prune——否则停在概览页只靠 health 轮询时，运行期到点的卡清不掉。
+    mockNow += 6000
+    const second = await host.handler('health', {})
+    assert.deepEqual(second.value.resetCardsExpiringSoon, [])
+    // 内存剔除后落盘：磁盘只剩远期卡。
+    let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+    assert.deepEqual(config.resetCards.map((card) => card.id), ['keep'])
+    // 紧随的第三次 health 走 TTL 快路径，两条路都保持干净。
+    const third = await host.handler('health', {})
+    assert.deepEqual(third.value.resetCardsExpiringSoon, [])
+    config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+    assert.deepEqual(config.resetCards.map((card) => card.id), ['keep'])
+  } finally {
+    Date.now = realNow
+  }
+})
+
 test('quota-reset-card stores an optional account scope so one CLIProxyAPI provider can hold per-account cards', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-rc-account-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

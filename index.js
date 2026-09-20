@@ -2733,8 +2733,9 @@ async function collectHealth(ctx) {
 const QUOTA_RESET_CARD_EXPIRING_WINDOW_MS = 24 * 60 * 60 * 1000
 
 /**
- * 剩余 ≤24h 到期的重置卡清单（概览 info 提示的数据源）。已过期的卡读路径已被剔除，
- * 不会出现在这里。返回 [{ provider, label }]；无命中返回空数组。
+ * 剩余 ≤24h 到期的重置卡清单（概览 info 提示的数据源）。读路径的 prune 正常时不会剩下
+ * 过期卡，这里再防御性排除一次（at < now 与 isResetCardExpired 同口径）——宁可少提示，
+ * 绝不把已过期的卡当「即将到期」展示。返回 [{ provider, label }]；无命中返回空数组。
  */
 async function collectResetCardsExpiringSoon(refreshQuotaConfigCache, now = Date.now()) {
   let config
@@ -2749,7 +2750,7 @@ async function collectResetCardsExpiringSoon(refreshQuotaConfigCache, now = Date
   const hits = []
   for (const card of cards) {
     const at = resetCardExpiryMs(card?.expiresAt)
-    if (at === null || at > horizon) continue
+    if (at === null || at < now || at > horizon) continue
     hits.push({
       provider: typeof card.provider === 'string' ? card.provider : '',
       label: typeof card.label === 'string' ? card.label : '',
@@ -4954,8 +4955,9 @@ function apply(ctx) {
   let quotaConfigMtimeMs = 0
   const quotaConfigPath = join(dshHome, QUOTA_CONFIG_FILE)
   // 过期重置卡自动移除：剔除内存快照里的过期条目，有变更才落盘（避免每次读都写文件）。
-  // 读失败不影响本次结果——内存已剔除，下次读再试。TTL 快路径与重新加载两条路都要过这关，
-  // 否则「打开面板后一直停在同一页」时，运行期到点的卡不会被清掉。
+  // 读失败不影响本次结果——内存已剔除，下次读再试。TTL 快路径、TTL 到期后 mtime 未变、
+  // 重新加载三条路都要过这关：mtime 未变就永远不会重新加载，缺了这一路，「停在概览页
+  // 只靠 health 轮询」时运行期到点的卡在内存里清不掉。
   const pruneExpiredQuotaResetCards = async () => {
     if (!pruneExpiredResetCards(quotaConfig)) return
     try {
@@ -4987,8 +4989,9 @@ function apply(ctx) {
         quotaConfig = await loadQuotaConfig(dshHome)
         quotaConfigLoaded = true
         quotaConfigMtimeMs = mtimeMs
-        await pruneExpiredQuotaResetCards()
       }
+      // 慢路径无论是否重新加载都 prune：mtime 未变时不重新加载，prune 是这条路上唯一的清理点。
+      await pruneExpiredQuotaResetCards()
       return quotaConfig
     }).finally(() => { quotaConfigLoadPromise = undefined })
     return quotaConfigLoadPromise
