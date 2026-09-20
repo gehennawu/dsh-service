@@ -8075,6 +8075,25 @@ test('unified config：额度卡排序区块读写与设置栏标签区块互不
   assert.deepEqual(afterReset.settingsNav, { order: ['general', 'dsh-service'], hidden: ['plugins'] })
 })
 
+test('unified config：峰谷节假日不再有配置区块（判定层只认构建期内联的生成表）', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-holidays-config-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome } })
+
+  // 月历补丁层取消后 `quotaHolidays` 已从白名单移除：读写一律 invalid-section，
+  // 不再有专门的日期校验与 invalid-holiday-date 信封。
+  assert.deepEqual(await host.handler('config-get', { section: 'quotaHolidays' }), { ok: false, error: 'invalid-section' })
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaHolidays', value: { added: ['2027-10-01'], removed: [] } }), { ok: false, error: 'invalid-section' })
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaHolidays', value: null }), { ok: false, error: 'invalid-section' })
+
+  // 其他区块不受牵连；配置文件也不应凭空出现 quotaHolidays 键。
+  assert.deepEqual(await host.handler('config-set', { section: 'quotaCards', value: { order: ['kimi-row'], hidden: [] } }), { ok: true, value: { order: ['kimi-row'], hidden: [] } })
+  const configFile = join(dshHome, 'dsh-service-config.json')
+  const diskRaw = JSON.parse(await readFile(configFile, 'utf8'))
+  assert.equal(diskRaw.quotaHolidays, undefined)
+  assert.deepEqual(diskRaw.quotaCards, { order: ['kimi-row'], hidden: [] })
+})
+
 test('unified config：并发写串行化——两台设备同时迁移不丢区块', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-unified-config-race-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

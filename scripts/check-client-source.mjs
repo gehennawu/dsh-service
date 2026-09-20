@@ -67,8 +67,8 @@ export const ALLOWED_GLOBALS = Object.freeze([
   // ── DOM / 浏览器宿主 ──
   'window', 'document', 'getComputedStyle', 'MutationObserver', 'ResizeObserver',
   'Notification', 'FileReader', 'Node',
-  // ── 构建期内联（src/model-icons.generated.js，见 scripts/build-client.mjs）──
-  'MODEL_ICON_DATA', 'MODEL_ICON_PROVIDERS', 'MODEL_ICON_PREFIXES',
+  // ── 构建期内联（src/model-icons.generated.js、src/holidays.generated.js，见 scripts/build-client.mjs）──
+  'MODEL_ICON_DATA', 'MODEL_ICON_PROVIDERS', 'MODEL_ICON_PREFIXES', 'HOLIDAY_DATA',
 ])
 
 /** 只对以此开头的函数做「返回面 vs 解构面」检查：分片工厂的命名约定。 */

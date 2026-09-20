@@ -5068,8 +5068,10 @@ test('deepseek balance card shows a peak/off-peak timeline following Beijing tim
     assert.ok(renderer.hasTest('quota-peak-now'))
     assert.equal(renderer.hasTest('quota-peak-dot'), false)
     assert.equal(renderer.findAllByTestIdPrefix('quota-peak-axis-').length, 0)
-    // 卡片内带规则说明行（时间措辞为「9点–12点」式，用户点名）。
-    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。/)
+    // 卡片内带规则说明行（官方定价页口径：高峰时段不含中国法定节假日，其余时段含节假日全天）。
+    assert.match(renderer.text('settings.section'), /空闲时段价格为高峰时段价格的一半。高峰时段：北京时间周一至周五（不含中国法定节假日）09:00–12:00、14:00–18:00；其余时段，包括周末及中国法定节假日全天均为空闲时段。/)
+    // 数据覆盖 2026 年（生成表含 2025/2026），故不出现降级提示。
+    assert.equal(renderer.hasTest('quota-peak-caption-degraded'), false)
 
     // 切到周六 15:00 北京时间（UTC 07:00）：全天空闲——单条绿色分段、圆点 62.5%、下一个换挡是周一 09:00。
     Date.now = () => Date.UTC(2026, 0, 10, 7, 0)
@@ -5154,6 +5156,102 @@ test('zai-coding-cn card shows its own peak/off-peak timeline (weekdays 14:00–
     assert.equal(idleSegments[0].props.style.width, '20%') // 60 / 300
     assert.equal(idleSegments[1].props.style.width, '80%') // 240 / 300
     assert.match(String(renderer.findByTestId('quota-peak-next').children[0]), /14:00 转高峰（1 小时后）/)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('deepseek peak/off-peak treats Chinese public holidays as all-day off-peak (National Day long break)', async () => {
+  // 官方口径：高峰 = 周一至周五**不含中国法定节假日**；周末与节假日全天空闲；调休上班的
+  // 周末仍算空闲。2026 年国庆 10/1–10/7 连休，且 10/10（周六）是调休上班日。
+  // 本用例同时钉住旧实现的一条静默缺陷：长假中段向后扫 7 天取不到任何翻转，倒计时整块消失。
+  const realNow = Date.now
+  try {
+    const quarantine = async (ms) => {
+      Date.now = () => ms
+      const renderer = createRenderer(async (channel, endpoint) => {
+        if (endpoint === 'version') return { ok: true, value: { current: '1.10.0', instanceId: 'x' } }
+        if (endpoint === 'quota') {
+          return {
+            ok: true,
+            value: {
+              providers: [{ provider: 'ds-official', displayName: 'DeepSeek 官方', adapted: true, kind: 'deepseek', refreshing: false, status: 'ok', windows: [{ id: 'balance-cny', text: '¥110.00', label: 'CNY', kindKey: 'balance' }], fetchedAt: ms }],
+              serverTime: ms,
+            },
+          }
+        }
+        throw new Error(`unexpected endpoint ${endpoint}`)
+      })
+      await renderer.load()
+      await renderer.findButton('额度查询').props.onClick()
+      await renderer.flush()
+      return renderer
+    }
+
+    // ① 国庆当天（2026-10-01 周四 11:00 北京 = UTC 03:00）：工作日但属法定节假日 → 空闲。
+    //    旧实现只看星期，这里会是高峰。
+    const holiday = await quarantine(Date.UTC(2026, 9, 1, 3, 0))
+    assert.equal(holiday.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    // 状态徽标是普通空闲文案（假期名徽标已随月历设置一并取消：节假日只进判定层，不做专门显示）。
+    assert.match(holiday.text('settings.section'), /当前空闲时段 · 半价计费/)
+    // 下一次换挡是 10/8（周四）09:00 转高峰——假期结束后的首个工作日高峰边界。
+    assert.match(String(holiday.findByTestId('quota-peak-next').children[0]), /09:00 转高峰（6 天 22 小时后）/)
+
+    // ② 长假中段（2026-10-04 周日 12:00 北京 = UTC 04:00）：倒计时**必须仍然存在**。
+    //    这是旧实现（dayOffset <= 6 的魔法上界）会静默丢失换挡行的场景。
+    const midBreak = await quarantine(Date.UTC(2026, 9, 4, 4, 0))
+    assert.equal(midBreak.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    assert.ok(midBreak.hasTest('quota-peak-next'), 'long holiday must still render the next switch-over line')
+    assert.match(String(midBreak.findByTestId('quota-peak-next').children[0]), /09:00 转高峰/)
+
+    // ③ 调休上班的周六（2026-10-10 = UTC 02:00）：仍为全天空闲（不因「上班」转忙时）。
+    const makeupSaturday = await quarantine(Date.UTC(2026, 9, 10, 2, 0))
+    assert.equal(makeupSaturday.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+
+    // ④ 假期前一工作日（2026-09-30 周三 15:00 = UTC 07:00）：仍按分钟区间判高峰，
+    //    证明节假日维度没有把普通工作日的判定一起改掉。
+    const beforeHoliday = await quarantine(Date.UTC(2026, 8, 30, 7, 0))
+    assert.equal(beforeHoliday.findByTestId('quota-peak-state').props['data-in-peak'], 'true')
+
+    // ⑤ 数据未覆盖年份（2027-01-04 周一 11:00 北京 = UTC 03:00）：退回纯星期判定（高峰），
+    //    并显示降级提示——绝不静默把「没数据」当成「没假期」。
+    const uncovered = await quarantine(Date.UTC(2027, 0, 4, 3, 0))
+    assert.equal(uncovered.findByTestId('quota-peak-state').props['data-in-peak'], 'true')
+    const degraded = uncovered.findByTestId('quota-peak-caption-degraded')
+    assert.match(String(degraded.children[0]), /暂未收录 2027 年的中国法定节假日安排/)
+    // 降级文案必须带处置指引：出现即 ≈ 用户插件过期，更新是唯一自助 remedy。
+    assert.match(String(degraded.children[0]), /更新插件后即可自动收录当年安排/)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('zai-coding-cn is unaffected by Chinese public holidays (weekday-only rule)', async () => {
+  // GLM Coding Plan 官方口径只看星期（周一至周五 14:00–18:00），**没有**节假日一说。
+  // 两家共用判定助手，所以这条对照用例是防止「节假日」被误扩到 GLM 的护栏。
+  const realNow = Date.now
+  Date.now = () => Date.UTC(2026, 9, 1, 7, 0) // 2026-10-01 周四 15:00 北京（国庆当天）
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      if (endpoint === 'version') return { ok: true, value: { current: '1.10.0', instanceId: 'x' } }
+      if (endpoint === 'quota') {
+        return {
+          ok: true,
+          value: {
+            providers: [{ provider: 'zai-row', displayName: '智谱', adapted: true, kind: 'zai-coding-cn', refreshing: false, status: 'ok', windows: [{ id: 'rolling', percent: 11 }], fetchedAt: Date.now() }],
+            serverTime: Date.now(),
+          },
+        }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+    // 国庆当天 15:00 落在 GLM 的高峰区间内 → 仍判高峰；且全程不出现任何节假日语境。
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'true')
+    assert.doesNotMatch(renderer.text('settings.section'), /假期/)
+    assert.equal(renderer.hasTest('quota-peak-caption-degraded'), false)
   } finally {
     Date.now = realNow
   }
@@ -12168,5 +12266,45 @@ test('model provider icons: CLIProxyAPI icon displays on composer seat only when
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
+  }
+})
+
+test('holiday calendar settings are removed entirely; the generated table only drives the peak determination', async () => {
+  // 月历设置与显示整层取消：额度页不再渲染任何节假日入口，也不再发生 quotaHolidays 配置
+  // 往返；节假日只作为 deepseek 峰谷判定的内部维度。历史遗留的本地补丁键必须被无视——
+  // 国庆当天不得因为旧 removed 名单被翻回高峰。
+  const realNow = Date.now
+  Date.now = () => Date.UTC(2026, 9, 1, 3, 0) // 2026-10-01 周四 11:00 北京（国庆当天）
+  try {
+    const configCalls = []
+    const renderer = createRenderer(async (channel, endpoint, payload) => {
+      if (endpoint === 'version') return { ok: true, value: { current: '1.10.0', instanceId: 'x' } }
+      if (endpoint === 'config-get' || endpoint === 'config-set') { configCalls.push(payload); return { ok: true, value: null } }
+      if (endpoint === 'quota') {
+        return {
+          ok: true,
+          value: {
+            providers: [{ provider: 'ds-official', displayName: 'DeepSeek 官方', adapted: true, kind: 'deepseek', refreshing: false, status: 'ok', windows: [{ id: 'balance-cny', text: '¥110.00', label: 'CNY', kindKey: 'balance' }], fetchedAt: Date.now() }],
+            serverTime: Date.now(),
+          },
+        }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    }, {
+      initialStorage: { 'dsh-service-quota-holiday-patch': JSON.stringify({ added: ['2026-10-12'], removed: ['2026-10-01'] }) },
+    })
+    await renderer.load()
+    await renderer.findButton('额度查询').props.onClick()
+    await renderer.flush()
+
+    // 任何节假日设置入口都不复存在。
+    assert.equal(renderer.hasTest('quota-holidays-toggle'), false)
+    assert.equal(renderer.hasTest('quota-holidays-calendar'), false)
+    // 判定层保留：国庆当天 11:00 仍判空闲，且旧补丁的 removed 不再生效。
+    assert.equal(renderer.findByTestId('quota-peak-state').props['data-in-peak'], 'false')
+    // 零节假日配置往返：不再读写 quotaHolidays 区块。
+    assert.equal(configCalls.filter((payload) => payload?.section === 'quotaHolidays').length, 0)
+  } finally {
+    Date.now = realNow
   }
 })

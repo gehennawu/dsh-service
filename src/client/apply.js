@@ -310,11 +310,17 @@
       // nowMs 平移 8h 后读 UTC 字段即得。segments = 高峰分钟区间（当日分钟数，北京零点起算），
       // 仅周一至周五生效；两家周六日全天空闲。captionKey 指向各自的规则说明词典键。
       // 用 null 原型表防 kind 撞上 Object.prototype 键名（constructor 等）。
+      //
+      // holidays：**是否为该 kind 叠加「中国法定节假日全天算空闲」**。只有 DeepSeek 官方定价页
+      // 有此口径（脚注：北京时间周一至周五「不含中国法定节假日」9:00-12:00、14:00-18:00 为高峰）；
+      // 智谱 GLM Coding Plan 的官方口径只看星期（每周一至周五 14:00-18:00），**不得**跟着变。
+      // 调休上班的周末仍算空闲是两家共同的既有行为：判定从不查「工作日」概念，只在周一至周五
+      // 里剔除法定节假日，故本次唯一增量是「工作日里的假期整天转空闲」，不存在反向案例。
       const QUOTA_PEAK_SCHEDULES = Object.assign(Object.create(null), {
-        // DeepSeek 开放平台：高峰 = 9:00–12:00、14:00–18:00（官方定价页）。
-        deepseek: { segments: [[540, 720], [840, 1080]], captionKey: 'quota.peak.caption' },
+        // DeepSeek 开放平台：高峰 = 9:00–12:00、14:00–18:00，**不含中国法定节假日**（官方定价页）。
+        deepseek: { segments: [[540, 720], [840, 1080]], captionKey: 'quota.peak.caption', holidays: true },
         // 智谱 GLM Coding Plan：高峰 = 14:00–18:00（官方套餐概览：非高峰时段模型调用按基础积分的 50% 抵扣）。
-        'zai-coding-cn': { segments: [[840, 1080]], captionKey: 'quota.peak.caption.zai' },
+        'zai-coding-cn': { segments: [[840, 1080]], captionKey: 'quota.peak.caption.zai', holidays: false },
       })
       const QUOTA_PEAK_COLOR = '#f0952f'
       const QUOTA_PEAK_IDLE_COLOR = 'var(--dsw-alias-state-success-primary)'
@@ -326,26 +332,76 @@
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         return { dayIndex: shifted.getUTCDay(), minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes() }
       }
-      function quotaIsPeakMinute(segments, dayIndex, minutesOfDay) {
-        if (dayIndex === 0 || dayIndex === 6) return false
-        return segments.some(([start, end]) => minutesOfDay >= start && minutesOfDay < end)
+      // 峰谷扫描的最大天数：**由数据覆盖范围推导**而不是固定魔法数——长假可达 9 天
+      // （2026 春节 2/15–2/23），旧的「扫 7 天必然覆盖」不变量在有节假日维度后不再成立，
+      // 会让 flips 为空、倒计时整块不渲染（静默缺失）。生成表里最晚覆盖年份的年末
+      // + 元旦高峰边界所需天数，并保证退化为纯星期判定时仍 ≥ 8（覆盖「周五最后一个
+      // 边界点后下个翻转在周一」）。
+      const QUOTA_PEAK_SCAN_DAYS = (() => {
+        let latest = 0
+        const years = Array.isArray(HOLIDAY_DATA?.years) ? HOLIDAY_DATA.years : []
+        for (const year of years) {
+          const value = Number(year)
+          if (Number.isFinite(value) && value > latest) latest = value
+        }
+        if (latest === 0) return 8
+        // 覆盖年全年 + 跨年到下一个元旦高峰边界（约 8 天）留足余量。
+        return Math.max(8, Math.ceil((new Date(Date.UTC(latest, 11, 31)).getTime() - Date.now()) / 86400000) + 8)
+      })()
+      // ── 节假日集合：生成表（构建期内联，见 scripts/generate-holidays.mjs），唯一事实源 ──
+      // 生成物只含**已由国务院公告确认**的年份。未覆盖年份**不查节假日**（退回纯星期判定）
+      // ——静态表空数据必须表现为「没有信息」而不是「没有假期」，否则等于把未知伪装成已知；
+      // 降级状态由说明行的附加提示说出来。曾有「月历点选即改」的配置补丁层，已整层取消：
+      // 判定只认生成表，不再读任何用户配置（历史遗留的补丁键/配置区块被直接无视）。
+      const quotaHolidayYears = new Set(Array.isArray(HOLIDAY_DATA?.years) ? HOLIDAY_DATA.years.map((year) => String(year)) : [])
+      const quotaHolidayGenerated = HOLIDAY_DATA?.offDays && typeof HOLIDAY_DATA.offDays === 'object' ? HOLIDAY_DATA.offDays : {}
+      /** 北京日历日的 `YYYY-MM-DD`。 */
+      function beijingDateKey(nowMs) {
+        const shifted = new Date(nowMs + 8 * 3600 * 1000)
+        const digits = (value) => String(value).padStart(2, '0')
+        return `${shifted.getUTCFullYear()}-${digits(shifted.getUTCMonth() + 1)}-${digits(shifted.getUTCDate())}`
+      }
+      /** 该北京年是否有节假日数据（生成表覆盖年）。无数据 → 退回纯星期判定，
+       * 并由说明行的降级提示把「这是估算」说出来。 */
+      function quotaHolidayDataCovers(yearKey) {
+        return quotaHolidayYears.has(yearKey)
+      }
+      /** 该北京日历日是否算放假日（生成表说了算）。 */
+      function quotaIsHolidayDate(dateKey) {
+        return typeof quotaHolidayGenerated[dateKey] === 'string'
+      }
+      function quotaIsPeakMinute(schedule, nowMs) {
+        const civil = beijingCivilParts(nowMs)
+        if (civil.dayIndex === 0 || civil.dayIndex === 6) return false
+        // 法定节假日全天算空闲：只在数据覆盖该年时才生效——未覆盖年份退回星期判定，并由
+        // 卡片上的降级提示把「这是估算」说出来（绝不静默显示一个可能错的忙/闲）。
+        if (schedule.holidays === true) {
+          const dateKey = beijingDateKey(nowMs)
+          if (quotaHolidayDataCovers(dateKey.slice(0, 4)) && quotaIsHolidayDate(dateKey)) return false
+        }
+        return schedule.segments.some(([start, end]) => civil.minutesOfDay >= start && civil.minutesOfDay < end)
       }
       /** 从当前时刻起收集前 count 个峰谷切换时刻（毫秒，升序）。
-       * 工作日的高峰边界点必为状态翻转；周末无边界。最坏情形（周五最后一个边界点之后）下个翻转在
-       * 周一，扫 7 天必然覆盖（现有调用最多取 2 个）。 */
-      function quotaUpcomingFlips(segments, nowMs, count) {
+       * 候选翻转点 = 当日高峰边界 + 次日的零点，逐点比较状态是否翻转——周末与法定节假日
+       * 没有边界点，其「整段空闲」由零点处的状态比较兜住。扫描上界 QUOTA_PEAK_SCAN_DAYS
+       * 覆盖最长假期（9 天），长假期间不会再出现 flips 为空、倒计时整块消失的情形。 */
+      function quotaUpcomingFlips(schedule, nowMs, count) {
         const shifted = new Date(nowMs + 8 * 3600 * 1000)
         shifted.setUTCHours(0, 0, 0, 0)
         const beijingDayStart = shifted.getTime() - 8 * 3600 * 1000
+        const boundariesPerDay = schedule.segments.flat()
         const flips = []
-        for (let dayOffset = 0; dayOffset <= 6 && flips.length < count; dayOffset++) {
+        let previous = quotaIsPeakMinute(schedule, nowMs)
+        for (let dayOffset = 0; dayOffset <= QUOTA_PEAK_SCAN_DAYS && flips.length < count; dayOffset++) {
           const dayStart = beijingDayStart + dayOffset * 86400000
-          const dayIndex = new Date(dayStart + 8 * 3600 * 1000).getUTCDay()
-          if (dayIndex === 0 || dayIndex === 6) continue
-          for (const minute of segments.flat()) {
-            const candidate = dayStart + minute * 60000
+          const candidates = boundariesPerDay.map((minute) => dayStart + minute * 60000)
+          candidates.push(dayStart + 86400000)
+          for (const candidate of candidates) {
             if (candidate <= nowMs) continue
+            const current = quotaIsPeakMinute(schedule, candidate)
+            if (current === previous) continue
             flips.push(candidate)
+            previous = current
             if (flips.length >= count) return flips
           }
         }
@@ -368,7 +424,9 @@
        * 当前状态徽标 + 数字钟换挡倒计时、两段式峰谷色带（橙=高峰、绿=空闲；当前时段剩余 +
        * 下一个相反时段，可跨天）、左缘细标线即当前时刻，规则说明行可选。额度卡与圆环面板共用，
        * 圆环面板窄所以不渲染说明行（showCaption:false）。schedule 必传（由 quotaPeakScheduleFor 判定）。
-       * 时刻推进用 ctx.timer 自续链而非 setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。 */
+       * 时刻推进用 ctx.timer 自续链而非 setInterval：测试桩里不会留真实定时器挂住进程，卸载即断链。
+       * 说明行在节假日数据未覆盖当前年份时追加一条降级提示——「按工作日估算」必须让用户看见，
+       * 否则等于把一次可能算错的忙/闲伪装成确定结论。 */
       function QuotaPeakTimeline({ showCaption, schedule }) {
         const translate = useTranslation()
         // 测试桩的 useState 不调用函数式初始化器，直接传值（多算一次 Date.now 无副作用）。
@@ -389,11 +447,16 @@
             if (disposer !== null && disposer !== undefined) disposer()
           }
         }, [])
-        const civil = beijingCivilParts(now)
-        const inPeak = quotaIsPeakMinute(schedule.segments, civil.dayIndex, civil.minutesOfDay)
-        const flips = quotaUpcomingFlips(schedule.segments, now, 2)
+        const inPeak = quotaIsPeakMinute(schedule, now)
+        const flips = quotaUpcomingFlips(schedule, now, 2)
         const nextFlip = flips[0] ?? null
         const accentColor = inPeak ? QUOTA_PEAK_COLOR : QUOTA_PEAK_IDLE_COLOR
+        const stateLabel = translate(inPeak ? 'quota.peak.nowPeak' : 'quota.peak.nowIdle')
+        // 降级提示：节假日维度只属于声明了 holidays 的 kind（当前仅 deepseek），且只在数据
+        // 覆盖当前北京年时生效；未覆盖年份忙/闲退回纯星期判定，必须说清这是估算。
+        // （节假日不做任何专门显示——假期语境只存在于说明行，判定层静默生效。）
+        const holidayDateKey = beijingDateKey(now)
+        const degraded = schedule.holidays === true && !quotaHolidayDataCovers(holidayDateKey.slice(0, 4))
         // pctOf 复用 /1440 归一：传入「权重占比 ×1440」得到百分比（保留 4 位小数）。
         const pctOf = (minute) => Math.round((minute / 1440) * 1000000) / 10000
         return React.createElement('div', { 'data-testid': 'quota-peak-timeline', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
@@ -405,7 +468,7 @@
               style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', lineHeight: '16px', color: accentColor, whiteSpace: 'nowrap', flexShrink: 0 },
             },
             React.createElement('span', { style: { width: '7px', height: '7px', ...fullRound('50%'), background: accentColor, flexShrink: 0 } }),
-            translate(inPeak ? 'quota.peak.nowPeak' : 'quota.peak.nowIdle')),
+            stateLabel),
             nextFlip !== null ? React.createElement('span', {
               'data-testid': 'quota-peak-next',
               style: { marginLeft: 'auto', fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
@@ -441,7 +504,11 @@
           showCaption === true ? React.createElement('div', {
             'data-testid': 'quota-peak-caption',
             style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
-          }, translate(schedule.captionKey)) : null)
+          }, translate(schedule.captionKey)) : null,
+          showCaption === true && degraded ? React.createElement('div', {
+            'data-testid': 'quota-peak-caption-degraded',
+            style: { fontSize: '11px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' },
+          }, translate('quota.peak.caption.degraded', { year: holidayDateKey.slice(0, 4) })) : null)
       }
 
       /**

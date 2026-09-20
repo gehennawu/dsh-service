@@ -119,7 +119,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 
 | Provider | Data source |
 | --- | --- |
-| DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown |
+| DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown (peak = Mon–Fri 09:00–12:00 and 14:00–18:00 UTC+8, **excluding Chinese public holidays**; weekends and public holidays are off-peak all day) |
 | Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows + peak/off-peak ribbon and countdown (peak = Mon–Fri 14:00–18:00 UTC+8) |
 | OpenCode Go | `{baseURL}/usage` (built-in channel without an explicit baseURL uses the registry default `https://opencode.ai/zen/go/v1`) |
 | OpenRouter | Credits used % |

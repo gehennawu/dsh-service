@@ -1283,7 +1283,8 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'quota.peak.untilPeak': '{time} 转高峰（{dur}后）',
       'quota.peak.tag.peak': '忙时',
       'quota.peak.tag.idle': '闲时',
-      'quota.peak.caption': '空闲时段价格为高峰时段的一半。高峰时段：北京时间周一至周五 09:00–12:00、14:00–18:00；其余时间为空闲时段，周六和周日全天空闲。',
+      'quota.peak.caption': '空闲时段价格为高峰时段价格的一半。高峰时段：北京时间周一至周五（不含中国法定节假日）09:00–12:00、14:00–18:00；其余时段，包括周末及中国法定节假日全天均为空闲时段。',
+      'quota.peak.caption.degraded': '暂未收录 {year} 年的中国法定节假日安排，本年度按「周一至周五 09:00–12:00、14:00–18:00」估算，节假日期内可能显示为高峰；更新插件后即可自动收录当年安排。',
       'quota.peak.caption.zai': '非高峰时段模型调用按基础积分的 50% 抵扣。高峰时段：每周一至周五 14:00–18:00（UTC+8）；其余时间为非高峰时段，周六和周日全天空闲。',
       // ── 官方右栏文件编辑（v1.6 用户点名）────────────────────────────────
       'features.fileEditor': '右栏文件编辑',
@@ -2182,7 +2183,8 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'quota.peak.untilPeak': 'Peak pricing from {time} (in {dur})',
       'quota.peak.tag.peak': 'Peak',
       'quota.peak.tag.idle': 'Off-peak',
-      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00. All other times are off-peak, including all day Saturday and Sunday.',
+      'quota.peak.caption': 'Off-peak price is half the peak price. Peak hours (GMT+8): Mon–Fri 09:00–12:00 and 14:00–18:00, excluding Chinese public holidays. All other times — including all day on weekends and Chinese public holidays — are off-peak.',
+      'quota.peak.caption.degraded': 'The {year} Chinese public holiday schedule is not yet included; this year is estimated as "Mon–Fri 09:00–12:00 and 14:00–18:00", so holidays may still show as peak. Updating the plugin picks up the current year\'s schedule automatically.',
       'quota.peak.caption.zai': 'Off-peak calls deduct 50% of the base credits. Peak hours: Mon–Fri 14:00–18:00 (UTC+8). All other times are off-peak, including all day Saturday and Sunday.',
       // ── Official right-Sidebar file editing (v1.6) ──────────────────────
       'features.fileEditor': 'Right-Sidebar file editing',
