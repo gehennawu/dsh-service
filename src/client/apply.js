@@ -5357,6 +5357,15 @@
         const scopedModelTotals = modelScope === 'today' ? modelTodayTotals : modelScope === 'all' ? modelAllTotals : modelWeekTotals
         const diagnosticDetail = (check) => {
           const detail = String(check.detail ?? '')
+          if (check.id === 'usage-index') {
+            // 三段 failed:indexed:updatedAt；'never' = 尚未建立索引，'unavailable' = 索引不可读。
+            if (detail === 'never') return translate('health.detail.usage-index.never')
+            if (detail === 'unavailable') return translate('health.detail.usage-index.unavailable')
+            const [failed = '0', indexed = '0', updatedAt = '0'] = detail.split(':')
+            const at = Number(updatedAt)
+            const params = { failed, indexed, updated: at > 0 ? `${formatShortDate(at)} ${formatClockTime(at)}` : '—' }
+            return translate(Number(failed) > 0 ? 'health.detail.usage-index.warning' : 'health.detail.usage-index.ok', params)
+          }
           if (check.id === 'session-storage' && check.status === 'ok') return translate('health.detail.session-storage.ok', { count: detail })
           if (check.id === 'workspace-registry' && check.status === 'ok') return translate('health.detail.workspace-registry.ok', { count: detail })
           if (check.id === 'dsh-home' && check.status === 'ok') return translate('health.detail.dsh-home.ok', { mode: detail })
@@ -5691,6 +5700,29 @@
               React.createElement('div', null,
                 React.createElement('button', { style: toggle, onClick: () => setToolErrorsOpen((value) => !value) }, `${toolErrorsOpen ? '▾' : '▸'} ${translate('usage.toolErrors.toggle', { count: toolErrors.length })}`),
                 toolErrorsOpen ? React.createElement('div', { style: { padding: '0 2px 8px' } }, errorList('tool', toolErrors)) : null))))
+        // 诊断检查项行渲染（宿主检查项与客户端专属行共用）：主行=检查名+状态点，次行=详情；
+        // 异常行（error/非 advisory warning）局部淡染强调，正常行低对比。
+        const renderCheckRow = (check, index, detailText) => {
+          const abnormal = check.status === 'error' || (check.status === 'warning' && check.advisory !== true)
+          const dotColor = check.status === 'ok' ? 'var(--dsh-svc-success)' : check.status === 'warning' ? 'var(--dsh-svc-warning)' : check.status === 'info' ? 'var(--dsh-svc-info)' : 'var(--dsh-svc-danger)'
+          return React.createElement('div', { key: check.id, 'data-testid': `health-check-${check.id}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 10px', borderRadius: '6px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)', background: abnormal ? (check.status === 'error' ? 'rgba(211,51,51,0.08)' : 'rgba(198,128,0,0.10)') : 'transparent' } },
+            React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '5px', background: dotColor } }),
+            React.createElement('div', { style: { minWidth: 0, flex: 1 } },
+              React.createElement('div', { style: { fontSize: '12px', fontWeight: abnormal ? 650 : 550, color: 'var(--dsh-svc-text)' } }, translate('health.check.' + check.id)),
+              React.createElement('div', { style: { fontSize: '11px', lineHeight: 1.5, marginTop: '2px', color: check.status === 'ok' ? 'var(--dsh-svc-text-muted)' : abnormal ? (check.status === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)') : 'var(--dsh-svc-text-muted)' } }, detailText)))
+        }
+        // 浏览器通知权限检查（客户端专属）：宿主看不到浏览器侧权限，故此行的数据源必须在客户端。
+        // 语义：granted → ok；尚未授权（default）与被拒（denied）都是「通知不会响」= warning；
+        // 浏览器不支持 → info（非用户可修的故障）。功能关闭时返回 null（整行不渲染）。
+        // 刻意不进入 diagnostics.checks：概览可行动项与诊断标签 ⚠ 都只消费宿主下发的检查项，
+        // 本行仅作诊断页内的可见性补足（被拒时静默失效才是真问题）。
+        const notificationPermissionCheck = features.taskNotifications === false
+          ? null
+          : typeof Notification === 'undefined'
+            ? { status: 'info', detail: translate('health.detail.notification-permission.unsupported') }
+            : Notification.permission === 'granted'
+              ? { status: 'ok', detail: translate('health.detail.notification-permission.granted') }
+              : { status: 'warning', detail: translate(Notification.permission === 'denied' ? 'health.detail.notification-permission.denied' : 'health.detail.notification-permission.default') }
         const healthSummaryBlock = React.createElement('div', { 'data-testid': 'health-diagnostics-region', style: displaySurface },
           // v0.39 用户复核：重新诊断按钮移入页面头右侧（SvcPageHeader action 位），此处不再独占一行。
           diagnostics && diagnostics.status !== 'ok'
@@ -5700,17 +5732,16 @@
             : null,
           diagnostics
             ? React.createElement('div', { 'data-testid': 'health-check-list', style: Object.assign({}, displaySurface, { marginTop: '10px', padding: '8px 10px' }) },
-                // v0.39 两行检查清单：主行=检查名+状态点，次行=详情；异常行（error/非 advisory warning）
-                // 局部淡染强调，正常行低对比。
-                diagnostics.checks.map((check, index) => {
-                  const abnormal = check.status === 'error' || (check.status === 'warning' && check.advisory !== true)
-                  const dotColor = check.status === 'ok' ? 'var(--dsh-svc-success)' : check.status === 'warning' ? 'var(--dsh-svc-warning)' : check.status === 'info' ? 'var(--dsh-svc-info)' : 'var(--dsh-svc-danger)'
-                  return React.createElement('div', { key: check.id, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 10px', borderRadius: '6px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)', background: abnormal ? (check.status === 'error' ? 'rgba(211,51,51,0.08)' : 'rgba(198,128,0,0.10)') : 'transparent' } },
-                    React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '5px', background: dotColor } }),
-                    React.createElement('div', { style: { minWidth: 0, flex: 1 } },
-                      React.createElement('div', { style: { fontSize: '12px', fontWeight: abnormal ? 650 : 550, color: 'var(--dsh-svc-text)' } }, translate('health.check.' + check.id)),
-                      React.createElement('div', { style: { fontSize: '11px', lineHeight: 1.5, marginTop: '2px', color: check.status === 'ok' ? 'var(--dsh-svc-text-muted)' : abnormal ? (check.status === 'error' ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-warning)') : 'var(--dsh-svc-text-muted)' } }, diagnosticDetail(check))))
-                }))
+                ...diagnostics.checks.map((check, index) => renderCheckRow(check, index, diagnosticDetail(check))),
+                // 浏览器通知权限（客户端专属检查行，追加在宿主检查项之后）：宿主看不到浏览器侧权限，
+                // 故不塞进 diagnostics.checks（那是宿主下发的结构化报告，客户端伪造会混淆数据来源），
+                // 也不进概览可行动项与标签 ⚠——只在诊断页呈现。
+                ...(notificationPermissionCheck === null
+                  ? []
+                  : [renderCheckRow(
+                      { id: 'notification-permission', status: notificationPermissionCheck.status },
+                      diagnostics.checks.length,
+                      notificationPermissionCheck.detail)]))
             : null)
         // v1.3 插件健康检查：只显示异常插件（官方设置页已有完整插件清单与开关，不做重复清单）。
         // 检查项行内摘要把 failed/pending/informational 计数说清楚；这里列出每个异常插件的名字、

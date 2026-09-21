@@ -2739,7 +2739,7 @@ function runtimeEnvCheck(runtimeEnv) {
   return { id: 'runtime-env', status: 'info', detail: 'unknown' }
 }
 
-async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
+async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
   const checks = []
   const add = (id, status, detail) => checks.push({ id, status, ...(detail === undefined ? {} : { detail: String(detail) }) })
 
@@ -2820,6 +2820,27 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv) {
   }
   if (!compatReport.available) add('plugin-compat', 'info', 'unavailable')
   else checks.push(pluginCompatCheckItem(compatReport))
+
+  // 使用统计索引（工作区实现，未发布）：统计链路自身的健康度。单会话折读失败会让用量静默少算，
+  // 此前只在模型统计页的全局警告里可见，诊断清单没有任何一项覆盖它。
+  // 功能关闭时宿主根本不刷新索引（usage/usage-refresh 均受 modelUsage 门控），报「失败」
+  // 只会是陈旧误导，故整项省略而不是降级成 info 行。
+  // 追加在清单尾部：不动前五项 id 顺序契约（既有测试与客户端渲染顺序都依赖它）。
+  if (options.usageEnabled === true) {
+    let index = null
+    try { index = await options.usageIndex } catch (_) { index = null }
+    if (index === null || typeof index !== 'object') add('usage-index', 'info', 'unavailable')
+    else {
+      const failed = usageFailedSessions(index).length
+      const indexed = index.sessions !== null && typeof index.sessions === 'object' ? Object.keys(index.sessions).length : 0
+      const updatedAt = Number.isFinite(Number(index.updatedAt)) ? Number(index.updatedAt) : 0
+      // updatedAt=0 = 从未建立索引（用户还没打开过模型统计页）：不是故障，报 info。
+      // 失败会话是「部分成功」语义（沿用 usage 页同款口径）：warning 而非 error——统计仍可用，
+      // 只是少算了这些会话，不点亮诊断标签 ⚠ 的 error 档。
+      if (updatedAt === 0) add('usage-index', 'info', 'never')
+      else add('usage-index', failed > 0 ? 'warning' : 'ok', `${failed}:${indexed}:${updatedAt}`)
+    }
+  }
 
   let status = 'ok'
   // advisory 警告（手动启动环境的黄色提示）只做行内呈现：不把 overall 拉成 warning。
@@ -5372,7 +5393,9 @@ function apply(ctx) {
 
     } },
     'diagnostics': { feature: 'healthDiagnostics', handle: async (payload, rpcEndpoint) => {
-      return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv) }
+      // usageIndex 传的是闭包里的同一个 promise（不在检查里重读磁盘 JSON——索引可达数百 KB）；
+      // modelUsage 关闭时整个 usage-index 检查项缺席，避免用陈旧索引报假故障。
+      return { ok: true, value: await collectDiagnostics(ctx, dshHome, runtimeEnv, { usageEnabled: featureEnabled('modelUsage'), usageIndex: usageIndexPromise }) }
 
     } },
     'plugin-restart': { feature: 'healthDiagnostics', audit: true, handle: async (payload, rpcEndpoint) => {

@@ -1506,6 +1506,79 @@ test('diagnostics RPC returns one overall report with storage, workspace, backup
   assert.equal(nodeCheck.status, 'ok')
 })
 
+test('diagnostics appends a usage-index check reporting indexed sessions, freshness, and failed sessions', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-index-check-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(dshHome, { recursive: true })
+  const now = Date.now()
+  const index = {
+    version: 6,
+    updatedAt: now,
+    sessions: { a: { revision: 'r', lastSeq: 0 }, b: { revision: 'r', lastSeq: 0 } },
+    failedSessions: [{ id: 'bad', code: 'session-fold-failed', stale: false }],
+  }
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(index))
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  // detail 三段 failed:indexed:updatedAt，追加在既有检查项之后（前五项顺序契约不动）。
+  assert.deepEqual(result.value.checks.find((item) => item.id === 'usage-index'), { id: 'usage-index', status: 'warning', detail: `1:2:${now}` })
+  assert.equal(result.value.checks[0].id, 'session-storage')
+  // 失败会话是「部分成功」语义（沿用 usage 页口径）：warning 而非 error，不把 overall 拉成 error。
+  assert.notEqual(result.value.status, 'error')
+})
+
+test('diagnostics reports a healthy usage index as ok and a never-built index as info', async (t) => {
+  const healthyHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-index-ok-'))
+  const freshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-index-never-'))
+  t.after(() => Promise.all([rm(healthyHome, { recursive: true, force: true }), rm(freshHome, { recursive: true, force: true })]))
+  await mkdir(healthyHome, { recursive: true })
+  await mkdir(freshHome, { recursive: true })
+  const now = Date.now()
+  await writeFile(join(healthyHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 6, updatedAt: now, sessions: { a: {} }, failedSessions: [] }))
+  const makeHost = (dshHome) => createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+    env: { DSH_HOME: dshHome },
+  })
+  const healthy = await makeHost(healthyHome).handler('diagnostics', {})
+  assert.deepEqual(healthy.value.checks.find((item) => item.id === 'usage-index'), { id: 'usage-index', status: 'ok', detail: `0:1:${now}` })
+  // updatedAt=0（用户从未打开模型统计页）→ info，不是故障、不影响 overall。
+  const never = await makeHost(freshHome).handler('diagnostics', {})
+  assert.deepEqual(never.value.checks.find((item) => item.id === 'usage-index'), { id: 'usage-index', status: 'info', detail: 'never' })
+  assert.equal(never.value.status, 'ok', 'a never-built index is informational, not a warning')
+})
+
+test('diagnostics omits the usage-index check when the model usage feature is disabled', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-index-gated-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(dshHome, { recursive: true })
+  // 索引本身带失败会话，但功能关闭时宿主根本不刷新它：报 warning 只会是陈旧误导，故整项缺席。
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 6, updatedAt: Date.now(), sessions: { a: {} }, failedSessions: [{ id: 'bad', code: 'session-fold-failed', stale: false }] }))
+  const { handler } = createHost({
+    services: {
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      subprocess: { resolveExecutable: async (name) => `/usr/bin/${name}` },
+    },
+    featureSettings: { modelUsage: false },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('diagnostics', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.checks.some((item) => item.id === 'usage-index'), false)
+})
+
 test('diagnostics degrades the plugins check to info when the loader service is absent', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-no-loader-'))
   const workspace = await mkdtemp(join(tmpdir(), 'dsh-service-no-loader-workspace-'))

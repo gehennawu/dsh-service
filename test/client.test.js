@@ -3932,6 +3932,128 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
   assert.equal(renderer.hasTest('tab-dot-health'), false)
 })
 
+test('a failing usage index shows a readable diagnostics row and enters overview attention items', async () => {
+  const updatedAt = Date.UTC(2026, 0, 2, 3, 4)
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date(updatedAt).toISOString() }], totalBytes: 1 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [
+      { id: 'usage-index', status: 'warning', detail: `2:7:${updatedAt}` },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  // 诊断数据只在进入诊断页时拉取（既有行为），故概览的检查项派生项也要先访问过一次诊断页。
+  assert.equal(renderer.hasTest('overview-actionables'), false)
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /使用统计索引.*2 个会话未能索引（统计少算），已索引 7 个，更新于 2026-01-02 03:04/)
+  assert.equal(renderer.hasTest('health-check-usage-index'), true)
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
+
+  // 回到概览：索引失败是真故障（统计会少算），进可行动项。
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('overview-actionables'), true)
+  assert.match(renderer.text('settings.section'), /使用统计索引/)
+  assert.match(renderer.text('settings.section'), /2 个会话未能索引/)
+})
+
+test('a healthy usage index renders as ok and never enters overview attention items', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date().toISOString() }], totalBytes: 1 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'usage-index', status: 'ok', detail: `0:3:${Date.UTC(2026, 5, 6, 7, 8)}` },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted' })
+
+  await renderer.load()
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'a healthy usage index must not create overview attention items')
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /使用统计索引.*已索引 3 个会话，更新于 2026-06-06 07:08/)
+})
+
+test('the notification-permission row is client-owned: appended after host checks, warning when denied, and invisible to overview alerts', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date().toISOString() }], totalBytes: 1 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'session-storage', status: 'ok', detail: '1' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'denied' })
+
+  await renderer.load()
+  // 被拒的浏览器通知不会响，但那是浏览器侧事实、不是宿主故障：不进概览可行动项、不点 ⚠。
+  assert.equal(renderer.hasTest('overview-actionables'), false, 'notification permission must not create overview attention items')
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), false)
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 追加在宿主检查项之后：会话存储行在前，通知权限行在后。
+  assert.ok(text.indexOf('会话存储') < text.indexOf('通知权限'), 'the client-owned row follows the host checks')
+  assert.match(text, /通知权限.*浏览器已拒绝系统通知，需在浏览器站点设置里恢复/)
+  // 宿主 checks 仍是纯粹的宿主报告：客户端不往里伪造条目。
+  assert.equal(renderer.hasTest('health-check-notification-permission'), true)
+
+  // 尚未询问（default）同样是「通知不会响」的 warning。
+  const undecided = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date().toISOString() }], totalBytes: 1 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'session-storage', status: 'ok', detail: '1' }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'default' })
+  await undecided.load()
+  await undecided.findButton('健康诊断').props.onClick()
+  await undecided.flush()
+  assert.match(undecided.text('settings.section'), /通知权限.*浏览器尚未授权系统通知/)
+
+  // 功能关闭时整行不渲染（不给关掉通知的用户留无意义的行）。
+  await renderer.setFeature('taskNotifications', false)
+  assert.equal(renderer.hasTest('health-check-notification-permission'), false)
+})
+
+test('the notification-permission row defers to the browser when system notifications are unsupported', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'linux', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date().toISOString() }], totalBytes: 1 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [{ id: 'session-storage', status: 'ok', detail: '1' }] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  // notificationPermission 缺省 = 不注入 Notification（老浏览器/非安全上下文）。
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /通知权限.*当前浏览器不支持系统通知/)
+})
+
 test('a manual-launch runtime-env check renders yellow inline but raises no alerts', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
