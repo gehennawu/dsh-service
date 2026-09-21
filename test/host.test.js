@@ -440,6 +440,54 @@ test('permission deep check scans nested workspace roots exactly once and skips 
   assert.equal(deep.value.samples.length, 0)
 })
 
+test('usage lists sessions through the legacy persistence shape whose list() returns bare headers', async (t) => {
+  // DSH 0.1.1-rc.2 ~ 0.1.2-rc.1 的 sessionPersistence 同时在位 list() 与 listSnapshots()，
+  // 但当时 list() 的契约是「只列 metadata」——返回裸 header（无 revision），
+  // listSnapshots() 才返回 {header, revision}。若优先探测 list()，消费方读 record.header.id
+  // 得到 undefined.id 而抛错，模型统计在该宿主上永远建不起索引（其余功能不依赖此形状）。
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-legacy-list-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const day = new Date(now).toLocaleDateString('en-CA')
+  const header = { id: 'legacy-1', version: 0, createdAt: now, cwd: '/workspace/project' }
+  const events = [
+    { type: 'request/header', seq: 0, time: now - 2000, data: { header: { config: { provider: 'deepseek', model: 'deepseek-chat' } } } },
+    { type: 'assistant/message', seq: 1, time: now - 1000, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 300, cacheWriteTokens: 10 } } },
+  ]
+  const persistence = {
+    // 旧 list()：裸 header 数组；旧 listSnapshots()：带 revision 的快照。
+    list: async () => [header],
+    listSnapshots: async () => [{ header, revision: 'rev-legacy' }],
+    readFrom: async (id, fromSeq) => ({ meta: {}, events: events.filter((event) => event.seq >= fromSeq) }),
+  }
+  const { handler } = createHost({
+    services: { sessionPersistence: persistence, workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true, 'the legacy list() shape must not fail the refresh')
+  assert.equal(result.value.indexedSessions, 1)
+  assert.deepEqual(result.value.failedSessions, [])
+  assert.equal(result.value.totals.steps, 1)
+  assert.equal(result.value.totals.inputTokens, 100)
+  assert.deepEqual(result.value.days[day].totals, {
+    steps: 1,
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 300,
+    cacheWriteTokens: 10,
+    cacheHitRate: 300 / 410,
+  })
+  // revision 必须取自 listSnapshots()：增量刷新靠它跳过未变会话，丢了就每轮全量重折。
+  const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored.sessions['legacy-1'].revision, 'rev-legacy')
+  // 增量语义仍然成立：revision 未变时不重读事件。
+  const unchanged = await handler('usage-refresh', {})
+  assert.equal(unchanged.ok, true)
+  assert.equal(unchanged.value.totals.steps, 1)
+})
+
+
 test('usage RPC builds and incrementally refreshes exact daily provider, model, and project totals', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

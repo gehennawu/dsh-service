@@ -2199,8 +2199,14 @@ function validSessionOffset(value) {
 // 不感知运行时差异。backup 的 readRaw 物理字节 seam 新公共面不再提供（物理整树 tar 回退
 // 即 0.1.5 语义），不做双形态。
 function persistenceListSnapshots(persistence) {
-  if (typeof persistence.list === 'function') return persistence.list()
-  return persistence.listSnapshots()
+  // 两个方法在 0.1.1-rc.2 ~ 0.1.2-rc.1 上**同时在位且语义不同**：listSnapshots() 给
+  // {header, revision}，list() 只给裸 header（当时 list 的契约就是「只列 metadata」）。
+  // 先探测 list() 会拿到裸 header，消费方读 record.header.id 即 undefined.id 抛错——
+  // 旧宿主上表现为模型统计永远建不起索引（其余功能不依赖这个形状，故只有统计坏掉）。
+  // 0.1.3-alpha.2 起反过来：listSnapshots 移除，list() 的返回值升级成
+  // {header, revision, sizeBytes}。故按「语义正确者优先」探测，与版本号无关。
+  if (typeof persistence.listSnapshots === 'function') return persistence.listSnapshots()
+  return persistence.list()
 }
 
 async function persistenceReadSlice(persistence, header, fromSeq) {
