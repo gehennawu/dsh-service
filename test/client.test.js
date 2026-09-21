@@ -1345,9 +1345,8 @@ test('usage heatmap calendar covers every indexed day, aligns columns to Monday,
   const heatmap = renderer.findByTestId('usage-heatmap')
   assert.match(heatmap.props.style.border, /solid/)
   assert.equal(renderer.findByTestId('usage-heatmap-title').children[0], '每日用量日历')
-  // 40 天前 + 20 天前 + 今天 → 3 个有用量的日子；窗口外那两天必须被统计进来。
-  assert.match(renderer.findByTestId('usage-heatmap-summary').children[0], /其中 3 天有用量/)
-  assert.match(renderer.findByTestId('usage-heatmap-summary').children[0], /单日峰值 400 token/)
+  // 热力块头不含汇总提示行，仅保留标题与维度切换。
+  assert.equal(renderer.findAllByTestIdPrefix('usage-heatmap-summary').length, 0)
 
   const cells = renderer.findAllByTestIdPrefix('usage-heatmap-cell-')
   // 覆盖范围必须包含 40 天前那格（主图 7 天窗口完全看不到它）。
@@ -1405,6 +1404,139 @@ test('usage heatmap calendar covers every indexed day, aligns columns to Monday,
 })
 
 // 无任何日期键时（空索引）不渲染热力日历块，也不抛错。
+// 打卡图（星期 × 小时）：默认日视图，切到「小时」后渲染 7×24 格、24 列刻度与独立汇总文案。
+// 宽度预算与日视图同一套约束：24 列在 484px 内只能用 16px 格（24×16 + 23×4 = 476），
+// 20px 格需 572px 会溢出——这条守住「改格尺寸/列数必须复算预算」。
+test('usage heatmap switches to a weekday-hour punch card whose 24 columns fit the width budget', async () => {
+  const days = {}
+  const totals = { steps: 4, inputTokens: 100, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 1, cacheHitRate: 0.3 }
+  const today = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  days[`${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`] = {
+    totals,
+    projects: [{ id: 'p1', title: 'P1', path: '/p1', totals, models: [] }],
+  }
+  // 宿主下发的打卡图桶：周三 8 时（weekday 2，周一为 0）与周日 23 时。
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 1,
+    totals,
+    projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+    errors: { models: [], tools: [] },
+    days,
+    hours: [
+      { weekday: 2, hour: 8, totals, projects: [{ id: 'p1', title: 'P1', totals }] },
+      { weekday: 6, hour: 23, totals: { ...totals, inputTokens: 400 }, projects: [{ id: 'p1', title: 'P1', totals: { ...totals, inputTokens: 400 } }] },
+    ],
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  // 默认日视图：无打卡格。
+  assert.equal(renderer.findByTestId('usage-heatmap-scope-day'), renderer.findByTestId('usage-heatmap-scope-day'))
+  assert.equal(renderer.findAllByTestIdPrefix('usage-punch-cell-').length, 0)
+
+  await renderer.findByTestId('usage-heatmap-scope-hour').props.onClick()
+  await renderer.flush()
+
+  const cells = renderer.findAllByTestIdPrefix('usage-punch-cell-')
+  assert.equal(cells.length, 168, '7 weekdays × 24 hours must all render (empty slots included)')
+  const hit = cells.find((cell) => cell.props['data-testid'] === 'usage-punch-cell-2-8')
+  assert.equal(hit.props['data-value'], 116, 'the Wednesday 08:00 bucket must carry its tokens')
+  assert.match(hit.props['aria-label'], /周三 08 时/)
+  const emptyCell = cells.find((cell) => cell.props['data-testid'] === 'usage-punch-cell-0-0')
+  assert.equal(emptyCell.props['data-level'], 0)
+  // 宽度预算：24 列 × 16px + 23 × 4px 间距 = 476px ≤ 484px。
+  assert.equal(hit.props.style.width, '16px')
+  assert.equal(renderer.findByTestId('usage-heatmap-title').children[0], '用量打卡图（星期 × 小时）')
+  // 切回日视图恢复日历格。
+  await renderer.findByTestId('usage-heatmap-scope-day').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findAllByTestIdPrefix('usage-punch-cell-').length, 0)
+  assert.ok(renderer.findAllByTestIdPrefix('usage-heatmap-cell-').length > 0)
+})
+
+// 项目文件夹已删除：入口按钮必须隐藏，但「全部」口径仍包含它的用量。
+test('usage project tabs hide projects whose folder is gone while totals keep their usage', async () => {
+  const totals = { steps: 2, inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+  const day = (() => { const d = new Date(); const pad = (v) => String(v).padStart(2, '0'); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` })()
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 2,
+    totals,
+    projects: [
+      { id: 'p-live', title: 'Live Project', path: '/live' },
+      { id: 'p-gone', title: 'Gone Project', path: '/gone', missing: true },
+    ],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [] } },
+    hours: [],
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  const tabs = renderer.findByTestId('usage-project-tabs')
+  const labels = JSON.stringify(tabs)
+  assert.match(labels, /Live Project/)
+  assert.doesNotMatch(labels, /Gone Project/, 'a project whose folder is gone must not offer a filter entry')
+  // 全部口径的汇总数字不受影响（用量仍在总量里）。
+  assert.equal(renderer.findByTestId('usage-summary-today-0').children[1].children[0], '55')
+})
+
+// 热力块头只保留标题 + 维度切换，不渲染汇总提示行。
+test('usage heatmap header carries only the title and the scope toggle', async () => {
+  const totals = { steps: 1, inputTokens: 10, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+  const day = (() => { const d = new Date(); const pad = (v) => String(v).padStart(2, '0'); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` })()
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 3,
+    totals,
+    projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [] } },
+    hours: [],
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-heatmap-title').children[0], '每日用量日历')
+  assert.equal(renderer.findAllByTestIdPrefix('usage-heatmap-summary').length, 0)
+  assert.ok(renderer.findByTestId('usage-heatmap-scope-day'))
+  assert.ok(renderer.findByTestId('usage-heatmap-scope-hour'))
+})
+
 test('usage heatmap is omitted when the index carries no days', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')

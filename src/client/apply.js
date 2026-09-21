@@ -4676,6 +4676,8 @@
         const [hoveredUsageSegment, setHoveredUsageSegment] = useState(null)
         // 热力日历格悬浮提示：与主图提示同形（fixed 跟随指针，pointerEvents:none）。
         const [hoveredHeatDay, setHoveredHeatDay] = useState(null)
+        // 热力块维度切换：'day' = 每日日历（默认），'hour' = 打卡图（星期 × 小时）。
+        const [heatScope, setHeatScope] = useState('day')
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
@@ -5228,9 +5230,12 @@
         // （region 外框 530 − region padding 12×2 − 本块 padding 10×2 − 边框 2），20×20 + 19×4 = 476 恰好进；
         // 21 周需 500px 会溢出。数据不满时右侧留白（GitHub 新账号的稀疏日历同样表现），
         // **不拉伸填满**——试过 flex 铺满，格子会变成 82×10 的细长条，热力图的可读性依赖方格。
+        // 打卡图是 24 列，同样的 484px 预算下 20px 格需 24×20 + 23×4 = 572px 会溢出 88px，
+        // 故小时维度专用 16px 格：24×16 + 23×4 = 476 恰好进（与日视图同一套约束算法）。
         const HEAT_CELL = 20
         const HEAT_GAP = 4
         const HEAT_MAX_WEEKS = 20
+        const PUNCH_CELL = 16
         // 文案走词典，星期/月份名走 Intl（与仓库既有 toLocaleString 用法同源），避免 19 个一次性死键。
         const heatLocale = currentUiLocale() === 'zh' ? 'zh-CN' : 'en-US'
         const heatParseDay = (key) => { const [year, month, day] = key.split('-').map(Number); return new Date(year, month - 1, day) }
@@ -5276,13 +5281,41 @@
             days: columnDays,
           })
         }
-        const heatActiveDays = heatDays.filter((date) => (heatTotalsByDay.get(dateKey(date))?.total || 0) > 0).length
         // 星期标签取固定参照周的周一..周日：行序恒定，与数据范围无关。
         const heatWeekdayReference = new Date(2024, 0, 1)
         const heatWeekdays = [0, 1, 2, 3, 4, 5, 6].map((row) => { const date = new Date(heatWeekdayReference); date.setDate(date.getDate() + row); return date.toLocaleDateString(heatLocale, { weekday: 'short' }) })
         const selectedProjects = usageProject === 'all'
           ? (usage?.projects || []).map((project) => project.id)
           : [usageProject]
+        // ── 打卡图（星期 × 小时）数据面 ──
+        // `usage.hours` 由宿主按客户端时区把同一批小时桶折成「本地星期 × 本地小时」，
+        // 与日视图同源、零新增持久化字段。格 = 该时段累计 token，行 = 周一..周日，列 = 0..23 时。
+        const hourTotalsFor = (bucket) => {
+          const totals = usageProject === 'all' ? bucket.totals : (bucket.projects || []).find((project) => project.id === usageProject)?.totals
+          return totals || { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+        }
+        const punchBuckets = Array.isArray(usage?.hours) ? usage.hours : []
+        const punchBySlot = new Map()
+        for (const bucket of punchBuckets) {
+          const weekday = Number(bucket?.weekday)
+          const hour = Number(bucket?.hour)
+          if (!Number.isInteger(weekday) || !Number.isInteger(hour) || weekday < 0 || weekday > 6 || hour < 0 || hour > 23) continue
+          const totals = hourTotalsFor(bucket)
+          punchBySlot.set(`${weekday}-${hour}`, {
+            total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0),
+            steps: Number(totals.steps || 0),
+          })
+        }
+        const punchValues = [...punchBySlot.values()]
+        const punchMax = punchValues.reduce((max, entry) => Math.max(max, entry.total), 0)
+        const punchLevel = (total) => {
+          if (total <= 0 || punchMax <= 0) return 0
+          if (total <= punchMax * 0.25) return 1
+          if (total <= punchMax * 0.5) return 2
+          if (total <= punchMax * 0.75) return 3
+          return 4
+        }
+        const punchHourLabels = (hour) => (hour % 3 === 0 ? String(hour).padStart(2, '0') : '')
         const emptyModelTotals = (id) => ({ id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
         const accumulateModelTotals = (buckets, model) => {
           const existing = buckets.get(model.id) || emptyModelTotals(model.id)
@@ -5447,7 +5480,50 @@
             },
           }
         }
-        const heatmapBlock = heatDays.length === 0 ? null : React.createElement('div', {
+        // 打卡图格：行=星期、列=小时。小时维度用 16px 格（24 列在 484px 预算下的唯一解）。
+        const punchCellStyle = (weekday, hour) => {
+          const entry = punchBySlot.get(`${weekday}-${hour}`) || { total: 0, steps: 0 }
+          const level = punchLevel(entry.total)
+          const label = translate('usage.heatmap.hourCell', { weekday: heatWeekdays[weekday], hour: String(hour).padStart(2, '0'), total: formatTokenValue(entry.total), steps: Number(entry.steps || 0).toLocaleString() })
+          return {
+            key: `${weekday}-${hour}`,
+            'data-testid': `usage-punch-cell-${weekday}-${hour}`,
+            'data-value': entry.total,
+            'data-level': level,
+            'aria-label': label,
+            onMouseEnter: (event) => setHoveredHeatDay({ id: `punch-${weekday}-${hour}`, label, x: event.clientX, y: event.clientY }),
+            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === `punch-${weekday}-${hour}` ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+            onMouseLeave: () => setHoveredHeatDay(null),
+            style: {
+              width: `${PUNCH_CELL}px`,
+              height: `${PUNCH_CELL}px`,
+              borderRadius: '3px',
+              flex: 'none',
+              cursor: entry.total > 0 ? 'pointer' : 'default',
+              background: entry.total > 0 ? 'var(--dsh-svc-success)' : 'var(--dsw-alias-border-l1)',
+              opacity: heatLevelOpacity(level),
+            },
+          }
+        }
+        const heatScopeTabs = React.createElement('div', { 'data-testid': 'usage-heatmap-scope-tabs', style: { display: 'flex', gap: '2px' } },
+          ['day', 'hour'].map((scopeId) => React.createElement('button', {
+            key: scopeId,
+            type: 'button',
+            'data-testid': `usage-heatmap-scope-${scopeId}`,
+            style: Object.assign({}, compactTab, heatScope === scopeId ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }),
+            onClick: () => setHeatScope(scopeId),
+          }, translate(`usage.heatmap.scope.${scopeId}`))))
+        // 打卡图：7 行（周一..周日）× 24 列（0..23 时），每 3 小时标一次刻度减少拥挤。
+        const punchGrid = React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', overflowX: 'auto', paddingBottom: '2px' } },
+          React.createElement('div', { 'aria-hidden': 'true', style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, flex: 'none', paddingTop: '19px' } },
+            heatWeekdays.map((label, row) => React.createElement('div', { key: row, style: { height: `${PUNCH_CELL}px`, fontSize: '11px', lineHeight: `${PUNCH_CELL}px`, color: 'var(--dsw-alias-label-secondary)' } }, label))),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, minWidth: 0, flex: 'none' } },
+            React.createElement('div', { 'aria-hidden': 'true', style: { display: 'flex', gap: `${HEAT_GAP}px`, height: '15px' } },
+              Array.from({ length: 24 }, (_, hour) => React.createElement('div', { key: `hour-${hour}`, style: { width: `${PUNCH_CELL}px`, flex: 'none', fontSize: '10px', lineHeight: '15px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, punchHourLabels(hour)))),
+            React.createElement('div', { 'data-testid': 'usage-punch-grid', role: 'img', 'aria-label': translate('usage.heatmap.hourGridLabel'), style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px` } },
+              [0, 1, 2, 3, 4, 5, 6].map((weekday) => React.createElement('div', { key: weekday, style: { display: 'flex', gap: `${HEAT_GAP}px` } },
+                Array.from({ length: 24 }, (_, hour) => React.createElement('div', punchCellStyle(weekday, hour))))))))
+        const heatmapBlock = (heatDays.length === 0 && punchBuckets.length === 0) ? null : React.createElement('div', {
           key: 'usage-heatmap',
           'data-testid': 'usage-heatmap',
           // 与同级的 `usage-model-list` 同一套容器语言（padding 8px 10px / radius 8 / raised-bg / 同色边框），
@@ -5455,9 +5531,9 @@
           style: { marginTop: '10px', padding: '8px 10px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)' },
         },
         React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' } },
-          React.createElement('div', { 'data-testid': 'usage-heatmap-title', style: { fontSize: '12px', fontWeight: 650 } }, translate('usage.heatmap.title')),
-          React.createElement('div', { 'data-testid': 'usage-heatmap-summary', style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, translate('usage.heatmap.summary', { active: heatActiveDays.toLocaleString(), days: heatDays.length.toLocaleString(), peak: formatTokenValue(heatMax) }))),
-        React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', overflowX: 'auto', paddingBottom: '2px' } },
+          React.createElement('div', { 'data-testid': 'usage-heatmap-title', style: { fontSize: '12px', fontWeight: 650 } }, translate(heatScope === 'hour' ? 'usage.heatmap.hourTitle' : 'usage.heatmap.title')),
+          heatScopeTabs),
+        heatScope === 'hour' ? punchGrid : React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', overflowX: 'auto', paddingBottom: '2px' } },
           // 星期标签列（周一..周日，与列内行序一致）；隔行写字（周一/三/五/日），格变大后 11px 文字不挤。
           React.createElement('div', { 'aria-hidden': 'true', style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, flex: 'none', paddingTop: '19px' } },
             heatWeekdays.map((label, row) => React.createElement('div', { key: row, style: { height: `${HEAT_CELL}px`, fontSize: '11px', lineHeight: `${HEAT_CELL}px`, color: 'var(--dsw-alias-label-secondary)' } }, row % 2 === 0 ? label : ''))),
@@ -5478,7 +5554,8 @@
           usage && Array.isArray(usage.projects) && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
                 React.createElement('button', { style: Object.assign({}, inlineTab, usageProject === 'all' ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject('all') }, translate('usage.allProjects')),
-                usage.projects.map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject(project.id) }, project.title)))
+                // 项目文件夹已删除的条目不再提供入口（其用量仍计入「全部」总量与热力图）。
+                usage.projects.filter((project) => project.missing !== true).map((project) => React.createElement('button', { key: project.id, style: Object.assign({}, inlineTab, usageProject === project.id ? inlineTabActive : { color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent' }), onClick: () => setUsageProject(project.id) }, project.title)))
             : null,
           usageFailureWarning,
           usage && usage.indexedSessions > 0

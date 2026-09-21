@@ -112,7 +112,7 @@ const MAX_BACKUP_COMPRESSED_BYTES = 512 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
-const USAGE_INDEX_VERSION = 5
+const USAGE_INDEX_VERSION = 6
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 // 官方右栏文件编辑（v1.6 用户点名）：浏览器只送资源地址，宿主解析会话后按 ctx.fs +
 // sandboxPolicy 读写；单文件上限双向生效（读取、保存、撤销通道都受它约束）。
@@ -1045,6 +1045,27 @@ function localDayForHour(hour, timezoneOffsetMinutes = 0) {
   return new Date(utcTime - offset * 60 * 1000).toISOString().slice(0, 10)
 }
 
+// 小时桶 → 本地「星期 × 小时」格键（打卡图）。与 localDayForHour 同一套时区折算：
+// 先按客户端偏移平移 UTC 时刻，再用 getUTC* 读取平移后的本地分量，不依赖宿主所在时区。
+// weekday 以周一为 0，与客户端热力日历的行序一致。
+function localWeekdayHourForHour(hour, timezoneOffsetMinutes = 0) {
+  const offset = Number.isFinite(Number(timezoneOffsetMinutes)) ? Math.max(-840, Math.min(840, Number(timezoneOffsetMinutes))) : 0
+  const utcTime = Date.parse(`${hour}:00:00.000Z`)
+  if (!Number.isFinite(utcTime)) return undefined
+  const shifted = new Date(utcTime - offset * 60 * 1000)
+  return { weekday: (shifted.getUTCDay() + 6) % 7, hour: shifted.getUTCHours() }
+}
+
+// 项目文件夹被删时只在「按项目」维度隐藏其入口；总量、日期桶与模型明细仍保留该段历史用量。
+function usageProjectMissing(project) {
+  if (typeof project?.path !== 'string' || project.path.length === 0) return false
+  try {
+    return !existsSync(project.path)
+  } catch (_) {
+    return false
+  }
+}
+
 function emptyUsageTotals() {
   return { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
 }
@@ -1091,13 +1112,25 @@ function revisionKey(revision) {
 }
 
 function createUsageIndex() {
-  return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions: {} }
+  return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions: {}, failedSessions: [] }
+}
+
+// 版本迁移：折读口径变更时旧桶必须重折，live 条目丢掉即可由源会话重建；
+// 但 detached 条目（其会话文件已删除）没有任何重折材料——若照旧全量重建，
+// 保留的历史会被一次版本升级静默清空。故迁移只丢弃可重折的 live 条目，detached 原样带过。
+function migrateUsageIndex(parsed) {
+  const sessions = {}
+  for (const [id, session] of Object.entries(parsed.sessions)) {
+    if (session !== null && typeof session === 'object' && session.detached === true) sessions[id] = session
+  }
+  return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions, failedSessions: [] }
 }
 
 async function loadUsageIndex(dshHome) {
   try {
     const parsed = JSON.parse(await readFile(join(dshHome, USAGE_INDEX_FILE), 'utf8'))
-    if (parsed?.version !== USAGE_INDEX_VERSION || typeof parsed.sessions !== 'object' || parsed.sessions === null) return createUsageIndex()
+    if (typeof parsed?.sessions !== 'object' || parsed.sessions === null) return createUsageIndex()
+    if (parsed.version !== USAGE_INDEX_VERSION) return migrateUsageIndex(parsed)
     return parsed
   } catch (error) {
     if (error?.code === 'ENOENT') return createUsageIndex()
@@ -2145,14 +2178,21 @@ function usageFailedSessions(index) {
 
 function publicUsage(index, timezoneOffsetMinutes = 0) {
   const failedSessions = usageFailedSessions(index)
-  const indexedSessions = Object.keys(index.sessions).length
-  const result = { updatedAt: index.updatedAt, indexedSessions, successfulSessions: indexedSessions - failedSessions.filter((failure) => failure.stale).length, failedSessions, totals: emptyUsageTotals(), days: {}, errors: { models: [], tools: [] } }
+  const allSessions = Object.values(index.sessions)
+  // 保留条目仍计入总量与日期桶（它们就是历史用量），但在会话计数里单列，
+  // 否则界面上的「已索引 N 个会话」会包含磁盘上已不存在的会话。
+  const detachedSessions = allSessions.filter((session) => session.detached === true).length
+  const indexedSessions = allSessions.length
+  const result = { updatedAt: index.updatedAt, indexedSessions, detachedSessions, successfulSessions: indexedSessions - failedSessions.filter((failure) => failure.stale).length, failedSessions, totals: emptyUsageTotals(), days: {}, hours: {}, errors: { models: [], tools: [] } }
   const projects = new Map()
+  const projectVisibility = new Map()
   const modelErrors = new Map()
   const toolErrors = new Map()
   const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
-  for (const session of Object.values(index.sessions)) {
+  for (const session of allSessions) {
     projects.set(session.project.id, session.project)
+    // 项目文件夹被删只影响「按项目」筛选入口的可见性；用量本身照旧进总量与日期桶。
+    if (!projectVisibility.has(session.project.id)) projectVisibility.set(session.project.id, !usageProjectMissing(session.project))
     pruneSessionErrors(session, recentCutoff)
     for (const error of Object.values(session.modelErrors || {})) {
       const count = error.recentTimes.length
@@ -2181,6 +2221,17 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
         projectBucket.models.set(model.id, modelBucket)
       }
       dayBucket.projects.set(session.project.id, projectBucket)
+      // 打卡图（星期 × 小时）：与 days 同为「已有原始数据的一次重排」，不新增持久化字段。
+      // 只带 totals 与项目拆分（不带模型明细），实测体积约为带模型版本的 1/2。
+      const slot = localWeekdayHourForHour(hour, timezoneOffsetMinutes)
+      if (slot !== undefined) {
+        const key = `${slot.weekday}-${slot.hour}`
+        const hourBucket = result.hours[key] || (result.hours[key] = { weekday: slot.weekday, hour: slot.hour, totals: emptyUsageTotals(), projects: new Map() })
+        addUsageTotals(hourBucket.totals, source.totals)
+        const hourProject = hourBucket.projects.get(session.project.id) || { id: session.project.id, title: session.project.title, totals: emptyUsageTotals() }
+        addUsageTotals(hourProject.totals, source.totals)
+        hourBucket.projects.set(session.project.id, hourProject)
+      }
     }
   }
   const errorSort = (a, b) => b.count - a.count || a.key.localeCompare(b.key) || a.projectId.localeCompare(b.projectId)
@@ -2197,6 +2248,13 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
       models: [...project.models.values()].map((model) => ({ ...model, totals: finishTotals(model.totals) })).sort((a, b) => a.id.localeCompare(b.id)),
     })).sort((a, b) => a.title.localeCompare(b.title))
   }
+  result.hours = Object.values(result.hours).map((bucket) => ({
+    ...bucket,
+    totals: finishTotals(bucket.totals),
+    projects: [...bucket.projects.values()].map((project) => ({ ...project, totals: finishTotals(project.totals) })).sort((a, b) => a.id.localeCompare(b.id)),
+  })).sort((a, b) => a.weekday - b.weekday || a.hour - b.hour)
+  // missing 只对「项目文件夹已不存在」的条目为真，客户端据此隐藏项目分页按钮。
+  result.projects = result.projects.map((project) => ({ ...project, missing: projectVisibility.get(project.id) === false }))
   return result
 }
 
@@ -2216,7 +2274,23 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
   const index = structuredClone(currentIndex)
   index.failedSessions = []
   const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
-  for (const id of Object.keys(index.sessions)) if (!liveIds.has(id)) delete index.sessions[id]
+  // 保留策略：会话被删（或项目文件夹被删）都不再扣减已统计的贡献——条目永久留在索引里，
+  // 只打 detached 标记供界面区分，hours/lastSeq 等桶数据一字不动；会话回来时自动摘掉标记。
+  // 这样总量与热力图始终是「索引建立以来的完整历史」，不再随删除缩水。
+  const detachedAt = Date.now()
+  for (const [id, session] of Object.entries(index.sessions)) {
+    if (liveIds.has(id)) {
+      if (session.detached === true) {
+        delete session.detached
+        delete session.detachedAt
+      }
+      continue
+    }
+    if (session.detached !== true) {
+      session.detached = true
+      session.detachedAt = detachedAt
+    }
+  }
   const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
   for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
   for (const record of snapshots) {

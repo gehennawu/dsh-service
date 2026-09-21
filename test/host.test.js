@@ -609,7 +609,7 @@ test('usage indexes a read_image failure with no error code as IMAGE_NOT_SUPPORT
   assert.doesNotMatch(stored, /deepseek-v4|pic\.png/)
 })
 
-test('usage index skips inherited fork events and removes deleted sessions', async (t) => {
+test('usage index skips inherited fork events and retains deleted sessions', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-fork-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const time = new Date(2026, 7, 19, 8).getTime()
@@ -629,8 +629,17 @@ test('usage index skips inherited fork events and removes deleted sessions', asy
   assert.equal(built.value.totals.inputTokens, 60)
   snapshots = []
   const deleted = await handler('usage-refresh', {})
-  assert.equal(deleted.value.totals.steps, 0)
-  assert.equal(deleted.value.indexedSessions, 0)
+  // 保留策略：会话被删后其贡献永久留在索引里，只打 detached 标记；总量不缩水。
+  assert.equal(deleted.value.totals.steps, 1)
+  assert.equal(deleted.value.totals.inputTokens, 60)
+  assert.equal(deleted.value.indexedSessions, 1)
+  assert.equal(deleted.value.detachedSessions, 1)
+  // 会话回来时自动摘掉标记，用量不重复计入。
+  snapshots = [{ header: { id: 'fork', version: 0, createdAt: time, cwd: '/workspace', seedLength: 2 }, revision: 'a' }]
+  const restored = await handler('usage-refresh', {})
+  assert.equal(restored.value.totals.steps, 1)
+  assert.equal(restored.value.totals.inputTokens, 60)
+  assert.equal(restored.value.detachedSessions, 0)
 })
 
 test('usage index reads alpha.4 inheritedEventCount while retaining old header fallback', async (t) => {
@@ -697,11 +706,76 @@ test('usage ignores assistant steps whose provider reports no token data', async
   assert.equal('missingUsage' in result.value.days[day].projects[0].models[0].totals, false)
 })
 
-test('usage index version mismatch rebuilds the persisted index', async (t) => {
+test('usage retention keeps deleted sessions in totals and exposes the hourly punch-card grid', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-retain-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  // 固定 UTC 时刻，避免用例随运行时的本地时区漂移：08:00Z 在 tz=0 下即 8 时。
+  const eventTime = Date.UTC(2026, 7, 19, 8, 30)
+  const projectDir = join(dshHome, 'kept-project')
+  await mkdir(projectDir, { recursive: true })
+  const header = { id: 'retained', version: 0, createdAt: eventTime, cwd: projectDir }
+  let snapshots = [{ header, revision: 'r1' }]
+  const events = [
+    { type: 'request/header', seq: 0, time: eventTime, data: { header: { config: { provider: 'test', model: 'test-model' } } } },
+    { type: 'assistant/message', seq: 1, time: eventTime, data: { usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ]
+  const persistence = {
+    list: async () => snapshots,
+    open: async () => ({ inheritedEventCount: 0, read: async (from) => ({ events: events.filter((event) => event.seq >= (from ?? 0)) }), close: async () => {} }),
+  }
+  const { handler } = createHost({
+    services: { sessionPersistence: persistence, workspaceRegistry: { list: () => [{ id: 'project-1', title: 'Project One', path: projectDir }] } },
+    env: { DSH_HOME: dshHome },
+  })
+  const built = await handler('usage-refresh', {})
+  assert.equal(built.value.detachedSessions, 0)
+  // 小时桶（星期 × 小时）随载荷下发：2026-08-19 是周三 → weekday 2（周一为 0）。
+  const slot = built.value.hours.find((bucket) => bucket.totals.steps === 1)
+  assert.ok(slot, 'the hourly punch-card grid must carry the folded bucket')
+  assert.equal(slot.weekday, 2)
+  assert.equal(slot.hour, 8)
+  assert.equal(slot.totals.inputTokens, 100)
+  assert.equal(slot.projects[0].id, 'project-1')
+
+  // 删除会话：历史用量必须原样保留，只标记 detached。
+  snapshots = []
+  const deleted = await handler('usage-refresh', {})
+  assert.equal(deleted.value.detachedSessions, 1)
+  assert.equal(deleted.value.indexedSessions, 1)
+  assert.equal(deleted.value.totals.inputTokens, 100)
+  assert.equal(deleted.value.totals.steps, 1)
+  // 项目文件夹仍存在 → 项目入口照常可见。
+  assert.equal(deleted.value.projects.find((project) => project.id === 'project-1').missing, false)
+  assert.equal(deleted.value.hours.length, 1)
+
+  // 项目文件夹消失：只在项目维度标记 missing，总量与小时桶不受影响。
+  const missingDir = join(dshHome, 'gone-project')
+  await mkdir(missingDir, { recursive: true })
+  snapshots = [{ header: { ...header, id: 'other', cwd: missingDir }, revision: 'r1' }]
+  const withMissing = await handler('usage-refresh', {})
+  const other = withMissing.value.projects.find((project) => project.id === `cwd:${missingDir}`)
+  assert.equal(other.missing, false, 'project folder currently exists')
+  await rm(missingDir, { recursive: true, force: true })
+  const afterRemoval = await handler('usage-refresh', {})
+  assert.equal(afterRemoval.value.projects.find((project) => project.id === `cwd:${missingDir}`).missing, true)
+  assert.equal(afterRemoval.value.totals.inputTokens, 200, 'missing project still counts toward the total')
+})
+
+test('usage index version mismatch rebuilds live entries but carries detached history forward', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
-  const stale = { version: 4, updatedAt: now, sessions: { old: { revision: 'r', lastSeq: 1, project: { id: 'p', title: 'Old' }, currentModel: null, hours: {} } } }
+  const hours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const stale = {
+    version: 4,
+    updatedAt: now,
+    sessions: {
+      old: { revision: 'r', lastSeq: 1, project: { id: 'p', title: 'Old' }, currentModel: null, hours: {} },
+      // detached 条目的会话文件已删除，没有任何重折材料——必须跨版本带过，否则保留的历史会被一次升级清空。
+      kept: { revision: 'r', lastSeq: 3, project: { id: 'p2', title: 'Kept', path: '/gone/project' }, currentModel: null, hours, detached: true, detachedAt: now },
+    },
+  }
   await mkdir(dshHome, { recursive: true })
   await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(stale))
   const persistence = {
@@ -711,10 +785,13 @@ test('usage index version mismatch rebuilds the persisted index', async (t) => {
   const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
   const result = await handler('usage-refresh', {})
   assert.equal(result.ok, true)
-  assert.equal(result.value.indexedSessions, 0)
+  assert.equal(result.value.indexedSessions, 1, 'live entry is dropped for re-fold')
+  assert.equal(result.value.detachedSessions, 1, 'detached history survives the version bump')
+  assert.equal(result.value.totals.steps, 1)
+  assert.equal(result.value.totals.inputTokens, 60)
   const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
-  assert.equal(stored.version, 5)
-  assert.deepEqual(Object.keys(stored.sessions), [])
+  assert.equal(stored.version, 6)
+  assert.deepEqual(Object.keys(stored.sessions), ['kept'])
 })
 
 test('usage index tolerates a malformed persisted failure list instead of failing the RPC', async (t) => {
@@ -722,7 +799,7 @@ test('usage index tolerates a malformed persisted failure list instead of failin
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
   const tampered = {
-    version: 5,
+    version: 6,
     updatedAt: now,
     failedSessions: 'not-an-array',
     sessions: { kept: { revision: 'r', lastSeq: 0, project: { id: 'p', title: 'Kept' }, currentModel: null, hours: {} } },
@@ -7016,7 +7093,8 @@ test('usage refresh isolates unreadable sessions, persists partial results, and 
       { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 10, outputTokens: 2 } } },
     ]
     const failure = new Error('@deepseek-ai/dsh-session-format-v0-to-v1 refuses this format v0 Session: user/message 8 source summary requires notice form; raw log: D:\\private\\session; token=secret-value')
-    const list = async () => ids.map(id => ({ header: { id, cwd: '/fixture' }, revision: 'r1' }))
+    let revision = 'r1'
+    const list = async () => ids.map(id => ({ header: { id, cwd: '/fixture' }, revision }))
     const read = async (id) => {
       if (id === 'bad' && broken) throw failure
       return { events }
@@ -7051,19 +7129,26 @@ test('usage refresh isolates unreadable sessions, persists partial results, and 
     assert.deepEqual(recovered.value.failedSessions, [])
     ids = ['good-before', 'good-after']
     const deleted = await host.handler('usage-refresh', {})
-    assert.equal(deleted.value.totals.inputTokens, 20)
+    // 保留策略：被删的 bad 其贡献留在索引里，总量不缩水，只单列 detached 计数。
+    assert.equal(deleted.value.totals.inputTokens, 30)
+    assert.equal(deleted.value.detachedSessions, 1)
     ids = ['bad']
     broken = true
+    // 保留策略下条目不再因删除而消失，故这里必须靠 revision 变化逼出重读（旧版靠「删除后重加」）。
+    revision = 'r2'
     const allFailed = (await host.handler('usage-refresh', {})).value
-    assert.equal(allFailed.indexedSessions, 0)
-    assert.equal(allFailed.successfulSessions, 0)
+    assert.equal(allFailed.detachedSessions, 2, 'the two dropped sessions stay as detached history')
+    assert.equal(allFailed.successfulSessions, 2)
     assert.equal(allFailed.failedSessions.length, 1)
     host = makeHost()
     assert.deepEqual((await host.handler('usage', {})).value, allFailed)
     ids = []
     const removedFailure = (await host.handler('usage-refresh', {})).value
     assert.deepEqual(removedFailure.failedSessions, [])
-    assert.equal(removedFailure.indexedSessions, 0)
+    assert.equal(removedFailure.detachedSessions, 3)
+    // 全部会话删除后，历史用量仍然完整保留。
+    assert.equal(removedFailure.totals.inputTokens, 30)
+    assert.equal(removedFailure.indexedSessions, 3)
   })
 })
 
