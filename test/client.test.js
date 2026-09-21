@@ -1062,7 +1062,8 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(tooltip.props.style.position, 'fixed')
   assert.equal(tooltip.props.style.left, '232px')
   assert.equal(tooltip.props.style.top, '152px')
-  assert.equal(tooltip.children[0].includes(`日期：${day}\n输入 1,000 token\n输出 200 token\n缓存命中 3,100 token`), true)
+  // 四行明细 + 三行汇总：总量按 token 紧凑格式，命中率取宿主加权值 3000/4100 ≈ 73.2%。
+  assert.equal(tooltip.children[0].includes(`日期：${day}\n输入 1,000 token\n输出 200 token\n缓存命中 3,100 token\ntoken 总量 4.3K\n成功模型步骤 5 次\n缓存命中率 73.2%`), true)
   visibleSegment.props.onMouseLeave()
   await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /日期：.*输入.*Token/)
@@ -1503,6 +1504,44 @@ test('usage project tabs hide projects whose folder is gone while totals keep th
   assert.doesNotMatch(labels, /Gone Project/, 'a project whose folder is gone must not offer a filter entry')
   // 全部口径的汇总数字不受影响（用量仍在总量里）。
   assert.equal(renderer.findByTestId('usage-summary-today-0').children[1].children[0], '55')
+})
+
+// 命中率兜底：旧宿主不传 cacheHitRate 时，客户端必须按同一加权式回算
+// ΣcacheRead ÷ Σ(input+cacheRead+cacheWrite)——比率不可跨桶相加，别退化成日值平均。
+test('usage tooltip derives the weighted cache hit rate when the host omits it', async () => {
+  const totals = { steps: 7, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 3000, cacheWriteTokens: 100 }
+  const day = (() => { const d = new Date(); const pad = (v) => String(v).padStart(2, '0'); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` })()
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 1,
+    totals,
+    projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals, models: [] }] } },
+    hours: [],
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  const segment = renderer.findAllByTestIdPrefix('usage-segment-').find((el) => Number(el.props['data-value']) > 0)
+  assert.ok(segment, 'a non-empty segment must exist to hover')
+  segment.props.onMouseEnter({ clientX: 10, clientY: 10 })
+  await renderer.flush()
+  const text = renderer.findByTestId('usage-tooltip').children[0]
+  // 3000 / (1000 + 3000 + 100) = 73.17% → 73.2%
+  assert.match(text, /缓存命中率 73\.2%/)
+  assert.match(text, /token 总量 4\.3K/)
+  assert.match(text, /成功模型步骤 7 次/)
 })
 
 // 热力块头只保留标题 + 维度切换，不渲染汇总提示行。

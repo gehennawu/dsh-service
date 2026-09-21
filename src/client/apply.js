@@ -5596,7 +5596,18 @@
                 // 可访问的文本图表摘要：视觉上不可见，屏幕阅读器可见（v0.39 确认规格）。
                 React.createElement('div', { 'data-testid': 'usage-chart-summary', style: { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' } },
                   translate('usage.chartSummary', { total: formatTokenValue(chartValues.reduce((a, b) => a + b, 0)) })),
-                hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'pre-line', textAlign: 'left' } }, `${translate('usage.tooltip.date', { date: hoveredUsageSegment.date })}\n${translate('usage.tooltip.input', { value: Number(hoveredUsageSegment.totals.inputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.output', { value: Number(hoveredUsageSegment.totals.outputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.cache', { value: Number((hoveredUsageSegment.totals.cacheReadTokens || 0) + (hoveredUsageSegment.totals.cacheWriteTokens || 0)).toLocaleString() })}`) : null,
+                // 提示框追加三行汇总：token 总量 / 成功模型步骤 / 缓存命中率。
+                // 命中率取宿主已按当日桶加权的 cacheHitRate（比率不可跨桶相加，见知识库同名条目）；
+                // 旧宿主缺该字段时按同一加权式 ΣcacheRead ÷ Σ(input+cacheRead+cacheWrite) 回算。
+                hoveredUsageSegment ? React.createElement('div', { 'data-testid': 'usage-tooltip', style: { position: 'fixed', left: `${hoveredUsageSegment.x + 12}px`, top: `${hoveredUsageSegment.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'pre-line', textAlign: 'left' } }, (() => {
+                  const totals = hoveredUsageSegment.totals || {}
+                  const totalValue = usageValue(totals, 'inputTokens') + usageValue(totals, 'outputTokens') + usageValue(totals, 'cacheTokens')
+                  const denominator = Number(totals.inputTokens || 0) + Number(totals.cacheReadTokens || 0) + Number(totals.cacheWriteTokens || 0)
+                  const hitRate = Number.isFinite(Number(totals.cacheHitRate))
+                    ? Number(totals.cacheHitRate)
+                    : (denominator === 0 ? 0 : Number(totals.cacheReadTokens || 0) / denominator)
+                  return `${translate('usage.tooltip.date', { date: hoveredUsageSegment.date })}\n${translate('usage.tooltip.input', { value: Number(totals.inputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.output', { value: Number(totals.outputTokens || 0).toLocaleString() })}\n${translate('usage.tooltip.cache', { value: Number((totals.cacheReadTokens || 0) + (totals.cacheWriteTokens || 0)).toLocaleString() })}\n${translate('usage.tooltip.total', { value: formatTokenValue(totalValue) })}\n${translate('usage.tooltip.steps', { value: Number(totals.steps || 0).toLocaleString() })}\n${translate('usage.tooltip.hitRate', { value: (hitRate * 100).toFixed(1) + '%' })}`
+                })()) : null,
                 React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', marginTop: '10px' } },
                   summaryBlock('today', 'usage.today', todayTotals),
                   summaryBlock('seven', 'usage.sevenDays', sevenTotals)),

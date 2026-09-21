@@ -102,7 +102,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 
 ![Model statistics](./screenshots/model-usage_en.png)
 
-- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values; legend and refresh live in a unified region header; an accessible text summary accompanies the chart
+- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values; legend and refresh live in a unified region header; an accessible text summary accompanies the chart. The hover tooltip has seven lines: the date plus input/output/cache-hit detail, then **total tokens, successful model steps, and cache hit rate**; the hit rate is the host's per-day weighted value (ratios must not be summed across buckets)
 - Per-model horizontal bars with a "Today / Last 7 days / All time" toggle
 - A **daily usage heatmap calendar** at the bottom of the card: every day in the index (up to 20 weeks, columns aligned to Monday), four intensity steps by single-day peak, hover for that day's details; follows the project filter. The chart covers only the last 7 days, so this adds the long-range view
 - The heatmap header can switch to an **hourly punch card**: 7 rows (Monday–Sunday) × 24 columns (00–23), each cell the tokens for that slot, answering "when am I busiest". It is the same hourly buckets re-folded along a different axis, with no new persisted fields. 24 columns fit the region width only at 16px cells (20px overflows)
