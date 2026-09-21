@@ -1293,6 +1293,226 @@ test('usage model list re-sorts and relabels when switching between total and to
   assert.doesNotMatch(renderer.text('settings.section'), /google\/gemini/)
 })
 
+// 热力日历：覆盖宿主索引内**全部**日期（不止主图的 7 天），列按 ISO 周一对齐、强度四档、
+// 随项目筛选联动，并渲染在统计卡最下方（模型列表之后）。
+test('usage heatmap calendar covers every indexed day, aligns columns to Monday, and follows the project filter', async () => {
+  // 相对今天构造日期，避免测试与固定日历日期耦合（跨月/跨年由用例自身覆盖）。
+  const dayKey = (offset) => {
+    const date = new Date()
+    date.setHours(0, 0, 0, 0)
+    date.setDate(date.getDate() - offset)
+    const digits = (value) => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
+  }
+  const totals = (tokens, steps) => ({
+    steps,
+    inputTokens: tokens,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheHitRate: 0.5,
+  })
+  // 40 天前（窗口外）+ 第 20 天 + 今天：主图只画近 7 天，日历必须全都看到。
+  // 峰值 400 落在今天，用来验证四档阈值的分位边界。
+  const projectModels = (models) => [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals: totals(0, 0), models }]
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 1,
+    totals: {},
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: { models: [], tools: [] },
+    days: {
+      [dayKey(40)]: { totals: totals(100, 1), projects: projectModels([]) },
+      [dayKey(20)]: { totals: totals(50, 2), projects: projectModels([]) },
+      [dayKey(0)]: { totals: totals(400, 8), projects: projectModels([]) },
+    },
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  const heatmap = renderer.findByTestId('usage-heatmap')
+  assert.match(heatmap.props.style.border, /solid/)
+  assert.equal(renderer.findByTestId('usage-heatmap-title').children[0], '每日用量日历')
+  // 40 天前 + 20 天前 + 今天 → 3 个有用量的日子；窗口外那两天必须被统计进来。
+  assert.match(renderer.findByTestId('usage-heatmap-summary').children[0], /其中 3 天有用量/)
+  assert.match(renderer.findByTestId('usage-heatmap-summary').children[0], /单日峰值 400 token/)
+
+  const cells = renderer.findAllByTestIdPrefix('usage-heatmap-cell-')
+  // 覆盖范围必须包含 40 天前那格（主图 7 天窗口完全看不到它）。
+  const cellKeys = cells.map((cell) => cell.props['data-testid'].replace('usage-heatmap-cell-', ''))
+  assert.equal(cellKeys.includes(dayKey(40)), true, 'heatmap must include days outside the 7-day chart window')
+  assert.equal(cellKeys.includes(dayKey(20)), true)
+  assert.equal(cellKeys.includes(dayKey(0)), true)
+  // 起点对齐到周一：首格必须是周一（getDay()===1）；末格是今天——最后一周允许不满（与 GitHub 一致，
+  // 网格随「今天」截断，而不是补到周日）。
+  const firstKey = cellKeys[0]
+  const [fy, fm, fd] = firstKey.split('-').map(Number)
+  assert.equal(new Date(fy, fm - 1, fd).getDay(), 1, 'grid must start on a Monday')
+  assert.equal(cellKeys.at(-1), dayKey(0), 'grid must end on today')
+  // 7 的整数倍减最后一周的截断：格数应为 7×列数，且除最后一列外每列 7 格。
+  assert.equal(cells.length >= 7, true)
+  assert.equal(Math.ceil(cells.length / 7) * 7 - cells.length < 7, true)
+  // 四档强度：今天=峰值 → 4；20 天前 50/400=12.5% → 1；40 天前 100/400=25% → 1；无记录 → 0。
+  const cellByKey = new Map(cells.map((cell) => [cell.props['data-testid'].replace('usage-heatmap-cell-', ''), cell]))
+  assert.equal(cellByKey.get(dayKey(0)).props['data-level'], 4)
+  assert.equal(cellByKey.get(dayKey(20)).props['data-level'], 1)
+  assert.equal(cellByKey.get(dayKey(40)).props['data-level'], 1)
+  assert.equal(Number(cellByKey.get(dayKey(0)).props['data-value']), 400)
+  // 无记录日：level 0，且 aria 仍给出可读日期（屏幕阅读器不应遇到空白格）。
+  const emptyCell = cells.find((cell) => cell.props['data-level'] === 0)
+  assert.ok(emptyCell, 'expected at least one no-usage day inside the grid')
+  assert.match(emptyCell.props['aria-label'], /：0 token · 0 次模型步骤$/)
+  assert.equal(Number(emptyCell.props['data-value']), 0)
+  // 图例五档（0..4）齐全。
+  assert.equal(renderer.findAllByTestIdPrefix('usage-heatmap-legend-').length, 5)
+
+  // 悬浮提示：fixed 跟随指针，内容为当日明细。
+  cellByKey.get(dayKey(0)).props.onMouseEnter({ clientX: 300, clientY: 400 })
+  await renderer.flush()
+  const tooltip = renderer.findByTestId('usage-heatmap-tooltip')
+  assert.equal(tooltip.props.style.position, 'fixed')
+  assert.equal(tooltip.props.style.left, '312px')
+  assert.equal(tooltip.props.style.top, '412px')
+  assert.match(tooltip.children[0], /400 token · 8 次模型步骤$/)
+  cellByKey.get(dayKey(0)).props.onMouseLeave()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('usage-heatmap-grid').props.role, 'img')
+
+  // 位置：必须排在模型列表之后（统计卡最下方）。
+  const located = renderer.findNode((node) => node.props?.['data-testid'] === 'usage-card')
+  const order = []
+  const walk = (node) => {
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (node === null || typeof node !== 'object') return
+    if (typeof node.props?.['data-testid'] === 'string') order.push(node.props['data-testid'])
+    for (const child of node.children || []) walk(child)
+  }
+  walk(located.node)
+  assert.ok(order.includes('usage-model-list'), 'model list must be rendered')
+  assert.ok(order.indexOf('usage-model-list') < order.indexOf('usage-heatmap'), 'heatmap must come after the model list')
+})
+
+// 无任何日期键时（空索引）不渲染热力日历块，也不抛错。
+test('usage heatmap is omitted when the index carries no days', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 1, totals: {}, projects: [{ id: 'p', title: 'P', path: '/p' }], days: {}, errors: { models: [], tools: [] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findAllByTestIdPrefix('usage-heatmap').length, 0)
+})
+
+// 上限与格尺寸：格 20px、间距 4px、最多 20 周——满编宽 20×20+19×4 = 476px，必须仍进统计区内容宽。
+// 这条守住两个最容易踩的回归：① 把格子调大而上限没跟着收；② 热力图挪出统计区后宽度预算变了却没复算。
+test('usage heatmap caps its history at 20 weeks and sizes cells at 20px so full capacity fits', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const dayKey = (offset) => {
+    const date = new Date()
+    date.setHours(0, 0, 0, 0)
+    date.setDate(date.getDate() - offset)
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  }
+  // 连续 200 天（远超 20 周上限），确保触发封顶分支。
+  const days = {}
+  for (let offset = 0; offset < 200; offset += 1) {
+    const total = { steps: 1, inputTokens: 100 + offset, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 1, cacheHitRate: 0.3 }
+    days[dayKey(offset)] = { totals: total, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: total, models: [] }] }
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 1, totals: {}, projects: [{ id: 'p1', title: 'P1', path: '/p1' }], days, errors: { models: [], tools: [] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  const cells = renderer.findAllByTestIdPrefix('usage-heatmap-cell-')
+  const columns = renderer.findByTestId('usage-heatmap-grid').children[0]
+  // 封顶 20 周 → 最多 21 列（起点对齐周一可能多凑出一列），绝不出现 22 周以上的量级。
+  assert.equal(columns.length <= 21, true, `expected <= 21 columns, got ${columns.length}`)
+  assert.equal(columns.length >= 20, true, `expected >= 20 columns, got ${columns.length}`)
+  assert.equal(cells.length <= 21 * 7, true)
+  // 每列都是整周（除最后一列截断）：第一列必须 7 格。
+  assert.equal(columns[0].children[0].length, 7)
+  const firstCell = cells[0]
+  assert.match(firstCell.props.style.width, /^20px$/)
+  assert.match(firstCell.props.style.height, /^20px$/)
+  // 满编宽度（20 周 × 20px + 19 个 4px 间距 = 476）不得超统计区内容宽（实测 484px）。
+  const fullCapacity = 20 * 20 + 19 * 4
+  assert.equal(fullCapacity <= 484, true, 'full-capacity grid must fit the statistics-region content width')
+})
+
+// 嵌套一致性：热力图必须与图表/模型列表同属 `usage-statistics-region` 的子块。
+// 挂到 `usage-card` 上（跳过 region）会让它比上方各块宽 13px/侧、左右边缘对不齐——真机上肉眼可见的「脱节」。
+test('usage heatmap is nested inside the statistics region alongside the chart and model list', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  const key = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  const total = { steps: 3, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 500, cacheWriteTokens: 10, cacheHitRate: 0.3 }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 1, totals: {}, projects: [{ id: 'p1', title: 'P1', path: '/p1' }], days: { [key]: { totals: total, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: total, models: [] }] } }, errors: { models: [], tools: [] } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+
+  // 三个块必须是同一父节点下的兄弟，且该父节点是统计区。
+  const owner = new Map()
+  const record = (node, parent) => {
+    if (Array.isArray(node)) { for (const child of node) record(child, parent); return }
+    if (node === null || typeof node !== 'object') return
+    const id = node.props?.['data-testid']
+    if (typeof id === 'string' && ['usage-chart', 'usage-model-list', 'usage-heatmap'].includes(id)) owner.set(id, parent?.props?.['data-testid'] ?? null)
+    for (const child of node.children || []) record(child, node)
+  }
+  for (const tree of [renderer.findByTestId('usage-card')]) record(tree, undefined)
+  for (const id of ['usage-chart', 'usage-model-list', 'usage-heatmap']) {
+    assert.equal(owner.get(id), 'usage-statistics-region', `${id} must be a direct child of usage-statistics-region`)
+  }
+  // 容器语言与模型列表一致（同 padding / radius / 背景令牌）。
+  const heatmapStyle = renderer.findByTestId('usage-heatmap').props.style
+  const modelListStyle = renderer.findByTestId('usage-model-list').props.style
+  assert.equal(heatmapStyle.borderRadius, modelListStyle.borderRadius)
+  assert.equal(heatmapStyle.background, modelListStyle.background)
+  assert.equal(heatmapStyle.border, modelListStyle.border)
+  assert.equal(heatmapStyle.padding.split(' ')[0], modelListStyle.padding.split(' ')[0], 'horizontal padding must match the model list')
+  assert.equal(heatmapStyle.marginTop, modelListStyle.marginTop)
+})
+
 test('service panel uses distinct cards, display surfaces, and semantic action colors', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')

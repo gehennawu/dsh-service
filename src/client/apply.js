@@ -4662,6 +4662,8 @@
         const [upgradeManualConfirm, setUpgradeManualConfirm] = useState(false)
         const [upgradeManualPending, setUpgradeManualPending] = useState(false)
         const [hoveredUsageSegment, setHoveredUsageSegment] = useState(null)
+        // 热力日历格悬浮提示：与主图提示同形（fixed 跟随指针，pointerEvents:none）。
+        const [hoveredHeatDay, setHoveredHeatDay] = useState(null)
         const [usageProject, setUsageProject] = useState('all')
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
@@ -5205,6 +5207,67 @@
         }, { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
         const sevenDenominator = sevenTotals.inputTokens + sevenTotals.cacheReadTokens + sevenTotals.cacheWriteTokens
         sevenTotals.cacheHitRate = sevenDenominator === 0 ? 0 : sevenTotals.cacheReadTokens / sevenDenominator
+        // ── 日用量热力日历（卡片最下方）：GitHub 贡献图式，覆盖宿主索引内**全部**日期键 ──
+        // 数据面零改动：`usage.days` 本就按「索引内每个有记录的本地日」下发（宿主 publicUsage 折小时桶
+        // 而成），主图只取最后 7 天——累计口径下其余日期一直是随载荷白下发的。
+        // 维度选择：格 = 一个自然日（本地日，与宿主分桶口径一致），强度 = 当日 token 总量。
+        // 格边长 20px + 间距 4px：单格明显变大，7 行格网高 164px（原 15px 时为 123px），整块也更舒展。
+        // 上限 **20 周**：本块与图表/模型列表同为 `usage-statistics-region` 的子块，内容宽实测 484px
+        // （region 外框 530 − region padding 12×2 − 本块 padding 10×2 − 边框 2），20×20 + 19×4 = 476 恰好进；
+        // 21 周需 500px 会溢出。数据不满时右侧留白（GitHub 新账号的稀疏日历同样表现），
+        // **不拉伸填满**——试过 flex 铺满，格子会变成 82×10 的细长条，热力图的可读性依赖方格。
+        const HEAT_CELL = 20
+        const HEAT_GAP = 4
+        const HEAT_MAX_WEEKS = 20
+        // 文案走词典，星期/月份名走 Intl（与仓库既有 toLocaleString 用法同源），避免 19 个一次性死键。
+        const heatLocale = currentUiLocale() === 'zh' ? 'zh-CN' : 'en-US'
+        const heatParseDay = (key) => { const [year, month, day] = key.split('-').map(Number); return new Date(year, month - 1, day) }
+        const heatFormatDate = (date) => date.toLocaleDateString(heatLocale, { month: 'short', day: 'numeric' })
+        const heatFormatMonth = (date) => date.toLocaleDateString(heatLocale, { month: 'short' })
+        const heatDayKeys = Object.keys(usage?.days || {}).filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key) && Number.isFinite(heatParseDay(key).getTime()))
+        const heatTotalsByDay = new Map()
+        for (const key of heatDayKeys) {
+          const totals = usageTotalsFor(key)
+          heatTotalsByDay.set(key, { total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0), steps: Number(totals.steps || 0) })
+        }
+        const heatDays = []
+        const heatToday = new Date()
+        heatToday.setHours(0, 0, 0, 0)
+        if (heatDayKeys.length > 0) {
+          const earliest = heatDayKeys.map(heatParseDay).reduce((min, date) => (date < min ? date : min))
+          const floor = new Date(heatToday)
+          floor.setDate(floor.getDate() - (HEAT_MAX_WEEKS * 7 - 1))
+          const start = earliest < floor ? floor : new Date(earliest)
+          // 列对齐到周一（ISO 周，贴合中文习惯）：为凑整周多出的前缀日按「无记录」渲染。
+          start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
+          for (const cursor = new Date(start); cursor <= heatToday; cursor.setDate(cursor.getDate() + 1)) heatDays.push(new Date(cursor))
+        }
+        const heatMax = heatDays.reduce((max, date) => Math.max(max, heatTotalsByDay.get(dateKey(date))?.total || 0), 0)
+        // 四档强度按当日峰值分位（0 单列一档）：与主图的自适应纵轴同一思路，视觉上可比。
+        const heatLevel = (total) => {
+          if (total <= 0 || heatMax <= 0) return 0
+          if (total <= heatMax * 0.25) return 1
+          if (total <= heatMax * 0.5) return 2
+          if (total <= heatMax * 0.75) return 3
+          return 4
+        }
+        const heatLevelOpacity = (level) => (level <= 0 ? 1 : [1, 0.25, 0.45, 0.7, 1][level])
+        const heatColumns = []
+        for (let index = 0; index < heatDays.length; index += 7) {
+          const columnDays = heatDays.slice(index, index + 7)
+          const first = columnDays[0]
+          const previous = index === 0 ? null : heatDays[index - 7]
+          heatColumns.push({
+            key: dateKey(first),
+            // 列首月变化时才写标签，避免同一月份每列重复。
+            monthLabel: previous !== null && previous.getMonth() === first.getMonth() ? '' : heatFormatMonth(first),
+            days: columnDays,
+          })
+        }
+        const heatActiveDays = heatDays.filter((date) => (heatTotalsByDay.get(dateKey(date))?.total || 0) > 0).length
+        // 星期标签取固定参照周的周一..周日：行序恒定，与数据范围无关。
+        const heatWeekdayReference = new Date(2024, 0, 1)
+        const heatWeekdays = [0, 1, 2, 3, 4, 5, 6].map((row) => { const date = new Date(heatWeekdayReference); date.setDate(date.getDate() + row); return date.toLocaleDateString(heatLocale, { weekday: 'short' }) })
         const selectedProjects = usageProject === 'all'
           ? (usage?.projects || []).map((project) => project.id)
           : [usageProject]
@@ -5344,6 +5407,61 @@
                     : `${failure.tool} · ${failure.code}`),
                   React.createElement('span', null, translate('usage.errors.count', { count: failure.count }))),
                 React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '3px', overflowWrap: 'anywhere' } }, failure.message))))
+        // ── 日用量热力日历（卡片最下方）──
+        // 承载「索引内全部日期」的长期视图：主图只画近 7 天，这里回答「哪天在烧、有没有断档」。
+        // 随项目筛选联动（usageTotalsFor 已按 usageProject 取值），与上方各块口径一致。
+        // 单独成块（而非塞进 usageBlock 的数组）是为了把嵌套压平——塞进去时括号层级过深，极易错配。
+        const heatCellStyle = (date) => {
+          const entry = heatTotalsByDay.get(dateKey(date)) || { total: 0, steps: 0 }
+          const level = heatLevel(entry.total)
+          const label = translate('usage.heatmap.cell', { date: heatFormatDate(date), total: formatTokenValue(entry.total), steps: Number(entry.steps || 0).toLocaleString() })
+          return {
+            key: dateKey(date),
+            'data-testid': `usage-heatmap-cell-${dateKey(date)}`,
+            'data-value': entry.total,
+            'data-level': level,
+            'aria-label': label,
+            onMouseEnter: (event) => setHoveredHeatDay({ id: dateKey(date), label, x: event.clientX, y: event.clientY }),
+            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === dateKey(date) ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+            onMouseLeave: () => setHoveredHeatDay(null),
+            style: {
+              width: `${HEAT_CELL}px`,
+              height: `${HEAT_CELL}px`,
+              borderRadius: '4px',
+              flex: 'none',
+              cursor: entry.total > 0 ? 'pointer' : 'default',
+              background: entry.total > 0 ? 'var(--dsh-svc-success)' : 'var(--dsw-alias-border-l1)',
+              opacity: heatLevelOpacity(level),
+            },
+          }
+        }
+        const heatmapBlock = heatDays.length === 0 ? null : React.createElement('div', {
+          key: 'usage-heatmap',
+          'data-testid': 'usage-heatmap',
+          // 与同级的 `usage-model-list` 同一套容器语言（padding 8px 10px / radius 8 / raised-bg / 同色边框），
+          // 保证两块的左右边缘与内缩完全对齐；本块内容高，底部 padding 略加。
+          style: { marginTop: '10px', padding: '8px 10px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)' },
+        },
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' } },
+          React.createElement('div', { 'data-testid': 'usage-heatmap-title', style: { fontSize: '12px', fontWeight: 650 } }, translate('usage.heatmap.title')),
+          React.createElement('div', { 'data-testid': 'usage-heatmap-summary', style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, translate('usage.heatmap.summary', { active: heatActiveDays.toLocaleString(), days: heatDays.length.toLocaleString(), peak: formatTokenValue(heatMax) }))),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', overflowX: 'auto', paddingBottom: '2px' } },
+          // 星期标签列（周一..周日，与列内行序一致）；隔行写字（周一/三/五/日），格变大后 11px 文字不挤。
+          React.createElement('div', { 'aria-hidden': 'true', style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, flex: 'none', paddingTop: '19px' } },
+            heatWeekdays.map((label, row) => React.createElement('div', { key: row, style: { height: `${HEAT_CELL}px`, fontSize: '11px', lineHeight: `${HEAT_CELL}px`, color: 'var(--dsw-alias-label-secondary)' } }, row % 2 === 0 ? label : ''))),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, minWidth: 0, flex: 'none' } },
+            // 月份标签行：与列一一对齐（仅月首列有文字，其余留空占位保持列宽）。
+            React.createElement('div', { 'aria-hidden': 'true', style: { display: 'flex', gap: `${HEAT_GAP}px`, height: '15px' } },
+              heatColumns.map((column) => React.createElement('div', { key: `month-${column.key}`, style: { width: `${HEAT_CELL}px`, flex: 'none', fontSize: '11px', lineHeight: '15px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } }, column.monthLabel))),
+            React.createElement('div', { 'data-testid': 'usage-heatmap-grid', role: 'img', 'aria-label': translate('usage.heatmap.gridLabel'), style: { display: 'flex', gap: `${HEAT_GAP}px` } },
+              heatColumns.map((column) => React.createElement('div', { key: column.key, style: { display: 'flex', flexDirection: 'column', gap: `${HEAT_GAP}px`, flex: 'none' } },
+                column.days.map((date) => React.createElement('div', heatCellStyle(date)))))))),
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '5px', marginTop: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+          React.createElement('span', null, translate('usage.heatmap.less')),
+          [0, 1, 2, 3, 4].map((level) => React.createElement('span', { key: level, 'data-testid': `usage-heatmap-legend-${level}`, style: { width: '12px', height: '12px', borderRadius: '3px', background: level === 0 ? 'var(--dsw-alias-border-l1)' : 'var(--dsh-svc-success)', opacity: heatLevelOpacity(level) } })),
+          React.createElement('span', null, translate('usage.heatmap.more'))),
+        hoveredHeatDay ? React.createElement('div', { 'data-testid': 'usage-heatmap-tooltip', style: { position: 'fixed', left: `${hoveredHeatDay.x + 12}px`, top: `${hoveredHeatDay.y + 12}px`, zIndex: 1000, pointerEvents: 'none', padding: '7px 9px', borderRadius: '6px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', fontSize: '12px', fontWeight: 600, whiteSpace: 'pre-line', textAlign: 'left' } }, hoveredHeatDay.label) : null)
+
         const usageBlock = React.createElement('div', { key: 'usage-section', 'data-testid': 'usage-card', style: card },
           usage && Array.isArray(usage.projects) && usage.projects.length > 0
             ? React.createElement('div', { 'data-testid': 'usage-project-tabs', style: { display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '12px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
@@ -5423,7 +5541,10 @@
                         output: formatTokenValue(model.outputTokens),
                       })))
                   }),
-                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null))
+                  hiddenModelCount > 0 ? React.createElement('button', { style: Object.assign({}, toggle, { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: '2px' }), onClick: () => setModelsOpen((value) => !value) }, `${modelsOpen ? '▾' : '▸'} ${translate(modelsOpen ? 'usage.models.less' : 'usage.models.more', { count: hiddenModelCount })}`) : null),
+                  // 热力日历是统计区（usage-statistics-region）的**同级子块**，与图表/汇总卡/模型列表同一容器、
+                  // 同一内缩；此前误挂在 usage-card 上（跳过 region），导致它比上方各块宽 13px/侧而显得脱节。
+                  heatmapBlock)
             : React.createElement('p', { style: hint }, usageError || translate('usage.empty')),
           ...(usage && usage.indexedSessions > 0 ? [] : [React.createElement('div', { key: 'usage-refresh-fallback', style: row }, React.createElement('button', { style: neutral, 'data-variant': 'neutral', onClick: refreshUsage, disabled: usageBusy }, translate(usageBusy ? 'usage.refreshing' : 'usage.refresh')))]))
 

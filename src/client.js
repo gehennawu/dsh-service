@@ -1144,6 +1144,13 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'usage.hitRate': '缓存命中率',
       'usage.today': '今日',
       'usage.sevenDays': '近 7 天',
+      // 热力日历（卡片最下方）：覆盖宿主索引内全部日期；星期/月份名走 Intl，不入词典。
+      'usage.heatmap.title': '每日用量日历',
+      'usage.heatmap.summary': '索引内 {days} 天有记录，其中 {active} 天有用量，单日峰值 {peak} token',
+      'usage.heatmap.gridLabel': '每日 token 用量热力日历',
+      'usage.heatmap.cell': '{date}：{total} token · {steps} 次模型步骤',
+      'usage.heatmap.less': '少',
+      'usage.heatmap.more': '多',
       'usage.errors.title': '模型报错',
       'usage.errors.toggle': '模型报错（{count} 类）',
       'usage.errors.recent': '最近 24 小时',
@@ -2048,6 +2055,14 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'usage.hitRate': 'Cache hit rate',
       'usage.today': 'Today',
       'usage.sevenDays': 'Last 7 days',
+      // Heatmap calendar (bottom of the card): covers every day in the host index; weekday and
+      // month names come from Intl, not the dictionary.
+      'usage.heatmap.title': 'Daily usage calendar',
+      'usage.heatmap.summary': '{days} days indexed, {active} with usage, single-day peak {peak} tokens',
+      'usage.heatmap.gridLabel': 'Daily token usage heatmap calendar',
+      'usage.heatmap.cell': '{date}: {total} tokens · {steps} model steps',
+      'usage.heatmap.less': 'Less',
+      'usage.heatmap.more': 'More',
       'usage.errors.title': 'Model errors',
       'usage.errors.toggle': 'Model errors ({count} types)',
       'usage.errors.recent': 'Last 24 hours',
