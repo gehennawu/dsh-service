@@ -487,7 +487,6 @@ test('usage lists sessions through the legacy persistence shape whose list() ret
   assert.equal(unchanged.value.totals.steps, 1)
 })
 
-
 test('usage RPC builds and incrementally refreshes exact daily provider, model, and project totals', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -825,7 +824,7 @@ test('usage index version mismatch retains deleted sessions without detached fla
   const ghostHours = { '2026-08-19T07': { totals: { steps: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
   const keptHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
   const stale = {
-    version: 5,
+    version: 4,
     updatedAt: now,
     sessions: {
       // ghost 在升级前源文件已被删除，但旧索引未打 detached 标记——绝不能在版本升级时丢失历史数据！
@@ -849,19 +848,64 @@ test('usage index version mismatch retains deleted sessions without detached fla
   assert.equal(result.value.totals.steps, 3)
   assert.equal(result.value.totals.inputTokens, 160)
   const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
-  assert.equal(stored.version, 6)
+  assert.equal(stored.version, 7)
   assert.equal(stored.sessions.ghost.detached, true)
   assert.equal(stored.sessions.ghost.rebuildPending, undefined)
   assert.equal(stored.sessions.kept.detached, true)
 })
 
-test('usage index version mismatch rebuilds live sessions from seq 0 without duplicating tokens even when revision matches', async (t) => {
+test('usage index version bump without a fold-contract change keeps every bucket and reads nothing', async (t) => {
+  // v5→v6 只加了 detached / failedSessions 记账字段，折叠函数逐字节未变（口径在 v5 定稿）。
+  // 那时把「索引版本变了」当成「口径变了」而强制全量重折，会让 v5 索引升到 v6 时重读全部会话：
+  // 旧日志读不动时每次刷新都重报一批「会话读取失败」，且失败不清标记、永远重试。
+  // 升级索引版本号**不等于**折叠口径变更，故 v5/v6 桶必须原样沿用、一次日志都不读。
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-bump-no-refold-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const hours = { '2026-08-19T08': { totals: { steps: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const stale = {
+    version: 5,
+    updatedAt: now,
+    sessions: {
+      'live-1': { revision: 'r-same', lastSeq: 1, project: { id: 'p', title: 'Live' }, currentModel: null, hours },
+      // 真实场景：这一条会被 v6 迁移错误地打上 rebuildPending，此后每轮都重读重报。
+      'stuck-1': { revision: 'r-stuck', lastSeq: 1, project: { id: 'p', title: 'Stuck' }, currentModel: null, hours, rebuildPending: true },
+    },
+  }
+  await mkdir(dshHome, { recursive: true })
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(stale))
+  const readOffsets = []
+  const persistence = {
+    listSnapshots: async () => [
+      { header: { id: 'live-1', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'r-same' },
+      { header: { id: 'stuck-1', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'r-stuck' },
+    ],
+    readFrom: async (id, fromSeq) => { readOffsets.push(`${id}:${fromSeq}`); throw new Error('legacy log unreadable') },
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(readOffsets, [], 'an aligned fold contract must not re-read any session log')
+  assert.deepEqual(result.value.failedSessions, [], 'no session may be reported as read-failed')
+  assert.equal(result.value.indexedSessions, 2)
+  // 历史桶一字不动地留下，总量不缩水
+  assert.equal(result.value.totals.steps, 4)
+  assert.equal(result.value.totals.inputTokens, 200)
+  const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored.version, 7)
+  // 误加的历史标记必须被清掉，否则它会跨重启继续触发全量重读
+  assert.equal(stored.sessions['live-1'].rebuildPending, undefined)
+  assert.equal(stored.sessions['stuck-1'].rebuildPending, undefined)
+})
+
+test('usage index version mismatch rebuilds live sessions from seq 0 when the fold contract is older', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-live-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
   const oldHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
   const stale = {
-    version: 5,
+    // v4 的桶口径落后（当时无 usage 的步骤也计为步骤），必须从 seq 0 重折。
+    version: 4,
     updatedAt: now,
     sessions: {
       'live-1': { revision: 'r-same', lastSeq: 1, project: { id: 'p', title: 'Live' }, currentModel: null, hours: oldHours },
@@ -891,7 +935,7 @@ test('usage index version mismatch rebuilds live sessions from seq 0 without dup
   assert.equal(result.value.totals.steps, 1)
   assert.equal(result.value.totals.inputTokens, 150)
   const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
-  assert.equal(stored.version, 6)
+  assert.equal(stored.version, 7)
   assert.equal(stored.sessions['live-1'].rebuildPending, undefined)
 })
 
@@ -901,7 +945,8 @@ test('usage index version mismatch preserves old summary on rebuild failure and 
   const now = Date.now()
   const oldHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 80, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
   const stale = {
-    version: 5,
+    // v4 桶口径落后 → 迁移会打 rebuildPending；读取失败时该标记必须跨重启保留以便重试。
+    version: 4,
     updatedAt: now,
     sessions: {
       fragile: { revision: 'r1', lastSeq: 1, project: { id: 'p', title: 'Fragile' }, currentModel: null, hours: oldHours },
@@ -930,10 +975,10 @@ test('usage index version mismatch preserves old summary on rebuild failure and 
   // 重折失败时旧摘要不丢，总量依然能统计到
   assert.equal(result1.value.totals.inputTokens, 80)
   const stored1 = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
-  assert.equal(stored1.version, 6)
+  assert.equal(stored1.version, 7)
   assert.equal(stored1.sessions.fragile.rebuildPending, true, 'rebuildPending must persist to disk on failure')
 
-  // 模拟宿主重启：重新初始化 host 读取存盘的 v6 index，rebuildPending 跨重启保留
+  // 模拟宿主重启：重新初始化 host 读取存盘的索引，rebuildPending 跨重启保留
   failRead = false
   const host2 = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
   const result2 = await host2.handler('usage-refresh', {})
@@ -950,7 +995,7 @@ test('usage index tolerates a malformed persisted failure list instead of failin
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
   const tampered = {
-    version: 6,
+    version: 7,
     updatedAt: now,
     failedSessions: 'not-an-array',
     sessions: { kept: { revision: 'r', lastSeq: 0, project: { id: 'p', title: 'Kept' }, currentModel: null, hours: {} } },
@@ -1655,7 +1700,7 @@ test('diagnostics appends a usage-index check reporting indexed sessions, freshn
   await mkdir(dshHome, { recursive: true })
   const now = Date.now()
   const index = {
-    version: 6,
+    version: 7,
     updatedAt: now,
     sessions: { a: { revision: 'r', lastSeq: 0 }, b: { revision: 'r', lastSeq: 0 } },
     failedSessions: [{ id: 'bad', code: 'session-fold-failed', stale: false }],
@@ -1685,7 +1730,7 @@ test('diagnostics reports a healthy usage index as ok and a never-built index as
   await mkdir(healthyHome, { recursive: true })
   await mkdir(freshHome, { recursive: true })
   const now = Date.now()
-  await writeFile(join(healthyHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 6, updatedAt: now, sessions: { a: {} }, failedSessions: [] }))
+  await writeFile(join(healthyHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 7, updatedAt: now, sessions: { a: {} }, failedSessions: [] }))
   const makeHost = (dshHome) => createHost({
     services: {
       sessionPersistence: { listSnapshots: async () => [] },
@@ -1707,7 +1752,7 @@ test('diagnostics omits the usage-index check when the model usage feature is di
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   await mkdir(dshHome, { recursive: true })
   // 索引本身带失败会话，但功能关闭时宿主根本不刷新它：报 warning 只会是陈旧误导，故整项缺席。
-  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 6, updatedAt: Date.now(), sessions: { a: {} }, failedSessions: [{ id: 'bad', code: 'session-fold-failed', stale: false }] }))
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify({ version: 7, updatedAt: Date.now(), sessions: { a: {} }, failedSessions: [{ id: 'bad', code: 'session-fold-failed', stale: false }] }))
   const { handler } = createHost({
     services: {
       sessionPersistence: { listSnapshots: async () => [] },

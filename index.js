@@ -112,8 +112,16 @@ const MAX_BACKUP_COMPRESSED_BYTES = 512 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
-const USAGE_INDEX_VERSION = 6
+const USAGE_INDEX_VERSION = 7
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+// 桶口径已对齐（= 当前折叠口径）的最低索引版本：口径在 v5 定稿，v5/v6 的折叠函数与当前
+// **逐字节相同**（v6 只加了 detached / failedSessions 记账字段），故加载 v5 及以后的桶可
+// 直接沿用；**低于它的必须重折**（v4 及更早把「无 usage 的步骤」也计为步骤）。
+// 反向写法（「非当前版本就重折」「不在已知表里就重折」）会把纯记账升版当成口径变更：
+// v5→v6 那次折叠函数一字未改，却把全部会话拖进全量重读，旧日志读不动时就变成每次刷新都
+// 重读重报（真机 132 会话全量重读、44 个误报——它们 revision 未变，本可安全跳过）。
+// 新增索引版本号时**无需**改动本常量：新版本默认落在「已对齐」一侧。
+const USAGE_FOLD_ALIGNED_FROM_INDEX_VERSION = 5
 // 报错滚动窗口：一个常量同时约束「折叠时是否收录」（recentErrorTime）、「出参前修剪」
 // （publicUsage）与「落盘前修剪」（refreshUsageIndex），三者必须一致，否则会出现
 // 收录了却被下一轮清掉的半衰状态。窗口只影响报错计数，与永久保留的用量无关。
@@ -1119,19 +1127,26 @@ function createUsageIndex() {
   return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions: {}, failedSessions: [] }
 }
 
-// 版本迁移：折读口径变更时旧桶需要重折，但所有旧摘要必须保留，直到确认 live 且重折成功才替换。
-// 未标记 detached 的条目可能源文件已在升级前被删除（此前未标 detached），也可能源文件仍在但需要重折；
-// 绝不能在迁移时直接丢弃。我们给所有非 detached 条目打上显式的 rebuildPending 标记并跨重启保留：
-// 若后续刷新时发现源文件已删除，自动转为 detached 保留完整历史；
-// 若源文件仍在，全量重折成功后才替换旧摘要并清除标记，重折失败则继续保留旧摘要。
+// 版本迁移：**只在确知折叠口径落后时才重折**（见 USAGE_FOLD_ALIGNED_FROM_INDEX_VERSION）。
+// 所有旧摘要一律保留——未标记 detached 的条目可能源文件已在升级前被删除（此前未标 detached），
+// 也可能源文件仍在；绝不能在迁移时丢弃，更不能无差别重折。口径已对齐的版本直接沿用旧桶
+// （revision 未变的会话连读都不读）；只有口径落后才打 rebuildPending 强制从 seq 0 重折。标记
+// 跨重启保留：源已删则转 detached 留全历史，源仍在则重折成功才替换、失败保留旧摘要下次再试。
 function migrateUsageIndex(parsed) {
+  const fromIndexVersion = Number.isSafeInteger(parsed?.version) ? parsed.version : 0
+  const needsRefold = fromIndexVersion < USAGE_FOLD_ALIGNED_FROM_INDEX_VERSION
   const sessions = {}
   if (parsed?.sessions !== null && typeof parsed?.sessions === 'object') {
     for (const [id, session] of Object.entries(parsed.sessions)) {
       if (session !== null && typeof session === 'object') {
         const migrated = structuredClone(session)
-        if (migrated.detached !== true) {
+        // detached 条目没有重折材料（源文件已删），永远只保留不重折。
+        if (needsRefold && migrated.detached !== true) {
           migrated.rebuildPending = true
+        } else {
+          // 口径未变（或条目不可重折）：清掉历史升级可能残留的待重建标记，否则它会让这个
+          // 会话在每次刷新时被反复全量重读——旧日志读不动时正是「每次刷新都报失败」的来源。
+          delete migrated.rebuildPending
         }
         sessions[id] = migrated
       }
