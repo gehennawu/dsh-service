@@ -1191,6 +1191,121 @@ test('usage all-failed payload shows warning without indexed sessions and recove
   assert.equal(renderer.hasTest('usage-failure-warning'), false)
 })
 
+test('usage failure warning can be dismissed and stays dismissed until a new failure appears', async () => {
+  const day = new Date().toLocaleDateString('en-CA')
+  const totals = { steps: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  const usageWith = (failedSessions) => ({
+    updatedAt: Date.now(),
+    indexedSessions: 1 + failedSessions.length,
+    successfulSessions: 1,
+    failedSessions,
+    totals,
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals, models: [] }] } },
+  })
+  const original = [{ id: 'legacy-v0', code: 'session-read-failed', message: 'x', stale: true }]
+  let current = usageWith(original)
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-dismiss' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: current }
+    if (endpoint === 'usage-refresh') return { ok: true, value: current }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), true, 'the warning is visible before dismissal')
+
+  renderer.findByTestId('usage-failure-dismiss').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), false, 'dismissing hides the warning')
+  assert.equal(typeof localStorage.getItem('dsh-service-usage-failures-dismissed'), 'string', 'the dismissal is remembered')
+
+  // 同一组失败：刷新后仍然静音（指纹未变）
+  renderer.findByTestId('usage-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), false, 'the same failure set stays dismissed across refreshes')
+
+  // 出现新的失败会话：指纹变化 → 告警必须重新出现，不能被「关一次」永久静音
+  current = usageWith([...original, { id: 'another-bad-session', code: 'format-migration-failed', message: 'y', stale: true }])
+  renderer.findByTestId('usage-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), true, 'a new skipped session resurfaces the warning')
+
+  // 只改顺序（同一集合）不得误判为新失败
+  renderer.findByTestId('usage-failure-dismiss').props.onClick()
+  await renderer.flush()
+  current = usageWith([...current.failedSessions].reverse())
+  renderer.findByTestId('usage-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('usage-failure-warning'), false, 'reordering the same failure set must not resurface the warning')
+})
+
+test('usage failure warning dismissal persists across a fresh mount', async () => {
+  const day = new Date().toLocaleDateString('en-CA')
+  const totals = { steps: 1, inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  const failures = [{ id: 'legacy-v0', code: 'session-read-failed', message: 'x', stale: true }]
+  const usage = {
+    updatedAt: Date.now(),
+    indexedSessions: 2,
+    successfulSessions: 1,
+    failedSessions: failures,
+    totals,
+    projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project' }],
+    errors: { models: [], tools: [] },
+    days: { [day]: { totals, projects: [{ id: 'project-1', title: 'Project One', path: '/workspace/project', totals, models: [] }] } },
+  }
+  const createUsageRenderer = (initialStorage) => createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-dismiss-remount' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    if (endpoint === 'usage-refresh') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { initialStorage })
+
+  const first = createUsageRenderer()
+  await first.load()
+  first.mount('settings.section')
+  await first.flush()
+  await first.findButton('模型统计').props.onClick()
+  await first.flush()
+  assert.equal(first.hasTest('usage-failure-warning'), true)
+  first.findByTestId('usage-failure-dismiss').props.onClick()
+  await first.flush()
+  assert.equal(first.hasTest('usage-failure-warning'), false)
+  const storedFingerprint = localStorage.getItem('dsh-service-usage-failures-dismissed')
+  assert.equal(typeof storedFingerprint, 'string', 'the dismissal fingerprint is written to storage')
+
+  // 重开设置页（新挂载 + 从持久化键恢复，模拟刷新页面）：关闭状态必须读回，不能又冒出来。
+  const second = createUsageRenderer({ 'dsh-service-usage-failures-dismissed': storedFingerprint })
+  await second.load()
+  second.mount('settings.section')
+  await second.flush()
+  await second.findButton('模型统计').props.onClick()
+  await second.flush()
+  assert.equal(second.hasTest('usage-failure-warning'), false, 'the dismissal survives a fresh mount')
+
+  // 清掉记忆键 → 告警恢复（用户可主动找回）
+  const third = createUsageRenderer()
+  await third.load()
+  third.mount('settings.section')
+  await third.flush()
+  await third.findButton('模型统计').props.onClick()
+  await third.flush()
+  assert.equal(third.hasTest('usage-failure-warning'), true, 'clearing the stored key brings the warning back')
+})
+
 test('usage old payload without failedSessions remains compatible', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')

@@ -4643,6 +4643,10 @@
             }, translate('quota.adapt')))] : []))
       }
 
+      // 跳过会话告警的「已关闭」记忆键。存的是**失败集合指纹**（见 ServicePanel 内注释），
+      // 不是布尔值——同组失败关掉后不再提示，出现新的失败会话则指纹变化、告警重新出现。
+      const USAGE_FAILURE_DISMISS_KEY = 'dsh-service-usage-failures-dismissed'
+
       function ServicePanel() {
         const translate = useTranslation()
         const { value: features } = useFeatures()
@@ -4686,6 +4690,9 @@
         const [usageBusy, setUsageBusy] = useState(false)
         const [usageError, setUsageError] = useState(null)
         const [usageFailureDetails, setUsageFailureDetails] = useState(false)
+        // 已关闭的跳过会话告警：存失败集合指纹（而非布尔），空串/null 表示未关闭。
+        // 与「维护子页记忆」同法：先默认值，mount 后从 localStorage 读回，避免渲染期副作用。
+        const [usageFailureDismissed, setUsageFailureDismissed] = useState(null)
         const [upgradeBusy, setUpgradeBusy] = useState(false)
         const [upgradeError, setUpgradeError] = useState(null)
         // 疑似手动启动环境的升级两段式：确认后果 → 仍要升级；成功后不自动退出，改示指引。
@@ -4759,6 +4766,10 @@
           })
           return () => { active = false }
         }, [features.healthDiagnostics])
+        // 跳过会话告警的关闭记忆：mount 时读回（与维护子页记忆同法），读失败按未关闭处理。
+        useEffect(() => {
+          try { setUsageFailureDismissed(localStorage.getItem(USAGE_FAILURE_DISMISS_KEY)) } catch (_) { setUsageFailureDismissed(null) }
+        }, [])
         useEffect(() => {
           if (!featureEnabled('modelUsage')) return () => {}
           let active = true
@@ -5486,13 +5497,34 @@
         const usageSuccessfulSessions = Number.isFinite(Number(usage?.successfulSessions))
           ? Number(usage.successfulSessions)
           : Math.max(0, Number(usage?.indexedSessions || 0) - usageFailures.filter((failure) => failure && failure.stale === true).length)
-        const usageFailureWarning = usageFailures.length === 0
+        // 失败集合指纹：id+错误码排序后拼串（不排序则宿主列表顺序变化就会误判为新失败）。
+        // 关闭告警时把这个指纹写进 localStorage，之后只有**同一组**失败被静音；一旦出现新的
+        // 失败会话（增删/换码，如这次读不动的旧日志被修好、或又冒出别的坏会话）指纹即变，
+        // 告警自动重新出现——避免「关一次就永远看不到新问题」。
+        const usageFailureFingerprint = usageFailures
+          .map((failure) => `${failure && typeof failure.id === 'string' ? failure.id : ''}\u0000${failure && typeof failure.code === 'string' ? failure.code : ''}`)
+          .sort()
+          .join('\u0001')
+        const usageFailureWarning = usageFailures.length === 0 || usageFailureDismissed === usageFailureFingerprint
           ? null
           : React.createElement('div', { 'data-testid': 'usage-failure-warning', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsh-svc-warning)', background: 'var(--dsh-svc-raised-bg)', color: 'var(--dsh-svc-text)' } },
-              React.createElement('div', { style: { fontSize: '12px', lineHeight: 1.5, fontWeight: 650 } }, translate('usage.failures.global', { successful: usageSuccessfulSessions.toLocaleString(), failed: usageFailures.length.toLocaleString() })),
-              usageFailures.some((failure) => failure && failure.stale === true)
-                ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11px', lineHeight: 1.5, color: 'var(--dsh-svc-text-muted)' } }, translate('usage.failures.staleHint'))
-                : null,
+              React.createElement('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '8px' } },
+                React.createElement('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+                  React.createElement('div', { style: { fontSize: '12px', lineHeight: 1.5, fontWeight: 650 } }, translate('usage.failures.global', { successful: usageSuccessfulSessions.toLocaleString(), failed: usageFailures.length.toLocaleString() })),
+                  usageFailures.some((failure) => failure && failure.stale === true)
+                    ? React.createElement('div', { style: { marginTop: '4px', fontSize: '11px', lineHeight: 1.5, color: 'var(--dsh-svc-text-muted)' } }, translate('usage.failures.staleHint'))
+                    : null),
+                React.createElement('button', {
+                  type: 'button',
+                  'data-testid': 'usage-failure-dismiss',
+                  'aria-label': translate('usage.failures.dismiss'),
+                  title: translate('usage.failures.dismiss'),
+                  style: { flex: 'none', background: 'transparent', border: 0, padding: '0 2px', cursor: 'pointer', color: 'var(--dsh-svc-text-muted)', fontSize: '16px', lineHeight: 1 },
+                  onClick: () => {
+                    setUsageFailureDismissed(usageFailureFingerprint)
+                    try { localStorage.setItem(USAGE_FAILURE_DISMISS_KEY, usageFailureFingerprint) } catch (_) {}
+                  },
+                }, '×')),
               React.createElement('button', { type: 'button', 'data-testid': 'usage-failure-details-toggle', 'aria-expanded': String(usageFailureDetails), style: Object.assign({}, toggle, { marginTop: '5px', padding: 0 }), onClick: () => setUsageFailureDetails((value) => !value) }, `${usageFailureDetails ? '▾' : '▸'} ${translate(usageFailureDetails ? 'usage.failures.hide' : 'usage.failures.show')}`),
                usageFailureDetails
                 ? React.createElement('div', { 'data-testid': 'usage-failure-details', style: { display: 'grid', gap: '6px', marginTop: '8px' } },

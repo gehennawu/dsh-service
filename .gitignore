@@ -32,3 +32,6 @@ docs/planning/
 
 # Project-local skills (not shared)
 .agents/skills/
+
+# 真机验证取证（截图 / DUMP）——瞬态产物，不进版本库
+.e2e-out/
