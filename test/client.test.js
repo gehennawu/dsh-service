@@ -8262,11 +8262,13 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   // 初始拉取 + 聚合文本（跨回合累计、×n 计数）。
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
   assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×2')
-  // 布局契约：行挂输入卡下方 dock 行，flex:0 0 100% + order:1 独占官方统计（含上下文
-  // 圆环）行的下一行（svcStyle 行级规则开 wrap + row-gap:0 两行贴紧），不与官方条目
-  // 同行挤占、不把圆环挤到第三行；自身无顶部内边距。
+  // 布局契约：行挂输入卡下方 dock 行；「独占一行」的 flex:0 0 100% **不写在行内**——
+  // 由 svcStyle 按形态限定（见下方 svcStyle 断言）：老宿主（0.1.5-rc.1/rc.2）上同槽位
+  // 渲染为 uV2eYG_root（flex-direction:column）子项，行内 flex-basis:100% 在那里解析成
+  // 「占满容器高度」，把一行文字撑成 ~150px 空壳（issue #3 底部异常空白）。
+  // order:1 后移让官方统计+圆环共占第一行（0.1.6 形态）。
   const dockStyle = renderer.findByTestId('subagent-models-dock').props.style
-  assert.equal(dockStyle.flex, '0 0 100%')
+  assert.equal('flex' in dockStyle, false)
   assert.equal(dockStyle.order, 1)
   assert.equal(dockStyle.textAlign, 'center')
   assert.equal(dockStyle.maxWidth, '100%')
@@ -8310,6 +8312,48 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   assert.equal((renderer.registrations()['conversation.composer.dock'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models-dock').length, 0)
   await renderer.setFeature('subagentModelsDock', true)
   assert.equal(renderer.registrations()['conversation.composer.dock'].some((item) => item.id === 'dsh-service-subagent-models-dock'), true)
+})
+
+test('subagent models dock row: svcStyle claims a full line only on 0.1.6 dock rows, never inside the old host column', async () => {
+  // 注入样式捕获：主渲染器环境没有 document，挂最小桩接住 svcStyle 文本（同 version card 用例）。
+  const injectedStyles = []
+  class FakeMutationObserver { observe() {} disconnect() {} }
+  globalThis.MutationObserver = FakeMutationObserver
+  globalThis.document = {
+    body: {},
+    head: { appendChild(el) { injectedStyles.push(el.textContent) } },
+    createElement() { return { dataset: {}, remove() {} } },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
+  }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.5-rc.2', pluginVersion: '1.0.0', instanceId: 'x' } }
+      if (endpoint === 'check-update') return { ok: true, value: { plugin: { current: '1.0.0', latest: '1.0.0', tags: { latest: '1.0.0', next: '1.0.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' } } }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    await renderer.flush()
+
+    // 0.1.6 dock 行：累计行在场才开 wrap + 撑满整行（既有行为，不得回退）；「独占一行」
+    // 的 flex:0 0 100% 用**后代选择器**声明——穿透槽位 wrapper 的 display:contents 依然
+    // 命中，且只在 dock 行形态下生效。
+    assert.match(injectedStyles.join('\n'), /\[class\*="uV2eYG_dock"\]:has\(\[data-dsh-service-subagent-models-dock\]\)\{flex-wrap:wrap;width:100%;row-gap:0\}/)
+    assert.match(injectedStyles.join('\n'), /\[class\*="uV2eYG_dock"\] \[data-dsh-service-subagent-models-dock\]\{flex:0 0 100%\}/)
+    // 老宿主（0.1.5-rc.1/rc.2）上没有 uV2eYG_dock 元素：同槽位直接渲染为 uV2eYG_root
+    // （flex-direction:column）子项，若累计行仍带 flex-basis:100% 会解析成「占满容器
+    // 高度」，一行文字被撑成 ~150px 空壳（issue #3 底部异常空白）。后代选择器天然把
+    // 老宿主排除在外；曾试过按父级 `:not([class*="uV2eYG_dock"])` 分流，但 0.1.6 上
+    // 累计行的直接父级是 class 为空的槽位 wrapper（display:contents），会误伤新宿主。
+    assert.doesNotMatch(injectedStyles.join('\n'), /:not\(\[class\*="uV2eYG_dock"\]\) > \[data-dsh-service-subagent-models-dock\]/)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
 })
 
 test('subagent page: composer subagent-info toggle defaults on, flips the independent feature, and persists', async () => {
@@ -8595,7 +8639,10 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*column-gap: 3px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*font-size: 11px !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="bOPqQW_root"\] \{[^}]*flex-wrap: wrap !important/s)
-    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{ flex: 1 1 auto !important; min-width: 0 !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{ flex: 0 1 auto !important; min-width: 0 !important; \}/)
+    // 子项 grow 必须为 0：老宿主（0.1.5-rc.2）这条行是「整行宽 + justify-content:center」，
+    // flex-grow 会先吃掉富余宽度，而行内 pill 是 flex-start ⇒ 整组被钉在行左端（「统计是歪的」）。
+    assert.doesNotMatch(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{[^}]*flex: 1 1 auto/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*padding-left: 2px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*font-size: 11px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_label"\] \{[^}]*text-overflow: ellipsis !important/s)

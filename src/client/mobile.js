@@ -208,9 +208,11 @@ html[data-dshsvc-mobile] [class*="nArs4W_toggleButton"] {
    完整显示需 ~380px，于是官方让它们各自收缩、把每枚的文字截断（0.1.5-rc.2 的
    截断落在每枚 pill 自己的 bOPqQW_label 上）。用户点名（2026-09-15）：「不要换行，
    保持一行、把空间利用最大化」。
-   修法：只收紧这条行自身的内边距/间距，两枚 pill 按需分宽、共占满整行——始终一行，
-   装得下时零截断（≥~420px 视口），装不下时按比例各让一点（比官方的固定截断少一个
-   数量级），不换行、不横向滚动。
+   修法：只收紧这条行自身的内边距/间距（32→2px、12→3px），行内两枚按官方
+   justify-content 居中排开、flex-wrap:nowrap 保持一行；宽度不够时两枚按 shrink
+   比例各让一点（比官方的固定截断少一个数量级），全程不换行、不横向滚动。
+   注意「用满宽度」是靠**收窄行的内边距**换来的，不是靠子项 flex-grow——grow 会把
+   整组推向左侧（老宿主形态，见下方 bOPqQW_root 规则注）。
    旧宿主（0.1.2-alpha.2 ~ 0.1.4）的单行横滑规则（NDN2W_root）原样保留。 */
 /* 统计条与外部上下文圆环的单行布局：
    0.1.6 官方把上下文圆环（JObwrW_root / JObwrW_trigger）移入输入框外部下方的
@@ -241,6 +243,17 @@ html[data-dshsvc-mobile] [class*="NDN2W_root"] {
   scrollbar-width: none !important;
 }
 html[data-dshsvc-mobile] [class*="NDN2W_root"]::-webkit-scrollbar { display: none !important; }
+/* 统计行在老宿主上是「整行宽 + 居中」，子项 flex-grow 一旦非 0 整组就会左偏：
+   官方这条行的盒子随版本变过两次形态——
+   · 0.1.5-rc.2：width:100% + padding:0 32px + justify-content:center，宽度
+     **等于整行**（它是 composer 卡片里的一行），行内必有富余宽度；
+   · 0.1.6 起：max-width:100%，行**收缩到内容宽**，再由外层 dock 居中，行内零富余。
+   富余宽度落在 justify-content:center 上才是「两枚统计居中」；若给子项 flex-grow，
+   两枚 anchor 先把富余吃干，而行内每枚 pill 是默认 justify-content:flex-start
+   ⇒ 文字贴着行内容盒左端、右端留出与富余等宽的空洞（实测 606px 视口尾空 144.7px、
+   整组中心偏移 −72.3px，即「统计是歪的」）。故子项 grow 必须为 0：老宿主上交还给
+   官方 justify-content 居中，新宿主上行本就无富余、写成 0 与 1 等效（空操作）。
+   收缩仍保留 shrink:1，窄视口按比例让位的既定行为不变。 */
 html[data-dshsvc-mobile] [class*="bOPqQW_root"] {
   flex-wrap: nowrap !important;
   padding-left: 2px !important;
@@ -249,7 +262,9 @@ html[data-dshsvc-mobile] [class*="bOPqQW_root"] {
   font-size: 11px !important;
   line-height: 16px !important;
 }
-html[data-dshsvc-mobile] [class*="bOPqQW_root"] > * { flex: 1 1 auto !important; min-width: 0 !important; }
+/* 子项用 flex:0 1 auto（= flex 初始值）而非 flex:1 1 auto：
+   grow 必须为 0，否则老宿主把统计整组推歪（见上方 rc.2 注）。 */
+html[data-dshsvc-mobile] [class*="bOPqQW_root"] > * { flex: 0 1 auto !important; min-width: 0 !important; }
 html[data-dshsvc-mobile] [class*="bOPqQW_pill"] {
   min-width: 0 !important;
   padding-left: 2px !important;

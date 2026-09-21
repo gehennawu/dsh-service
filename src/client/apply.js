@@ -89,12 +89,27 @@
           // 会话累计行独占 dock 行的下一行（v1.8.x 布局修订）：官方 dock 行（uV2eYG_dock，
           // content-sized + nowrap 的 flex 行）默认把槽位内容与统计胶囊/上下文圆环挤在一行；
           // 仅当累计行在场（:has 限定，功能关闭时官方行零影响）才开 wrap + 撑满整行。
-          // 累计行自身 flex:0 0 100% + order:1（组件内联样式）——order 后移是关键：官方 DOM
+          // 累计行 flex:0 0 100%（下方按形态限定的规则）+ order:1——order 后移是关键：官方 DOM
           // 里槽位排在上下文圆环之前，不同后移会把圆环挤到第三行；后移后统计胶囊+圆环
           // 共占第一行（官方原位），累计行居第二行。row-gap:0 把换行后的两行贴紧
           // （官方 gap:12px 纵横同值，拆开只收纵向、横向列距不动）。
           // 哈希词干随 DSH 版本漂移，与 mobile.css 同一口径按当前词干匹配、升级时复核。
           '[class*="uV2eYG_dock"]:has([data-dsh-service-subagent-models-dock]){flex-wrap:wrap;width:100%;row-gap:0}',
+          // 累计行「独占一行」的 flex:0 0 100% 只在 0.1.6 的 dock 行形态下声明（后代选择
+          // 器，穿透槽位 wrapper 的 display:contents 依然命中）；老宿主上这条 dock 行不存在，
+          // 累计行回到列布局的内容高（单行），不再被撑成整座容器那么高。
+          '[class*="uV2eYG_dock"] [data-dsh-service-subagent-models-dock]{flex:0 0 100%}',
+          // 老宿主（0.1.5-rc.1/rc.2）下累计行若仍声称占满 100% 会出 issue #3 的空白：
+          // 官方聊天包把统计胶囊（order 0）与累计行（order 60）注册在**同一个**
+          // conversation.composer.dock 槽位，该槽位当时渲染为 uV2eYG_root 的子项，而
+          // uV2eYG_root 是 flex-direction:column（主轴=纵向）——横向语义的
+          // flex-basis:100% 在纵向容器上解析为「占满容器高度」，一行文字的累计行被撑成
+          // ~150px 空壳，输入框下方出现一大块空白。判据不能用父级：0.1.6 上槽位
+          // wrapper（data-slot，class 为空、display:contents）才是累计行的直接父级，
+          // 按父级分流会同时命中新宿主；「祖先是否有 dock 行」CSS 选不了祖先，但能反着
+          // 用后代选择器——老宿主根本没有 uV2eYG_dock 元素。故累计行的 flex 一律不写
+          // 行内样式、交给上面这条按形态限定的规则。此规则组无条件注入（与移动端开关
+          // 无关，老宿主不开移动端适配同样空白）。
           // ── 统一视觉语言基础层（v0.39）：.dshsvc-* 命名空间类，锚在 data-dshsvc-root 不外溢 ──
           // 线宽主、阴影次；动效 120/170ms；reduced-motion 归零；内容区灰画布 + 卡片分层。
           '[data-dshsvc-root]{color:var(--dsh-svc-text);font-size:14px;line-height:1.55;background:var(--dsh-svc-page-bg);border-radius:var(--dsh-svc-radius-card);padding:2px}',

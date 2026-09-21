@@ -104,16 +104,19 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           }
         }, [props.sessionId])
         if (text === '') return null
-        // 挂输入卡下方 dock 行（conversation.composer.dock 槽位）：svcStyle 的行级规则
-        //（:has 限定）让官方 dock 行开 wrap，本行 flex:0 0 100% 独占官方统计的下一行。
-        // order:1 必须有——官方 DOM 里槽位排在上下文圆环之前，100% 行会把圆环挤到
+        // 挂输入卡下方 dock 行（conversation.composer.dock 槽位）：svcStyle 的
+        // `[class*="uV2eYG_dock"] [data-dsh-service-subagent-models-dock]{flex:0 0 100%}`
+        // 让本行在 0.1.6 dock 行（开 wrap，见 apply.js :has 规则）独占官方统计的下一行。
+        // 这条 flex 不能写进行内样式：老宿主（0.1.5-rc.1/rc.2）上同槽位渲染为
+        // uV2eYG_root（flex-direction:column）的子项，横向语义的 flex-basis:100% 在那里
+        // 变成「占满容器高度」，一行文字被撑成 ~150px 空壳（issue #3 底部空白）。
+        // order:1 仍须有——官方 DOM 里槽位排在上下文圆环之前，100% 行会把圆环挤到
         // 第三行；order 后移让统计胶囊+圆环共占第一行（官方原位），本行居第二行。
         return React.createElement('div', {
           'data-testid': 'subagent-models-dock',
           'data-dsh-service-subagent-models-dock': true,
           style: {
             boxSizing: 'border-box',
-            flex: '0 0 100%',
             order: 1,
             textAlign: 'center',
             fontSize: '12px',
