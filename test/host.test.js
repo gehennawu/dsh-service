@@ -2315,6 +2315,123 @@ test('a successful upgrade invalidates the cached update check', async (t) => {
   assert.equal(after.value.plugin.upToDate, true)
 })
 
+// GitHub releases API 替身：只接受**宿主常量拼出的** URL，把实际请求记进 requests 供用例
+// 断言「零输入拼接」（版本段必须来自宿主，不能来自浏览器），其余按 respond 决定正文/状态。
+function mockReleaseApi(t, { status = 200, body = {}, respond } = {}) {
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = typeof respond === 'function' ? respond(String(url)) : status
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (response.statusCode === 200) {
+        response.emit('data', JSON.stringify(body))
+        response.emit('end')
+      }
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  return requests
+}
+
+test('release-notes fetches the release body from a host-built GitHub URL and strips HTML', async (t) => {
+  const home = await makeHome(t, 'dsh-service-notes-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '9.9.9' })
+  const requests = mockReleaseApi(t, {
+    body: {
+      tag_name: 'v9.9.9',
+      name: 'v9.9.9',
+      body: '<h3 id="cn">新增功能</h3>\n\n- 修复了一个问题\n\n<h3 id="en">Added</h3>\n\n- Fixed a thing\n',
+      published_at: '2026-09-21T07:28:11Z',
+      prerelease: false,
+      html_url: 'https://github.com/gehennawu/dsh-service/releases/tag/v9.9.9',
+    },
+  })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+  const result = await handler('release-notes', { kind: 'plugin' })
+  assert.equal(result.ok, true)
+  // 版本一律宿主侧解析（优先磁盘已装版本，与 check-update 的 upToDate 同基准）。
+  assert.equal(result.value.version, '9.9.9')
+  assert.equal(result.value.tag, 'v9.9.9')
+  // 上游 DSH 仓正文用 `<h3 id=…>` 作小节锚点：客户端 markdown 拒原始 HTML，不剔除会显示成字面标签。
+  assert.doesNotMatch(result.value.notes, /<h3/)
+  assert.match(result.value.notes, /新增功能/)
+  assert.match(result.value.notes, /- 修复了一个问题/)
+  assert.equal(result.value.truncated, false)
+  assert.equal(result.value.publishedAt, '2026-09-21T07:28:11Z')
+  assert.equal(result.value.prerelease, false)
+  // 唯一出网地址 = 宿主常量拼出的固定 API 路径；载荷只有 kind，浏览器不参与任何 URL 片段。
+  assert.deepEqual(requests, ['https://api.github.com/repos/gehennawu/dsh-service/releases/tags/v9.9.9'])
+})
+
+test('release-notes maps the DSH kind to the dsh-v tag and caches the successful body', async (t) => {
+  const requests = mockReleaseApi(t, {
+    body: { tag_name: `dsh-v${installedDshVersion}`, name: 'x', body: 'note body', prerelease: true },
+  })
+  const { handler } = createHost()
+  const first = await handler('release-notes', { kind: 'dsh' })
+  assert.equal(first.ok, true)
+  assert.equal(first.value.version, installedDshVersion)
+  assert.match(requests[0], new RegExp(`/repos/deepseek-ai/DeepSeek-Harness/releases/tags/dsh-v${installedDshVersion.replace(/[.+]/g, '\\$&')}$`))
+  const second = await handler('release-notes', { kind: 'dsh' })
+  assert.equal(second.value.cached, true)
+  assert.equal(second.value.notes, 'note body')
+  assert.equal(requests.length, 1, 'a published release body is immutable — the second read must hit the cache')
+})
+
+test('release-notes only accepts the closed kind set and reports an unpublished tag distinctly', async (t) => {
+  const requests = mockReleaseApi(t, { respond: (url) => (url.includes('/tags/v9.9.9') ? 404 : 200) })
+  const home = await makeHome(t, 'dsh-service-notes-404-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '9.9.9' })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+
+  // 闭集校验：浏览器送来的 kind 只有两个合法取值——URL、版本、仓库名都不接受输入拼接。
+  const bad = await handler('release-notes', { kind: 'https://evil.example/x' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error, 'unknown-kind')
+  assert.equal((await handler('release-notes', {})).error, 'unknown-kind')
+  assert.equal(requests.length, 0, 'a rejected kind must never leave the host')
+
+  const missing = await handler('release-notes', { kind: 'plugin' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error, 'release-not-found')
+  assert.equal(requests.length, 1)
+})
+
+test('release-notes does not cache a missing release, so it appears as soon as it is published', async (t) => {
+  // 上游是先发 npm 再补 release（DSH 实测最长间隔 95 分钟）：这段窗口里 check-update 已经
+  // 报「有新版本」而正文必然 404。404 是「随时可能变好」的结果，不能进负缓存——否则用户
+  // 刚看到待定态、release 随即上线，他还要再等一个 TTL 才读得到正文。
+  const home = await makeHome(t, 'dsh-service-notes-nocache-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '9.9.9' })
+  let published = false
+  const requests = mockReleaseApi(t, {
+    respond: () => (published ? 200 : 404),
+    body: { tag_name: 'v9.9.9', name: 'v9.9.9', body: '补上的说明' },
+  })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+
+  const first = await handler('release-notes', { kind: 'plugin' })
+  assert.equal(first.ok, false)
+  assert.equal(first.error, 'release-not-found')
+  assert.equal(requests.length, 1)
+
+  // release 上线后立刻重试即可拿到正文：中间不该有 60s 负缓存挡着。
+  published = true
+  const second = await handler('release-notes', { kind: 'plugin' })
+  assert.equal(second.ok, true)
+  assert.equal(second.value.notes, '补上的说明')
+  assert.equal(requests.length, 2, 'a 404 must not be cached — the retry has to reach GitHub')
+  assert.notEqual(second.value.cached, true)
+})
+
 test('optional commands service registers a guarded /restart command and cleans it up', async () => {
   const host = createHost({ commands: true })
   assert.equal(host.registeredCommands.length, 1)

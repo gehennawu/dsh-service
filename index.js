@@ -107,6 +107,15 @@ const FeatureSettingsSchema = z.object({
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
+// 「本次更新内容」：release 正文由宿主抓取后按纯文本下发，客户端就地渲染。
+// 目标仓库与路径段是宿主常量（浏览器不参与拼装），版本段只接受 semver 字符集——
+// GitHub 对 HTML 响应统一 `x-frame-options: deny`，iframe 载体（官方右栏浏览器 tab）
+// 永远拿不到正文，只能由宿主绕过 iframe 取数据。
+const GITHUB_API = 'https://api.github.com'
+const RELEASE_REPOS = Object.freeze({ dsh: 'deepseek-ai/DeepSeek-Harness', plugin: 'gehennawu/dsh-service' })
+const MAX_RELEASE_RESPONSE_BYTES = 512 * 1024
+const MAX_RELEASE_NOTES_CHARS = 20000
+const RELEASE_TAG_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/
 const MAX_BACKUP_TRANSFER_BYTES = 256 * 1024 * 1024
 const MAX_BACKUP_COMPRESSED_BYTES = 512 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -404,6 +413,104 @@ function fetchPublishedVersions(packageName) {
     request.on('timeout', () => {
       request.destroy()
       fail(new Error('请求 npm registry 超时'))
+    })
+  })
+}
+
+// 「本次更新内容」的 GitHub release 正文抓取。与 fetchPublishedVersions 同规：
+// 目标由宿主常量拼出，**零浏览器输入拼接**——`kind` 只用于选仓库，版本段过
+// RELEASE_TAG_VERSION_RE 字符集校验（不过即拒，不编码、不猜测）。
+// 只认 0.1.6-alpha.2 一类 tag：DSH 仓的 tag 带 `dsh-v` 前缀，插件仓不带。
+function releaseTagFor(kind, version) {
+  if (typeof version !== 'string' || !RELEASE_TAG_VERSION_RE.test(version)) return null
+  if (kind === 'dsh') return `dsh-v${version}`
+  if (kind === 'plugin') return `v${version}`
+  return null
+}
+
+function fetchReleaseNotes(kind, version) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const succeed = (value) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+
+    const tag = releaseTagFor(kind, version)
+    const repository = RELEASE_REPOS[kind]
+    if (tag === null || repository === undefined) {
+      fail(new Error('invalid-release-target'))
+      return
+    }
+
+    const url = `${GITHUB_API}/repos/${repository}/releases/tags/${tag}`
+    const request = https.get(url, {
+      timeout: 10000,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'dsh-service',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    }, (response) => {
+      const status = response.statusCode || 0
+      if (status < 200 || status >= 300) {
+        response.resume()
+        fail(new Error(status === 404 ? 'release-not-found' : `GitHub API 返回 HTTP ${status}`))
+        return
+      }
+
+      let body = ''
+      let bytes = 0
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > MAX_RELEASE_RESPONSE_BYTES) {
+          fail(new Error('GitHub API 响应过大'))
+          request.destroy()
+          return
+        }
+        body += chunk
+      })
+      response.on('error', fail)
+      response.on('end', () => {
+        if (settled) return
+        try {
+          const data = JSON.parse(body)
+          const rawNotes = typeof data?.body === 'string' ? data.body : ''
+          // 正文只作为**纯文本**下发：不解析 HTML、不改写结构，客户端按不可信文本渲染。
+          // 超长一律截断（release 正文是给人看的，不是数据面）。
+          // 唯一的规范化是剔掉 HTML 标签：上游 DSH 仓的正文用 `<h3 id=…>` 作小节锚点
+          // （GitHub 自带的中英双栏导航），客户端 markdown 渲染器按设计拒绝原始 HTML，
+          // 不剔就会把标签当字面文本显示出来。剔除只会减少内容，绝不引入标记。
+          const flattened = rawNotes.replace(/<[^>]*>/g, '')
+          const truncated = flattened.length > MAX_RELEASE_NOTES_CHARS
+          succeed({
+            version,
+            tag: typeof data?.tag_name === 'string' ? data.tag_name : tag,
+            title: typeof data?.name === 'string' && data.name !== '' ? data.name : tag,
+            notes: truncated ? flattened.slice(0, MAX_RELEASE_NOTES_CHARS) : flattened,
+            truncated,
+            // 截断阈值随行下发：客户端文案里的字符数不再各写一份常量。
+            notesLimit: MAX_RELEASE_NOTES_CHARS,
+            publishedAt: typeof data?.published_at === 'string' ? data.published_at : null,
+            prerelease: data?.prerelease === true,
+            url: typeof data?.html_url === 'string' ? data.html_url : `https://github.com/${repository}/releases/tag/${tag}`,
+          })
+        } catch (_) {
+          fail(new Error('解析 GitHub release 响应失败'))
+        }
+      })
+    })
+    request.on('error', fail)
+    request.on('timeout', () => {
+      request.destroy()
+      fail(new Error('请求 GitHub release 超时'))
     })
   })
 }
@@ -4900,6 +5007,8 @@ function apply(ctx) {
   let usageRefreshPromise
   let updateCache
   let updatePromise
+  // release 正文缓存：键 kind，值带 version（版本一变即整体失效，不必手工清理）。
+  const releaseNotesCache = new Map()
   const quotaThrottle = createQuotaThrottle()
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
   // 可重赋值的 let 一律以 { current } 箱体跨模块传递：端点工厂解构是值快照，
@@ -5440,6 +5549,42 @@ function apply(ctx) {
         const message = error?.message || String(error)
         updateCache = { ok: false, error: message, checkedAt: now, ttl: 60 * 1000 }
         return { ok: false, error: message, cached: false }
+      }
+
+    } },
+    // 「本次更新内容」（版本卡行内展开）：GitHub 对 HTML 响应统一 `x-frame-options: deny`，
+    // iframe 载体（官方右栏浏览器 tab）拿不到 release 正文，只能由宿主取数据、按纯文本下发。
+    // 载荷只有 kind 一个**闭集**字段：版本号一律宿主侧解析（插件取磁盘已装、DSH 取运行版本），
+    // 浏览器既不送 URL 也不送版本串——安全教义「零输入拼接」不因本端点放宽。
+    'release-notes': { handle: async (payload, rpcEndpoint) => {
+      const now = Date.now()
+      const kind = payload?.kind
+      if (kind !== 'dsh' && kind !== 'plugin') return { ok: false, error: 'unknown-kind' }
+      // 插件优先取磁盘已装版本（与 check-update 的 upToDate 同基准：升级落地未重启时
+      // 用户看的就是新版正文）；DSH 无磁盘视图，取运行版本。
+      const installed = kind === 'plugin' ? await installedPluginVersionOrNull(dshHome) : null
+      const target = parseSemver(installed) !== null ? installed : (kind === 'dsh' ? dshVersion : pluginVersion)
+      if (parseSemver(target) === null) return { ok: false, error: 'invalid-release-target' }
+      const cached = releaseNotesCache.get(kind)
+      if (cached !== undefined && cached.version === target && now - cached.checkedAt < cached.ttl) {
+        return cached.ok
+          ? { ok: true, value: Object.assign({}, cached.value, { cached: true }) }
+          : { ok: false, error: cached.error, cached: true }
+      }
+      try {
+        const value = await fetchReleaseNotes(kind, target)
+        // 已发布 tag 的正文不可变：成功结果长 TTL；失败短 TTL，避免上游抖动时反复打 GitHub。
+        releaseNotesCache.set(kind, { ok: true, value, version: target, checkedAt: now, ttl: 60 * 60 * 1000 })
+        return { ok: true, value }
+      } catch (error) {
+        const code = error?.message === 'release-not-found' ? 'release-not-found' : 'release-unavailable'
+        // `release-not-found` 是上游发布时序，不是故障：DSH 先发 npm、release 稍后补
+        // （实测最长 95 分钟，期间 check-update 已报「有新版本」而正文必然 404）。
+        // 这种「随时可能变好」的结果**不缓存**，否则用户刚点开看到待定态、Release 随即上线，
+        // 他还要再等一个 TTL 才看得到正文。真故障（网络/限额）保留 60s 负缓存，防反复打上游。
+        if (code === 'release-not-found') releaseNotesCache.delete(kind)
+        else releaseNotesCache.set(kind, { ok: false, error: code, version: target, checkedAt: now, ttl: 60 * 1000 })
+        return { ok: false, error: code }
       }
 
     } },

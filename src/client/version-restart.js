@@ -249,12 +249,6 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
         channelLine(translate, 'next', tags && tags.next),
          ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
 
-      // 版本支持边界（v1.4.12/0.1.6 适配轮）：0.1.3-alpha.1 起旧 sessionPersistence seam 移除、
-      // 0.1.5 起 layout Details 列移除 + 会话格式 V3、0.1.6-alpha.1 起 announce 改异步串行
-      // 与 Sh0Q9G_ 类哈希漂移——本版已全部完成适配（docs/research/dsh-v0.1.6-alpha.1-plugin-impact.md）。
-      // 边界钉在 0.1.6-alpha.3：其后的版本尚未验证，运行版本越界时版本卡声明行转红警示；
-      // 无法解析的版本串（如 unknown）按不支持判空、中性展示。
-      const DSH_NOT_SUPPORTED_FROM = '0.1.6-alpha.3'
       const parseSemver = (value) => {
         if (typeof value !== 'string') return null
         const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
@@ -282,10 +276,6 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
           return typeof ia === 'number' ? -1 : 1
         }
         return pa.pre.length < pb.pre.length ? -1 : pa.pre.length === pb.pre.length ? 0 : 1
-      }
-      const isDshUnsupported = (current) => {
-        const cmp = compareSemver(current, DSH_NOT_SUPPORTED_FROM)
-        return cmp !== null && cmp >= 0
       }
 
       function ServiceOverlay() {
@@ -436,5 +426,5 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
   const isUpgradeInFlight = () => upgradeInFlight
   const setUpgradeInFlight = (value) => { upgradeInFlight = value }
   const getRuntimeEnvState = () => runtimeEnvState
-  return { DSH_NOT_SUPPORTED_FROM, RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, isDshUnsupported, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState }
+  return { RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState }
 }

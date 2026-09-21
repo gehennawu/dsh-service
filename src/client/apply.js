@@ -74,14 +74,12 @@
           '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
           // 版本卡自身作为查询容器：窄设置面板与手机都按可用宽度排版，不依赖移动手势开关。
-          // 窄容器两行（v1.5.1 用户复核定稿）：版本号+适配声明连排一块（identity 转 block 让
-          // label/版本号/声明按行内文本自然连排换行，声明 display:inline 跟随版本号）/ 状态行（status）。
+          // 窄容器两行：版本号跟 label 连排一块（identity 转 block 走行内文本流）/ 状态行（status）。
           '[data-dshsvc-root] [data-testid="version-card"]{container-type:inline-size;container-name:dshsvc-version}',
           '@container dshsvc-version (max-width:480px){',
           '[data-dshsvc-root] .dshsvc-version-row{gap:6px !important;padding:12px 2px !important}',
           '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;display:block}',
           '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere}',
-          '[data-dshsvc-root] .dshsvc-version-note{display:inline}',
           '[data-dshsvc-root] .dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}',
           '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。
@@ -331,7 +329,7 @@
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，
       // 清单见 scripts/client-source.mjs）。返回值解构回原名供 ServicePanel/导航入口/覆盖层消费；
       // upgradeInFlight/runtimeEnvState 两个 let 经访问器跨界（见下方调用点的 is/set/get 改写）。
-      const { DSH_NOT_SUPPORTED_FROM, RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, isDshUnsupported, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState } = createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavToggle })
+      const { RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState } = createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavToggle })
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
@@ -4728,6 +4726,12 @@
         const [activeTab, setActiveTab] = useState('overview')
         // 版本详情行内展开（不用浮层：弹层会被设置模态盖住）
         const [channelOpen, setChannelOpen] = useState(false)
+        // 「本次更新内容」：GitHub 的 release 页面对 iframe 一律 `x-frame-options: deny`，
+        // 官方右栏浏览器 tab 载不出来；正文由宿主取回、客户端就地渲染。按 kind 分槽存快照，
+        // 状态机 loading/ready/error 由 notesState 三态表达（loading 只在请求飞行中）。
+        const notesCacheRef = useRef({})
+        const notesHostUnsupportedRef = useRef(false)
+        const [notesState, setNotesState] = useState({ kind: null, phase: 'idle', value: null, error: null })
         // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
         const restartFlowState = useRestartFlow()
         const runtimeEnv = useRuntimeEnv()
@@ -4767,6 +4771,52 @@
         const refreshUpdate = async () => {
           const res = await rpcCall('check-update', {}).catch(() => null)
           if (res) applyUpdateResult(res)
+        }
+        // 「本次更新内容」的展开/收起：点开即取（宿主侧按 kind+版本缓存，重复点开只回缓存），
+        // 面板内缓存到模块级 ref，同一 kind 不因收起再展开而重发请求。收起不清缓存，
+        // 只切 kind（展开另一行）时覆盖显示槽。
+        // 宿主半与客户端半同包发布，但浏览器半刷新即换、宿主半要重启才换：升级落地未重启
+        // 那段窗口里 release-notes 会回 unknown-endpoint。与其每次点开都报错，不如认下
+        // 「这个宿主还不支持」并把入口整体收起（与其它「旧宿主缺字段静默降级」同规）。
+        const notesErrorCode = (error) => (error === 'release-not-found' ? 'release-not-found' : 'release-unavailable')
+        const loadNotes = async (kind) => {
+          setNotesState({ kind, phase: 'loading', value: null, error: null })
+          let res = null
+          try {
+            res = await rpcCall('release-notes', { kind })
+          } catch (_) {
+            res = null
+          }
+          if (res && res.ok !== false && res.value) {
+            notesCacheRef.current[kind] = res.value
+            setNotesState({ kind, phase: 'ready', value: res.value, error: null })
+            return
+          }
+          if (res?.error === 'unknown-endpoint') {
+            notesHostUnsupportedRef.current = true
+            setNotesState({ kind: null, phase: 'idle', value: null, error: null })
+            return
+          }
+          // `release-not-found` 不是故障而是上游发布时序：DSH 先发 npm、release 稍后补（实测最长
+          // 95 分钟），这段窗口里 check-update 已经报「有新版本」而正文必然 404。落**待定态**：
+          // 中性文案 + 重试按钮，不当错误渲染；宿主侧对 404 也不缓存，Release 一上线重试即得。
+          const code = notesErrorCode(res?.error)
+          setNotesState({ kind, phase: code === 'release-not-found' ? 'pending' : 'error', value: null, error: code })
+        }
+        const toggleNotes = async (kind) => {
+          if (notesHostUnsupportedRef.current === true) return
+          const current = notesState.kind === kind ? notesState : null
+          // 「已就绪」与「读取中」再点是收起；待定态再点是重试（内容还没拿到，收起没有意义）。
+          if (current !== null && (current.phase === 'ready' || current.phase === 'loading')) {
+            setNotesState({ kind, phase: 'idle', value: null, error: null })
+            return
+          }
+          const cached = notesCacheRef.current[kind]
+          if (cached !== undefined) {
+            setNotesState({ kind, phase: 'ready', value: cached, error: null })
+            return
+          }
+          await loadNotes(kind)
         }
         useEffect(() => {
           // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
@@ -6196,7 +6246,7 @@
         // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换展开/收起。
         const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
           React.createElement('path', { d: 'M9 6l6 6-6 6' }))
-        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder, extra) => {
+        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder, notesKind) => {
           const statusText = !state
             ? (updateError || translate('update.checking'))
             : state.restartPending ? translate('update.installedPendingRestart', { version: state.current || fallbackVersion || '' })
@@ -6211,21 +6261,30 @@
                 chevronIcon(channelOpen),
                 React.createElement('span', null, statusText))
             : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
+          // 「本次更新内容」入口与状态文本并列：有可解析版本就常驻（与是否有新版本无关——
+          // 用户想看的往往正是**当前这一版**改了什么）。正文由宿主取回，见 toggleNotes。
+          const notesOpen = notesKind !== undefined && notesState.kind === notesKind && notesState.phase !== 'idle'
+          const notesButton = notesKind === undefined || notesHostUnsupportedRef.current === true
+            ? null
+            : React.createElement('button', {
+                type: 'button',
+                'data-testid': `version-${id}-notes-toggle`,
+                'aria-expanded': String(notesOpen),
+                title: translate(notesOpen ? 'update.notes.hide' : 'update.notes.button'),
+                onClick: () => { toggleNotes(notesKind) },
+                style: Object.assign({}, ghost, { minHeight: '22px', padding: '1px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }),
+              }, notesOpen ? null : chevronIcon(false), React.createElement('span', null, translate('update.notes.button')))
           return React.createElement('div', { key: id, className: 'dshsvc-version-row', style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px 16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
             React.createElement('div', { className: 'dshsvc-version-identity', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 } },
               React.createElement('span', { style: { fontSize: '13px', fontWeight: 650, whiteSpace: 'nowrap' } }, `${label} `),
               state?.url
                 ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
-                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading')),
-              // 适配声明跟随版本号（v1.5.1 用户点名）：宽容器内联排在版本号之后；
-              // 窄容器（≤480px）由容器查询转行内文本连排，移动端两行：版本号+声明 / 状态。
-              extra ? React.createElement('div', { className: 'dshsvc-version-note', style: { minWidth: 0, lineHeight: 1.5, overflowWrap: 'anywhere' } }, extra) : null),
-            React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, action || null))
+                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading'))),
+            React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, notesButton, action || null))
         }
         // 版本信息区块：DSH 行在有更新时状态文本（小三角 + 有新版本）整体可点击，行内下拉展开
         const dshUpdate = updateInfo?.dsh
         const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
-        const dshUnsupported = isDshUnsupported(version)
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         // 磁盘已装版本比运行进程新 = 升级已落地、只差重启（手动启动环境尤其常见）：这是宿主事实，
         // 不是本次点击的临时状态——重挂载、刷新页面后依然成立，升级按钮不再冒出来骗人
@@ -6243,32 +6302,56 @@
         // 手动重启指引：本次点击刚装好，或（事实层面）已装好待重启且当前是手动启动环境。
         // 托管环境由恢复轮询接管，不重复提示。
         const manualRestartHint = upgradeManualPending || (installedAhead && runtimeEnv !== null && runtimeEnv.manualStartLikely === true)
-        // 支持上限声明常驻在 dsh-service 版本号之后（v1.4.10+；v1.5.1 点名维持内联跟随版本号，
-        // 窄容器由容器查询转行内连排——移动端两行：版本号+声明 / 状态）。
-        // 运行版本 ≥ DSH_NOT_SUPPORTED_FROM 时转红警示。
-        // 仅在宿主服务本身正常并提供可解析版本时判为越界；无法解析的版本串中性展示。
-        const pluginSupportBound = React.createElement('span', {
-          key: 'dsh-support-bound',
-          'data-testid': 'version-dsh-support-bound',
-          style: {
-            fontSize: '12px',
-            lineHeight: 1.4,
-            marginLeft: '2px',
-            padding: dshUnsupported ? '1px 6px' : 0,
-            borderRadius: '4px',
-            color: dshUnsupported ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
-            background: dshUnsupported ? 'rgba(211,51,51,0.08)' : 'transparent',
-            border: dshUnsupported ? '1px solid rgba(211,51,51,0.3)' : 0,
-            fontWeight: dshUnsupported ? 650 : 400,
-            whiteSpace: 'normal',
-          },
-        }, translate('version.dsh.supportBound', { limit: DSH_NOT_SUPPORTED_FROM }))
+        // 「本次更新内容」正文：折叠面板挂在触发它的那一行下方（`notesState.kind` 决定归属），
+        // 正文按不可信文本渲染——能复用官方 MarkdownText 就用（与官方聊天观感一致、
+        // 默认拒原始 HTML/危险链接），官方 seed 缺席的老外壳回落 pre-wrap 纯文本。
+        const releaseNotesPanel = (kind) => {
+          if (notesState.kind !== kind || notesState.phase === 'idle') return null
+          const meta = notesState.phase === 'ready' ? notesState.value : null
+          const body = notesState.phase === 'loading'
+            ? React.createElement('p', { 'data-testid': `version-${kind}-notes-loading`, style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.loading'))
+            // 待定态（上游先发 npm、release 稍后补）：中性文字 + 「重试」按钮，不是错误。
+            // 红色 + role="alert" 会把它讲成故障，而这里既不是故障、用户也无事可做。
+            : notesState.phase === 'pending'
+              ? React.createElement('div', { 'data-testid': `version-${kind}-notes-pending`, style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' } },
+                  React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
+                    translate('update.notes.error.release-not-found')),
+                  React.createElement('button', {
+                    type: 'button',
+                    'data-testid': `version-${kind}-notes-retry`,
+                    onClick: () => { loadNotes(kind) },
+                    style: Object.assign({}, ghost, { minHeight: '22px', padding: '1px 8px', fontSize: '11px' }),
+                  }, translate('update.notes.retry')))
+              : notesState.phase === 'error'
+                ? React.createElement('p', { 'data-testid': `version-${kind}-notes-error`, role: 'alert', style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
+                    translate('update.notes.error.' + (typeof notesState.error === 'string' && notesState.error !== '' ? notesState.error : 'release-unavailable')))
+                : typeof meta?.notes === 'string' && meta.notes.trim() !== ''
+                  ? React.createElement('div', { 'data-testid': `version-${kind}-notes-body`, style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' } },
+                      sessionMarkdownText !== null
+                        ? React.createElement(sessionMarkdownText, { text: meta.notes, labels: sessionMarkdownLabels(translate) })
+                        : React.createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 } }, meta.notes))
+                  : React.createElement('p', { 'data-testid': `version-${kind}-notes-empty`, style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.empty'))
+          const metaLine = meta === null ? [] : [
+            meta.publishedAt
+              ? React.createElement('span', { key: 'published' }, translate('update.notes.publishedAt', { date: String(meta.publishedAt).slice(0, 10) }))
+              : null,
+            meta.prerelease === true ? React.createElement('span', { key: 'prerelease', style: { color: 'var(--dsw-alias-state-warn-primary)' } }, translate('update.notes.prerelease')) : null,
+            meta.truncated === true ? React.createElement('span', { key: 'truncated' }, translate('update.notes.truncated', { chars: Number(meta.notesLimit) > 0 ? meta.notesLimit : 20000 })) : null,
+          ].filter((node) => node !== null)
+          return React.createElement('div', { 'data-testid': `version-${kind}-notes`, style: { marginTop: '6px', marginBottom: '4px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', display: 'flex', flexDirection: 'column', gap: '8px' } },
+            body,
+            metaLine.length > 0
+              ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, ...metaLine)
+              : null)
+        }
         // 版本卡只放版本与升级：运行环境信息在健康诊断检查项与重启确认提示中呈现（用户复核口径）。
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, false, false, pluginSupportBound),
-            versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true),
+            versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, false, false, 'plugin'),
+            releaseNotesPanel('plugin'),
+            versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true, 'dsh'),
+            releaseNotesPanel('dsh'),
             channelOpen
               ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
                   React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),

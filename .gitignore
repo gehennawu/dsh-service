@@ -35,6 +35,8 @@ docs/planning/
 
 # 真机验证取证（截图 / DUMP）——瞬态产物，不进版本库
 .e2e-out/
+# 仓库侧取证落点（scripts/verify-*.mjs 在会话沙箱内不能写 /workspace/.dsh-e2e）
+.verify-out/
 
 # 老宿主兼容测试资产（npm 包与解压产物）——持久保留在工作区，不进版本库
 test/fixtures/

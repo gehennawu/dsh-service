@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+// 与真实宿主 createRpcDispatcher 的 strict envelope 同形：{code:'internal', message, details:{}}。
+// 客户端 rpcCall 会经 normalizeRpcResult 把 message 拍平成字符串再交给消费方。
+const rpcError = (message) => ({ ok: false, error: { code: 'internal', message, details: {} } })
+
 function createRenderer(rpcCall, options = {}) {
   let moduleDefinition
   let moduleExports
@@ -2277,14 +2281,11 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.equal(renderer.findByTestId('version-dsh-link').props.href, 'https://github.com/deepseek-ai/DeepSeek-Harness/releases')
   assert.equal(renderer.findByTestId('version-plugin-link').props.href, 'https://github.com/gehennawu/dsh-service/releases')
 
-  // 版本卡常驻支持边界声明（适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.2；越界钉 0.1.6-alpha.3）；支持范围内的运行版本为中性色
-  const supportBound = renderer.findByTestId('version-dsh-support-bound')
-  assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2/, 'support-bound declaration is always present')
-  assert.equal(supportBound.props.style.color, 'var(--dsw-alias-label-secondary)')
-  assert.equal(supportBound.props.style.background, 'transparent', 'supported run keeps the declaration neutral')
-  // v1.5.1 用户点名：适配声明内联紧跟版本号（不排到状态之后）——扁平文本顺序=版本号→声明→状态。
-  assert.match(text, /0\.9\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2）已是最新版本/,
-    'support bound reads directly after the version number and before the status')
+  // 适配声明整条移除（2026-09-21）：版本号行只剩 「dsh-service 版本号」+ 状态/入口，
+  // 不再出现任何 DSH 适配区间文案，也不再有常驻声明节点。
+  assert.doesNotMatch(text, /适配 DSH|0\.1\.1-rc\.2 ~ /, 'the standing adaptation notice is gone')
+  assert.equal(renderer.hasTest('version-dsh-support-bound'), false, 'no support-bound node remains')
+  assert.match(text, /dsh-service 0\.9\.0\s*已是最新版本/, 'the version row is just version + status')
 
   // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
   await renderer.findButton('有新版本：0.2.0').props.onClick()
@@ -2307,41 +2308,205 @@ test('settings mount automatically shows separate DSH and plugin update states w
   assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
 })
 
-test('version card flags the DSH support bound red when running ≥ 0.1.6-alpha.3 (≤0.1.6-alpha.2 stays supported)', async () => {
-  const cases = [
-    { current: '0.1.2-rc.1', red: false },
-    { current: '0.1.3-alpha.1', red: false },
-    { current: '0.1.5-rc.1', red: false },
-    { current: '0.1.5-rc.2', red: false },
-    { current: '0.1.6-alpha.1', red: false },
-    { current: '0.1.6-alpha.2', red: false },
-    { current: '0.1.6-alpha.3', red: true },
-    { current: '0.1.6', red: true },
-  ]
-  for (const item of cases) {
-    const renderer = createRenderer(async (channel, endpoint) => {
-      assert.equal(channel, '/dsh-service')
-      if (endpoint === 'version') return { ok: true, value: { current: item.current, pluginVersion: '1.4.9', instanceId: 'x' } }
-      if (endpoint === 'health') return { ok: false, error: 'not relevant' }
-      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
-      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
-      if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
-      throw new Error(`unexpected endpoint ${endpoint}`)
-    })
-    await renderer.load()
-    const bound = renderer.findByTestId('version-dsh-support-bound')
-    assert.match(renderer.text('settings.section'), /0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2/, `bound note present on ${item.current}`)
-    if (item.red) {
-      assert.equal(bound.props.style.color, 'var(--dsw-alias-state-error-primary)', `${item.current} is at/above the unsupported bound and turns red`)
-      assert.equal(bound.props.style.background, 'rgba(211,51,51,0.08)', `${item.current} gets the danger background`)
-    } else {
-      assert.equal(bound.props.style.color, 'var(--dsw-alias-label-secondary)', `${item.current} stays neutral`)
-      assert.equal(bound.props.style.background, 'transparent', `${item.current} has no danger background`)
+test('version card expands the release notes inline and renders them without an iframe', async () => {
+  // GitHub 对 HTML 响应统一 `x-frame-options: deny`：官方右栏的浏览器 tab（iframe 载体）
+  // 永远载不出 release 页面。本用例钉住替代路径——宿主取正文、客户端就地渲染，
+  // 整个展开过程既不新建 iframe 也不跳转外部地址。
+  // 计数渲染树里的 iframe/webview 节点：这条断言是「不靠嵌入、不靠插件」的可执行表达。
+  const countFrames = (renderer) => {
+    let frames = 0
+    const walk = (node) => {
+      if (Array.isArray(node)) { node.forEach(walk); return }
+      if (node === null || typeof node !== 'object') return
+      if (node.type === 'iframe' || node.type === 'webview') frames += 1
+      for (const child of node.children || []) walk(child)
     }
+    for (const tree of renderer.roots()) walk(tree)
+    return frames
   }
+  const calls = []
+  const notes = 'v1.9.4（2026-09-21）\n\n### 新增 / 修复\n- 模型统计：新增日用量热力日历。\n\n### Added / Fixed\n- Model statistics: added a daily usage heatmap.'
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '1.9.4', latest: '1.9.4', upToDate: true } } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'release-notes') {
+      assert.deepEqual(payload, { kind: 'plugin' }, 'the payload carries only the closed kind field')
+      return { ok: true, value: { version: '1.9.4', tag: 'v1.9.4', title: 'v1.9.4', notes, truncated: false, notesLimit: 20000, publishedAt: '2026-09-21T07:28:11Z', prerelease: false, url: 'https://github.com/gehennawu/dsh-service/releases/tag/v1.9.4' } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  // 未展开时没有任何正文请求，版本行内也不存在 notes 面板 / iframe。
+  assert.equal(renderer.hasTest('version-plugin-notes'), false)
+  assert.equal(calls.filter((call) => call.endpoint === 'release-notes').length, 0)
+  assert.equal(countFrames(renderer), 0, 'the version card must never embed an iframe')
+
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  // 展开后正文经「宿主取回」的一条 RPC 落地，就地渲染为文本节点——不是 iframe、不是导航。
+  assert.equal(calls.filter((call) => call.endpoint === 'release-notes').length, 1)
+  assert.equal(renderer.hasTest('version-plugin-notes'), true)
+  assert.match(renderer.text('settings.section'), /模型统计：新增日用量热力日历/)
+  assert.match(renderer.text('settings.section'), /added a daily usage heatmap/)
+  // 元信息行：发布日期 + 非预发布不带 pre-release 标。
+  assert.match(renderer.text('settings.section'), /发布于 2026-09-21/)
+  assert.doesNotMatch(renderer.text('settings.section'), /预发布/)
+  // 正文渲染进官方 MarkdownText 替身（非 iframe、非 <a> 跳转）。
+  const body = renderer.findByTestId('version-plugin-notes-body')
+  assert.equal(body.children[0].props['data-testid'], 'md-markdown')
+  assert.equal(body.children[0].children[0], notes)
+  assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['aria-expanded'], 'true')
+
+  // 收起：正文消失；再展开直接命中面板内缓存，不重发 RPC。
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-plugin-notes'), false)
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-plugin-notes'), true)
+  assert.equal(calls.filter((call) => call.endpoint === 'release-notes').length, 1, 're-expanding must reuse the in-panel cache')
+  assert.equal(countFrames(renderer), 0, 'expanded or not, the release body is never an embedded frame')
 })
 
-test('version card keeps the support bound inline after the version number, two rows on narrow containers', async () => {
+test('release notes panel covers the DSH row, the empty body, truncation, the pending state and upstream failures', async () => {
+  const notesFor = {
+    dsh: { notes: '', truncated: false, prerelease: true, publishedAt: null },
+    plugin: { notes: 'x'.repeat(30), truncated: true, prerelease: false, publishedAt: '2026-09-21T07:28:11Z' },
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true }, plugin: { current: '1.9.4', latest: '1.9.4', upToDate: true } } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'release-notes') {
+      const fixture = notesFor[payload.kind]
+      // 严格信封：真实宿主一律回 {code,message,details} 对象（客户端 normalizeRpcResult 拍平成
+      // 字符串）。裸字符串是同套件的历史惯例，但它在真机上会被外壳判 schema 非法改写——见
+      // docs/knowledge/rpc-contract.md 的 strict RPC 条。新端点一律按线上形状写夹具。
+      if (fixture === undefined) return rpcError('release-not-found')
+      return { ok: true, value: { version: '1.9.4', tag: 'v1.9.4', title: 'v1.9.4', notesLimit: 20000, ...fixture } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  // DSH 行也有入口：没有正文时给「这一版没有填写更新说明」，不崩、不留空白卡。
+  await renderer.findByTestId('version-dsh-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-dsh-notes-empty'), true)
+  assert.match(renderer.text('settings.section'), /这一版没有填写更新说明/)
+  assert.match(renderer.text('settings.section'), /预发布/)
+  // 展开另一行会接管显示槽：同一时刻只有一份正文面板。
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-dsh-notes'), false)
+  assert.equal(renderer.hasTest('version-plugin-notes'), true)
+  assert.match(renderer.text('settings.section'), /内容过长，仅显示前 20000 个字符/)
+
+  // 未建 Release（404 语义）与上游失败各有稳定文案，绝不把错误码裸漏到界面。
+  // 上游先发 npm、release 稍后补（DSH 实测最长 95 分钟）：这段窗口里 check-update 已经报
+  // 「有新版本」而正文必然 404。它是**待定态**，不是错误——中性文案 + 重试按钮，
+  // 不得用 role="alert" 或危险色把它讲成故障；点「重试」要真的再打一次宿主。
+  let notFoundCalls = 0
+  let releaseAppeared = false
+  const notFound = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'release-notes') {
+      notFoundCalls += 1
+      if (!releaseAppeared) return rpcError('release-not-found')
+      return { ok: true, value: { version: '1.9.4', tag: 'v1.9.4', notes: 'release 补上了', truncated: false } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await notFound.load()
+  await notFound.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await notFound.flush()
+  const pending = notFound.findByTestId('version-plugin-notes-pending')
+  assert.equal(notFound.hasTest('version-plugin-notes-error'), false, 'a missing release is not an error state')
+  assert.equal(pending.props.role, undefined, 'pending must not announce itself as an alert')
+  const pendingText = notFound.text('settings.section')
+  assert.match(pendingText, /发布说明还没上线/)
+  assert.doesNotMatch(pendingText, /release-not-found/, 'the raw code never reaches the UI')
+  // 待定态的按钮标签是「重试」而不是「收起」——内容还没拿到，收起没有意义。
+  assert.equal(notFound.findByTestId('version-plugin-notes-retry').children[0], '重试')
+  assert.equal(notFoundCalls, 1)
+
+  // release 上线后点「重试」：同一挂载内直接拿到正文（不需要收起再展开、不需要刷新页面）。
+  releaseAppeared = true
+  await notFound.findByTestId('version-plugin-notes-retry').props.onClick()
+  await notFound.flush()
+  assert.equal(notFoundCalls, 2)
+  assert.equal(notFound.hasTest('version-plugin-notes-pending'), false, 'the pending state clears once the release exists')
+  assert.equal(notFound.hasTest('version-plugin-notes-body'), true)
+  assert.match(notFound.text('settings.section'), /release 补上了/)
+
+  const failed = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'release-notes') throw new Error('network down')
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await failed.load()
+  await failed.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await failed.flush()
+  assert.equal(failed.hasTest('version-plugin-notes-error'), true)
+  assert.match(failed.text('settings.section'), /读取更新内容失败，请稍后重试/)
+})
+
+test('release notes fall back to pre-wrapped plain text when the shell has no markdown renderer', async () => {
+  // 老外壳 seed 缺席：正文仍必须可读（回落 pre-wrap），不得因为拿不到官方渲染器就整卡空白。
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'release-notes') return { ok: true, value: { version: '1.9.4', tag: 'v1.9.4', notes: '- 纯文本回落', truncated: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { noUiPrimitives: true })
+  await renderer.load()
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  const body = renderer.findByTestId('version-plugin-notes-body')
+  assert.equal(body.children[0].props.style.whiteSpace, 'pre-wrap')
+  assert.match(renderer.text('settings.section'), /纯文本回落/)
+})
+
+test('release notes entry withdraws itself when the running host predates the endpoint', async () => {
+  // 浏览器半刷新即换、宿主半要重启才换：升级落地未重启的窗口里 release-notes 回 unknown-endpoint。
+  // 入口应整体收起（而不是每次点开都弹错），也不得把 unknown-endpoint 裸漏到界面。
+  let notesCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'release-notes') {
+      notesCalls += 1
+      return rpcError('unknown-endpoint')
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.equal(renderer.hasTest('version-plugin-notes-toggle'), true, 'the entry exists until the host answers')
+  await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(notesCalls, 1)
+  assert.equal(renderer.hasTest('version-plugin-notes'), false, 'no error card for an unsupported host')
+  assert.equal(renderer.hasTest('version-plugin-notes-toggle'), false, 'the entry withdraws itself')
+  assert.equal(renderer.hasTest('version-dsh-notes-toggle'), false, 'both rows withdraw together')
+  assert.doesNotMatch(renderer.text('settings.section'), /unknown-endpoint/)
+})
+
+test('version card carries no DSH adaptation notice on any running version, two rows on narrow containers', async () => {
+  // 适配声明整条移除（2026-09-21）：版本号行只剩「版本号 + 状态/入口」，越界运行版本也不再标红。
+  // 这里遍历原先用于锁红线边界的版本档，逐档断言"任何档位都不出现声明"，防止文案以别的形态回流。
+  //
   // 注入样式捕获：主渲染器环境没有 document，这里挂最小桩接住 svcStyle 文本；
   // 同时补齐 nav 标记效果依赖的 MutationObserver/querySelector 面（有桩即走真实分支）。
   const injectedStyles = []
@@ -2359,40 +2524,38 @@ test('version card keeps the support bound inline after the version number, two 
     visibilityState: 'visible',
   }
   try {
-    const renderer = createRenderer(async (channel, endpoint) => {
-      assert.equal(channel, '/dsh-service')
-      if (endpoint === 'version') return { ok: true, value: { current: '0.1.5-rc.1', pluginVersion: '1.5.0', instanceId: 'x' } }
-      if (endpoint === 'check-update') return { ok: true, value: { plugin: { current: '1.5.0', latest: '1.5.0', tags: { latest: '1.5.0', next: '1.5.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' } } }
-      throw new Error(`unexpected endpoint ${endpoint}`)
-    }, { initiallyUnmounted: ['settings.section'] })
-    await renderer.load()
-    renderer.mount('settings.section')
-    await renderer.flush()
+    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.2.0', 'unknown']
+    for (const current of versions) {
+      const renderer = createRenderer(async (channel, endpoint) => {
+        assert.equal(channel, '/dsh-service')
+        if (endpoint === 'version') return { ok: true, value: { current, pluginVersion: '1.9.4', instanceId: 'x' } }
+        if (endpoint === 'check-update') return { ok: true, value: { plugin: { current: '1.9.4', latest: '1.9.4', tags: { latest: '1.9.4', next: '1.9.4' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' } } }
+        throw new Error(`unexpected endpoint ${endpoint}`)
+      }, { initiallyUnmounted: ['settings.section'] })
+      await renderer.load()
+      renderer.mount('settings.section')
+      await renderer.flush()
 
-    // 宽容器：声明排在 identity（label+版本号）内部、紧跟版本号元素；不自带整行 basis。
-    const noteWrap = renderer.findNode((node) => node.props?.className === 'dshsvc-version-note')
-    assert.ok(noteWrap, 'support bound wrapper rendered')
-    assert.equal(noteWrap.parent.props.className, 'dshsvc-version-identity', 'support bound lives inside the identity cluster (right after the version number)')
-    const identityChildren = noteWrap.parent.children
-    const linkIndex = identityChildren.findIndex((child) => child.props?.['data-testid'] === 'version-plugin-link')
-    assert.ok(linkIndex >= 0, 'identity contains the plugin version link')
-    assert.equal(identityChildren[linkIndex + 1], noteWrap.node, 'support bound directly follows the version number element')
-    assert.equal(noteWrap.node.props.style.flexBasis, undefined, 'wide containers keep the note inline, never forced onto its own line')
-    assert.match(renderer.text('settings.section'), /1\.5\.0（适配 DSH 0\.1\.1-rc\.2 ~ 0\.1\.6-alpha\.2）/)
+      const text = renderer.text('settings.section')
+      assert.doesNotMatch(text, /适配 DSH|Adapted for DSH/, `${current}: no adaptation notice`)
+      assert.doesNotMatch(text, /0\.1\.1-rc\.2/, `${current}: no version-range text`)
+      assert.equal(renderer.hasTest('version-dsh-support-bound'), false, `${current}: no support-bound node`)
+      // 版本号与状态仍在：移除声明不得把整行一起带走。
+      assert.match(text, /dsh-service 1\.9\.4/, `${current}: the plugin version still renders`)
+      assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['data-testid'], 'version-plugin-notes-toggle')
+    }
 
-    // 窄容器（≤480px）两行契约由容器查询负责：identity 转 block 让 版本号+声明 连排一块（行内文本
-    // 自然换行，声明永不独占行），status 独立整行——移动端两行：版本号+声明 / 状态。
+    // 窄容器（≤480px）两行契约由容器查询负责：identity 整行（label+版本号走行内文本流）+ status 整行；
+    // 声明已删，对应的 .dshsvc-version-note 规则必须一并消失（不留死规则）。
     const css = injectedStyles.join('')
     const narrowStart = css.indexOf('@container dshsvc-version (max-width:480px){')
     assert.ok(narrowStart >= 0, 'narrow container query present')
     const identityRuleStart = css.indexOf('.dshsvc-version-identity{flex-basis:100%;display:block}', narrowStart)
-    const noteInlineStart = css.indexOf('.dshsvc-version-note{display:inline}', narrowStart)
     const statusRuleStart = css.indexOf('.dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}', narrowStart)
-    assert.ok(identityRuleStart > narrowStart, 'identity takes the full first row and switches to inline text flow on narrow containers')
-    assert.ok(noteInlineStart > narrowStart, 'note flows inline with the version number on narrow containers (never its own row)')
+    assert.ok(identityRuleStart > narrowStart, 'identity takes the full first row on narrow containers')
     assert.ok(statusRuleStart > narrowStart, 'status takes the second row on narrow containers')
-    assert.equal(css.indexOf('.dshsvc-version-note{flex-basis:100%', narrowStart), -1,
-      'narrow containers must not force the note onto its own row (two-row layout, not three)')
+    assert.equal(css.indexOf('.dshsvc-version-note', narrowStart), -1,
+      'the removed notice must not leave a dead CSS rule behind')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

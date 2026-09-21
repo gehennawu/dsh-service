@@ -75,6 +75,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 - 显示当前 DSH 与插件版本，链接 GitHub Releases
 - 自动检查 npm **正式版 + 预览版**（latest / next 双 tag）；有新版本时行内展开对比，版本号附 npmjs 与 npmmirror 双链接
 - 一键升级，完成后自动重启；未检测到进程管理器时先确认后果，保持运行并提示手动重启
+- 「本次更新内容」行内展开：正文由宿主从 GitHub Releases API 取回后就地渲染（纯 Markdown，不嵌 iframe、不跳转），带发布日期与预发布标记；未建 Release 或读取失败各有明确提示
 - 升级落地但进程尚未重启期间（手动启动环境尤为常见），版本行改示「已安装 X，重启后生效」并收起升级按钮，重开面板或刷新页面状态依旧；重启进程后恢复常态
 
 ### 安全重启
@@ -353,7 +354,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 适配口径**：已适配 DSH `0.1.6-alpha.2`——会话格式 V3（`system/message` 入史、旧 PTC 词汇更名，详情视图自动归档系统事件）、sessionPersistence handle 化（用量增量、标题缓存、诊断计数全部按新公共面 `list`/`open`/`read`/`close` 走）、官方右栏替代详情列（移动端右缘手势直接驱动 `ctx.layout.openRightbar/closeRightbar`）、官方 turn-process 对象化（子代理回合认领双形态兼容）、移动端底行触发钮双哈希兼容、子代理回合尾模型行 list 槽位自适应兼容、新插件管理页 `plugins.bundle.config` 槽位注入、会话详情打开接入 `uiWorkspace` 降级链路。旧版 DSH（`>=0.1.1-rc.2`）保持兼容：新旧两套 persistence/布局 seam 按运行时能力探测双形态走，旧宿主上针对新结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后以 V3 格式写入的会话日志无法被旧版 DSH 读取——**备份不可跨版本降级恢复**。版本卡常驻显示「适配 DSH 0.1.1-rc.2 ~ 0.1.6-alpha.2」，越界运行版本（`≥0.1.6-alpha.3`）标红警示。
+**DSH 适配口径**：已适配 DSH `0.1.6-alpha.2`——会话格式 V3（`system/message` 入史、旧 PTC 词汇更名，详情视图自动归档系统事件）、sessionPersistence handle 化（用量增量、标题缓存、诊断计数全部按新公共面 `list`/`open`/`read`/`close` 走）、官方右栏替代详情列（移动端右缘手势直接驱动 `ctx.layout.openRightbar/closeRightbar`）、官方 turn-process 对象化（子代理回合认领双形态兼容）、移动端底行触发钮双哈希兼容、子代理回合尾模型行 list 槽位自适应兼容、新插件管理页 `plugins.bundle.config` 槽位注入、会话详情打开接入 `uiWorkspace` 降级链路。旧版 DSH（`>=0.1.1-rc.2`）保持兼容：新旧两套 persistence/布局 seam 按运行时能力探测双形态走，旧宿主上针对新结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后以 V3 格式写入的会话日志无法被旧版 DSH 读取——**备份不可跨版本降级恢复**。插件市场按 `package.json` 的 `engines.dsh` 区间判定兼容性（该字段是唯一的支持口径声明）。
 
 ## 🔒 安全设计
 
