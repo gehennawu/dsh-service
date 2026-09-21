@@ -2478,6 +2478,120 @@ test('release notes fall back to pre-wrapped plain text when the shell has no ma
   assert.match(renderer.text('settings.section'), /纯文本回落/)
 })
 
+test('release notes panel closes on an outside click or Escape, but not on a click inside the version card', async () => {
+  // 面板是行内展开不是模态：读完（或在读的过程中决定不看）必须有第二个出口。
+  // 判据刻意收在版本卡上，而不是「整页随便点」——版本卡里还有另一行入口、
+  // 升级按钮与通道下拉，点到它们面板不该自己关了（那会让「切到 DSH 行」这种操作失真）。
+  const docListeners = new Map()
+  globalThis.document = {
+    addEventListener(type, handler) { (docListeners.get(type) || docListeners.set(type, new Set()).get(type)).add(handler) },
+    removeEventListener(type, handler) { docListeners.get(type)?.delete(handler) },
+  }
+  const fire = (type, event) => { for (const handler of docListeners.get(type) || []) handler(event) }
+  const panelChild = {}
+  const panelNode = { contains: (target) => target === panelNode || target === panelChild }
+  const fireOutside = () => fire('pointerdown', { target: { closest: () => null } })
+  try {
+    let notesCalls = 0
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+      if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+      if (endpoint === 'release-notes') {
+        notesCalls += 1
+        return { ok: true, value: { version: '1.9.4', tag: 'v1.9.4', notes: '正文', truncated: false } }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    assert.equal(docListeners.get('pointerdown')?.size ?? 0, 0, 'a collapsed panel must not park a document listener')
+
+    await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), true)
+    assert.equal(docListeners.get('pointerdown')?.size, 1)
+    assert.equal(docListeners.get('keydown')?.size, 1)
+
+    // 行内点击（版本卡子树内任意位置）：面板留着。
+    fire('pointerdown', { target: { closest: (selector) => (selector === '[data-testid="version-card"]' ? {} : null) } })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), true, 'a click inside the card keeps the panel open')
+    // 面板本体（ref.contains）：即使 closest 缺席也留着。
+    renderer.findByTestId('version-plugin-notes').props.ref.current = panelNode
+    fire('pointerdown', { target: panelChild })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), true, 'a click inside the panel body keeps it open')
+
+    // 卡片之外：收起，且入口回到折叠态；正文仍在缓存里，再点开不重发请求。
+    fireOutside()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), false, 'an outside click collapses the panel')
+    assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['aria-expanded'], 'false')
+    assert.equal(docListeners.get('pointerdown')?.size ?? 0, 0, 'a collapsed panel releases the document listeners')
+
+    await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(notesCalls, 1, 'the collapsed panel keeps its cache: no re-request')
+    assert.equal(renderer.hasTest('version-plugin-notes'), true)
+
+    // Esc 同效。
+    fire('keydown', { key: 'Escape' })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), false, 'Escape collapses the panel')
+    assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['aria-expanded'], 'false')
+  } finally {
+    delete globalThis.document
+  }
+})
+
+test('a release notes response landing after the panel was dismissed stays collapsed', async () => {
+  // 外点关闭把面板收起了，但在飞的 release-notes 还会落地。旧实现无条件 setState，
+  // 面板会自己又弹回来——「点了别处却关不掉」。这里让响应挂在测试手里精确复现那个时序。
+  const docListeners = new Map()
+  globalThis.document = {
+    addEventListener(type, handler) { (docListeners.get(type) || docListeners.set(type, new Set()).get(type)).add(handler) },
+    removeEventListener(type, handler) { docListeners.get(type)?.delete(handler) },
+  }
+  let release = null
+  let notesCalls = 0
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.4', instanceId: 'x' } }
+      if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+      if (endpoint === 'release-notes') {
+        notesCalls += 1
+        return new Promise((resolve) => {
+          release = () => resolve({ ok: true, value: { version: '1.9.4', tag: 'v1.9.4', notes: '迟到的正文', truncated: false } })
+        })
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+    await renderer.load()
+    const opening = renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes-loading'), true, 'the panel is open while the request flies')
+
+    for (const handler of docListeners.get('pointerdown') || []) handler({ target: { closest: () => null } })
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), false, 'the outside click collapses it while loading')
+
+    release()
+    await opening
+    await renderer.flush()
+    assert.equal(renderer.hasTest('version-plugin-notes'), false, 'the late response must not re-open the panel')
+    assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['aria-expanded'], 'false')
+
+    // 正文没白取：仍在面板内缓存里，再展开零 RPC。
+    await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
+    await renderer.flush()
+    assert.equal(notesCalls, 1, 'the in-flight response is still cached after the dismissal')
+    assert.equal(renderer.hasTest('version-plugin-notes-body'), true)
+  } finally {
+    delete globalThis.document
+  }
+})
+
 test('release notes entry withdraws itself when the running host predates the endpoint', async () => {
   // 浏览器半刷新即换、宿主半要重启才换：升级落地未重启的窗口里 release-notes 回 unknown-endpoint。
   // 入口应整体收起（而不是每次点开都弹错），也不得把 unknown-endpoint 裸漏到界面。
@@ -5887,7 +6001,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const navSwitch = renderer.findByTestId('quota-nav-switch')
   assert.equal(navSwitch.props['aria-checked'], 'false')
   assert.equal(navSwitch.props['aria-label'], '设置页左列显示「额度查询」入口')
-  assert.match(renderer.text('settings.section'), /开启后在设置页左侧标签列底部显示「额度查询」快捷入口/)
+  assert.match(renderer.text('settings.section'), /开启后在设置页左侧标签显示入口/)
   assert.doesNotMatch(renderer.text('settings.section'), /默认关闭；/)
   // 开关与标题同一行：两者是同一个 flex 行的直接子节点。
   const titleRow = renderer.findByTestId('remote-quota-card').children.find(

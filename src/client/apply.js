@@ -4732,6 +4732,12 @@
         const notesCacheRef = useRef({})
         const notesHostUnsupportedRef = useRef(false)
         const [notesState, setNotesState] = useState({ kind: null, phase: 'idle', value: null, error: null })
+        // 请求序号：收起（含外点关闭）与换行都 +1，让在飞的旧响应落地时自我作废——
+        // 否则「关掉面板后才回来的 release 正文」会把面板又点亮，看起来像关不掉。
+        const notesRequestRef = useRef(0)
+        // 面板正文节点：外点判定要能区分「点面板内部」与「点面板外」——面板是行内展开，
+        // 真实 DOM 里本就在版本卡子树内，这一层是元素级兜底（不依赖 closest 的实现）。
+        const notesPanelRef = useRef(null)
         // 重启流程状态来自共享流（与设置页左列底部的专属入口同源）
         const restartFlowState = useRestartFlow()
         const runtimeEnv = useRuntimeEnv()
@@ -4780,6 +4786,8 @@
         // 「这个宿主还不支持」并把入口整体收起（与其它「旧宿主缺字段静默降级」同规）。
         const notesErrorCode = (error) => (error === 'release-not-found' ? 'release-not-found' : 'release-unavailable')
         const loadNotes = async (kind) => {
+          const token = (notesRequestRef.current += 1)
+          const stale = () => notesRequestRef.current !== token
           setNotesState({ kind, phase: 'loading', value: null, error: null })
           let res = null
           try {
@@ -4788,11 +4796,16 @@
             res = null
           }
           if (res && res.ok !== false && res.value) {
+            // 缓存先落、UI 后落：用户在飞行中收起时不该点亮面板，但拿到的正文仍值得留着——
+            // 再展开直接命中缓存，不为一次外点关闭白扔一条已成功的请求。
             notesCacheRef.current[kind] = res.value
+            if (stale()) return
             setNotesState({ kind, phase: 'ready', value: res.value, error: null })
             return
           }
+          if (stale()) return
           if (res?.error === 'unknown-endpoint') {
+            // 「这个宿主还不支持」是环境事实，与面板是否还被看着无关，照记不误。
             notesHostUnsupportedRef.current = true
             setNotesState({ kind: null, phase: 'idle', value: null, error: null })
             return
@@ -4803,21 +4816,59 @@
           const code = notesErrorCode(res?.error)
           setNotesState({ kind, phase: code === 'release-not-found' ? 'pending' : 'error', value: null, error: code })
         }
+        // 面板收起（含点击面板外、Esc）：在飞的响应一并作废，避免关掉后又被旧响应点亮。
+        // 缓存保留——再展开直接命中缓存，不重发请求。
+        const collapseNotes = () => {
+          notesRequestRef.current += 1
+          setNotesState({ kind: null, phase: 'idle', value: null, error: null })
+        }
         const toggleNotes = async (kind) => {
           if (notesHostUnsupportedRef.current === true) return
           const current = notesState.kind === kind ? notesState : null
           // 「已就绪」与「读取中」再点是收起；待定态再点是重试（内容还没拿到，收起没有意义）。
           if (current !== null && (current.phase === 'ready' || current.phase === 'loading')) {
-            setNotesState({ kind, phase: 'idle', value: null, error: null })
+            collapseNotes()
             return
           }
           const cached = notesCacheRef.current[kind]
           if (cached !== undefined) {
+            notesRequestRef.current += 1
             setNotesState({ kind, phase: 'ready', value: cached, error: null })
             return
           }
           await loadNotes(kind)
         }
+        // 面板展开期间：点击版本卡之外任意位置（pointerdown）或按 Esc 即收起。
+        // 内点判定**收在版本卡整棵子树上**，不是「只要落在面板节点上」——版本卡里还有另一行
+        // 入口、升级按钮与通道下拉，点到它们面板不该自己关了（否则「切到 DSH 行」这类操作会被
+        // 自己的外点逻辑搅乱）。面板节点再做一层 ref.contains 元素级兜底。
+        // 监听随展开/收起精确挂卸（依赖 [notesOpen]），收起后不留常驻 document 监听。
+        const notesOpen = notesState.kind !== null && notesState.phase !== 'idle'
+        useEffect(() => {
+          if (!notesOpen || typeof document === 'undefined') return undefined
+          const onPointerDown = (event) => {
+            const target = event?.target
+            if (target != null && typeof target.closest === 'function') {
+              try {
+                if (target.closest('[data-testid="version-card"]') !== null) return
+              } catch (_) {}
+            }
+            const panel = notesPanelRef.current
+            if (panel != null && typeof panel.contains === 'function') {
+              try { if (panel.contains(target)) return } catch (_) {}
+            }
+            collapseNotes()
+          }
+          const onKeyDown = (event) => {
+            if (event?.key === 'Escape') collapseNotes()
+          }
+          document.addEventListener('pointerdown', onPointerDown)
+          document.addEventListener('keydown', onKeyDown)
+          return () => {
+            document.removeEventListener('pointerdown', onPointerDown)
+            document.removeEventListener('keydown', onKeyDown)
+          }
+        }, [notesOpen])
         useEffect(() => {
           // 健康诊断开关关闭时权限浅检查属于被门禁功能：不发起请求，也不落错误态。
           if (!featureEnabled('healthDiagnostics')) return () => {}
@@ -6338,7 +6389,7 @@
             meta.prerelease === true ? React.createElement('span', { key: 'prerelease', style: { color: 'var(--dsw-alias-state-warn-primary)' } }, translate('update.notes.prerelease')) : null,
             meta.truncated === true ? React.createElement('span', { key: 'truncated' }, translate('update.notes.truncated', { chars: Number(meta.notesLimit) > 0 ? meta.notesLimit : 20000 })) : null,
           ].filter((node) => node !== null)
-          return React.createElement('div', { 'data-testid': `version-${kind}-notes`, style: { marginTop: '6px', marginBottom: '4px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', display: 'flex', flexDirection: 'column', gap: '8px' } },
+          return React.createElement('div', { 'data-testid': `version-${kind}-notes`, 'data-dshsvc-notes-panel': '', ref: notesPanelRef, style: { marginTop: '6px', marginBottom: '4px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsh-svc-raised-bg)', display: 'flex', flexDirection: 'column', gap: '8px' } },
             body,
             metaLine.length > 0
               ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, ...metaLine)
