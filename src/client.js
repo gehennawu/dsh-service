@@ -830,7 +830,6 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'health.detail.notification-permission.default': '浏览器尚未授权系统通知，可在「配置 → 通知」中启用',
       'health.detail.notification-permission.denied': '浏览器已拒绝系统通知，需在浏览器站点设置里恢复',
       'health.detail.notification-permission.unsupported': '当前浏览器不支持系统通知',
-      'health.detail.notification-permission.disabled': '任务通知功能已关闭，本节不检查',
       // v1.3 插件健康检查：只检查异常（官方设置页已有完整插件清单与开关，这里不做重复清单）。
       'health.check.plugins': '插件',
       'health.detail.plugins.unavailable': '插件体检不可用（宿主未暴露 Loader）',
@@ -1762,7 +1761,6 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'health.detail.notification-permission.default': 'The browser has not granted system notifications yet; enable them under Configuration → Notifications',
       'health.detail.notification-permission.denied': 'The browser blocked system notifications; restore them in the site settings',
       'health.detail.notification-permission.unsupported': 'This browser does not support system notifications',
-      'health.detail.notification-permission.disabled': 'Task notifications are turned off, so this section is not checked',
       'health.check.plugins': 'Plugins',
       'health.detail.plugins.unavailable': 'Plugin health check unavailable (host loader is not exposed)',
       'health.detail.plugins.ok': '{total} plugins healthy',

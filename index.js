@@ -1119,13 +1119,23 @@ function createUsageIndex() {
   return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions: {}, failedSessions: [] }
 }
 
-// 版本迁移：折读口径变更时旧桶必须重折，live 条目丢掉即可由源会话重建；
-// 但 detached 条目（其会话文件已删除）没有任何重折材料——若照旧全量重建，
-// 保留的历史会被一次版本升级静默清空。故迁移只丢弃可重折的 live 条目，detached 原样带过。
+// 版本迁移：折读口径变更时旧桶需要重折，但所有旧摘要必须保留，直到确认 live 且重折成功才替换。
+// 未标记 detached 的条目可能源文件已在升级前被删除（此前未标 detached），也可能源文件仍在但需要重折；
+// 绝不能在迁移时直接丢弃。我们给所有非 detached 条目打上显式的 rebuildPending 标记并跨重启保留：
+// 若后续刷新时发现源文件已删除，自动转为 detached 保留完整历史；
+// 若源文件仍在，全量重折成功后才替换旧摘要并清除标记，重折失败则继续保留旧摘要。
 function migrateUsageIndex(parsed) {
   const sessions = {}
-  for (const [id, session] of Object.entries(parsed.sessions)) {
-    if (session !== null && typeof session === 'object' && session.detached === true) sessions[id] = session
+  if (parsed?.sessions !== null && typeof parsed?.sessions === 'object') {
+    for (const [id, session] of Object.entries(parsed.sessions)) {
+      if (session !== null && typeof session === 'object') {
+        const migrated = structuredClone(session)
+        if (migrated.detached !== true) {
+          migrated.rebuildPending = true
+        }
+        sessions[id] = migrated
+      }
+    }
   }
   return { version: USAGE_INDEX_VERSION, updatedAt: 0, sessions, failedSessions: [] }
 }
@@ -1204,10 +1214,36 @@ const RESET_CARD_NAIVE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?
 
 /** 客户端时区偏移（分钟，JS getTimezoneOffset 语义）→ 合法范围整数；非法一律视为「未知」（undefined）。 */
 function quotaTimezoneOffset(value) {
-  if (value === undefined || value === null || value === '') return undefined
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return undefined
-  return Math.max(-840, Math.min(840, Math.trunc(parsed)))
+  if (typeof value !== 'number' || !Number.isInteger(value) || Math.abs(value) > 840) return undefined
+  return value
+}
+
+function quotaTimeZone(value) {
+  if (typeof value !== 'string' || value.length > 100) return undefined
+  try { return new Intl.DateTimeFormat('en', { timeZone: value }).resolvedOptions().timeZone } catch (_) { return undefined }
+}
+
+// 用目标日期的 IANA 时区规则解释存量墙上时间；不存在的 DST 跳跃时刻保留待人工修正。
+function resetCardWallTimeMs(raw, timeZone) {
+  const wallText = raw.length === 10 ? `${raw}T23:59:59.999` : raw
+  const wall = Date.parse(`${wallText}Z`)
+  if (!Number.isFinite(wall)) return null
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  })
+  const wallAt = (at) => {
+    const p = Object.fromEntries(formatter.formatToParts(new Date(at)).map(({ type, value }) => [type, value]))
+    return Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`) + ((at % 1000) + 1000) % 1000
+  }
+  const candidates = []
+  // 在目标墙上时刻两侧采样候选偏移，覆盖 DST 两档；反向映射相等才接受，避免跳跃日静默纠正。
+  for (const delta of [-36, 0, 36]) {
+    const sample = wall + delta * 3600000
+    const candidate = wall - (wallAt(sample) - sample)
+    if (wallAt(candidate) === wall) candidates.push(candidate)
+  }
+  return candidates.length === 0 ? null : Math.min(...candidates)
 }
 
 /**
@@ -1218,14 +1254,20 @@ function quotaTimezoneOffset(value) {
  *   - datetime-local 串（`2026-09-30T08:00`）→ 该墙上时间在**客户端时区**里的绝对时刻。
  *     此前按宿主时区（容器 UTC）解释，与浏览器渲染各算一套：UTC+8 用户在界面上看到「已过期」，
  *     宿主却仍判未过期——既不自动移除，还继续当临期卡提示。
- *   - 无时区形态但**拿不到客户端偏移** → null（无法判定，宁可留着也不按错误时区删卡/标过期）。
+ *   - 优先使用客户端 IANA 时区的目标日期规则；仅旧客户端缺时区名时兼容合法固定偏移。
+ *   - 无时区形态且没有合法时区信息 → null（宁可留着也不按宿主时区删卡/标过期）。
  *   - 缺失/无法解析 → null（永不过期，只手动移除）。
  */
-function resetCardExpiryMs(expiresAt, timezoneOffsetMinutes) {
+function resetCardExpiryMs(expiresAt, timezoneOffsetMinutes, timeZone) {
   if (typeof expiresAt !== 'string') return null
   const raw = expiresAt.trim()
   if (raw === '') return null
   if (RESET_CARD_DATE_RE.test(raw) || RESET_CARD_NAIVE_RE.test(raw)) {
+    // 显式提供的时区非法时不得降级成可能错误的偏移，更不能触发删除。
+    if (timeZone !== undefined) {
+      const zone = quotaTimeZone(timeZone)
+      return zone === undefined ? null : resetCardWallTimeMs(raw, zone)
+    }
     const offset = quotaTimezoneOffset(timezoneOffsetMinutes)
     if (offset === undefined) return null
     // 把「墙上时间」按 offset 平移成 UTC：getTimezoneOffset 是「本地→UTC 需要加的分钟数」，
@@ -1235,13 +1277,15 @@ function resetCardExpiryMs(expiresAt, timezoneOffsetMinutes) {
     const endOfDay = raw.length === 10 ? 24 * 60 * 60 * 1000 - 1 : 0
     return wall + endOfDay + offset * 60 * 1000
   }
+  // 非标准无偏移串不得落回宿主本地 Date.parse（例如空格代替 T）。
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/i.test(raw)) return null
   const parsed = Date.parse(raw)
   return Number.isFinite(parsed) ? parsed : null
 }
 
 /** 已过期（到期时刻严格早于 now）的重置卡：宿主读配置时自动剔除。 */
-function isResetCardExpired(card, now = Date.now(), timezoneOffsetMinutes) {
-  const at = resetCardExpiryMs(card?.expiresAt, timezoneOffsetMinutes)
+function isResetCardExpired(card, now = Date.now(), timezoneOffsetMinutes, timeZone) {
+  const at = resetCardExpiryMs(card?.expiresAt, timezoneOffsetMinutes, timeZone)
   return at !== null && at < now
 }
 
@@ -1250,9 +1294,9 @@ function isResetCardExpired(card, now = Date.now(), timezoneOffsetMinutes) {
  * 有剔除才落盘，避免每次读都写文件。返回值同时告诉调用方「是否发生过变更」。
  * 无时区形态的卡必须带上客户端偏移才参与判定，否则会按宿主时区误删。
  */
-function pruneExpiredResetCards(config, now = Date.now(), timezoneOffsetMinutes) {
+function pruneExpiredResetCards(config, now = Date.now(), timezoneOffsetMinutes, timeZone) {
   if (!Array.isArray(config?.resetCards) || config.resetCards.length === 0) return false
-  const kept = config.resetCards.filter((card) => !isResetCardExpired(card, now, timezoneOffsetMinutes))
+  const kept = config.resetCards.filter((card) => !isResetCardExpired(card, now, timezoneOffsetMinutes, timeZone))
   if (kept.length === config.resetCards.length) return false
   config.resetCards = kept
   return true
@@ -1261,24 +1305,24 @@ function pruneExpiredResetCards(config, now = Date.now(), timezoneOffsetMinutes)
 /**
  * 把无时区的 datetime-local 到期串固化成绝对时刻（ISO，带 Z）：一次迁移，之后任何时区都读得一致。
  * 纯日期串刻意保持原样——「9-30 到期」是本地日期承诺，改成绝对时刻会在界面上多出一个时间点，
- * 且它每次判定都用当时的客户端偏移算当日末尾，无需固化。
- * 拿不到偏移时原样返回（不做无依据的改写），无法解析时同样原样返回（保留人工可核查的原文）。
+ * 且它每次判定都用客户端时区的目标日期规则算当日末尾，无需固化。
+ * 拿不到时区信息时原样返回，无法解析时同样原样返回（保留人工可核查的原文）。
  */
-function canonicalResetCardExpiresAt(expiresAt, timezoneOffsetMinutes) {
+function canonicalResetCardExpiresAt(expiresAt, timezoneOffsetMinutes, timeZone) {
   if (typeof expiresAt !== 'string') return expiresAt
   const raw = expiresAt.trim()
   if (!RESET_CARD_NAIVE_RE.test(raw)) return expiresAt
-  const at = resetCardExpiryMs(raw, timezoneOffsetMinutes)
+  const at = resetCardExpiryMs(raw, timezoneOffsetMinutes, timeZone)
   return at === null ? expiresAt : new Date(at).toISOString()
 }
 
 /** 把配置里所有无时区 datetime 卡固化为绝对时刻。有改写才返回 true（调用方据此落盘）。 */
-function normalizeResetCardInstants(config, timezoneOffsetMinutes) {
+function normalizeResetCardInstants(config, timezoneOffsetMinutes, timeZone) {
   if (!Array.isArray(config?.resetCards)) return false
   let changed = false
   for (const card of config.resetCards) {
     if (card === null || typeof card !== 'object') continue
-    const next = canonicalResetCardExpiresAt(card.expiresAt, timezoneOffsetMinutes)
+    const next = canonicalResetCardExpiresAt(card.expiresAt, timezoneOffsetMinutes, timeZone)
     if (next !== card.expiresAt) {
       card.expiresAt = next
       changed = true
@@ -2348,6 +2392,9 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
       session.detached = true
       session.detachedAt = detachedAt
     }
+    if (session.rebuildPending) {
+      delete session.rebuildPending
+    }
   }
   const recentCutoff = Date.now() - USAGE_ERROR_WINDOW_MS
   for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
@@ -2355,16 +2402,19 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
     const id = String(record.header.id)
     const revision = revisionKey(record.revision)
     const previous = index.sessions[id]
-    if (previous?.revision === revision) continue
-    const fromSeq = usageReadStart(previous)
+    const isRebuild = previous?.rebuildPending === true
+    if (previous?.revision === revision && !isRebuild) continue
+    const fromSeq = isRebuild ? 0 : usageReadStart(previous)
     let stage = 'read'
     try {
       const read = await persistenceReadSlice(persistence, record.header, fromSeq)
       const inheritedEventCount = inheritedEventCountFor(record, read)
       const events = usageReadEvents(read)
       stage = 'fold'
-      const next = foldUsageEvents(ctx, record, previous === undefined ? undefined : structuredClone(previous), events, inheritedEventCount)
+      const foldBase = isRebuild ? undefined : (previous === undefined ? undefined : structuredClone(previous))
+      const next = foldUsageEvents(ctx, record, foldBase, events, inheritedEventCount)
       next.revision = revision
+      delete next.rebuildPending
       index.sessions[id] = next
     } catch (error) {
       index.failedSessions.push(usageSessionFailure(id, error, stage, previous !== undefined))
@@ -5076,9 +5126,13 @@ function apply(ctx) {
   // 必须按「用户墙上时间」解释，宿主容器时区（多为 UTC）不是用户的时区。额度/健康等读路径
   // 都带这个字段，记录最后一次即可；拿不到时宁可不判定（见 resetCardExpiryMs），也不按错时区删卡。
   let quotaClientOffset
+  let quotaClientTimeZone
   const rememberQuotaClientOffset = (payload) => {
-    const offset = quotaTimezoneOffset(payload?.timezoneOffsetMinutes)
-    if (offset !== undefined) quotaClientOffset = offset
+    if (payload?.timeZone !== undefined || payload?.timezoneOffsetMinutes !== undefined) {
+      quotaClientOffset = quotaTimezoneOffset(payload?.timezoneOffsetMinutes)
+      // 显式非法时区留给判定器拒绝；旧客户端只带偏移时不得沿用另一客户端的时区。
+      quotaClientTimeZone = payload?.timeZone
+    }
     return quotaClientOffset
   }
   // 过期重置卡自动移除：剔除内存快照里的过期条目，有变更才落盘（避免每次读都写文件）。
@@ -5088,8 +5142,8 @@ function apply(ctx) {
   const pruneExpiredQuotaResetCards = async () => {
     const offset = quotaClientOffset
     // 先固化无时区 datetime 卡（一次迁移，之后任何时区都读得一致），再按偏移剔除过期卡。
-    const canonicalized = normalizeResetCardInstants(quotaConfig, offset)
-    const pruned = pruneExpiredResetCards(quotaConfig, Date.now(), offset)
+    const canonicalized = normalizeResetCardInstants(quotaConfig, offset, quotaClientTimeZone)
+    const pruned = pruneExpiredResetCards(quotaConfig, Date.now(), offset, quotaClientTimeZone)
     if (!canonicalized && !pruned) return
     try {
       await saveQuotaConfig(dshHome, quotaConfig)
@@ -5541,16 +5595,15 @@ function apply(ctx) {
     coreRoutes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
-    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt: (expiresAt, offset) => canonicalResetCardExpiresAt(expiresAt, quotaTimezoneOffset(offset) ?? quotaClientOffset), QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
+    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
   ])
 
   const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
-  // 任何带 timezoneOffsetMinutes 的请求都更新最新客户端偏移（额度读路径在判定无时区重置卡时用它）。
-  // 放在分发器外层一次性接住，避免每个端点各自记一遍。
+  // 只接受额度时区端点的上下文；usage 的固定偏移不能覆盖额度的 IANA 时区规则。
   const dispatchRpc = (endpoint, payload) => {
-    rememberQuotaClientOffset(payload)
+    if (endpoint === 'quota' || endpoint === 'quota-reset-card' || endpoint === 'health') rememberQuotaClientOffset(payload)
     return dispatchEndpoint(endpoint, payload)
   }
   try {

@@ -208,12 +208,13 @@ export function createQuotaRoutes({
             const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
             if (accountName !== '') card.account = accountName
             if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
-            // 面板 datetime-local 是无时区串：落盘即固化成绝对时刻，之后任何时区读到的都是同一时刻。
-            // 拿不到客户端偏移时保留原文（由读路径按当时的偏移解释），不无依据地改写。
+            // 新客户端发送按目标日期解析的 ISO；存量客户端裸串按请求时区固化，不能依赖宿主时区。
+            // 缺少时区信息或无法解析时保留原文，不做无依据的改写。
             if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') {
               card.expiresAt = String(canonicalResetCardExpiresAt(
                 payload.expiresAt.trim(),
                 payload?.timezoneOffsetMinutes,
+                payload?.timeZone,
               )).slice(0, 32)
             }
             config.resetCards = [...allCards, card]

@@ -56,7 +56,7 @@ import { ROOT, readClientSource } from './client-source.mjs'
  */
 export const ALLOWED_GLOBALS = Object.freeze([
   // ── 语言内建 ──
-  'Array', 'Boolean', 'Date', 'Error', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object',
+  'Array', 'Boolean', 'Date', 'Error', 'Intl', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object',
   'Promise', 'RegExp', 'Set', 'String', 'Symbol', 'Uint8Array', 'undefined',
   'decodeURIComponent', 'encodeURIComponent',
   // ── 定时器 / 调度 ──

@@ -770,18 +770,20 @@ test('usage retention keeps deleted sessions in totals and exposes the hourly pu
   assert.equal(afterRemoval.value.totals.inputTokens, 200, 'missing project still counts toward the total')
 })
 
-test('usage index version mismatch rebuilds live entries but carries detached history forward', async (t) => {
-  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-'))
+test('usage index version mismatch retains deleted sessions without detached flag as detached history', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-deleted-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
-  const hours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const ghostHours = { '2026-08-19T07': { totals: { steps: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const keptHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
   const stale = {
-    version: 4,
+    version: 5,
     updatedAt: now,
     sessions: {
-      old: { revision: 'r', lastSeq: 1, project: { id: 'p', title: 'Old' }, currentModel: null, hours: {} },
-      // detached 条目的会话文件已删除，没有任何重折材料——必须跨版本带过，否则保留的历史会被一次升级清空。
-      kept: { revision: 'r', lastSeq: 3, project: { id: 'p2', title: 'Kept', path: '/gone/project' }, currentModel: null, hours, detached: true, detachedAt: now },
+      // ghost 在升级前源文件已被删除，但旧索引未打 detached 标记——绝不能在版本升级时丢失历史数据！
+      ghost: { revision: 'r1', lastSeq: 2, project: { id: 'p1', title: 'Ghost' }, currentModel: null, hours: ghostHours },
+      // kept 是已经带有 detached 标记的会话
+      kept: { revision: 'r2', lastSeq: 3, project: { id: 'p2', title: 'Kept', path: '/gone/project' }, currentModel: null, hours: keptHours, detached: true, detachedAt: now },
     },
   }
   await mkdir(dshHome, { recursive: true })
@@ -793,13 +795,106 @@ test('usage index version mismatch rebuilds live entries but carries detached hi
   const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
   const result = await handler('usage-refresh', {})
   assert.equal(result.ok, true)
-  assert.equal(result.value.indexedSessions, 1, 'live entry is dropped for re-fold')
-  assert.equal(result.value.detachedSessions, 1, 'detached history survives the version bump')
-  assert.equal(result.value.totals.steps, 1)
-  assert.equal(result.value.totals.inputTokens, 60)
+  // ghost 与 kept 两个会话全部完好保留在索引中，历史 token 不缩水
+  assert.equal(result.value.indexedSessions, 2)
+  assert.equal(result.value.detachedSessions, 2, 'ghost is safely converted to detached history instead of dropped')
+  assert.equal(result.value.totals.steps, 3)
+  assert.equal(result.value.totals.inputTokens, 160)
   const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
   assert.equal(stored.version, 6)
-  assert.deepEqual(Object.keys(stored.sessions), ['kept'])
+  assert.equal(stored.sessions.ghost.detached, true)
+  assert.equal(stored.sessions.ghost.rebuildPending, undefined)
+  assert.equal(stored.sessions.kept.detached, true)
+})
+
+test('usage index version mismatch rebuilds live sessions from seq 0 without duplicating tokens even when revision matches', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-live-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const oldHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const stale = {
+    version: 5,
+    updatedAt: now,
+    sessions: {
+      'live-1': { revision: 'r-same', lastSeq: 1, project: { id: 'p', title: 'Live' }, currentModel: null, hours: oldHours },
+    },
+  }
+  await mkdir(dshHome, { recursive: true })
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(stale))
+  const readOffsets = []
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'live-1', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'r-same' }],
+    readFrom: async (id, fromSeq) => {
+      readOffsets.push(fromSeq)
+      return {
+        events: [
+          { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'anthropic', model: 'claude' } } } },
+          { type: 'assistant/message', seq: 1, time: now, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 150, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+        ],
+      }
+    },
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const result = await handler('usage-refresh', {})
+  assert.equal(result.ok, true)
+  // 必须从 seq 0 开始全量重折（而不是增量），不能因为 revision 相同而跳过
+  assert.deepEqual(readOffsets, [0])
+  // 新折读结果替换旧摘要，token 准确为 150，绝不能在旧值 100 上重复累加为 250
+  assert.equal(result.value.totals.steps, 1)
+  assert.equal(result.value.totals.inputTokens, 150)
+  const stored = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored.version, 6)
+  assert.equal(stored.sessions['live-1'].rebuildPending, undefined)
+})
+
+test('usage index version mismatch preserves old summary on rebuild failure and keeps rebuildPending across restarts', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-rebuild-fail-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const oldHours = { '2026-08-19T08': { totals: { steps: 1, inputTokens: 80, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }, models: {} } }
+  const stale = {
+    version: 5,
+    updatedAt: now,
+    sessions: {
+      fragile: { revision: 'r1', lastSeq: 1, project: { id: 'p', title: 'Fragile' }, currentModel: null, hours: oldHours },
+    },
+  }
+  await mkdir(dshHome, { recursive: true })
+  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(stale))
+  let failRead = true
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'fragile', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'r1' }],
+    readFrom: async (id, fromSeq) => {
+      if (failRead) throw new Error('simulated-disk-read-failure')
+      return {
+        events: [
+          { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'anthropic', model: 'claude' } } } },
+          { type: 'assistant/message', seq: 1, time: now, data: { turn: 0, step: 0, message: { role: 'assistant', content: [] }, usage: { inputTokens: 90, outputTokens: 15, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+        ],
+      }
+    },
+  }
+  const host1 = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const result1 = await host1.handler('usage-refresh', {})
+  assert.equal(result1.ok, true)
+  assert.equal(result1.value.failedSessions[0]?.code, 'session-read-failed')
+  assert.equal(result1.value.failedSessions[0]?.stale, true)
+  // 重折失败时旧摘要不丢，总量依然能统计到
+  assert.equal(result1.value.totals.inputTokens, 80)
+  const stored1 = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored1.version, 6)
+  assert.equal(stored1.sessions.fragile.rebuildPending, true, 'rebuildPending must persist to disk on failure')
+
+  // 模拟宿主重启：重新初始化 host 读取存盘的 v6 index，rebuildPending 跨重启保留
+  failRead = false
+  const host2 = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const result2 = await host2.handler('usage-refresh', {})
+  assert.equal(result2.ok, true)
+  assert.deepEqual(result2.value.failedSessions, [])
+  // 恢复后成功重折，新值 90 替换旧值 80，rebuildPending 清除
+  assert.equal(result2.value.totals.inputTokens, 90)
+  const stored2 = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.equal(stored2.sessions.fragile.rebuildPending, undefined)
 })
 
 test('usage index tolerates a malformed persisted failure list instead of failing the RPC', async (t) => {
@@ -2682,6 +2777,21 @@ test('reset card expiry interprets the wall-clock string in the client timezone,
   assert.equal(isResetCardExpired({}, Date.now(), 0), false)
 })
 
+test('reset card expiry uses target-date DST rules and rejects invalid timezone inputs', () => {
+  const zone = 'America/New_York'
+  assert.equal(resetCardExpiryMs('2026-12-01T08:00', 240, zone), Date.parse('2026-12-01T13:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-07-01T08:00', 300, zone), Date.parse('2026-07-01T12:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-03-08', 300, zone), Date.parse('2026-03-09T03:59:59.999Z'))
+  assert.equal(resetCardExpiryMs('2026-11-01', 240, zone), Date.parse('2026-11-02T04:59:59.999Z'))
+  assert.equal(resetCardExpiryMs('2026-11-01T01:30', 300, zone), Date.parse('2026-11-01T05:30:00Z'), 'overlap selects the earlier instant like browser Date')
+  assert.equal(resetCardExpiryMs('2026-03-08T02:30', 300, zone), null, 'nonexistent legacy wall time is not migrated or pruned')
+  for (const offset of [false, [], '0', 841, -841, 1.5]) assert.equal(resetCardExpiryMs('2026-12-01T08:00', offset), null)
+  assert.equal(resetCardExpiryMs('2026-12-01T08:00', 240, 'Invalid/Zone'), null)
+  const config = { resetCards: [{ id: 'winter', expiresAt: '2026-12-01T08:00' }] }
+  assert.equal(pruneExpiredResetCards(config, Date.parse('2026-12-01T12:30Z'), 240, zone), false)
+  assert.equal(pruneExpiredResetCards(config, Date.parse('2026-12-01T13:01Z'), 240, zone), true)
+})
+
 test('pruneExpiredResetCards drops only expired cards and reports whether anything changed', () => {
   const config = {
     version: 1,
@@ -3941,6 +4051,22 @@ test('a naive datetime card is canonicalized to an absolute instant once the cli
   assert.equal((await host.handler('health', { timezoneOffsetMinutes: -480 })).ok, true)
   config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
   assert.equal(config.resetCards[0].expiresAt, '2099-09-30')
+})
+
+test('reset card RPC and legacy migration use the target IANA timezone rather than the current offset', async (t) => {
+  const dshHome = await makeHome(t)
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  await writeFile(storedPath, JSON.stringify({ version: 1, kinds: {}, resetCards: [
+    { id: 'legacy', provider: 'zai-coding-cn', expiresAt: '2099-12-01T08:00' },
+  ] }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  const timezone = { timezoneOffsetMinutes: 240, timeZone: 'America/New_York' }
+  assert.equal((await host.handler('health', timezone)).ok, true)
+  let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[0].expiresAt, '2099-12-01T13:00:00.000Z')
+  assert.equal((await host.handler('quota-reset-card', { provider: 'zai-coding-cn', expiresAt: '2099-12-02T08:00', ...timezone })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[1].expiresAt, '2099-12-02T13:00:00.000Z')
 })
 
 test('health prunes an expired reset card when the config TTL elapses without an mtime change', async (t) => {

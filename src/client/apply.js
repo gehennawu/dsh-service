@@ -17,7 +17,15 @@
         const withOffset = TZ_AWARE_ENDPOINTS.has(endpoint) && base.timezoneOffsetMinutes === undefined
           ? { ...base, timezoneOffsetMinutes: new Date().getTimezoneOffset() }
           : base
-        return Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, withOffset)).then(normalizeRpcResult)
+        const request = TZ_AWARE_ENDPOINTS.has(endpoint)
+          ? { ...withOffset, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+          : withOffset
+        // datetime-local 必须在浏览器按目标日期解析；当前偏移不能代表跨夏令时的到期日。
+        if (endpoint === 'quota-reset-card' && typeof request.expiresAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/.test(request.expiresAt)) {
+          const at = new Date(request.expiresAt)
+          if (Number.isFinite(at.getTime())) request.expiresAt = at.toISOString()
+        }
+        return Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, request)).then(normalizeRpcResult)
       }
 
 
@@ -530,10 +538,9 @@
         if (typeof expiresAt !== 'string') return null
         const raw = expiresAt.trim()
         if (raw === '') return null
-        const parsed = Date.parse(raw)
-        if (!Number.isFinite(parsed)) return null
-        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return parsed + 24 * 60 * 60 * 1000 - 1
-        return parsed
+        // 纯日期必须取浏览器本地日末，不能用 UTC 零点加 24h（DST 日可能只有 23/25 小时）。
+        const parsed = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T23:59:59.999` : raw)
+        return Number.isFinite(parsed) ? parsed : null
       }
 
       /** 手录重置卡的统一文案与过期态：卡片行与圆环面板共用。v0.20 起免次数。 */
@@ -4690,6 +4697,7 @@
         // 热力块维度切换：'day' = 每日日历（默认），'hour' = 打卡图（星期 × 小时）。
         const [heatScope, setHeatScope] = useState('day')
         const [usageProject, setUsageProject] = useState('all')
+        const usageDataCacheRef = useRef(null)
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
@@ -5252,108 +5260,143 @@
         const heatParseDay = (key) => { const [year, month, day] = key.split('-').map(Number); return new Date(year, month - 1, day) }
         const heatFormatDate = (date) => date.toLocaleDateString(heatLocale, { month: 'short', day: 'numeric' })
         const heatFormatMonth = (date) => date.toLocaleDateString(heatLocale, { month: 'short' })
-        const heatDayKeys = Object.keys(usage?.days || {}).filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key) && Number.isFinite(heatParseDay(key).getTime()))
-        const heatTotalsByDay = new Map()
-        for (const key of heatDayKeys) {
-          const totals = usageTotalsFor(key)
-          heatTotalsByDay.set(key, { total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0), steps: Number(totals.steps || 0) })
-        }
-        const heatDays = []
-        const heatToday = new Date()
-        heatToday.setHours(0, 0, 0, 0)
-        if (heatDayKeys.length > 0) {
-          const earliest = heatDayKeys.map(heatParseDay).reduce((min, date) => (date < min ? date : min))
-          const floor = new Date(heatToday)
-          floor.setDate(floor.getDate() - (HEAT_MAX_WEEKS * 7 - 1))
-          const start = earliest < floor ? floor : new Date(earliest)
-          // 列对齐到周一（ISO 周，贴合中文习惯）：为凑整周多出的前缀日按「无记录」渲染。
-          start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
-          for (const cursor = new Date(start); cursor <= heatToday; cursor.setDate(cursor.getDate() + 1)) heatDays.push(new Date(cursor))
-        }
-        const heatMax = heatDays.reduce((max, date) => Math.max(max, heatTotalsByDay.get(dateKey(date))?.total || 0), 0)
-        // 四档强度按当日峰值分位（0 单列一档）：与主图的自适应纵轴同一思路，视觉上可比。
-        const heatLevel = (total) => {
-          if (total <= 0 || heatMax <= 0) return 0
-          if (total <= heatMax * 0.25) return 1
-          if (total <= heatMax * 0.5) return 2
-          if (total <= heatMax * 0.75) return 3
-          return 4
-        }
-        const heatLevelOpacity = (level) => (level <= 0 ? 1 : [1, 0.25, 0.45, 0.7, 1][level])
-        const heatColumns = []
-        for (let index = 0; index < heatDays.length; index += 7) {
-          const columnDays = heatDays.slice(index, index + 7)
-          const first = columnDays[0]
-          const previous = index === 0 ? null : heatDays[index - 7]
-          heatColumns.push({
-            key: dateKey(first),
-            // 列首月变化时才写标签，避免同一月份每列重复。
-            monthLabel: previous !== null && previous.getMonth() === first.getMonth() ? '' : heatFormatMonth(first),
-            days: columnDays,
-          })
-        }
-        // 星期标签取固定参照周的周一..周日：行序恒定，与数据范围无关。
-        const heatWeekdayReference = new Date(2024, 0, 1)
-        const heatWeekdays = [0, 1, 2, 3, 4, 5, 6].map((row) => { const date = new Date(heatWeekdayReference); date.setDate(date.getDate() + row); return date.toLocaleDateString(heatLocale, { weekday: 'short' }) })
-        const selectedProjects = usageProject === 'all'
-          ? (usage?.projects || []).map((project) => project.id)
-          : [usageProject]
-        // ── 打卡图（星期 × 小时）数据面 ──
-        // `usage.hours` 由宿主按客户端时区把同一批小时桶折成「本地星期 × 本地小时」，
-        // 与日视图同源、零新增持久化字段。格 = 该时段累计 token，行 = 周一..周日，列 = 0..23 时。
-        const hourTotalsFor = (bucket) => {
-          const totals = usageProject === 'all' ? bucket.totals : (bucket.projects || []).find((project) => project.id === usageProject)?.totals
-          return totals || { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
-        }
-        const punchBuckets = Array.isArray(usage?.hours) ? usage.hours : []
-        const punchBySlot = new Map()
-        for (const bucket of punchBuckets) {
-          const weekday = Number(bucket?.weekday)
-          const hour = Number(bucket?.hour)
-          if (!Number.isInteger(weekday) || !Number.isInteger(hour) || weekday < 0 || weekday > 6 || hour < 0 || hour > 23) continue
-          const totals = hourTotalsFor(bucket)
-          punchBySlot.set(`${weekday}-${hour}`, {
-            total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0),
-            steps: Number(totals.steps || 0),
-          })
-        }
-        const punchValues = [...punchBySlot.values()]
-        const punchMax = punchValues.reduce((max, entry) => Math.max(max, entry.total), 0)
-        const punchLevel = (total) => {
-          if (total <= 0 || punchMax <= 0) return 0
-          if (total <= punchMax * 0.25) return 1
-          if (total <= punchMax * 0.5) return 2
-          if (total <= punchMax * 0.75) return 3
-          return 4
-        }
-        const punchHourLabels = (hour) => (hour % 3 === 0 ? String(hour).padStart(2, '0') : '')
-        const emptyModelTotals = (id) => ({ id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
-        const accumulateModelTotals = (buckets, model) => {
-          const existing = buckets.get(model.id) || emptyModelTotals(model.id)
-          existing.steps += model.totals.steps || 0
-          existing.inputTokens += model.totals.inputTokens || 0
-          existing.outputTokens += model.totals.outputTokens || 0
-          existing.cacheReadTokens += model.totals.cacheReadTokens || 0
-          existing.cacheWriteTokens += model.totals.cacheWriteTokens || 0
-          buckets.set(model.id, existing)
-        }
-        const modelTodayTotals = new Map()
-        const modelWeekTotals = new Map()
-        const modelAllTotals = new Map()
-        const weekDayKeys = new Set(usageDays.map((day) => day.key))
-        const todayDayKey = usageDays[usageDays.length - 1].key
-        // 累计口径遍历宿主下发的全部日期键（可早于 7 天窗口）；周/今日按窗口命中累积。
-        for (const [dayKey, source] of Object.entries(usage?.days || {})) {
-          const targets = [modelAllTotals]
-          if (weekDayKeys.has(dayKey)) targets.push(modelWeekTotals)
-          if (dayKey === todayDayKey) targets.push(modelTodayTotals)
-          for (const project of source.projects) {
-            if (!selectedProjects.includes(project.id)) continue
-            for (const model of project.models) {
-              for (const buckets of targets) accumulateModelTotals(buckets, model)
+        const usageCacheKey = `${usage?.updatedAt || 0}:${usageProject}:${heatLocale}:${dateKey(new Date())}`
+        if (!usageDataCacheRef.current || usageDataCacheRef.current.key !== usageCacheKey) {
+          const heatDayKeys = Object.keys(usage?.days || {}).filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key) && Number.isFinite(heatParseDay(key).getTime()))
+          const heatTotalsByDay = new Map()
+          for (const key of heatDayKeys) {
+            const totals = usageTotalsFor(key)
+            heatTotalsByDay.set(key, { total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0), steps: Number(totals.steps || 0) })
+          }
+          const heatDays = []
+          const heatToday = new Date()
+          heatToday.setHours(0, 0, 0, 0)
+          if (heatDayKeys.length > 0) {
+            const earliest = heatDayKeys.map(heatParseDay).reduce((min, date) => (date < min ? date : min))
+            const thisMonday = new Date(heatToday)
+            thisMonday.setDate(thisMonday.getDate() - ((thisMonday.getDay() + 6) % 7))
+            const floor = new Date(thisMonday)
+            floor.setDate(floor.getDate() - ((HEAT_MAX_WEEKS - 1) * 7))
+            const earliestMonday = new Date(earliest)
+            earliestMonday.setDate(earliestMonday.getDate() - ((earliestMonday.getDay() + 6) % 7))
+            const start = earliestMonday < floor ? floor : earliestMonday
+            for (const cursor = new Date(start); cursor <= heatToday; cursor.setDate(cursor.getDate() + 1)) heatDays.push(new Date(cursor))
+          }
+          const heatMax = heatDays.reduce((max, date) => Math.max(max, heatTotalsByDay.get(dateKey(date))?.total || 0), 0)
+          const heatColumns = []
+          for (let index = 0; index < heatDays.length; index += 7) {
+            const columnDays = heatDays.slice(index, index + 7)
+            const first = columnDays[0]
+            const previous = index === 0 ? null : heatDays[index - 7]
+            heatColumns.push({
+              key: dateKey(first),
+              // 列首月变化时才写标签，避免同一月份每列重复。
+              monthLabel: previous !== null && previous.getMonth() === first.getMonth() ? '' : heatFormatMonth(first),
+              days: columnDays,
+            })
+          }
+          // 星期标签取固定参照周的周一..周日：行序恒定，与数据范围无关。
+          const heatWeekdayReference = new Date(2024, 0, 1)
+          const heatWeekdays = [0, 1, 2, 3, 4, 5, 6].map((row) => { const date = new Date(heatWeekdayReference); date.setDate(date.getDate() + row); return date.toLocaleDateString(heatLocale, { weekday: 'short' }) })
+          const selectedProjects = usageProject === 'all'
+            ? (usage?.projects || []).map((project) => project.id)
+            : [usageProject]
+          // ── 打卡图（星期 × 小时）数据面 ──
+          // `usage.hours` 由宿主按客户端时区把同一批小时桶折成「本地星期 × 本地小时」，
+          // 与日视图同源、零新增持久化字段。格 = 该时段累计 token，行 = 周一..周日，列 = 0..23 时。
+          const hourTotalsFor = (bucket) => {
+            const totals = usageProject === 'all' ? bucket.totals : (bucket.projects || []).find((project) => project.id === usageProject)?.totals
+            return totals || { steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+          }
+          const punchBuckets = Array.isArray(usage?.hours) ? usage.hours : []
+          const punchBySlot = new Map()
+          for (const bucket of punchBuckets) {
+            const weekday = Number(bucket?.weekday)
+            const hour = Number(bucket?.hour)
+            if (!Number.isInteger(weekday) || !Number.isInteger(hour) || weekday < 0 || weekday > 6 || hour < 0 || hour > 23) continue
+            const totals = hourTotalsFor(bucket)
+            punchBySlot.set(`${weekday}-${hour}`, {
+              total: usageSegments.reduce((sum, [metricName]) => sum + usageValue(totals, metricName), 0),
+              steps: Number(totals.steps || 0),
+            })
+          }
+          const punchValues = [...punchBySlot.values()]
+          const punchMax = punchValues.reduce((max, entry) => Math.max(max, entry.total), 0)
+          const heatLevel = (total) => {
+            if (total <= 0 || heatMax <= 0) return 0
+            if (total <= heatMax * 0.25) return 1
+            if (total <= heatMax * 0.5) return 2
+            if (total <= heatMax * 0.75) return 3
+            return 4
+          }
+          const punchLevel = (total) => {
+            if (total <= 0 || punchMax <= 0) return 0
+            if (total <= punchMax * 0.25) return 1
+            if (total <= punchMax * 0.5) return 2
+            if (total <= punchMax * 0.75) return 3
+            return 4
+          }
+          const emptyModelTotals = (id) => ({ id, steps: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+          const accumulateModelTotals = (buckets, model) => {
+            const existing = buckets.get(model.id) || emptyModelTotals(model.id)
+            existing.steps += model.totals.steps || 0
+            existing.inputTokens += model.totals.inputTokens || 0
+            existing.outputTokens += model.totals.outputTokens || 0
+            existing.cacheReadTokens += model.totals.cacheReadTokens || 0
+            existing.cacheWriteTokens += model.totals.cacheWriteTokens || 0
+            buckets.set(model.id, existing)
+          }
+          const modelTodayTotals = new Map()
+          const modelWeekTotals = new Map()
+          const modelAllTotals = new Map()
+          const weekDayKeys = new Set(usageDays.map((day) => day.key))
+          const todayDayKey = usageDays[usageDays.length - 1].key
+          // 累计口径遍历宿主下发的全部日期键（可早于 7 天窗口）；周/今日按窗口命中累积。
+          for (const [dayKey, source] of Object.entries(usage?.days || {})) {
+            const targets = [modelAllTotals]
+            if (weekDayKeys.has(dayKey)) targets.push(modelWeekTotals)
+            if (dayKey === todayDayKey) targets.push(modelTodayTotals)
+            for (const project of source.projects) {
+              if (!selectedProjects.includes(project.id)) continue
+              for (const model of project.models) {
+                for (const buckets of targets) accumulateModelTotals(buckets, model)
+              }
             }
           }
+          usageDataCacheRef.current = {
+            key: usageCacheKey,
+            heatTotalsByDay,
+            heatDays,
+            heatMax,
+            heatColumns,
+            heatWeekdays,
+            heatLevel,
+            punchBuckets,
+            punchBySlot,
+            punchMax,
+            punchLevel,
+            modelTodayTotals,
+            modelWeekTotals,
+            modelAllTotals,
+          }
         }
+        const heatLevelOpacity = (level) => (level <= 0 ? 1 : [1, 0.25, 0.45, 0.7, 1][level])
+        const punchHourLabels = (hour) => (hour % 3 === 0 ? String(hour).padStart(2, '0') : '')
+        const {
+          heatTotalsByDay,
+          heatDays,
+          heatMax,
+          heatColumns,
+          heatWeekdays,
+          heatLevel,
+          punchBuckets,
+          punchBySlot,
+          punchMax,
+          punchLevel,
+          modelTodayTotals,
+          modelWeekTotals,
+          modelAllTotals,
+        } = usageDataCacheRef.current
         const scopedModelTotals = modelScope === 'today' ? modelTodayTotals : modelScope === 'all' ? modelAllTotals : modelWeekTotals
         const diagnosticDetail = (check) => {
           const detail = String(check.detail ?? '')
@@ -5487,7 +5530,7 @@
             'data-level': level,
             'aria-label': label,
             onMouseEnter: (event) => setHoveredHeatDay({ id: dateKey(date), label, x: event.clientX, y: event.clientY }),
-            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === dateKey(date) ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === dateKey(date) ? (current.x === event.clientX && current.y === event.clientY ? current : Object.assign({}, current, { x: event.clientX, y: event.clientY })) : current),
             onMouseLeave: () => setHoveredHeatDay(null),
             style: {
               width: `${HEAT_CELL}px`,
@@ -5512,7 +5555,7 @@
             'data-level': level,
             'aria-label': label,
             onMouseEnter: (event) => setHoveredHeatDay({ id: `punch-${weekday}-${hour}`, label, x: event.clientX, y: event.clientY }),
-            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === `punch-${weekday}-${hour}` ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+            onMouseMove: (event) => setHoveredHeatDay((current) => current && current.id === `punch-${weekday}-${hour}` ? (current.x === event.clientX && current.y === event.clientY ? current : Object.assign({}, current, { x: event.clientX, y: event.clientY })) : current),
             onMouseLeave: () => setHoveredHeatDay(null),
             style: {
               width: `${PUNCH_CELL}px`,
@@ -5605,7 +5648,7 @@
                               'data-testid': `usage-segment-${segmentId}`,
                               'data-value': value,
                               onMouseEnter: (event) => setHoveredUsageSegment({ id: segmentId, date: day.key, totals: chartTotals[index], x: event.clientX, y: event.clientY }),
-                              onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? Object.assign({}, current, { x: event.clientX, y: event.clientY }) : current),
+                              onMouseMove: (event) => setHoveredUsageSegment((current) => current && current.id === segmentId ? (current.x === event.clientX && current.y === event.clientY ? current : Object.assign({}, current, { x: event.clientX, y: event.clientY })) : current),
                               onMouseLeave: () => setHoveredUsageSegment(null),
                               style: { height: `${segmentHeight}%`, minHeight: value > 0 ? '2px' : 0, background: color, opacity: hoveredUsageSegment && !active ? 0.42 : 1, cursor: value > 0 ? 'pointer' : 'default', transition: 'opacity 120ms ease' },
                             })

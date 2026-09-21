@@ -1386,6 +1386,12 @@ test('usage heatmap calendar covers every indexed day, aligns columns to Monday,
   assert.equal(tooltip.props.style.left, '312px')
   assert.equal(tooltip.props.style.top, '412px')
   assert.match(tooltip.children[0], /400 token · 8 次模型步骤$/)
+  // 指针微移：更新坐标且不变 id 时平滑跟随
+  cellByKey.get(dayKey(0)).props.onMouseMove({ clientX: 305, clientY: 415 })
+  await renderer.flush()
+  const movedTooltip = renderer.findByTestId('usage-heatmap-tooltip')
+  assert.equal(movedTooltip.props.style.left, '317px')
+  assert.equal(movedTooltip.props.style.top, '427px')
   cellByKey.get(dayKey(0)).props.onMouseLeave()
   await renderer.flush()
   assert.equal(renderer.findByTestId('usage-heatmap-grid').props.role, 'img')
@@ -1625,10 +1631,9 @@ test('usage heatmap caps its history at 20 weeks and sizes cells at 20px so full
 
   const cells = renderer.findAllByTestIdPrefix('usage-heatmap-cell-')
   const columns = renderer.findByTestId('usage-heatmap-grid').children[0]
-  // 封顶 20 周 → 最多 21 列（起点对齐周一可能多凑出一列），绝不出现 22 周以上的量级。
-  assert.equal(columns.length <= 21, true, `expected <= 21 columns, got ${columns.length}`)
-  assert.equal(columns.length >= 20, true, `expected >= 20 columns, got ${columns.length}`)
-  assert.equal(cells.length <= 21 * 7, true)
+  // 封顶 20 周 → 严格最多 20 列（起点对齐到本周周一往前 19 周），绝不溢出到 21 列。
+  assert.equal(columns.length, 20, `expected exactly 20 columns, got ${columns.length}`)
+  assert.equal(cells.length <= 20 * 7, true)
   // 每列都是整周（除最后一列截断）：第一列必须 7 格。
   assert.equal(columns[0].children[0].length, 7)
   const firstCell = cells[0]
@@ -1637,6 +1642,49 @@ test('usage heatmap caps its history at 20 weeks and sizes cells at 20px so full
   // 满编宽度（20 周 × 20px + 19 个 4px 间距 = 476）不得超统计区内容宽（实测 484px）。
   const fullCapacity = 20 * 20 + 19 * 4
   assert.equal(fullCapacity <= 484, true, 'full-capacity grid must fit the statistics-region content width')
+})
+
+test('usage heatmap caps at exactly 20 columns regardless of which day of the week today is', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const baseDate = new Date(2026, 8, 20) // 2026-09-20 is Sunday
+  const realNow = Date.now
+  try {
+    for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+      const mockToday = new Date(baseDate)
+      mockToday.setDate(mockToday.getDate() + dayOffset)
+      mockToday.setHours(12, 0, 0, 0)
+      Date.now = () => mockToday.getTime()
+
+      const days = {}
+      for (let offset = 0; offset < 200; offset += 1) {
+        const d = new Date(mockToday)
+        d.setHours(0, 0, 0, 0)
+        d.setDate(d.getDate() - offset)
+        const k = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+        const total = { steps: 1, inputTokens: 50, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+        days[k] = { totals: total, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: total, models: [] }] }
+      }
+
+      const renderer = createRenderer(async (channel, endpoint) => {
+        if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'test-inst' } }
+        if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+        if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1024, liveSessions: 1, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+        if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+        if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+        if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 1, totals: {}, projects: [{ id: 'p1', title: 'P1', path: '/p1' }], days, errors: { models: [], tools: [] } } }
+        throw new Error(`unexpected endpoint ${endpoint}`)
+      })
+
+      await renderer.load()
+      await renderer.findButton('模型统计').props.onClick()
+      await renderer.flush()
+
+      const columns = renderer.findByTestId('usage-heatmap-grid').children[0]
+      assert.equal(columns.length, 20, `Day ${mockToday.toDateString()} (day-of-week ${mockToday.getDay()}) must have exactly 20 columns, got ${columns.length}`)
+    }
+  } finally {
+    Date.now = realNow
+  }
 })
 
 // 嵌套一致性：热力图必须与图表/模型列表同属 `usage-statistics-region` 的子块。
@@ -4181,7 +4229,7 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(circles.length, 2)
   const circumference = 2 * Math.PI * 5.5
   assert.ok(String(circles[1].props.strokeDasharray).startsWith(String((circumference * 85) / 100)))
-  assert.deepEqual(quotaCalls, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0 }], 'first ring request waits for and targets the resolved provider')
+  assert.deepEqual(quotaCalls, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0, timeZone: 'UTC' }], 'first ring request waits for and targets the resolved provider')
 
   // 点击：开面板 + 再发一次 quota RPC（宿主决定缓存还是上游）。
   const callsBeforeClick = quotaCalls.length
@@ -4393,7 +4441,7 @@ test('quota ring recovers when the first strict-session injection missed the dir
   await renderer.flush()
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-ring-trigger'), true)
-  assert.deepEqual(quotaPayloads, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0 }])
+  assert.deepEqual(quotaPayloads, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0, timeZone: 'UTC' }])
 
   // strict 生命周期护栏：卸载即摘环；同会话重新挂载（新 binding）重新解析并恢复。
   renderer.setSessionSlot({ mounted: false })
@@ -4727,6 +4775,47 @@ test('a lone account-scoped reset-card group still names its account in the ring
   await renderer.flush()
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com', 'a lone account group still shows the account name')
   assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2099-06-01/)
+})
+
+test('date-only reset cards remain valid through the browser local DST day end', async () => {
+  const previousTZ = process.env.TZ
+  const realNow = Date.now
+  try {
+    process.env.TZ = 'America/New_York'
+    let now = Date.parse('2026-03-09T02:00:00Z') // March 8 22:00 EDT, after UTC day end
+    Date.now = () => now
+    const store = { getSnapshot: () => ({ current: { provider: 'cpa' } }), subscribe: () => () => {} }
+    const renderer = createRenderer(async (channel, endpoint) => {
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+      if (endpoint === 'quota') return { ok: true, value: { serverTime: now, providers: [{
+        provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config',
+        refreshing: false, status: 'ok', fetchedAt: now,
+        windows: [{ id: 'a-codex-5h', kindKey: 'codex-5h', label: 'a@example.com', percent: 0 }],
+        resetCards: [{ id: 'date', provider: 'cpa', account: 'a@example.com', expiresAt: '2026-03-08' }],
+      }] } }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    }, { modelDirectories: { directoryFor: () => ({ store, load: () => Promise.resolve() }) } })
+    await renderer.load()
+    await renderer.flush()
+    renderer.findByTestId('quota-ring-trigger').props.onClick()
+    await renderer.flush()
+    renderer.findByTestId('quota-panel-reset-title').props.onClick()
+    await renderer.flush()
+    let row = renderer.findByTestId('quota-panel-reset-card-0-0')
+    assert.doesNotMatch(String(row.children[1].children), /已过期/)
+    assert.match(String(row.children[1].children), /2026-03-08/)
+    now = Date.parse('2026-03-09T04:00:00Z')
+    renderer.findByTestId('quota-panel-reset-title').props.onClick()
+    await renderer.flush()
+    renderer.findByTestId('quota-panel-reset-title').props.onClick()
+    await renderer.flush()
+    row = renderer.findByTestId('quota-panel-reset-card-0-0')
+    assert.match(String(row.children[1].children), /已过期/)
+  } finally {
+    Date.now = realNow
+    if (previousTZ === undefined) delete process.env.TZ
+    else process.env.TZ = previousTZ
+  }
 })
 
 test('an expired reset card switches both its icon and its text to the warning color', async () => {
@@ -5579,7 +5668,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
   // 载荷免次数；成功后表单清空但保持打开，方便连续追加。
-  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2026-09-30T08:00', label: '周额度重置卡', timezoneOffsetMinutes: 0 }])
+  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2026-09-30T08:00:00.000Z', label: '周额度重置卡', timezoneOffsetMinutes: 0, timeZone: 'UTC' }])
   assert.ok(renderer.hasTest('quota-reset-editor-zai-coding-cn'))
   assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '')
   assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '')
@@ -5590,7 +5679,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', expiresAt: '2099-01-01', timezoneOffsetMinutes: 0 })
+  assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', expiresAt: '2099-01-01', timezoneOffsetMinutes: 0, timeZone: 'UTC' })
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-1'))
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-2'))
   const secondLineTexts = renderer.findByTestId('quota-reset-card-zai-coding-cn-rc-1').children.filter((child) => child != null)
@@ -5606,7 +5695,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   // 逐条移除：按宿主下发 id 只删那一条。
   renderer.findByTestId('quota-remove-zai-coding-cn-rc-1').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls[2], { provider: 'zai-coding-cn', remove: true, id: 'rc-1', timezoneOffsetMinutes: 0 })
+  assert.deepEqual(cardCalls[2], { provider: 'zai-coding-cn', remove: true, id: 'rc-1', timezoneOffsetMinutes: 0, timeZone: 'UTC' })
   assert.equal(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-1'), false)
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-2'))
 
@@ -7196,7 +7285,23 @@ test('CLIProxyAPI codex accounts each get their own reset-card block with an add
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
   await renderer.flush()
-  assert.deepEqual(cardCalls, [{ provider: 'cpa', account: 'codex-a@example.com', expiresAt: '2099-03-01T00:00', timezoneOffsetMinutes: 0 }])
+  assert.deepEqual(cardCalls, [{ provider: 'cpa', account: 'codex-a@example.com', expiresAt: '2099-03-01T00:00:00.000Z', timezoneOffsetMinutes: 0, timeZone: 'UTC' }])
+  // 真正经过浏览器保存路径：当前偏移不论冬夏，目标日期都必须按纽约规则固化。
+  const previousTZ = process.env.TZ
+  try {
+    process.env.TZ = 'America/New_York'
+    for (const [wall, iso] of [['2099-12-01T08:00', '2099-12-01T13:00:00.000Z'], ['2099-07-01T08:00', '2099-07-01T12:00:00.000Z']]) {
+      renderer.findByTestId('quota-reset-input-date').props.onChange({ target: { value: wall } })
+      await renderer.flush()
+      renderer.findByTestId('quota-reset-card-save').props.onClick()
+      await renderer.flush()
+      assert.equal(cardCalls.at(-1).expiresAt, iso)
+      assert.equal(cardCalls.at(-1).timeZone, 'America/New_York')
+    }
+  } finally {
+    if (previousTZ === undefined) delete process.env.TZ
+    else process.env.TZ = previousTZ
+  }
   // 真实往返：新卡归属 A 账号（B 账号的块里不能出现它）。A 账号已有两张卡，
   // 默认只展开最近那张，新的 2099-03-01 不是最近 → 落在折叠里，展开后可见。
   const blockB2 = renderer.findByTestId('quota-cpa-account-cpa-codex-b-example-com')
