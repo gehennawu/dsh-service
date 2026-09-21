@@ -114,6 +114,10 @@ const backupIdSecret = randomBytes(32)
 const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
 const USAGE_INDEX_VERSION = 6
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+// 报错滚动窗口：一个常量同时约束「折叠时是否收录」（recentErrorTime）、「出参前修剪」
+// （publicUsage）与「落盘前修剪」（refreshUsageIndex），三者必须一致，否则会出现
+// 收录了却被下一轮清掉的半衰状态。窗口只影响报错计数，与永久保留的用量无关。
+const USAGE_ERROR_WINDOW_MS = 48 * 60 * 60 * 1000
 // 官方右栏文件编辑（v1.6 用户点名）：浏览器只送资源地址，宿主解析会话后按 ctx.fs +
 // sandboxPolicy 读写；单文件上限双向生效（读取、保存、撤销通道都受它约束）。
 const FILE_RESOURCE_PREFIX = 'dsh-resource://file/session/'
@@ -1987,7 +1991,7 @@ function usageFailure(event) {
 }
 
 function recentErrorTime(time) {
-  return Number.isFinite(time) && time >= Date.now() - 24 * 60 * 60 * 1000
+  return Number.isFinite(time) && time >= Date.now() - USAGE_ERROR_WINDOW_MS
 }
 
 function addUsageError(session, event, model) {
@@ -2188,7 +2192,7 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
   const projectVisibility = new Map()
   const modelErrors = new Map()
   const toolErrors = new Map()
-  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
+  const recentCutoff = Date.now() - USAGE_ERROR_WINDOW_MS
   for (const session of allSessions) {
     projects.set(session.project.id, session.project)
     // 项目文件夹被删只影响「按项目」筛选入口的可见性；用量本身照旧进总量与日期桶。
@@ -2291,7 +2295,7 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
       session.detachedAt = detachedAt
     }
   }
-  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000
+  const recentCutoff = Date.now() - USAGE_ERROR_WINDOW_MS
   for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
   for (const record of snapshots) {
     const id = String(record.header.id)

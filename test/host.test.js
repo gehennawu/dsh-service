@@ -552,11 +552,16 @@ test('usage RPC groups UTC-hour buckets into the browser local calendar day', as
   assert.equal(cached.value.days['2026-08-20'].totals.inputTokens, 100)
 })
 
-test('usage RPC groups direct and code-dispatched tool failures for the last 24 hours without persisting paths', async (t) => {
+test('usage RPC groups direct and code-dispatched tool failures inside the 48-hour window without persisting paths', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-tool-errors-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const now = Date.now()
-  const old = now - 25 * 60 * 60 * 1000
+  // 窗口外样本必须比 48h 更早；沿用旧的 25h 会落回窗口内，断言只会因多一条记录而失败，
+  // 看不出是窗口失效——边界值随 USAGE_ERROR_WINDOW_MS 一起改。
+  const old = now - 49 * 60 * 60 * 1000
+  // 窗口内靠上的样本（30h 前）：24h 口径下会被排除、48h 口径下必须计入，
+  // 与上面的 49h 样本一起把窗口夹在 [30h, 49h) 区间内。
+  const older = now - 30 * 60 * 60 * 1000
   const events = [
     { type: 'tool/call', seq: 0, time: now - 5000, data: { turn: 0, step: 0, callId: 'call-1', name: 'edit', arguments: '{"file_path":"/workspace/a/README.md"}' } },
     { type: 'tool/result', seq: 1, time: now - 4900, surfaceOp: 'append', sourceEventSeqs: [0], data: { turn: 0, step: 0, message: { id: 'm1', role: 'user', source: { kind: 'tool' }, content: [{ type: 'tool-result', toolCallId: 'call-1', isError: true, content: [{ type: 'text', text: 'Error: edit requires reading "/workspace/a/README.md" first — read the file, then retry' }] }] }, error: { name: 'Error', code: 'FS_NOT_OBSERVED' } } },
@@ -567,6 +572,8 @@ test('usage RPC groups direct and code-dispatched tool failures for the last 24 
     { type: 'tool/code-dispatch', seq: 6, time: now - 2800, data: { rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:1', name: 'bash', arguments: { command: 'false' }, isError: false, content: [{ type: 'text', text: '[exit code: 1]' }] } },
     { type: 'tool/call', seq: 7, time: old - 100, data: { turn: 0, step: 2, callId: 'old-call', name: 'write', arguments: '{"file_path":"/old/path"}' } },
     { type: 'tool/result', seq: 8, time: old, surfaceOp: 'append', sourceEventSeqs: [7], data: { turn: 0, step: 2, message: { id: 'm3', role: 'user', source: { kind: 'tool' }, content: [{ type: 'tool-result', toolCallId: 'old-call', isError: true, content: [{ type: 'text', text: 'Error: write failed for /old/path' }] }] }, error: { name: 'FsError', code: 'EACCES' } } },
+    { type: 'tool/call', seq: 9, time: older - 100, data: { turn: 0, step: 3, callId: 'older-call', name: 'read', arguments: '{"file_path":"/workspace/c/README.md"}' } },
+    { type: 'tool/result', seq: 10, time: older, surfaceOp: 'append', sourceEventSeqs: [9], data: { turn: 0, step: 3, message: { id: 'm4', role: 'user', source: { kind: 'tool' }, content: [{ type: 'tool-result', toolCallId: 'older-call', isError: true, content: [{ type: 'text', text: 'Error: read failed: permission denied for /workspace/c/README.md' }] }] }, error: { name: 'FsError' } } },
   ]
   const persistence = {
     listSnapshots: async () => [{ header: { id: 'tool-session', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'tool-rev' }],
@@ -580,9 +587,10 @@ test('usage RPC groups direct and code-dispatched tool failures for the last 24 
     { key: 'edit|FS_NOT_OBSERVED', tool: 'edit', code: 'FS_NOT_OBSERVED', message: 'edit requires reading <path> first — read the file, then retry', count: 2, projectId: 'project', projectTitle: 'Project' },
     { key: 'bash|EXIT_1', tool: 'bash', code: 'EXIT_1', message: 'bash command exited with code 1', count: 1, projectId: 'project', projectTitle: 'Project' },
     { key: 'grep|PATH_NOT_FOUND', tool: 'grep', code: 'PATH_NOT_FOUND', message: 'grep search failed: <path> not found', count: 1, projectId: 'project', projectTitle: 'Project' },
+    { key: 'read|PERMISSION_DENIED', tool: 'read', code: 'PERMISSION_DENIED', message: 'read failed: permission denied for <path>', count: 1, projectId: 'project', projectTitle: 'Project' },
   ])
   const stored = await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8')
-  assert.doesNotMatch(stored, /\/workspace\/a|\/workspace\/b|\/missing\/one|\/old\/path/)
+  assert.doesNotMatch(stored, /\/workspace\/a|\/workspace\/b|\/workspace\/c|\/missing\/one|\/old\/path/)
 })
 
 test('usage indexes a read_image failure with no error code as IMAGE_NOT_SUPPORTED', async (t) => {

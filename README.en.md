@@ -108,7 +108,7 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 - The heatmap header can switch to an **hourly punch card**: 7 rows (Monday–Sunday) × 24 columns (00–23), each cell the tokens for that slot, answering "when am I busiest". It is the same hourly buckets re-folded along a different axis, with no new persisted fields. 24 columns fit the region width only at 16px cells (20px overflows)
 - **Indexed usage is kept permanently**: deleting a session or a project folder never subtracts history, so totals and the heatmap are always the complete history since the index was built; these entries carry over verbatim across an index version bump instead of being rebuilt away
 - When a **project folder no longer exists**, that project disappears from the project filter, yet its usage still counts toward the "All projects" totals, day buckets, and model breakdown
-- Last-24-hour model/tool errors (collapsed by default, rendered only when present)
+- Last-48-hour model/tool errors (collapsed by default, rendered only when present)
 - Steps whose provider reports no token usage are excluded
 - A session that cannot be read, migrated, or parsed no longer blocks other sessions. An all-projects warning shows successful/skipped counts and expandable session IDs, error categories, and safe summaries. Previously indexed data is retained and marked stale; first-time failures contribute nothing and are retried on the next refresh. Only global errors, such as an unavailable service, failed session listing, or failed index write, fail the entire refresh
 
