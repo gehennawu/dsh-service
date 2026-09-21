@@ -1437,6 +1437,9 @@
           },
           style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: '1px solid ' + (value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'), background: value[key] !== false ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: writable && saving === '' ? 'pointer' : 'default', opacity: writable ? 1 : 0.5, lineHeight: 0 },
         }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: value[key] !== false ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: value[key] !== false ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))
+        // 注意：本组件的根**不带** `card` 内边距——它同时被官方插件卡的折叠面板复用
+        // （那里的容器已自带 `margin: 0 16px; padding: 12px 0 8px`），在根上加卡式内边距会串味。
+        // 配置页所需的卡式内边距由调用处那层容器负责（见 tabContent 的 configuration 分支）。
         return React.createElement('div', null, FEATURE_GROUPS.map(([groupKey, keys]) => React.createElement('div', { key: groupKey, style: { marginTop: '10px' } },
           React.createElement('div', { style: { fontSize: '12px', fontWeight: 700, marginBottom: '2px' } }, translate(groupKey)),
           keys.map(row))))
@@ -1553,7 +1556,8 @@
 
         return React.createElement('div', {
           'data-testid': 'config-nav-order-page',
-          style: { display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' },
+          // 页内首块上边距交回 tab-panel（同其它页的 card 约定），此处不再自带 marginTop。
+          style: { display: 'flex', flexDirection: 'column', gap: '12px' },
         },
         React.createElement('div', {
           style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' },
@@ -1911,7 +1915,7 @@
           }
         }
 
-        const cardStyle = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
+        const cardStyle = svcCardStyle()
         const modeButton = (candidate) => React.createElement('button', {
           type: 'button',
           key: candidate,
@@ -2520,7 +2524,9 @@
         useEffect(() => {
           if (batch !== null && (batch.phase === 'running' || batch.phase === 'planned')) setBatchCardOpen(true)
         }, [batch !== null && batch.phase])
-        return React.createElement('div', { 'data-testid': 'skills-section' },
+        // 维护子页统一用卡式容器（同 subagent-section 的 cardStyle / restart-card 的 card），
+        // 使本页首块与其它子页一样从 tab-panel 内容顶开始、底部留出同量留白。
+        return React.createElement('div', { 'data-testid': 'skills-section', style: svcCardStyle() },
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' } },
             React.createElement('input', { 'data-testid': 'skills-filter', value: filterText, placeholder: translate('skills.filter'), onChange: (event) => setFilterText(event.target.value), style: { fontSize: '12px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '200px' } }),
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
@@ -3768,7 +3774,9 @@
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-delete-confirm', style: dangerSolidButton, disabled: deleting, onClick: () => void confirmDelete() }, deleting ? translate('sessions.status.working') : translate('sessions.delete.confirm')))))
         }
 
-        return React.createElement('div', null,
+        // 根节点带 testid（与 remote-quota-card / restart-card / skills-section 一致），
+        // 便于真机取证与结构断言定位这一块；此前是唯一没有根 testid 的顶层页块。
+        return React.createElement('div', { 'data-testid': 'sessions-section', style: svcCardStyle() },
           React.createElement('div', { style: sectionTitle }, translate('sessions.title')),
           // v0.35 用户点名：设置页左列入口开关放在面板靠上、筛选标签之前。
           // v0.39 统一：与重启/额度同款胶囊开关（此前是复选框，与其他入口开关不一致）。
@@ -4067,7 +4075,11 @@
         // 手动适配行（未适配/已停用的候选供应商）的选择状态；拆成两个独立 state 避免对象草稿接力更新。
         const [addProvider, setAddProvider] = useState('')
         const [addKind, setAddKind] = useState('')
-        return React.createElement('div', { 'data-testid': 'remote-quota-card', style: { marginTop: '18px' } },
+        // 顶层页块用工厂级 `svcCardStyle()`（同为设置页左列快捷入口的 `RestartSection` 一致）：
+        // 上内边距让标题贴住 tab-panel 内容顶，页内首块不再各自写 marginTop。
+        // 注意 `RemoteQuotaCard` 还被设置页左列快捷入口直接复用（`renderContent` 原样挂进
+        // `settings.section` 槽位、外层无包裹），`card` 的 padding/margin 在两个场景下都成立。
+        return React.createElement('div', { 'data-testid': 'remote-quota-card', style: svcCardStyle() },
           // 标题行：左「额度查询」，右「说明 + 左列入口胶囊开关」；开关与标题同一行，说明紧贴开关之前。
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' } },
             React.createElement('div', { style: Object.assign({}, sectionTitle, { margin: 0 }) }, translate('quota.cardTitle')),
@@ -5118,7 +5130,7 @@
         const toggle = Object.assign({}, btn, { background: 'transparent', color: 'var(--dsw-alias-label-primary)', border: 0, borderTop: '1px solid var(--dsw-alias-border-l1)', borderRadius: 0, padding: '10px 2px', width: '100%', textAlign: 'left', fontWeight: 600 })
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
+        const card = svcCardStyle()
         const displaySurface = svcSurfaceStyle()
         const tabPanel = { padding: '14px 2px 2px', color: 'var(--dsw-alias-label-primary)' }
         const inlineTab = { background: 'transparent', color: 'var(--dsw-alias-label-secondary)', border: 0, borderBottom: '2px solid transparent', padding: '8px 10px', cursor: 'pointer', fontSize: '13px', fontWeight: 550, transition: 'color 120ms, border-color 120ms' }
@@ -5553,7 +5565,10 @@
         const platformLabel = (health && typeof health.platform === 'string' && health.platform)
           ? `${platformNames[health.platform] || health.platform}${typeof health.arch === 'string' && health.arch ? ` · ${health.arch}` : ''}`
           : '—'
-        const containerInfoBlock = React.createElement('div', { key: 'container-info', style: { marginTop: '18px' } },
+        // 与 versionBlock 同用 `card`（padding 4px 0 14px + marginBottom 12px）承载「区块标题 + 展示面」，
+        // 不再用 `marginTop: 18px` 手工下沉——后者与 card 的 marginBottom 相邻折叠成 18px，
+        // 使概览的区块纵向节奏与其它页（统一 12px）不一致。
+        const containerInfoBlock = React.createElement('div', { key: 'container-info', style: card },
           React.createElement('div', { style: sectionTitle }, translate('overview.container')),
           health
             ? React.createElement('div', { 'data-testid': 'health-display', style: Object.assign({}, displaySurface, { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }) },
@@ -5566,7 +5581,7 @@
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
-        const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', style: { marginTop: '18px' } },
+        const overviewErrorsBlock = React.createElement('div', { key: 'overview-errors', style: card },
           React.createElement('div', { 'data-testid': 'overview-errors-title', style: sectionTitle }, translate('overview.errors')),
           React.createElement('div', { 'data-testid': 'overview-errors-region', style: displaySurface },
             React.createElement('div', { style: Object.assign({}, hint, { margin: '-3px 0 7px' }) }, translate('usage.errors.recent')),
@@ -6079,8 +6094,9 @@
             React.createElement('span', { style: { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' } }, label),
             labelHint ? React.createElement('span', { style: hint }, labelHint) : null),
           notifySwitch(on, onChange, disabled))
+        // 仅被「配置 → 通知」页消费；不带自身 marginTop——页内定位统一交给该页的 card 容器。
         const notificationBlock = !notifSupported ? null
-          : React.createElement('div', { style: { marginTop: '18px' } },
+          : React.createElement('div', null,
               React.createElement('div', { style: sectionTitle }, translate('notification.title')),
               React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
                 React.createElement('p', { style: hint }, translate('notification.description')),
@@ -6208,12 +6224,14 @@
                           ? React.createElement(SubagentSection, null)
                           : React.createElement(SessionsSection, null))
             : configTab === 'notifications'
-              ? React.createElement('div', { 'data-testid': 'config-notifications-page', style: features.taskNotifications === false ? { opacity: 0.55 } : undefined },
+              ? React.createElement('div', { 'data-testid': 'config-notifications-page', style: Object.assign({}, card, features.taskNotifications === false ? { opacity: 0.55 } : {}) },
                   notificationBlock,
                   ...(features.taskNotifications === false ? [React.createElement('p', { key: 'notify-off-hint', style: Object.assign({}, hint, { marginTop: '8px' }) }, translate('config.notificationsDisabled'))] : []))
               : configTab === 'navOrder'
                 ? React.createElement(SettingsNavOrderSection, null)
-                : React.createElement(FeatureGroups, null)
+                // FeatureGroups 的根不带卡式内边距（官方插件卡共用该组件），配置页在这里补上，
+                // 使本页首块与其它页一样从 tab-panel 内容顶开始（原先靠 marginTop:10px 下沉 10px）。
+                : React.createElement('div', { style: card }, React.createElement(FeatureGroups, null))
         // v0.39：根节点带 data-dshsvc-root 作用域锚（焦点环/降动效/reduced-motion 都挂在它下）、
         // data-dshsvc-page 记录当前内部页、dshsvc-page 类收 800px 内容宽。导航渲染收敛到
         // SvcTabs 基元（role=tablist/tab + aria-selected）；旧 group/tray/top-tab 结构已移除。

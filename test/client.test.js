@@ -1513,6 +1513,44 @@ test('usage heatmap is nested inside the statistics region alongside the chart a
   assert.equal(heatmapStyle.marginTop, modelListStyle.marginTop)
 })
 
+// 顶层页块的容器约定：每页/子页的最外层块统一用工厂级 `svcCardStyle()`
+// （padding 4px 0 14px + marginBottom 12px），且**不自带 marginTop**——页内首块的起点由
+// tab-panel 的 paddingTop 决定。此前概览/额度/配置三页各自用 marginTop:18px / 10px 手工下沉，
+// 使它们的首块比其它页低 18px / 10px（真机取证的「页内偏移」）。
+test('every page and sub-page root block shares the svcCardStyle container convention', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+
+  // 卡片约定：三段齐备且不得带 marginTop（下沉会破坏页内首块对齐）。
+  const CARD = { padding: '4px 0 14px', marginBottom: '12px' }
+  const assertCard = (id) => {
+    const style = renderer.findByTestId(id).props.style
+    assert.equal(style.padding, CARD.padding, `${id} must use the shared card padding`)
+    assert.equal(style.marginBottom, CARD.marginBottom, `${id} must use the shared card bottom margin`)
+    assert.equal(style.marginTop, undefined, `${id} must not carry its own top margin`)
+  }
+  // 顶层页块：点开对应标签后测量卡式容器（三段齐备、无自带 marginTop）。
+  const openTab = async (label) => { await renderer.findButton(label).props.onClick(); await renderer.flush() }
+  for (const [label, id] of [['模型统计', 'usage-card'], ['健康诊断', 'health-card'], ['额度查询', 'remote-quota-card']]) {
+    await openTab(label)
+    assertCard(id)
+  }
+  // 维护页默认子页（子代理）的根块同样是卡式容器；会话/技能/重启三个子页块也各带根 testid。
+  await openTab('维护')
+  assertCard('subagent-section')
+})
+
 test('service panel uses distinct cards, display surfaces, and semantic action colors', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')

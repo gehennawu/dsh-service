@@ -42,3 +42,8 @@
       }, extra)
       // 展示面（只读信息容器）：页面级浅底 + 细边框，与操作卡片区分。
       const svcSurfaceStyle = (extra) => Object.assign({ background: 'var(--dsh-svc-surface-bg)', color: 'var(--dsh-svc-text)', border: '1px solid var(--dsh-svc-border)', borderRadius: 'var(--dsh-svc-radius-control)', padding: '10px' }, extra)
+      // 页面级「区块卡」容器：一个页面/子页的最外层块统一用它——上内边距 4px 让区块标题贴住
+      // tab-panel 的内容顶（页内首块不再各自写 marginTop），下内边距 14px + marginBottom 12px
+      // 构成统一的纵向节奏。此前该字面量在三个分片里各写一份，且部分页改用 `marginTop: 18px`
+      // 手工下沉，导致概览/额度/配置三页的首块起点与其它页不一致；收敛到这一处。
+      const svcCardStyle = (extra) => Object.assign({ padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }, extra)

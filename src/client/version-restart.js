@@ -355,7 +355,7 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
         const ghost = svcButtonStyle('ghost')
         const row = { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
-        const card = { padding: '4px 0 14px', marginBottom: '12px', color: 'var(--dsw-alias-label-primary)' }
+        const card = svcCardStyle()
         const displaySurface = svcSurfaceStyle()
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
