@@ -17,6 +17,7 @@ export function createQuotaRoutes({
   MAX_QUOTA_RESET_CARDS,
   MAX_QUOTA_RESET_CARDS_PER_PROVIDER,
   MAX_QUOTA_RESET_CARD_ACCOUNT,
+  canonicalResetCardExpiresAt,
   QUOTA_ADAPTER_BY_KIND,
   name,
   quotaCredentialConfigured,
@@ -207,7 +208,14 @@ export function createQuotaRoutes({
             const card = { id: `rc-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`, provider: providerName }
             if (accountName !== '') card.account = accountName
             if (typeof payload?.label === 'string' && payload.label.trim() !== '') card.label = payload.label.trim().slice(0, 40)
-            if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') card.expiresAt = payload.expiresAt.trim().slice(0, 32)
+            // 面板 datetime-local 是无时区串：落盘即固化成绝对时刻，之后任何时区读到的都是同一时刻。
+            // 拿不到客户端偏移时保留原文（由读路径按当时的偏移解释），不无依据地改写。
+            if (typeof payload?.expiresAt === 'string' && payload.expiresAt.trim() !== '') {
+              card.expiresAt = String(canonicalResetCardExpiresAt(
+                payload.expiresAt.trim(),
+                payload?.timezoneOffsetMinutes,
+              )).slice(0, 32)
+            }
             config.resetCards = [...allCards, card]
           }
           return { value: { ok: true } }

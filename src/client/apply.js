@@ -7,7 +7,18 @@
       // 渲染树——插件设置节被外壳错误边界吞成白屏（「清除已删除记录」实测触发，
       // 宿主未重载新端点时 unknown-endpoint 即命中）。归一回字符串语义（error=message、
       // 恢复 details.detail）后全插件既有 `res.error` 字符串消费零改动。
-      const rpcCall = (endpoint, payload) => Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, payload)).then(normalizeRpcResult)
+      // 需要浏览器时区偏移的端点：宿主用「用户墙上时间」解释无时区的重置卡到期串
+      // （纯日期 / datetime-local；容器多为 UTC，两边各算一套会让卡在界面上「已过期」
+      // 却仍被宿主判为未过期，既不自动移除也继续提示）。只在这几个端点上附带，
+      // 不给其余请求的载荷平白加字段——偏移是少数端点的真需求，不是全局协议。
+      const TZ_AWARE_ENDPOINTS = new Set(['quota', 'quota-reset-card', 'health'])
+      const rpcCall = (endpoint, payload) => {
+        const base = payload !== null && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+        const withOffset = TZ_AWARE_ENDPOINTS.has(endpoint) && base.timezoneOffsetMinutes === undefined
+          ? { ...base, timezoneOffsetMinutes: new Date().getTimezoneOffset() }
+          : base
+        return Promise.resolve(ctx.connection.rpc.call('/dsh-service', endpoint, withOffset)).then(normalizeRpcResult)
+      }
 
 
       let svcStyle
@@ -6221,16 +6232,8 @@
         if (permissionAbnormal > 0) statusItems.push({ level: 'warning', text: translate('permissions.summary.warning', { count: permissionAbnormal }) })
         if (updateOutdated) statusItems.push({ level: 'info', text: translate('overview.updateAvailable') })
         if (backupLoaded && backups.items.length === 0) statusItems.push({ level: 'info', text: translate('overview.backupEmpty') })
-        // 重置卡即将到期（宿主经 health 下发，额度功能关闭时不带该字段）：
-        // 剩余 ≤24h 即提示（纯日期卡与精确时刻卡的曝光时长统一），过期后宿主读路径
-        // 自动移除该卡、字段随之消失，提示不再渲染。
-        const expiringResetCards = Array.isArray(health?.resetCardsExpiringSoon) ? health.resetCardsExpiringSoon : []
-        if (expiringResetCards.length > 0) {
-          const names = expiringResetCards
-            .map((card) => (typeof card.label === 'string' && card.label !== '' ? card.label : card.provider))
-            .filter((name) => typeof name === 'string' && name !== '')
-          statusItems.push({ level: 'info', text: translate('overview.resetCardExpiring', { cards: names.join('、') }) })
-        }
+        // 重置卡到期不再进概览提示（整条去掉，用户裁决）：卡到期由宿主自动移除，
+        // 界面只在额度页展示现存卡，这里不再产出 info 项。
         const statusLevel = statusItems.some((item) => item.level === 'error') ? 'error'
           : statusItems.some((item) => item.level === 'warning') ? 'warning'
             : statusItems.some((item) => item.level === 'info') ? 'info' : 'normal'

@@ -1955,7 +1955,8 @@ test('overview status is informational when only update or empty-backup hints ex
   assert.match(clean.text('settings.section'), /所有系统运行正常/)
 })
 
-test('a soon-expiring reset card surfaces as an overview info item and disappears once the host drops it', async () => {
+test('a soon-expiring reset card no longer produces an overview info item', async () => {
+  // 概览提示整条去掉：即便宿主仍下发该字段（旧宿主 / 滚动升级窗口），概览也不得再渲染重置卡提示。
   const healthPayload = { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0, resetCardsExpiringSoon: [{ provider: 'zai-coding-cn', label: '周额度重置卡' }] }
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
@@ -1967,15 +1968,9 @@ test('a soon-expiring reset card surfaces as an overview info item and disappear
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
-  // 24 小时内到期 → info 级可行动项，带上卡名（无卡名时回落 provider）。
-  assert.equal(renderer.hasTest('overview-actionables'), true)
-  assert.match(renderer.text('settings.section'), /重置卡 24 小时内到期：周额度重置卡/)
-  assert.match(renderer.text('settings.section'), /有 1 条提示/)
-
-  // 宿主自动移除该卡后 health 不再带该字段，提示随之消失（无需前端再判时间）。
-  delete healthPayload.resetCardsExpiringSoon
-  await renderer.advanceTimer(5000)
-  assert.equal(renderer.hasTest('overview-actionables'), false, 'the reminder must clear once the host stops reporting it')
+  // 没有其它待办项 → 可行动项区整块不出现，也不出现重置卡文案。
+  assert.equal(renderer.hasTest('overview-actionables'), false)
+  assert.doesNotMatch(renderer.text('settings.section'), /重置卡|到期/)
   assert.match(renderer.text('settings.section'), /所有系统运行正常/)
 })
 
@@ -4064,7 +4059,7 @@ test('quota ring follows the session provider, renders the tightest window, and 
   assert.equal(circles.length, 2)
   const circumference = 2 * Math.PI * 5.5
   assert.ok(String(circles[1].props.strokeDasharray).startsWith(String((circumference * 85) / 100)))
-  assert.deepEqual(quotaCalls, [{ providers: ['opencode-go'] }], 'first ring request waits for and targets the resolved provider')
+  assert.deepEqual(quotaCalls, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0 }], 'first ring request waits for and targets the resolved provider')
 
   // 点击：开面板 + 再发一次 quota RPC（宿主决定缓存还是上游）。
   const callsBeforeClick = quotaCalls.length
@@ -4276,7 +4271,7 @@ test('quota ring recovers when the first strict-session injection missed the dir
   await renderer.flush()
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-ring-trigger'), true)
-  assert.deepEqual(quotaPayloads, [{ providers: ['opencode-go'] }])
+  assert.deepEqual(quotaPayloads, [{ providers: ['opencode-go'], timezoneOffsetMinutes: 0 }])
 
   // strict 生命周期护栏：卸载即摘环；同会话重新挂载（新 binding）重新解析并恢复。
   renderer.setSessionSlot({ mounted: false })
@@ -5462,7 +5457,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
   // 载荷免次数；成功后表单清空但保持打开，方便连续追加。
-  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2026-09-30T08:00', label: '周额度重置卡' }])
+  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2026-09-30T08:00', label: '周额度重置卡', timezoneOffsetMinutes: 0 }])
   assert.ok(renderer.hasTest('quota-reset-editor-zai-coding-cn'))
   assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '')
   assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '')
@@ -5473,7 +5468,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   await renderer.flush()
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', expiresAt: '2099-01-01' })
+  assert.deepEqual(cardCalls[1], { provider: 'zai-coding-cn', expiresAt: '2099-01-01', timezoneOffsetMinutes: 0 })
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-1'))
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-2'))
   const secondLineTexts = renderer.findByTestId('quota-reset-card-zai-coding-cn-rc-1').children.filter((child) => child != null)
@@ -5489,7 +5484,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   // 逐条移除：按宿主下发 id 只删那一条。
   renderer.findByTestId('quota-remove-zai-coding-cn-rc-1').props.onClick()
   await renderer.flush()
-  assert.deepEqual(cardCalls[2], { provider: 'zai-coding-cn', remove: true, id: 'rc-1' })
+  assert.deepEqual(cardCalls[2], { provider: 'zai-coding-cn', remove: true, id: 'rc-1', timezoneOffsetMinutes: 0 })
   assert.equal(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-1'), false)
   assert.ok(renderer.hasTest('quota-reset-card-zai-coding-cn-rc-2'))
 
@@ -7079,7 +7074,7 @@ test('CLIProxyAPI codex accounts each get their own reset-card block with an add
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
   await renderer.flush()
-  assert.deepEqual(cardCalls, [{ provider: 'cpa', account: 'codex-a@example.com', expiresAt: '2099-03-01T00:00' }])
+  assert.deepEqual(cardCalls, [{ provider: 'cpa', account: 'codex-a@example.com', expiresAt: '2099-03-01T00:00', timezoneOffsetMinutes: 0 }])
   // 真实往返：新卡归属 A 账号（B 账号的块里不能出现它）。A 账号已有两张卡，
   // 默认只展开最近那张，新的 2099-03-01 不是最近 → 落在折叠里，展开后可见。
   const blockB2 = renderer.findByTestId('quota-cpa-account-cpa-codex-b-example-com')

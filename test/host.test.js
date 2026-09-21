@@ -2568,27 +2568,45 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
   ])
 })
 
-test('reset card expiry treats a bare date as end-of-day and a timestamp as its exact instant', () => {
-  // 纯日期：当日 23:59:59.999 —— 用户口径是「9-30 到期」整天还有效，不是当天零点一过就失效。
-  const dayEnd = Date.parse('2026-09-30T00:00:00Z') + 24 * 60 * 60 * 1000 - 1
-  assert.equal(resetCardExpiryMs('2026-09-30'), dayEnd)
-  // 带时刻：按真实时刻，不再顺延。
-  assert.equal(resetCardExpiryMs('2026-09-30T08:00'), Date.parse('2026-09-30T08:00'))
-  assert.equal(resetCardExpiryMs('2026-09-30T08:00:00Z'), Date.parse('2026-09-30T08:00:00Z'))
+test('reset card expiry interprets the wall-clock string in the client timezone, not the host one', () => {
+  const dayEndUtc = Date.parse('2026-09-30T00:00:00Z') + 24 * 60 * 60 * 1000 - 1
+  // 纯日期在 UTC 客户端（offset 0）：当日 23:59:59.999 —— 「9-30 到期」整天还有效，
+  // 不是当天零点一过就失效。
+  assert.equal(resetCardExpiryMs('2026-09-30', 0), dayEndUtc)
+  // 同一张卡在 UTC+8 客户端（getTimezoneOffset = -480）：那是北京时间 9-30 的末尾，
+  // 换算成绝对时刻比 UTC 的当日末尾早 8 小时。
+  const dayEndPlus8 = Date.parse('2026-09-30T15:59:59.999Z')
+  assert.equal(resetCardExpiryMs('2026-09-30', -480), dayEndPlus8)
+  // datetime-local 是「用户墙上时间」：UTC+8 的 08:00 就是 00:00Z，与宿主时区无关。
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00', 0), Date.parse('2026-09-30T08:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00', -480), Date.parse('2026-09-30T00:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00', 300), Date.parse('2026-09-30T13:00:00Z'))
+  // 带偏移的绝对串：任何客户端时区都是同一时刻。
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00:00Z', 0), Date.parse('2026-09-30T08:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00:00Z', -480), Date.parse('2026-09-30T08:00:00Z'))
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00:00+08:00', 300), Date.parse('2026-09-30T08:00:00+08:00'))
+  // 无时区串但拿不到客户端偏移：不判定（null），绝不按宿主时区猜——那正是「界面已过期、
+  // 宿主仍判未过期」的成因（本机容器 UTC，浏览器 UTC+8 时同一张卡两边结论相反）。
+  assert.equal(resetCardExpiryMs('2026-09-30', undefined), null)
+  assert.equal(resetCardExpiryMs('2026-09-30T08:00', undefined), null)
+  assert.equal(resetCardExpiryMs('2026-09-30', 'nonsense'), null)
   // 缺失/不可解析 → 永不过期。
-  assert.equal(resetCardExpiryMs(''), null)
-  assert.equal(resetCardExpiryMs('   '), null)
-  assert.equal(resetCardExpiryMs('not-a-date'), null)
-  assert.equal(resetCardExpiryMs(undefined), null)
-  assert.equal(resetCardExpiryMs(12345), null)
+  assert.equal(resetCardExpiryMs('', 0), null)
+  assert.equal(resetCardExpiryMs('   ', 0), null)
+  assert.equal(resetCardExpiryMs('not-a-date', 0), null)
+  assert.equal(resetCardExpiryMs(undefined, 0), null)
+  assert.equal(resetCardExpiryMs(12345, 0), null)
 
   // 到期判定：严格早于 now 才算过期（正好等于到期时刻仍算有效）。
-  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd - 1), false)
-  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd), false)
-  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEnd + 1), true)
-  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30T08:00' }, Date.parse('2026-09-30T08:00') + 1), true)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEndUtc - 1, 0), false)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEndUtc, 0), false)
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, dayEndUtc + 1, 0), true)
+  // 同一时刻、同一张卡：UTC+8 已过期而 UTC 尚未 —— 这正是修复前两边打架的那一幕。
+  const straddle = Date.parse('2026-09-30T16:30:00Z')
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, straddle, 0), false, 'UTC: 9-30 尚未结束')
+  assert.equal(isResetCardExpired({ expiresAt: '2026-09-30' }, straddle, -480), true, 'UTC+8: 9-30 已结束')
   // 无到期时间：只手动移除，永不自动过期。
-  assert.equal(isResetCardExpired({}, Date.now()), false)
+  assert.equal(isResetCardExpired({}, Date.now(), 0), false)
 })
 
 test('pruneExpiredResetCards drops only expired cards and reports whether anything changed', () => {
@@ -2601,16 +2619,20 @@ test('pruneExpiredResetCards drops only expired cards and reports whether anythi
       { id: 'never', provider: 'opencode-go' },
     ],
   }
-  const changed = pruneExpiredResetCards(config)
+  const changed = pruneExpiredResetCards(config, Date.now(), 0)
   assert.equal(changed, true)
   assert.deepEqual(config.resetCards.map((card) => card.id), ['future', 'never'])
   // 第二次跑无过期项 → 报告「无变更」，调用方据此避免重复落盘。
-  assert.equal(pruneExpiredResetCards(config), false)
+  assert.equal(pruneExpiredResetCards(config, Date.now(), 0), false)
   assert.deepEqual(config.resetCards.map((card) => card.id), ['future', 'never'])
+  // 拿不到客户端偏移时，无时区卡不参与判定 → 不误删（保留人工核查的机会）。
+  const unknownTz = { resetCards: [{ id: 'naive', provider: 'zai', expiresAt: '2020-01-01' }] }
+  assert.equal(pruneExpiredResetCards(unknownTz, Date.now(), undefined), false)
+  assert.deepEqual(unknownTz.resetCards.map((card) => card.id), ['naive'])
   // 空/缺字段安全。
-  assert.equal(pruneExpiredResetCards({ resetCards: [] }), false)
-  assert.equal(pruneExpiredResetCards({}), false)
-  assert.equal(pruneExpiredResetCards(undefined), false)
+  assert.equal(pruneExpiredResetCards({ resetCards: [] }, Date.now(), 0), false)
+  assert.equal(pruneExpiredResetCards({}, Date.now(), 0), false)
+  assert.equal(pruneExpiredResetCards(undefined, Date.now(), 0), false)
 })
 
 test('readLlmProviders normalizes profiles and tolerates missing settings service', () => {
@@ -3782,52 +3804,70 @@ test('quota-reset-card validates provider, appends multiple cards, and removes b
   assert.equal(config.resetCards.filter((card) => card.provider === 'zai-coding-cn').length, 10)
 })
 
-test('expired reset cards are pruned from disk on read, and soon-expiring cards surface through health', async (t) => {
+test('expired reset cards are pruned from disk on read, keyed to the client timezone', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-expiry-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const storedPath = join(dshHome, 'dsh-service-quota.json')
-  const pad = (value) => String(value).padStart(2, '0')
-  // datetime-local 串（本地时区，无时区后缀）：resetCardExpiryMs 对非纯日期串按原样解析。
-  const localStamp = (ms) => {
-    const at = new Date(ms)
-    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`
-  }
-  const now = Date.now()
-  const today = new Date(now)
-  const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
-  const yesterday = new Date(now - 24 * 60 * 60 * 1000)
-  const yesterdayKey = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`
+  // 客户端偏移取 0（UTC，与本机容器一致），让「今日/昨日」的构造与判定同处一个时区。
   await writeFile(storedPath, JSON.stringify({
     version: 1,
     kinds: { 'zai-coding-cn': 'zai-coding-cn' },
     resetCards: [
-      // 今日纯日期卡（到期=今日末尾，剩余必 <24h）+ 2 小时后到期的精确时刻卡 → 都在窗口内。
-      { id: 'today', provider: 'zai-coding-cn', label: '今日卡', expiresAt: todayKey },
-      { id: 'soon', provider: 'zai-coding-cn', label: '临期卡', expiresAt: localStamp(now + 2 * 60 * 60 * 1000) },
-      // 25 小时后到期 → 超出 24h 窗口，不提示（旧「当天」口径同样不命中，锁窗口上限）。
-      { id: 'horizon', provider: 'zai-coding-cn', label: '远期卡', expiresAt: localStamp(now + 25 * 60 * 60 * 1000) },
-      { id: 'stale', provider: 'zai-coding-cn', label: '昨日卡', expiresAt: yesterdayKey },
-      { id: 'future', provider: 'zai-coding-cn', label: '远期纯日期卡', expiresAt: '2099-01-01' },
+      // 绝对时刻串：任何时区都读得一致。2 小时后到期 → 未过期，保留。
+      { id: 'soon', provider: 'zai-coding-cn', label: '临期卡', expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() },
+      // 已过去 2 小时 → 过期，读路径必须剔除。
+      { id: 'stale', provider: 'zai-coding-cn', label: '昨日卡', expiresAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+      { id: 'future', provider: 'zai-coding-cn', label: '远期卡', expiresAt: '2099-01-01' },
       { id: 'never', provider: 'zai-coding-cn', label: '永久卡' },
     ],
   }))
   const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
-  // health 是概览的常驻轮询：额度功能开启时带上「24 小时内到期」清单，且只有窗口内那两条。
-  const health = await host.handler('health', {})
+  // health 是面板常驻轮询：即便概览不再提示，它仍要推进「过期卡自动移除」。
+  const health = await host.handler('health', { timezoneOffsetMinutes: 0 })
   assert.equal(health.ok, true)
-  assert.deepEqual(health.value.resetCardsExpiringSoon, [
-    { provider: 'zai-coding-cn', label: '今日卡' },
-    { provider: 'zai-coding-cn', label: '临期卡' },
-  ])
-  // 读配置即自动移除过期卡并落盘：昨日卡消失，窗口内/远期/永久卡保留。
+  // 提示字段已整条移除：不再下发。
+  assert.equal('resetCardsExpiringSoon' in health.value, false)
+  // 读配置即自动移除过期卡并落盘：昨日卡消失，其余保留。
   const config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
-  assert.deepEqual(config.resetCards.map((card) => card.id), ['today', 'soon', 'horizon', 'future', 'never'])
-  // 再次 health：过期卡已在磁盘消失，窗口内提醒不再变化。
-  const second = await host.handler('health', {})
-  assert.deepEqual(second.value.resetCardsExpiringSoon, [
-    { provider: 'zai-coding-cn', label: '今日卡' },
-    { provider: 'zai-coding-cn', label: '临期卡' },
-  ])
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['soon', 'future', 'never'])
+  // 再次 health：磁盘已干净，无重复改写。
+  const second = await host.handler('health', { timezoneOffsetMinutes: 0 })
+  const config2 = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config2.resetCards.map((card) => card.id), ['soon', 'future', 'never'])
+  assert.equal('resetCardsExpiringSoon' in second.value, false)
+})
+
+test('a naive datetime card is canonicalized to an absolute instant once the client offset is known', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-canon-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  await writeFile(storedPath, JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [{ id: 'naive', provider: 'zai-coding-cn', label: '裸时刻卡', expiresAt: '2099-03-01T00:00' }],
+  }))
+  const host = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
+  // 没有客户端偏移时不做无依据的改写：原文保持，也不据此删卡。
+  assert.equal((await host.handler('health', {})).ok, true)
+  let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[0].expiresAt, '2099-03-01T00:00')
+  // 带上 UTC+8 偏移后：固化成绝对时刻（北京时间 2099-03-01 00:00 = 2099-02-28T16:00Z）。
+  assert.equal((await host.handler('health', { timezoneOffsetMinutes: -480 })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[0].expiresAt, '2099-02-28T16:00:00.000Z')
+  // 固化是幂等的：再来一次不再改写。
+  assert.equal((await host.handler('health', { timezoneOffsetMinutes: -480 })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[0].expiresAt, '2099-02-28T16:00:00.000Z')
+  // 纯日期卡刻意不固化：「9-30 到期」是本地日期承诺，改绝对时刻会在界面多出时间点。
+  await writeFile(storedPath, JSON.stringify({
+    version: 1,
+    kinds: { 'zai-coding-cn': 'zai-coding-cn' },
+    resetCards: [{ id: 'bare', provider: 'zai-coding-cn', expiresAt: '2099-09-30' }],
+  }))
+  assert.equal((await host.handler('health', { timezoneOffsetMinutes: -480 })).ok, true)
+  config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.equal(config.resetCards[0].expiresAt, '2099-09-30')
 })
 
 test('health prunes an expired reset card when the config TTL elapses without an mtime change', async (t) => {
@@ -3853,21 +3893,23 @@ test('health prunes an expired reset card when the config TTL elapses without an
   let mockNow = base
   Date.now = () => mockNow
   try {
-    // 第一次 health：TTL 首载（或快路径），卡未过期 → 提醒含临期卡。
-    const first = await host.handler('health', {})
+    // 第一次 health：TTL 首载（或快路径），卡未过期 → 仍留在磁盘。
+    const first = await host.handler('health', { timezoneOffsetMinutes: 0 })
     assert.equal(first.ok, true)
-    assert.deepEqual(first.value.resetCardsExpiringSoon, [{ provider: 'zai-coding-cn', label: '临期卡' }])
-    // 推进 6 秒（> 5s TTL 且已跨过到期时刻）：慢路径 stat 后 mtime 未变、不重新加载，
-    // 该分支同样要 prune——否则停在概览页只靠 health 轮询时，运行期到点的卡清不掉。
-    mockNow += 6000
-    const second = await host.handler('health', {})
-    assert.deepEqual(second.value.resetCardsExpiringSoon, [])
-    // 内存剔除后落盘：磁盘只剩远期卡。
+    assert.equal('resetCardsExpiringSoon' in first.value, false)
     let config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+    assert.deepEqual(config.resetCards.map((card) => card.id), ['dying', 'keep'])
+    // 推进 6 秒（> 5s TTL 且已跨过到期时刻）：慢路径 stat 后 mtime 未变、不重新加载，
+    // 该分支同样要 prune——否则停在面板只靠 health 轮询时，运行期到点的卡清不掉。
+    mockNow += 6000
+    const second = await host.handler('health', { timezoneOffsetMinutes: 0 })
+    assert.equal(second.ok, true)
+    // 内存剔除后落盘：磁盘只剩远期卡。
+    config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
     assert.deepEqual(config.resetCards.map((card) => card.id), ['keep'])
     // 紧随的第三次 health 走 TTL 快路径，两条路都保持干净。
-    const third = await host.handler('health', {})
-    assert.deepEqual(third.value.resetCardsExpiringSoon, [])
+    const third = await host.handler('health', { timezoneOffsetMinutes: 0 })
+    assert.equal(third.ok, true)
     config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
     assert.deepEqual(config.resetCards.map((card) => card.id), ['keep'])
   } finally {
@@ -3904,23 +3946,24 @@ test('quota-reset-card stores an optional account scope so one CLIProxyAPI provi
   assert.deepEqual(config.resetCards.map((card) => card.account), ['codex-b@example.com', undefined, 'x'.repeat(128)])
 })
 
-test('health omits the reset-card reminder when quota lookup is disabled', async (t) => {
+test('health does not touch the quota config when quota lookup is disabled', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-expiry-off-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  const today = new Date()
-  const pad = (value) => String(value).padStart(2, '0')
-  const todayKey = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
-  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+  const storedPath = join(dshHome, 'dsh-service-quota.json')
+  // 放一张明显过期的卡：功能关闭时 health 不得去读/改写额度配置，卡必须原样留在磁盘。
+  await writeFile(storedPath, JSON.stringify({
     version: 1,
     kinds: { 'zai-coding-cn': 'zai-coding-cn' },
-    resetCards: [{ id: 'today', provider: 'zai-coding-cn', label: '今日卡', expiresAt: todayKey }],
+    resetCards: [{ id: 'stale', provider: 'zai-coding-cn', label: '过期卡', expiresAt: '2020-01-01' }],
   }))
   const overrides = quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k')
   const host = createHost({ ...overrides, featureSettings: { quotaLookup: false } })
-  const health = await host.handler('health', {})
+  const health = await host.handler('health', { timezoneOffsetMinutes: 0 })
   assert.equal(health.ok, true)
-  // 功能关闭：不带该字段（客户端据此不渲染概览提示），也不因读配置而触发额度相关副作用。
   assert.equal('resetCardsExpiringSoon' in health.value, false)
+  // 功能关闭 → 不因 health 轮询触发额度配置读改写，过期卡保持原样。
+  const config = parseQuotaConfigText(await readFile(storedPath, 'utf8'))
+  assert.deepEqual(config.resetCards.map((card) => card.id), ['stale'])
 })
 
 test('quota-refresh bypasses success TTL once but retains a hard manual cooldown', async (t) => {

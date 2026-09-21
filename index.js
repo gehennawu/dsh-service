@@ -1197,40 +1197,94 @@ function normalizeQuotaAllowedHosts(raw) {
   return out
 }
 
+// 重置卡到期串的两种「无时区」写法：纯日期与 datetime-local（面板录入格式）。
+// 两者都不带偏移，intl 语义是「用户墙上时间的这个点」，因此必须有客户端时区才能换算成绝对时刻。
+const RESET_CARD_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const RESET_CARD_NAIVE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/
+
+/** 客户端时区偏移（分钟，JS getTimezoneOffset 语义）→ 合法范围整数；非法一律视为「未知」（undefined）。 */
+function quotaTimezoneOffset(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return undefined
+  return Math.max(-840, Math.min(840, Math.trunc(parsed)))
+}
+
 /**
  * 重置卡到期时刻（毫秒）：
- *   - 带时刻的 ISO 串（`2026-09-30T08:00` / 含秒、时区）→ Date.parse 的真实时刻；
- *   - 只到日的串（`2026-09-30`）→ **该自然日的 23:59:59.999**。裸日期被 Date.parse 当作当日
- *     零点 UTC，会让「9-30 到期」的卡在 9-30 零点刚过就判过期，与用户「当天还有效」的直觉相反。
+ *   - 带偏移/时区的绝对串（`2026-09-30T08:00:00Z`、`+08:00`）→ Date.parse 的真实时刻，与时区无关；
+ *   - 只到日的串（`2026-09-30`）→ **该自然日在客户端时区里的 23:59:59.999**。裸日期被 Date.parse
+ *     当作当日零点 UTC，会让「9-30 到期」的卡在 9-30 零点刚过就判过期，与「当天还有效」的直觉相反。
+ *   - datetime-local 串（`2026-09-30T08:00`）→ 该墙上时间在**客户端时区**里的绝对时刻。
+ *     此前按宿主时区（容器 UTC）解释，与浏览器渲染各算一套：UTC+8 用户在界面上看到「已过期」，
+ *     宿主却仍判未过期——既不自动移除，还继续当临期卡提示。
+ *   - 无时区形态但**拿不到客户端偏移** → null（无法判定，宁可留着也不按错误时区删卡/标过期）。
  *   - 缺失/无法解析 → null（永不过期，只手动移除）。
  */
-function resetCardExpiryMs(expiresAt) {
+function resetCardExpiryMs(expiresAt, timezoneOffsetMinutes) {
   if (typeof expiresAt !== 'string') return null
   const raw = expiresAt.trim()
   if (raw === '') return null
+  if (RESET_CARD_DATE_RE.test(raw) || RESET_CARD_NAIVE_RE.test(raw)) {
+    const offset = quotaTimezoneOffset(timezoneOffsetMinutes)
+    if (offset === undefined) return null
+    // 把「墙上时间」按 offset 平移成 UTC：getTimezoneOffset 是「本地→UTC 需要加的分钟数」，
+    // 故 UTC = 墙上时间 + offset（UTC+8 → -480 → 减 8 小时）。
+    const wall = Date.parse(raw.length === 10 ? `${raw}T00:00:00.000Z` : `${raw}Z`)
+    if (!Number.isFinite(wall)) return null
+    const endOfDay = raw.length === 10 ? 24 * 60 * 60 * 1000 - 1 : 0
+    return wall + endOfDay + offset * 60 * 1000
+  }
   const parsed = Date.parse(raw)
-  if (!Number.isFinite(parsed)) return null
-  // 纯日期形态（YYYY-MM-DD，无 T/时刻）：顺延到当日末尾。
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return parsed + 24 * 60 * 60 * 1000 - 1
-  return parsed
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 /** 已过期（到期时刻严格早于 now）的重置卡：宿主读配置时自动剔除。 */
-function isResetCardExpired(card, now = Date.now()) {
-  const at = resetCardExpiryMs(card?.expiresAt)
+function isResetCardExpired(card, now = Date.now(), timezoneOffsetMinutes) {
+  const at = resetCardExpiryMs(card?.expiresAt, timezoneOffsetMinutes)
   return at !== null && at < now
 }
 
 /**
  * 自动移除已过期的重置卡。读路径（refreshQuotaConfigCache）在加载后调用：
  * 有剔除才落盘，避免每次读都写文件。返回值同时告诉调用方「是否发生过变更」。
+ * 无时区形态的卡必须带上客户端偏移才参与判定，否则会按宿主时区误删。
  */
-function pruneExpiredResetCards(config, now = Date.now()) {
+function pruneExpiredResetCards(config, now = Date.now(), timezoneOffsetMinutes) {
   if (!Array.isArray(config?.resetCards) || config.resetCards.length === 0) return false
-  const kept = config.resetCards.filter((card) => !isResetCardExpired(card, now))
+  const kept = config.resetCards.filter((card) => !isResetCardExpired(card, now, timezoneOffsetMinutes))
   if (kept.length === config.resetCards.length) return false
   config.resetCards = kept
   return true
+}
+
+/**
+ * 把无时区的 datetime-local 到期串固化成绝对时刻（ISO，带 Z）：一次迁移，之后任何时区都读得一致。
+ * 纯日期串刻意保持原样——「9-30 到期」是本地日期承诺，改成绝对时刻会在界面上多出一个时间点，
+ * 且它每次判定都用当时的客户端偏移算当日末尾，无需固化。
+ * 拿不到偏移时原样返回（不做无依据的改写），无法解析时同样原样返回（保留人工可核查的原文）。
+ */
+function canonicalResetCardExpiresAt(expiresAt, timezoneOffsetMinutes) {
+  if (typeof expiresAt !== 'string') return expiresAt
+  const raw = expiresAt.trim()
+  if (!RESET_CARD_NAIVE_RE.test(raw)) return expiresAt
+  const at = resetCardExpiryMs(raw, timezoneOffsetMinutes)
+  return at === null ? expiresAt : new Date(at).toISOString()
+}
+
+/** 把配置里所有无时区 datetime 卡固化为绝对时刻。有改写才返回 true（调用方据此落盘）。 */
+function normalizeResetCardInstants(config, timezoneOffsetMinutes) {
+  if (!Array.isArray(config?.resetCards)) return false
+  let changed = false
+  for (const card of config.resetCards) {
+    if (card === null || typeof card !== 'object') continue
+    const next = canonicalResetCardExpiresAt(card.expiresAt, timezoneOffsetMinutes)
+    if (next !== card.expiresAt) {
+      card.expiresAt = next
+      changed = true
+    }
+  }
+  return changed
 }
 
 // 重置卡条目（v0.19 手填过渡方案：官方无 API Key 可查的端点）：provider 必填，label/expiresAt 可选；
@@ -2800,41 +2854,6 @@ async function collectHealth(ctx) {
     activeAgents: activity.items.filter((item) => item.type === 'agent').length,
     activeJobs: activity.items.filter((item) => item.type === 'job').length,
   }
-}
-
-/**
- * 概览重置卡到期提示的窗口（设计定稿参数，只写这一处）：到期时刻距今 **≤24 小时** 即提示。
- * 用剩余时长而不是「当天」日历窗：纯日期卡本就顺延到当日 23:59:59.999、当天窗 ≈24h，
- * 但精确时刻卡（datetime-local）在当天窗下只剩 0:00 到到期时刻的一截（可能仅几十分钟），
- * 错过即被读路径自动清理、再无补看机会；剩余时长窗让两种录入方式都保证 ≥24h 曝光。
- */
-const QUOTA_RESET_CARD_EXPIRING_WINDOW_MS = 24 * 60 * 60 * 1000
-
-/**
- * 剩余 ≤24h 到期的重置卡清单（概览 info 提示的数据源）。读路径的 prune 正常时不会剩下
- * 过期卡，这里再防御性排除一次（at < now 与 isResetCardExpired 同口径）——宁可少提示，
- * 绝不把已过期的卡当「即将到期」展示。返回 [{ provider, label }]；无命中返回空数组。
- */
-async function collectResetCardsExpiringSoon(refreshQuotaConfigCache, now = Date.now()) {
-  let config
-  try {
-    config = await refreshQuotaConfigCache()
-  } catch (_) {
-    return []
-  }
-  const cards = Array.isArray(config?.resetCards) ? config.resetCards : []
-  if (cards.length === 0) return []
-  const horizon = now + QUOTA_RESET_CARD_EXPIRING_WINDOW_MS
-  const hits = []
-  for (const card of cards) {
-    const at = resetCardExpiryMs(card?.expiresAt)
-    if (at === null || at < now || at > horizon) continue
-    hits.push({
-      provider: typeof card.provider === 'string' ? card.provider : '',
-      label: typeof card.label === 'string' ? card.label : '',
-    })
-  }
-  return hits
 }
 
 function collectActiveWork(ctx) {
@@ -5032,12 +5051,25 @@ function apply(ctx) {
   let quotaConfigLastCheckedAt = 0
   let quotaConfigMtimeMs = 0
   const quotaConfigPath = join(dshHome, QUOTA_CONFIG_FILE)
+  // 最近一次请求上带的客户端时区偏移：无时区形态的重置卡到期串（纯日期 / datetime-local）
+  // 必须按「用户墙上时间」解释，宿主容器时区（多为 UTC）不是用户的时区。额度/健康等读路径
+  // 都带这个字段，记录最后一次即可；拿不到时宁可不判定（见 resetCardExpiryMs），也不按错时区删卡。
+  let quotaClientOffset
+  const rememberQuotaClientOffset = (payload) => {
+    const offset = quotaTimezoneOffset(payload?.timezoneOffsetMinutes)
+    if (offset !== undefined) quotaClientOffset = offset
+    return quotaClientOffset
+  }
   // 过期重置卡自动移除：剔除内存快照里的过期条目，有变更才落盘（避免每次读都写文件）。
   // 读失败不影响本次结果——内存已剔除，下次读再试。TTL 快路径、TTL 到期后 mtime 未变、
   // 重新加载三条路都要过这关：mtime 未变就永远不会重新加载，缺了这一路，「停在概览页
   // 只靠 health 轮询」时运行期到点的卡在内存里清不掉。
   const pruneExpiredQuotaResetCards = async () => {
-    if (!pruneExpiredResetCards(quotaConfig)) return
+    const offset = quotaClientOffset
+    // 先固化无时区 datetime 卡（一次迁移，之后任何时区都读得一致），再按偏移剔除过期卡。
+    const canonicalized = normalizeResetCardInstants(quotaConfig, offset)
+    const pruned = pruneExpiredResetCards(quotaConfig, Date.now(), offset)
+    if (!canonicalized && !pruned) return
     try {
       await saveQuotaConfig(dshHome, quotaConfig)
       quotaConfigMtimeMs = (await stat(quotaConfigPath)).mtimeMs
@@ -5333,11 +5365,9 @@ function apply(ctx) {
     } },
     'health': { handle: async (payload, rpcEndpoint) => {
       const value = await collectHealth(ctx)
-      // 剩余 24 小时内到期的重置卡（额度功能开启时才算）：概览「可行动项」的 info 提示数据源。
-      // 走 health 而非 quota，是因为概览不打开额度页也该看到提醒，而 health 是面板的常驻轮询。
-      if (featureEnabled('quotaLookup')) {
-        value.resetCardsExpiringSoon = await collectResetCardsExpiringSoon(refreshQuotaConfigCache)
-      }
+      // 概览不再提示重置卡到期（用户裁决整条去掉）。但 health 仍是面板最常打的读路径，
+      // 借它推进「过期卡自动移除」：额度功能开启时读一次配置（内部按客户端时区固化+剔除）。
+      if (featureEnabled('quotaLookup')) await refreshQuotaConfigCache()
       return { ok: true, value }
 
     } },
@@ -5488,12 +5518,18 @@ function apply(ctx) {
     coreRoutes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
-    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
+    createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt: (expiresAt, offset) => canonicalResetCardExpiresAt(expiresAt, quotaTimezoneOffset(offset) ?? quotaClientOffset), QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
   ])
 
-  const dispatchRpc = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
+  const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
+  // 任何带 timezoneOffsetMinutes 的请求都更新最新客户端偏移（额度读路径在判定无时区重置卡时用它）。
+  // 放在分发器外层一次性接住，避免每个端点各自记一遍。
+  const dispatchRpc = (endpoint, payload) => {
+    rememberQuotaClientOffset(payload)
+    return dispatchEndpoint(endpoint, payload)
+  }
   try {
     ensureConnectionRpcWebServerSeam(ctx)
     ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })

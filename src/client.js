@@ -926,8 +926,6 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'overview.status.warning': '有 {count} 项需要注意',
       'overview.status.error': '有 {count} 项需要处理',
       'overview.backupEmpty': '还没有备份，建议创建一份',
-      // 窗口口径（剩余 ≤24h）由宿主 QUOTA_RESET_CARD_EXPIRING_WINDOW_MS 定义，文案数字与其保持一致。
-      'overview.resetCardExpiring': '重置卡 24 小时内到期：{cards}',
       'overview.updateAvailable': '检测到新版本可用',
       'tabs.backup': '备份维护',
       'tabs.restart': '重启',
@@ -1847,8 +1845,6 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       'overview.status.warning': 'You have {count} item(s) to review',
       'overview.status.error': 'You have {count} item(s) needing attention',
       'overview.backupEmpty': 'No backups yet — consider creating one',
-      // Keep the number in sync with the host's QUOTA_RESET_CARD_EXPIRING_WINDOW_MS (remaining ≤ 24h).
-      'overview.resetCardExpiring': 'Reset card expires within 24 hours: {cards}',
       'overview.updateAvailable': 'A new version is available',
       'tabs.backup': 'Backup',
       'tabs.restart': 'Restart',
