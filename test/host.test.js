@@ -15,7 +15,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
 import pluginDefault from '../index.js'
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, titleRevisionKey, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 插件 Config（0.1.7-alpha.1 起的宿主配置面）：schema 契约在下面直接断言。
 const pluginConfig = pluginDefault.Config
@@ -8232,6 +8232,30 @@ test('historical four/five-segment titles survive an unrelated session append on
   assert.equal(thirdList.ok, true)
   assert.equal(titleCalls, 2, 'the session whose own file changed is refetched')
   assert.deepEqual(titleIds, ['session-beta'], 'only the genuinely changed session is refetched')
+})
+
+// titleRevisionKey 是宿主半的公共路径，老版本同样会跑到，故必须证明它对
+// 0.1.1-rc.2 ~ 0.1.6-alpha.2 的 revision 形状**零改动**：这些版本没有 corpus 段，
+// 若归一误伤（例如把某个有意义的尾段当语料段剥掉），老宿主上会出现「会话变了却命中旧标题」。
+// 形状取自各版本真实 npm 包源码：fileRevision 恒为 dev:ino:size:mtimeNs:ctimeNs 五段；
+// 进程内 live 会话为 `memory:sessionPersistence:<n>` 三段（`this.name` 即服务名）。
+test('titleRevisionKey leaves every pre-0.1.7 revision shape byte-identical', () => {
+  // 老版本一文件身份 5 段（0.1.1-rc.2 ~ 0.1.6-alpha.2 实测源码一致）。
+  const oldFile = '1048638:75536:1789443278480986985:1789443278480986985:123456789'
+  assert.equal(titleRevisionKey(oldFile), oldFile, 'pre-0.1.7 file revision must pass through unchanged')
+  // 进程内 live 令牌（三段，含服务名与自增计数）。
+  for (const token of ['memory:sessionPersistence:1', 'memory:sessionPersistence:42']) {
+    assert.equal(titleRevisionKey(token), token, 'in-memory token must pass through unchanged')
+  }
+  // 0.1.7 当前代际文件仍是 5 段，同样原样通过。
+  assert.equal(titleRevisionKey(oldFile), oldFile)
+  // 只有 0.1.7 历史代际的 6 段才剥尾段，且剥掉的必须只有第 6 段。
+  const historical = `${oldFile}:02afc03b60685e445dda3424121af07a6b5b56398685ff52602e044a6a488106`
+  assert.equal(titleRevisionKey(historical), oldFile, 'the corpus segment alone is stripped')
+  // 非字符串与异常形状不做任何猜测（原样返回，交给调用方比较）。
+  for (const odd of [undefined, null, 42, '', 'a:b', 'a:b:c:d:e:f:g', 'x:y:z:w:v:u:t:s']) {
+    assert.equal(titleRevisionKey(odd), odd, `unexpected shape must be returned as-is: ${String(odd)}`)
+  }
 })
 
 test('session event text matches the official semantic extractor contract, minus folded tool traffic', () => {
