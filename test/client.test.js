@@ -13240,6 +13240,35 @@ test('model provider icons: CSS gates narrow-mode replacement and stays inert fo
     )
   }
 
+  // ── 模型选择弹窗的分组标题（厂家/渠道商） ──────────────────────────────
+  // 与座上那枚同一套数据/渲染路径，但挂载机制不同：菜单是运行期 portal 出来的，
+  // 每组是**不同**的 provider，没有稳定独占座；图标作为**插入节点**排在渠道名**前**。
+  // 关键回归：不能用标题的伪元素——伪元素只能排在标题既有内容之后（渠道名后）。
+  assert.ok(css.includes(`[${icons.menuGroupAttr}]`), 'menu group rules are keyed by our own gate attribute')
+  assert.ok(css.includes(`[${icons.menuGroupIconAttr}]`), 'menu group icon node carries its own attribute')
+  assert.ok(
+    css.includes(`[${icons.menuGroupAttr}] [${icons.menuGroupIconAttr}]`),
+    'menu group rule must descend from the gated title to the icon node',
+  )
+  // 分区标题的规则不得给标题本体加 ::before/::after（位置会跑到渠道名后）。
+  for (const line of css.split('\n')) {
+    if (!line.includes(`[${icons.menuGroupAttr}]`) || !line.includes('{')) continue
+    assert.equal(
+      line.includes('::before') || line.includes('::after'),
+      false,
+      'menu group icon must be an inserted node, not a pseudo element (a pseudo element would land after the channel name): ' + line.trim(),
+    )
+  }
+  // 彩色档分区规则同样以门属性开头，保证 !important 级联下与单色规则可比、且顺序胜出。
+  assert.match(
+    css,
+    new RegExp(`\\[${icons.menuGroupAttr}\\]\\[${icons.seatAttr}="color"\\] \\[${icons.menuGroupIconAttr}\\]`),
+    'color tier has its own gated menu-group rule',
+  )
+  assert.match(css, /margin-right: 5px !important/, 'menu group icon keeps a gap from the channel name')
+  assert.match(css, /vertical-align: -2px !important/, 'menu group icon aligns to the title baseline')
+  assert.equal(icons.menuGroupPx, 13, 'menu group icon sits at the 12px title scale')
+
   // 刻意不引用移动端作用域属性：本功能与移动端适配开关无关，且避免与移动端引擎
   // 的挂载断言互相牵连（首版就是这样把 mobile adapt 用例弄红的）。
   assert.equal(css.includes('data-dshsvc-mobile'), false, 'icon CSS must not depend on the mobile-adaptation scope attribute')
@@ -13676,6 +13705,172 @@ test('model provider icons: CLIProxyAPI icon displays on composer seat only when
     // 5. 析构清理
     renderer.disposeFactory()
     assert.equal(attrs.has('data-dshsvc-model-icon'), false)
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: model menu group titles get the provider mark before the channel name', async () => {
+  // 需求：模型选择弹窗（composer 模型钮 → 「模型」二级列表）里，每个厂家/渠道商分组
+  // 标题**前**也显示同一枚图标；没适配的渠道保持官方标题原样。
+  // 关键回归：
+  //   ① 图标必须排在渠道名**前**（伪元素只能排到后面，故必须是插入节点）；
+  //   ② 幂等——引擎会被自己插入动作唤起的 MutationObserver 重入，不能越插越多；
+  //   ③ 未命中渠道的组不得留下任何自有属性/节点；
+  //   ④ 与座同一道开关与配额兜底门（cliproxy 只在余额查询里手动适配后出现）。
+  const attrs = new Map()
+  const seat = {
+    setAttribute(n, v) { attrs.set(n, v) },
+    removeAttribute(n) { attrs.delete(n) },
+    hasAttribute(n) { return attrs.has(n) },
+    style: { setProperty() {}, removeProperty() {} },
+  }
+  const observerCallbacks = []
+  class FakeMutationObserver {
+    constructor(cb) { this.cb = cb }
+    observe() { observerCallbacks.push(this.cb) }
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+
+  // 极简 Element 替身：够支撑 querySelectorAll / querySelector / insertBefore / remove。
+  const makeNode = (text) => {
+    const node = {
+      textContent: text,
+      firstChild: null,
+      children: [],
+      parent: null,
+      dataset: {},
+      attributes: new Map(),
+      style: {
+        props: new Map(),
+        setProperty(n, v) { this.props.set(n, v) },
+        removeProperty(n) { this.props.delete(n) },
+      },
+      setAttribute(n, v) { this.attributes.set(n, v) },
+      removeAttribute(n) { this.attributes.delete(n) },
+      hasAttribute(n) { return this.attributes.has(n) },
+      getAttribute(n) { return this.attributes.has(n) ? this.attributes.get(n) : null },
+      matches() { return false },
+      insertBefore(child, before) {
+        const at = before === null || before === undefined ? this.children.length : this.children.indexOf(before)
+        this.children.splice(at < 0 ? this.children.length : at, 0, child)
+        child.parent = this
+        this.firstChild = this.children[0] ?? null
+        return child
+      },
+      querySelector(sel) { return this.children.find((child) => child.matches(sel)) ?? null },
+      querySelectorAll(sel) { return this.children.filter((child) => child.matches(sel)) },
+      remove() {
+        if (this.parent !== null) {
+          this.parent.children = this.parent.children.filter((child) => child !== this)
+          this.parent.firstChild = this.parent.children[0] ?? null
+          this.parent = null
+        }
+      },
+    }
+    return node
+  }
+  const titles = ['DeepSeek', 'cpa', 'openrouter-f'].map((name) => makeNode(name))
+  const titled = (name) => titles.find((t) => t.textContent === name)
+  globalThis.document = {
+    body: {},
+    documentElement: {},
+    head: { appendChild() {} },
+    createElement() {
+      const icon = makeNode('')
+      // 引擎按自有属性找回自己插入的那一枚（querySelector / querySelectorAll 走 matches）。
+      icon.matches = (sel) => sel.includes('data-dshsvc-model-group-icon')
+      return icon
+    },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: (sel) => {
+      if (sel.includes('groupTitle')) return titles
+      if (sel.includes('data-dshsvc-model-group-icon')) return titles.flatMap((t) => t.children)
+      if (sel.includes('data-dshsvc-model-group')) return titles.filter((t) => t.hasAttribute('data-dshsvc-model-group'))
+      if (sel.includes('model-icon-seat') && attrs.has('data-dshsvc-model-icon-seat')) return [seat]
+      return []
+    },
+    contains: () => true,
+    addEventListener() {}, removeEventListener() {}, visibilityState: 'visible',
+  }
+
+  const directory = {
+    store: { getSnapshot: () => ({ current: { provider: 'openrouter-f' } }), subscribe: () => () => {} },
+    load: () => Promise.resolve(),
+  }
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    const icons = renderer.moduleExports().modelProviderIcons
+    // 真机里「菜单打开」是一次 DOM 变更 → MutationObserver 回调 → 引擎重算；替身手动补这一步。
+    const rerun = async () => {
+      for (const cb of observerCallbacks) cb()
+      await renderer.flush()
+    }
+    await rerun()
+
+    const deepseekTitle = titled('DeepSeek')
+    const cpaTitle = titled('cpa')
+    const openrouterTitle = titled('openrouter-f')
+
+    // ① 命中渠道：图标节点被插到 firstChild（渠道名**前**），标题带自有门属性。
+    assert.equal(openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'openrouter', 'menu title prepends the mapped provider mark')
+    assert.equal(openrouterTitle.getAttribute(icons.menuGroupAttr), 'openrouter', 'menu title carries our gate attribute')
+    assert.equal(openrouterTitle.getAttribute(icons.seatAttr), 'mono', 'openrouter mark renders via the mono path')
+    assert.equal(openrouterTitle.firstChild.getAttribute('aria-hidden'), 'true', 'inserted mark is decorative for assistive tech')
+    assert.ok(
+      String(openrouterTitle.firstChild.style.props.get(icons.sizeVar === undefined ? '' : '--dshsvc-model-icon')).startsWith('url("data:image/svg+xml,'),
+      'icon node carries its own mask variable',
+    )
+    assert.equal(deepseekTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'deepseek', 'every mapped group gets its own mark')
+
+    // ② 幂等：重入重算不得越插越多（否则 MutationObserver 会自激）。
+    await rerun()
+    await rerun()
+    assert.equal(openrouterTitle.children.length, 1, 're-running must not stack extra icons')
+    assert.equal(deepseekTitle.children.length, 1, 're-running must not stack extra icons')
+
+    // ③ 未命中渠道（cpa 未在余额查询里手动适配）：官方标题零改动。
+    assert.equal(cpaTitle.children.length, 0, 'unmapped group keeps the official title untouched')
+    assert.equal(cpaTitle.hasAttribute(icons.menuGroupAttr), false, 'unmapped group must not carry our gate attribute')
+
+    // ④ 与座同一道配额门：手动适配成 cliproxy → 标题立即长出 CPA 标；撤回 → 立即摘干净。
+    icons.quotaStore.publish({
+      serverTime: Date.now(),
+      providers: [{ provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', windows: [] }],
+    })
+    await renderer.flush()
+    assert.equal(cpaTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'cliproxy', 'manually adapted group gets its provider mark in the menu')
+    icons.quotaStore.publish({ serverTime: Date.now(), providers: [] })
+    await renderer.flush()
+    assert.equal(cpaTitle.children.length, 0, 'unadapting removes the menu mark immediately')
+    assert.equal(cpaTitle.hasAttribute(icons.menuGroupAttr), false)
+
+    // ⑤ 功能开关热生效：关闭 → 全部摘除；重开 → 恢复。
+    //    （真机实测过的缺陷：stop() 把引擎置 disposed，重开若不复位，订阅挂上了但
+    //     每次重算都被 disposed 早退挡掉——表现为「关一次再开，图标再也不回来」。）
+    await renderer.setFeature('modelProviderIcons', false)
+    await renderer.flush()
+    assert.equal(openrouterTitle.children.length, 0, 'feature off removes every title mark')
+    assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false, 'feature off removes the title gate attribute')
+    await renderer.setFeature('modelProviderIcons', true)
+    await renderer.flush()
+    await rerun()
+    assert.equal(
+      openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr),
+      'openrouter',
+      'hot re-enable must bring the title marks back (engine revival)',
+    )
+
+    // ⑥ 析构：插入的节点与标题属性全部摘除（不留残影）。
+    renderer.disposeFactory()
+    assert.equal(openrouterTitle.children.length, 0, 'teardown removes inserted menu icons')
+    assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false, 'teardown removes the title gate attribute')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

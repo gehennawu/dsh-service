@@ -28,6 +28,117 @@
       const createModelProviderIcons = ({ ctx, getModelDirectories }) => {
         const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false }
 
+        // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的那一枚 ────────────────
+        // 官方「模型」二级列表把每个 provider 渲染成
+        // `<section role="group"><div class="_7KE1Ra_groupTitle">渠道名</div>…</section>`，
+        // 标题里没有任何厂家标识。分组顺序与渠道名**完全等于**目录快照的
+        // groups[].id/name（宿主侧 buildModelCatalog 直接用 provider.id/name 构造），
+        // 所以映射键就用标题文本，配同一套 resolveModelIcon 解析——不引入第二份映射表。
+        // 标题文本取不到（空标题 / 结构漂移）就跳过该组，绝不猜。
+
+        /** 分组标题对应的 provider 名；拿不到文本返回 null。 */
+        const menuGroupProviderOf = (title) => {
+          try {
+            const text = String(title?.textContent ?? '').trim()
+            return text === '' ? null : text
+          } catch (_) {
+            return null
+          }
+        }
+
+        /** 摘掉本插件插进分组标题的那一枚图标（按自有属性，不碰官方任何节点）。 */
+        const removeMenuGroupIcon = (title) => {
+          try {
+            if (title === null || title === undefined || typeof title.querySelectorAll !== 'function') return
+            for (const node of Array.from(title.querySelectorAll(`[${MENU_GROUP_ICON_ATTR}]`))) {
+              try { node.remove() } catch (_) {}
+            }
+          } catch (_) {}
+        }
+
+        /** 清空全部分组装饰（菜单关闭 / 切换会话 / 功能关闭 / 析构都走这里）。 */
+        const clearMenuGroups = () => {
+          const doc = docOrNull()
+          if (doc === null || typeof doc.querySelectorAll !== 'function') return
+          try {
+            for (const node of Array.from(doc.querySelectorAll(`[${MENU_GROUP_ICON_ATTR}]`))) {
+              try { node.remove() } catch (_) {}
+            }
+          } catch (_) {}
+          let titles = []
+          try { titles = Array.from(doc.querySelectorAll(`[${MENU_GROUP_ATTR}]`)) } catch (_) { titles = [] }
+          for (const node of titles) {
+            removeMenuGroupIcon(node)
+            iconDomRemoveAttr(node, MENU_GROUP_ATTR)
+            iconDomRemoveAttr(node, MODEL_ICON_ATTR)
+            iconDomRemoveAttr(node, MODEL_ICON_SEAT_ATTR)
+            iconDomRemoveVar(node, MODEL_ICON_VAR)
+            iconDomRemoveVar(node, MODEL_ICON_SIZE_VAR)
+          }
+        }
+
+        /**
+         * 给每个打开中的分组标题前插一枚厂家图标；未命中渠道的组保持官方原样。
+         *
+         * 图标是**插入的兄弟节点**而不是标题的伪元素：伪元素只能排在标题既有内容
+         * 之后（表现为「渠道名后」），插到 firstChild 之前才是「渠道名**前**」。
+         *
+         * 幂等：已装饰且 slug 未变的组直接跳过——MutationObserver 会被我们自己的
+         * 插入动作唤醒，不设这条会自激。插入的是我们的节点，官方 React 不会把它
+         * 当 children 处理（React 只认自己创建的节点）。
+         */
+        const decorateMenuGroups = () => {
+          if (state.disposed) return
+          const doc = docOrNull()
+          if (doc === null || typeof doc.querySelectorAll !== 'function') return
+          let titles = []
+          try { titles = Array.from(doc.querySelectorAll(`[class*="_7KE1Ra_groupTitle"]`)) } catch (_) { return }
+          if (titles.length === 0) return
+          for (const title of titles) {
+            const provider = menuGroupProviderOf(title)
+            if (provider === null) continue
+            const resolved = resolveModelIcon(provider, { forComposer: true })
+            if (resolved === null) {
+              // 未适配渠道：官方标题零改动，顺带摘掉上一轮可能留下的残留。
+              removeMenuGroupIcon(title)
+              iconDomRemoveAttr(title, MENU_GROUP_ATTR)
+              iconDomRemoveAttr(title, MODEL_ICON_ATTR)
+              iconDomRemoveAttr(title, MODEL_ICON_SEAT_ATTR)
+              iconDomRemoveVar(title, MODEL_ICON_VAR)
+              iconDomRemoveVar(title, MODEL_ICON_SIZE_VAR)
+              continue
+            }
+            const useMask = resolved.spec.c !== 1
+            // 已有同一枚：跳过（防自激——MutationObserver 会被我们自己的插入动作唤醒）。
+            const current = iconDomGetAttr(title, MODEL_ICON_ATTR)
+            const hasIcon = (() => {
+              try { return title.querySelector(`[${MENU_GROUP_ICON_ATTR}]`) !== null } catch (_) { return false }
+            })()
+            if (hasIcon && current === resolved.slug) continue
+            removeMenuGroupIcon(title)
+            if (typeof doc.createElement !== 'function') continue
+            try {
+              const icon = doc.createElement('span')
+              icon.setAttribute(MENU_GROUP_ICON_ATTR, resolved.slug)
+              icon.setAttribute(MODEL_ICON_ATTR, resolved.slug)
+              icon.setAttribute(MODEL_ICON_SEAT_ATTR, useMask ? 'mono' : 'color')
+              icon.setAttribute('aria-hidden', 'true')
+              // 变量就近写在这枚图标上：mask 与 background-image 两条路径都从它取值。
+              if (icon.style && typeof icon.style.setProperty === 'function') {
+                icon.style.setProperty(MODEL_ICON_VAR, modelIconDataUri(resolved.spec, useMask))
+                // 光学修正与座上同规（满框形状收一点），这里基准是分组标题的 13px。
+                const optical = typeof resolved.spec.o === 'number' && resolved.spec.o > 0 ? resolved.spec.o : 1
+                if (optical !== 1) icon.style.setProperty(MODEL_ICON_SIZE_VAR, `${(MENU_GROUP_ICON_PX * optical).toFixed(2)}px`)
+              }
+              title.insertBefore(icon, title.firstChild)
+            } catch (_) {}
+            // 标题上也留一份门属性：标明该标题已被装饰，并让测试/排障可直接定位。
+            iconDomSetAttr(title, MENU_GROUP_ATTR, resolved.slug)
+            iconDomSetAttr(title, MODEL_ICON_ATTR, resolved.slug)
+            iconDomSetAttr(title, MODEL_ICON_SEAT_ATTR, useMask ? 'mono' : 'color')
+          }
+        }
+
         const currentSessionId = () => {
           try {
             const sessions = ctx.sessions
@@ -75,6 +186,9 @@
         /** 把 provider 解析结果写到座上；未命中则摘属性（官方默认图标照旧）。 */
         const apply = () => {
           if (state.disposed) return
+          // 弹窗分组标题与座是两处独立渲染面：座不在（菜单开着而 composer 被替换）时
+          // 也不能漏掉分组装饰，故先把菜单这半算完，再走座的分支。
+          decorateMenuGroups()
           const seat = findSeat()
           if (seat === null) { state.seat = null; return }
           state.seat = seat
@@ -127,6 +241,9 @@
             try { nodes = Array.from(doc.querySelectorAll(`[${MODEL_ICON_SEAT_ATTR}]`)) } catch (_) { nodes = [] }
             for (const seat of nodes) clearSeat(seat)
           }
+          // 弹窗分组标题同理：菜单会被官方 portal 到 body，它也带 seat 属性，
+          // 上面那条通用清理能顺带摘掉标题上的标记，但**插进去的节点**要显式移除。
+          clearMenuGroups()
           state.seat = null
           state.lastProvider = null
         }
@@ -266,5 +383,21 @@
           }
         }
 
-        return { start, stop, apply, clear }
+        /**
+         * 热重开复位：stop() 把 disposed 置真、并断开 MutationObserver；
+         * 重新打开功能时必须先复位，否则 start() 挂上的订阅与重算都会被
+         * `state.disposed` 早退挡掉（表现为「关一次再开，图标再也不回来」）。
+         * observerCreated 同样要复位，否则观察者不会被重新建立。
+         */
+        const revive = () => {
+          state.disposed = false
+          state.observerCreated = false
+          // 上一次 stop 已让会话/directory 订阅与观察者全灭，这里把「记住的会话」
+          // 一并清掉，让 subscribe()/apply() 重新解析当前会话。
+          state.lastSession = undefined
+          state.lastProvider = null
+          state.seat = null
+        }
+
+        return { start, stop, apply, clear, revive }
       }

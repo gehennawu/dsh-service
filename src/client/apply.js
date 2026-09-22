@@ -7631,6 +7631,10 @@
           const enabled = featureEnabled('modelProviderIcons')
           if (enabled && !subscribed) {
             subscribed = true
+            // stop() 把引擎标成 disposed 并断开观察者；重新打开必须复位该标记，
+            // 否则热重开会「订阅挂上了、重算全被 disposed 早退挡掉」——表现为
+            // 关闭后再打开，弹窗分组图标不再回来（真机实测）。
+            modelIconEngine.revive()
             modelIconEngine.start()
           } else if (!enabled && subscribed) {
             subscribed = false
@@ -7670,6 +7674,10 @@
       seatAttr: MODEL_ICON_SEAT_ATTR,
       sizeVar: MODEL_ICON_SIZE_VAR,
       basePx: MODEL_ICON_BASE_PX,
+      // 模型选择弹窗分组标题（厂家/渠道商）前的同一枚图标：门属性 + 节点属性 + 基准尺寸。
+      menuGroupAttr: MENU_GROUP_ATTR,
+      menuGroupIconAttr: MENU_GROUP_ICON_ATTR,
+      menuGroupPx: MENU_GROUP_ICON_PX,
       css: MODEL_ICON_CSS,
       slugs: Object.keys(MODEL_ICON_DATA),
       providerCount: Object.keys(MODEL_ICON_PROVIDERS).length,

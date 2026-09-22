@@ -24,6 +24,21 @@ window.__ModuleLoader__.load({
     const MODEL_ICON_SIZE_VAR = '--dshsvc-model-icon-size'
     const MODEL_ICON_BASE_PX = 15
     const MODEL_ICON_VIEWBOX = '0 0 24 24'
+    // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的同一枚图标 ──
+    // 官方 ModelSelect 的二级列表按 provider 分组，分组标题（`_7KE1Ra_groupTitle`）
+    // 只渲染 group.name 一个文本节点，没有任何厂家标识。这里用同一套数据与渲染路径
+    // 在其前画一枚图标：与 composer 座不同，菜单是**运行期才出现**的 DOM（官方在
+    // 打开菜单时才 portal 一个 `<section role="group">` 列表），且每个分组是**不同**
+    // 的 provider，所以不能像座上那样把变量挂在一个稳定锚点上——改为由引擎逐个分组
+    // 打标（见 src/client/model-icons.js 的 decorateMenuGroups）。
+    const MENU_GROUP_ATTR = 'data-dshsvc-model-group'
+    // 标记本插件画出的图标节点：图标是**插入的真实子元素**而不是伪元素。标题的内容
+    // 由官方 React 渲染，伪元素只能附着在标题自身、必然排到文本之后（表现为「渠道名
+    // 后」），要放到名字**前**只能插入节点；重算时按该属性只摘自己插入的那一枚。
+    const MENU_GROUP_ICON_ATTR = 'data-dshsvc-model-group-icon'
+    // 分组标题只有一行、字号 12px（官方 line-height 18px）；图标取同一量级，
+    // 由样式表统一尺寸与对齐，JS 侧只负责插节点。
+    const MENU_GROUP_ICON_PX = 13
 
     /** 把一张图标规格化成 data-URI（mask 用纯黑填充即可，mask 只看 alpha）。 */
     const modelIconDataUri = (spec, useMask) => {
@@ -253,6 +268,37 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
 @container (width<=360px) {
   html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
 }
+/* 模型选择弹窗：分组标题（厂家/渠道商）**前**的同一枚图标。
+   与座上那枚同一套渲染路径（mono 走 mask+currentColor、彩色走 background-image），
+   但挂载机制不同：菜单是运行期才 portal 出来的 DOM、每组是**不同**的 provider，
+   没有稳定独占座可挂，所以由引擎逐组插一个真实节点并打上自有属性门。
+   不能改用标题的伪元素：伪元素只能排在标题既有内容**之后**（表现为「渠道名后」），
+   而需求是名字**前**——插入节点（firstChild 之前）是唯一能满足位置的做法。
+   未命中渠道的组不写属性、不插节点，这里也就没有匹配对象——官方标题零改动。 */
+html [${MENU_GROUP_ATTR}] [${MENU_GROUP_ICON_ATTR}] {
+  display: inline-block !important;
+  /* 标题一行 12px（官方 line-height 18px），图标同量级并贴基线；
+     右侧留 5px 让图标与渠道名之间的缝隙与官方行内间距相当。 */
+  width: var(${MODEL_ICON_SIZE_VAR}, ${MENU_GROUP_ICON_PX}px) !important;
+  height: var(${MODEL_ICON_SIZE_VAR}, ${MENU_GROUP_ICON_PX}px) !important;
+  margin-right: 5px !important;
+  vertical-align: -2px !important;
+  background-color: currentColor !important;
+  -webkit-mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
+  mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
+}
+/* 彩色档：与座上同规——去掉 mask、改用 background-image 上品牌色。
+   选择器同样带 [${MODEL_ICON_ATTR}] 保持特异性平齐，保证 !important 级联下后一条胜出；
+   属性同时挂在标题与图标节点上（标题那份让「哪些组被装饰过」在 DOM 上可读）。 */
+html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_ATTR}] {
+  background-color: transparent !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+  background-image: var(${MODEL_ICON_VAR}) !important;
+  background-position: center !important;
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+}
 `
 
     // DOM 访问容错包装：真机是标准 Element，但测试替身/老外壳可能既没有 document
@@ -272,6 +318,11 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
       try {
         return el !== null && el !== undefined && typeof el.hasAttribute === 'function' && el.hasAttribute(name) === true
       } catch (_) { return false }
+    }
+    const iconDomGetAttr = (el, name) => {
+      try {
+        return el !== null && el !== undefined && typeof el.getAttribute === 'function' ? el.getAttribute(name) : null
+      } catch (_) { return null }
     }
     const iconDomSetVar = (el, name, value) => {
       try {
