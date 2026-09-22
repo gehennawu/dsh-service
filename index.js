@@ -4365,14 +4365,31 @@ async function sessionDirectoryBytes(ctx, header) {
   }
 }
 
+// 标题相关 revision 键：0.1.7-alpha.1 起，历史（迁移代际）会话的 revision 是
+// `${fileRevision}:${corpusHash}` —— fileRevision 自身恰为 5 段（dev:ino:size:mtimeNs:ctimeNs），
+// corpusHash 是**全语料**摘要（官方 historicalCorpusRevision 遍历所有会话文件 stat 求和）。
+// 后果：任一会话有一次追加，全部历史会话的 revision 立刻变化。
+// 标题只由本会话自己的事件折叠而来，语料摘要与标题无关，故比较时剥掉尾部的语料段；
+// 本会话文件一变（身份 5 段变化）仍然立刻失效。官方同样按「生命周期身份」而非 revision
+// 绑定投影缓存（SessionProjectionCache#cachedPredecessorTitle 用 lifecycleIdentityOf），
+// 这里的收窄与之一致。格式不符（段数 ≤5 或非 6 段）时原样返回，不猜结构。
+function titleRevisionKey(revision) {
+  if (typeof revision !== 'string') return revision
+  const segments = revision.split(':')
+  if (segments.length !== 6) return revision
+  return segments.slice(0, 5).join(':')
+}
+
 // 标题缓存条目是否仍新鲜：有 revision 源（sessionPersistence.listSnapshots 可用）时按指纹
 // 精确判定——文件没变标题就不变，冷会话永久命中；快照清单里缺席的 id（纯内存 live 会话）
 // 及 revision 源不可用时按 TTL 兜底。宁重读不展示旧标题。
+// 比较用 titleRevisionKey 归一的键：0.1.5~0.1.6 的 5 段 revision 原样，0.1.7 的 6 段剥掉
+// 全局语料摘要（已落盘的旧条目含 6 段原值，归一后同样命中，无需清缓存）。
 function sessionTitleFresh(entry, record, revisions, now) {
   if (entry === undefined) return false
   if (revisions !== null) {
     const revision = revisions.get(record.header.id)
-    if (revision !== undefined) return entry.revision === revision
+    if (revision !== undefined) return titleRevisionKey(entry.revision) === titleRevisionKey(revision)
     return now - entry.at < SESSIONS_TITLE_LIVE_TTL_MS
   }
   const ttl = record.live === true ? SESSIONS_TITLE_LIVE_TTL_MS : SESSIONS_TITLE_COLD_TTL_MS
@@ -5979,6 +5996,7 @@ export {
   selectSkillBatchCandidates,
   sessionEventCollapseKind,
   sessionEventText,
+  titleRevisionKey,
   setSkillInvocationKey,
   skillIdFor,
   stepfunWebIdFromToken,
@@ -6073,6 +6091,7 @@ export default {
   selectSkillBatchCandidates,
   sessionEventCollapseKind,
   sessionEventText,
+  titleRevisionKey,
   setSkillInvocationKey,
   skillIdFor,
   stepfunWebIdFromToken,

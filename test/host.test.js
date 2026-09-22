@@ -8170,6 +8170,70 @@ test('session list titles are revision-cached, only refetched on change, and sur
   assert.equal(restartedList.value.items.find((item) => item.id === 'session-beta').title, '标题-session-beta')
 })
 
+// 0.1.7-alpha.1 起历史会话的 revision = `${fileRevision}:${corpusHash}`（6 段），corpusHash 是
+// 全语料 stat 摘要：任一会话有一次追加，全部历史会话的 revision 都变。若照原值比较，标题缓存
+// 会被全局击穿（真机实测 129 条缓存仅 2 条命中，首次打开会话管理要对每个历史会话冷读整份日志）。
+// 标题只取决于本会话自身事件，故比较剥掉尾部语料段；本会话文件一变仍然立刻失效。
+test('historical four/five-segment titles survive an unrelated session append on 0.1.7 hosts', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-svc-titles-corpus-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const headers = {
+    'session-alpha': { id: 'session-alpha', createdAt: 1000, cwd: '/workspace/projects' },
+    'session-beta': { id: 'session-beta', createdAt: 900, cwd: '/workspace/projects' },
+  }
+  let titleCalls = 0
+  let titleIds = []
+  // 历史代际会话：身份 5 段 + 全局语料摘要 1 段。
+  const fileIdentity = (n) => `1048638:${n}:75536:1789443278480986985:1789443278480986985`
+  const revisions = new Map([
+    ['session-alpha', `${fileIdentity(1)}:corpus-one`],
+    ['session-beta', `${fileIdentity(2)}:corpus-one`],
+  ])
+  const sessionQuery = {
+    async listSessions() {
+      return [
+        { header: { ...headers['session-alpha'] }, live: false, persisted: true },
+        { header: { ...headers['session-beta'] }, live: false, persisted: true },
+      ]
+    },
+    async readTitleSnapshots(ids) {
+      titleCalls += 1
+      titleIds = [...ids]
+      return ids.map((sessionId) => ({ sessionId, status: 'fulfilled', value: { title: { title: `标题-${sessionId}` } } }))
+    },
+  }
+  const sessionPersistence = {
+    async listSnapshots() {
+      return [...revisions].map(([id, revision]) => ({ header: { id }, revision }))
+    },
+  }
+  const hostOptions = () => ({
+    services: { sessionQuery, sessionPersistence, workspaceRegistry: { archivedSessionIds: [] }, sessions: { get: () => undefined } },
+    env: { DSH_HOME: dshHome },
+  })
+
+  const host = createHost(hostOptions())
+  const firstList = await host.handler('sessions-list', {})
+  assert.equal(firstList.ok, true)
+  assert.equal(titleCalls, 1, 'first listing reads every title once')
+
+  // 另一个会话发生一次追加：语料摘要变化，两个历史会话的 revision 尾段全变。
+  revisions.set('session-alpha', `${fileIdentity(1)}:corpus-two`)
+  revisions.set('session-beta', `${fileIdentity(2)}:corpus-two`)
+  const secondList = await host.handler('sessions-list', {})
+  assert.equal(secondList.ok, true)
+  assert.equal(titleCalls, 1, 'a corpus-wide hash change alone must not refetch any title')
+  assert.equal(secondList.value.items.find((item) => item.id === 'session-alpha').title, '标题-session-alpha')
+  assert.equal(secondList.value.items.find((item) => item.id === 'session-beta').title, '标题-session-beta')
+
+  // 但本会话自身文件真的变了（身份 5 段变化）必须重读，且只重读它。
+  revisions.set('session-beta', `${fileIdentity(9)}:corpus-two`)
+  const thirdList = await host.handler('sessions-list', {})
+  assert.equal(thirdList.ok, true)
+  assert.equal(titleCalls, 2, 'the session whose own file changed is refetched')
+  assert.deepEqual(titleIds, ['session-beta'], 'only the genuinely changed session is refetched')
+})
+
 test('session event text matches the official semantic extractor contract, minus folded tool traffic', () => {
   const cases = [
     { type: 'user/message', data: { content: [{ type: 'text', text: ' first ' }, { type: 'reasoning', text: 'hidden' }, { type: 'text', text: 'second' }] } },
