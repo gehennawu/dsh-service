@@ -20,6 +20,41 @@ import { createSessionsRoutes } from './session-routes.js'
 import { createQuotaRoutes } from './quota-routes.js'
 import { createSubagentRoutes } from './subagent-routes.js'
 import { createBackupRoutes } from './backup-routes.js'
+import { createModelWorkbenchRoutes } from './model-workbench-routes.js'
+import { createWorkbenchStore, loadPiAiCatalog } from './model-workbench.js'
+import {
+  WORKBENCH_SIDECAR_VERSION,
+  applySuggestions,
+  applyUndo,
+  arbitrateModelSuggestions,
+  buildPiAiIndex,
+  consensusFields,
+  createFreshnessManager,
+  deriveKeyRefFor,
+  diffModelLists,
+  emptyWorkbenchSidecar,
+  fetchModelsProbe,
+  hostnameOf,
+  indexModelParamsDev,
+  isPrivateIpAddress,
+  loadModelParamsSnapshot,
+  loadWorkbenchSidecar,
+  modelParamsCandidates,
+  modelParamsDevEfforts,
+  modelPatchFromPiAi,
+  modelsProbeLookup,
+  normalizeBaseURLForMatch,
+  parseModelListing,
+  probeBaseURLCheck,
+  profileFingerprint,
+  readLlmProfiles,
+  saveModelParamsSnapshot,
+  saveWorkbenchSidecar,
+  selfCheckModelsPatch,
+  suggestRouteId,
+  suggestionId,
+  undoPreviewModels,
+} from './model-workbench.js'
 import { collectPluginCompat, pluginCompatCheckItem } from './plugin-compat.js'
 import { collectPluginHealth, pluginCheckItem, restartPluginEntry } from './plugin-health.js'
 import {
@@ -89,6 +124,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   // v1.8 新增：composer 模型按钮显示厂家/渠道图标（宽态加在模型名前，
   // 窄态替换官方默认图标；未适配渠道保留官方默认图标）。
   modelProviderIcons: true,
+  // v1.10 新增：模型配置工作台（供应商与模型 / 子代理路由），写路径经两段式确认。
+  modelCatalog: true,
 })
 const FeatureSettingsSchema = z.object({
   healthDiagnostics: z.boolean().default(true),
@@ -104,6 +141,7 @@ const FeatureSettingsSchema = z.object({
   sessionManager: z.boolean().default(true),
   fileEditor: z.boolean().default(true),
   modelProviderIcons: z.boolean().default(true),
+  modelCatalog: z.boolean().default(true),
 })
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
@@ -5010,6 +5048,9 @@ function apply(ctx) {
   // release 正文缓存：键 kind，值带 version（版本一变即整体失效，不必手工清理）。
   const releaseNotesCache = new Map()
   const quotaThrottle = createQuotaThrottle()
+  // 模型配置工作台（v1.10）：侧车仓库持有写前快照/绑定/验证摘要/人工恢复态。
+  // 写串行化在仓库内部；目录随 DSH 升级才变，进程内缓存一次。
+  const workbenchStore = createWorkbenchStore(dshHome)
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
   // 可重赋值的 let 一律以 { current } 箱体跨模块传递：端点工厂解构是值快照，
   // let 重赋值不会穿过解构边界；箱体靠对象身份保持活绑定。
@@ -5764,6 +5805,26 @@ function apply(ctx) {
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
+    createModelWorkbenchRoutes({
+      ctx,
+      randomUUID,
+      loadPiCatalog: loadPiAiCatalog,
+      workbenchStore,
+      // 移除守卫的只读引用面：子代理路由配置 + 官方默认模型选择（都是宿主侧事实，浏览器不参与）。
+      loadSubagentRoute: async () => {
+        await subagentRouteLoadPromise
+        return subagentRouteRef.current
+      },
+      loadAgentDefaultModelSelection: () => {
+        const service = ctx.get('agentDefaultModel')
+        if (service === undefined || typeof service.currentSelection !== 'function') return undefined
+        return service.currentSelection()
+      },
+      writeSubagentRoute: serializeSubagentRouteWrite,
+      listSubagentModels,
+      dshHome,
+      pluginVersion,
+    }),
   ])
 
   const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
@@ -5867,6 +5928,41 @@ export {
   saveUnifiedConfig,
   updateUnifiedConfigSection,
   sanitizeSettingsNavConfig,
+  // 模型配置工作台（v1.10）：领域纯函数经 index.js 再导出，测试从 '../index.js' 导入的
+  // 既有约定保持不变（旧分支 test/workbench.test.js 即此形状）。
+  WORKBENCH_SIDECAR_VERSION,
+  applySuggestions,
+  applyUndo,
+  arbitrateModelSuggestions,
+  buildPiAiIndex,
+  createWorkbenchStore,
+  deriveKeyRefFor,
+  diffModelLists,
+  emptyWorkbenchSidecar,
+  fetchModelsProbe,
+  hostnameOf,
+  isPrivateIpAddress,
+  loadWorkbenchSidecar,
+  modelPatchFromPiAi,
+  modelsProbeLookup,
+  normalizeBaseURLForMatch,
+  parseModelListing,
+  probeBaseURLCheck,
+  profileFingerprint,
+  readLlmProfiles,
+  saveWorkbenchSidecar,
+  selfCheckModelsPatch,
+  suggestRouteId,
+  suggestionId,
+  undoPreviewModels,
+  // P3.5 补充源（modelparams.dev）与多源共识：同样经 index.js 再导出供测试直达。
+  consensusFields,
+  createFreshnessManager,
+  indexModelParamsDev,
+  loadModelParamsSnapshot,
+  modelParamsCandidates,
+  modelParamsDevEfforts,
+  saveModelParamsSnapshot,
 }
 export default {
   SKILL_SOURCE_RANK,

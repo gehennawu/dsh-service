@@ -25,6 +25,8 @@
     "quota-routes.js",
     "subagent-routes.js",
     "backup-routes.js",
+    "model-workbench.js",
+    "model-workbench-routes.js",
     "plugin-health.js",
     "plugin-compat.js",
     "client.js",
