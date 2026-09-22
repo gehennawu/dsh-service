@@ -1369,6 +1369,66 @@ export function applyUndo(snapshotModels, currentModels, { dropAdded = false, re
   return kept
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 连接字段编辑（地址 / 协议 / 显示名）与渠道快照
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 连接字段写补丁：只产出**被改动**的字段，未触碰的键（含未知高级键/模型数组）不参与写入。
+ * 地址值按数据写入 settings（唯一出网路径见 fetchModelsProbe 的 SSRF 护栏），不进 shell/路径。 */
+export function connectionPatch(current, next) {
+  const patch = {}
+  for (const field of ['displayName', 'api', 'baseURL']) {
+    if (!(field in (next ?? {}))) continue
+    const raw = next[field]
+    const value = String(raw ?? '').trim().slice(0, field === 'baseURL' ? 2048 : 128)
+    const before = typeof current?.[field] === 'string' ? current[field].trim() : ''
+    if (value === before) continue
+    // 空地址 = 清除该键（回落目录 baseUrl）；空协议/空显示名不接受（显示名回落 route 由读取侧负责）。
+    if (value === '') patch[`bad${field[0].toUpperCase()}${field.slice(1)}`] = true
+    else patch[field] = value
+  }
+  return patch
+}
+
+/** 连接快照（撤销用）：只含承载连接语义的键；凭据只记引用名，密钥值永不入侧车。 */
+export function connectionSnapshotOf(profile) {
+  const snapshot = { at: Date.now() }
+  for (const field of ['displayName', 'api', 'baseURL', 'apiKeyEnv']) {
+    if (typeof profile?.[field] === 'string' && profile[field] !== '') snapshot[field] = profile[field]
+  }
+  return snapshot
+}
+
+/** 连接撤销重放：只回滚快照有记录的键；后续手工添加的未知键/模型数组原样保留。
+ * 快照未记录某键 = 该键在写前不存在 → 恢复为「不存在」（unset），而不是猜一个默认值。 */
+export function connectionUndoOps(snapshot, current) {
+  const ops = []
+  for (const field of ['displayName', 'api', 'baseURL', 'apiKeyEnv']) {
+    const target = typeof snapshot?.[field] === 'string' && snapshot[field] !== '' ? snapshot[field] : undefined
+    const now = typeof current?.[field] === 'string' && current[field] !== '' ? current[field] : undefined
+    if (target === undefined) {
+      if (now !== undefined) ops.push({ op: 'unset', path: [field] })
+      continue
+    }
+    if (now !== target) ops.push({ op: 'set', path: [field], value: target })
+  }
+  return ops
+}
+
+/** 撤销面标记：'full'（连接+模型）/ 'models'（旧模型数组槽）/ 'removed'（渠道删除）/ 'none'。 */
+export function undoScopeOf(snapshot) {
+  if (!isPlainObject(snapshot)) return 'none'
+  if (snapshot.kind === 'full') return 'full'
+  if (snapshot.kind === 'removed') return 'removed'
+  return Array.isArray(snapshot.models) ? 'models' : 'none'
+}
+
+/** 删除快照里的 profile（恢复用）：缺字段/非对象即视为不可恢复。 */
+export function routeRestoreValue(snapshot) {
+  const profile = snapshot?.profile
+  return isPlainObject(profile) ? { ...profile } : undefined
+}
+
 /**
  * 窄化能力补丁（简易添加流）：只生成 `input`/`reasoningEfforts`。
  * `follow`/`undefined` = 跟随 adapter 默认（既不声明 text-only 也不声明不支持推理）——
@@ -1446,7 +1506,7 @@ export function piRecordsForRoute(piIndex, route) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function emptyWorkbenchSidecar() {
-  return { schemaVersion: WORKBENCH_SIDECAR_VERSION, providers: {}, bindings: {}, validations: {}, undo: {}, recovery: {} }
+  return { schemaVersion: WORKBENCH_SIDECAR_VERSION, providers: {}, removed: {}, bindings: {}, validations: {}, undo: {}, recovery: {} }
 }
 
 /** 读侧车：缺文件/非法 JSON/schemaVersion 不匹配/分区非对象 → 整体 fail-closed 为空仓。 */
@@ -1455,7 +1515,7 @@ export async function loadWorkbenchSidecar(dshHome) {
     const raw = JSON.parse(await readFile(join(dshHome, WORKBENCH_SIDECAR_FILE), 'utf8'))
     if (!isPlainObject(raw) || raw.schemaVersion !== WORKBENCH_SIDECAR_VERSION) return emptyWorkbenchSidecar()
     const restored = emptyWorkbenchSidecar()
-    for (const key of ['providers', 'bindings', 'validations', 'undo', 'recovery']) {
+    for (const key of ['providers', 'removed', 'bindings', 'validations', 'undo', 'recovery']) {
       if (isPlainObject(raw[key])) restored[key] = raw[key]
     }
     return restored

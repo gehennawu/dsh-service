@@ -471,10 +471,10 @@ async function createRoutes(options = {}) {
     // 空目录：本组用例只关心路由层契约，不依赖真实装机目录。
     loadPiCatalog: async () => ({ channels: [], channelIds: new Set(), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
     workbenchStore: store,
-    loadSubagentRoute: async () => ({ version: 1, mode: 'inherit' }),
-    loadAgentDefaultModelSelection: () => undefined,
-    writeSubagentRoute: async () => ({ saved: true }),
-    listSubagentModels: async () => ({ models: [] }),
+    loadSubagentRoute: options.loadSubagentRoute ?? (async () => ({ version: 1, mode: 'inherit' })),
+    loadAgentDefaultModelSelection: options.loadAgentDefaultModelSelection ?? (() => undefined),
+    writeSubagentRoute: options.writeSubagentRoute ?? (async () => ({ saved: true })),
+    listSubagentModels: options.listSubagentModels ?? (async () => ({ models: [] })),
     dshHome,
     pluginVersion: 'test',
   })
@@ -484,7 +484,8 @@ async function createRoutes(options = {}) {
 test('workbench routes: every models2-* endpoint is feature-gated on modelCatalog', async () => {
   const { routes } = await createRoutes({ dshHome: '/nonexistent' })
   const endpoints = Object.keys(routes)
-  assert.equal(endpoints.length, 22)
+  assert.equal(endpoints.length, 29)
+  assert.deepEqual(endpoints.filter((name) => !name.startsWith('models2-')), [], 'all endpoints live in the models2- namespace')
   for (const name of endpoints) {
     assert.equal(name.startsWith('models2-'), true, `${name} uses the models2- namespace`)
     assert.equal(routes[name].feature, 'modelCatalog', `${name} is behind the modelCatalog gate`)
@@ -999,4 +1000,404 @@ test('workbench probe guard: DNS resolution is refused unless every answer is pu
   } finally {
     t2(original)
   }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.11 新增面：连接编辑（地址/协议/显示名 + 换密钥）、渠道删除与删除恢复、
+// 单模型行写入、连接/删除纳入撤销。全部经路由层驱动，锁定「未知键保真 + 引用不暗改」。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 造一个带未知高级键、per-model compat、多协议字段的 profile 当保真基线。 */
+function fidelityProfiles() {
+  return {
+    cpa: {
+      displayName: 'CPA 网关',
+      api: 'openai-completions',
+      baseURL: 'https://gw.example.com/v1',
+      apiKeyEnv: 'CPA_API_KEY',
+      vendorExtra: { nested: [1, 2, 3], keep: true },
+      models: [
+        { id: 'm1', name: 'M One', contextWindow: 128000, compat: { keep: true }, vendorModelKey: 'zzz' },
+        { id: 'm2', input: ['text', 'image'], reasoningEfforts: { off: null, high: 'high' } },
+      ],
+    },
+  }
+}
+
+test('workbench connection: editing fields writes only those keys and keeps unknown keys byte-identical', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-conn-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const ops = []
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => {
+      for (const op of list) {
+        ops.push(op)
+        const [, route, field] = op.path
+        const target = profiles[route] ?? (profiles[route] = {})
+        if (op.op === 'unset') delete target[field]
+        else target[field] = op.value
+      }
+    },
+  })
+  const before = JSON.parse(JSON.stringify(profiles.cpa))
+  const preview = await routes['models2-connection-preview'].handle({ route: 'cpa', next: { baseURL: 'https://new.example.com/v1', displayName: 'CPA 新名' } })
+  assert.equal(preview.ok, true)
+  assert.equal(preview.value.probeAllowed, true, 'public https address is probe-allowed')
+  assert.equal(typeof preview.value.credential.writable, 'boolean')
+  assert.equal(typeof preview.value.fingerprint, 'string', 'the server issues the write-time baseline; clients never compute it')
+  const commit = await routes['models2-connection-commit'].handle({
+    route: 'cpa',
+    next: { baseURL: 'https://new.example.com/v1', displayName: 'CPA 新名' },
+    baseFingerprint: preview.value.fingerprint,
+  })
+  assert.equal(commit.ok, true)
+  assert.deepEqual(ops.map((op) => op.path.join('.')), ['providers.cpa.displayName', 'providers.cpa.baseURL'])
+  assert.equal(profiles.cpa.baseURL, 'https://new.example.com/v1')
+  assert.deepEqual(profiles.cpa.vendorExtra, before.vendorExtra, 'unknown top-level key preserved')
+  assert.deepEqual(profiles.cpa.models, before.models, 'model array untouched by a connection edit')
+  assert.equal(profiles.cpa.models[0].compat.keep, true, 'per-model unknown key preserved')
+  assert.equal(profiles.cpa.apiKeyEnv, 'CPA_API_KEY', 'credential reference not touched by an address edit')
+})
+
+test('workbench connection: stale fingerprint is refused and probe-blocked addresses still save', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-conn2-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => {
+      for (const op of list) {
+        const [, route, field] = op.path
+        profiles[route][field] = op.value
+      }
+    },
+  })
+  // 并发漂移：指纹不符 → conflict（不写）。
+  const stale = await routes['models2-connection-commit'].handle({ route: 'cpa', next: { api: 'openai-responses' }, baseFingerprint: 'deadbeef' })
+  assert.equal(stale.ok, false)
+  assert.equal(stale.error, 'conflict')
+  assert.equal(profiles.cpa.api, 'openai-completions', 'refused write left settings untouched')
+  // 非公网/HTTP 地址：允许保存（数据写入），但禁在线发现。
+  const preview = await routes['models2-connection-preview'].handle({ route: 'cpa', next: { baseURL: 'http://127.0.0.1:8080/v1' } })
+  assert.equal(preview.ok, true)
+  assert.equal(preview.value.probeAllowed, false)
+  assert.equal(typeof preview.value.probeBlocked, 'string')
+  const committed = await routes['models2-connection-commit'].handle({ route: 'cpa', next: { baseURL: 'http://127.0.0.1:8080/v1' }, baseFingerprint: preview.value.fingerprint })
+  assert.equal(committed.ok, true, 'a non-public address is still a legal manual configuration')
+  assert.equal(profiles.cpa.baseURL, 'http://127.0.0.1:8080/v1')
+})
+
+test('workbench connection: an empty address clears the key (falls back to the catalog baseUrl)', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-conn3-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const ops = []
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => { for (const op of list) { ops.push(op); if (op.op === 'unset') delete profiles[op.path[1]][op.path[2]]; else profiles[op.path[1]][op.path[2]] = op.value } },
+  })
+  const cleared = await routes['models2-connection-preview'].handle({ route: 'cpa', next: { baseURL: '' } })
+  const res = await routes['models2-connection-commit'].handle({ route: 'cpa', next: { baseURL: '' }, baseFingerprint: cleared.value.fingerprint })
+  assert.equal(res.ok, true)
+  assert.deepEqual(ops, [{ op: 'unset', path: ['providers', 'cpa', 'baseURL'] }], 'empty address unsets the key instead of writing an empty string')
+  assert.equal('baseURL' in profiles.cpa, false)
+})
+
+test('workbench connection: key replacement rejects a shadowing environment without touching settings', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-key-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const written = []
+  const { routes, ctx } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => { for (const op of list) written.push(op) },
+  })
+  ctx.get = ((original) => (name) => (name === 'credentials' ? {
+    describe: async () => ({ configured: true, source: 'env', writable: false }),
+    set: async () => { throw new Error('credentials-local: a read-only source shadows this reference') },
+    unset: async () => {},
+    resolve: async () => undefined,
+  } : original(name)))(ctx.get)
+  const preview = await routes['models2-connection-preview'].handle({ route: 'cpa', next: {}, keyRef: 'CPA_API_KEY' })
+  const res = await routes['models2-connection-commit'].handle({ route: 'cpa', next: {}, key: 'sk-new', baseFingerprint: preview.value.fingerprint })
+  assert.equal(res.ok, false)
+  assert.equal(res.error.startsWith('credential-rejected'), true, 'the real service refusal is surfaced, not masked')
+  assert.deepEqual(written, [], 'no settings write happens when the credential cannot be stored')
+})
+
+test('workbench route removal: snapshot first, credential retained, restore writes the exact profile back', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-del-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const original = JSON.parse(JSON.stringify(profiles.cpa))
+  const { routes, store } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => {
+      for (const op of list) {
+        const [, route] = op.path
+        if (op.op === 'unset') delete profiles[route]
+        else profiles[route] = op.value
+      }
+    },
+  })
+  const preview = await routes['models2-route-remove-preview'].handle({ route: 'cpa' })
+  assert.equal(preview.ok, true)
+  assert.equal(preview.value.blocked, false)
+  assert.equal(preview.value.credential.retained, true, 'deleting a route keeps the credential')
+
+  const removed = await routes['models2-route-remove-commit'].handle({ route: 'cpa', baseFingerprint: preview.value.fingerprint })
+  assert.equal(removed.ok, true)
+  assert.equal(profiles.cpa, undefined, 'route removed from settings')
+  assert.equal(removed.value.credentialRetained, true)
+
+  // 删除后入口仍可找到：清单从侧车读，不随路由行消失。
+  const list = await routes['models2-route-removed-list'].handle({})
+  assert.equal(list.ok, true)
+  assert.equal(list.value.removed.length, 1)
+  assert.equal(list.value.removed[0].route, 'cpa')
+  assert.equal(list.value.removed[0].taken, false)
+  const snapshot = await store.load()
+  assert.equal(JSON.stringify(snapshot.removed.cpa.profile).includes('sk-'), false, 'no secret value in the snapshot')
+
+  // 同名路由重新出现时拒绝覆盖。
+  profiles.cpa = { api: 'openai-completions', models: [{ id: 'x' }] }
+  const blocked = await routes['models2-route-restore'].handle({ route: 'cpa' })
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.error, 'route-taken')
+  delete profiles.cpa
+
+  const restored = await routes['models2-route-restore'].handle({ route: 'cpa' })
+  assert.equal(restored.ok, true)
+  assert.deepEqual(profiles.cpa, original, 'restore writes the profile back byte-identically (unknown keys included)')
+  assert.equal(restored.value.credentialValueRestored, false, 'the old key value is never restored')
+  const after = await store.load()
+  assert.equal(after.removed.cpa, undefined, 'a successful restore clears the snapshot')
+})
+
+test('workbench route removal: a snapshot write failure refuses the destructive delete', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-del2-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    // 侧车不可写：没有可回滚状态就不做破坏性动作。
+    workbenchStore: { load: async () => ({ providers: {}, removed: {}, recovery: {} }), mutate: async () => { throw new Error('sidecar read-only') } },
+    mutate: async () => { throw new Error('settings must not be written') },
+  })
+  const confirmed = await routes['models2-route-remove-preview'].handle({ route: 'cpa' })
+  const res = await routes['models2-route-remove-commit'].handle({ route: 'cpa', baseFingerprint: confirmed.value.fingerprint })
+  assert.equal(res.ok, false)
+  assert.equal(profiles.cpa !== undefined, true, 'the route survives when no snapshot could be persisted')
+})
+
+test('workbench route removal: a referenced route is blocked with no third confirmation loop', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-del3-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    loadAgentDefaultModelSelection: () => ({ provider: 'cpa', model: 'm1' }),
+    mutate: async () => { throw new Error('must not write') },
+  })
+  const preview = await routes['models2-route-remove-preview'].handle({ route: 'cpa' })
+  assert.equal(preview.value.blocked, true)
+  assert.equal(preview.value.references.some((ref) => ref.kind === 'agent-default-model'), true)
+  const commit = await routes['models2-route-remove-commit'].handle({ route: 'cpa', baseFingerprint: preview.value.fingerprint })
+  assert.equal(commit.ok, false)
+  assert.equal(commit.error, 'removal-blocked', 'the host refuses even if the client skips the preview')
+})
+
+test('workbench model patch: one row changes while every other row stays byte-identical', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-row-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  let written = null
+  const { routes, store } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => { written = list[0].value; profiles.cpa.models = written },
+  })
+  const before = JSON.parse(JSON.stringify(profiles.cpa))
+  const res = await routes['models2-model-patch'].handle({ route: 'cpa', modelId: 'm1', patch: { contextWindow: 200000, input: ['text', 'image'] } })
+  assert.equal(res.ok, true)
+  assert.equal(written[0].contextWindow, 200000)
+  assert.deepEqual(written[0].input, ['text', 'image'])
+  assert.equal(written[0].vendorModelKey, 'zzz', 'the edited row keeps its unknown key')
+  assert.deepEqual(written[1], before.models[1], 'the sibling row is untouched byte-for-byte')
+  // 撤销槽含连接 + 模型（写前整份），且凭据值不在其中。
+  const snapshot = await store.load()
+  // 单模型行编辑只快照模型数组（连接字段没动）——scope 如实报 'models'，不冒充 'full'。
+  assert.equal(snapshot.providers.cpa.kind, undefined)
+  assert.equal(snapshot.providers.cpa.models.length, 2)
+  assert.deepEqual(snapshot.providers.cpa.models, before.models)
+  // id 不可改写、未知模型拒绝。
+  const forged = await routes['models2-model-patch'].handle({ route: 'cpa', modelId: 'nope', patch: { name: 'x' } })
+  assert.equal(forged.ok, false)
+  assert.equal(forged.error.startsWith('unknown-model'), true)
+})
+
+test('workbench model patch: an unsupported reasoning mapping is rejected instead of silently written', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-row2-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async () => { throw new Error('must not write an invalid patch') },
+  })
+  // 只有 off 键 = 没有任何非 off 等级 → llm-pi-ai 校验会拒；宿主自检必须先行拦下。
+  const res = await routes['models2-model-patch'].handle({ route: 'cpa', modelId: 'm2', patch: { reasoningEfforts: { off: null } } })
+  assert.equal(res.ok, false)
+  assert.equal(res.error.startsWith('schema-invalid'), true)
+  const ok = await routes['models2-model-patch'].handle({ route: 'cpa', modelId: 'm2', patch: { reasoningEfforts: { off: null, high: 'high' } } })
+  assert.equal(ok.ok, true, 'a mapping with a real level is accepted')
+})
+
+test('workbench undo: a connection snapshot restores connection fields and the model array together', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-undo-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => {
+      for (const op of list) {
+        const [, route, field] = op.path
+        const target = profiles[route] ?? (profiles[route] = {})
+        if (op.op === 'unset') delete target[field]
+        else target[field] = op.value
+      }
+    },
+  })
+  const before = JSON.parse(JSON.stringify(profiles.cpa))
+  const moved = await routes['models2-connection-preview'].handle({ route: 'cpa', next: { baseURL: 'https://moved.example.com/v1' } })
+  await routes['models2-connection-commit'].handle({ route: 'cpa', next: { baseURL: 'https://moved.example.com/v1' }, baseFingerprint: moved.value.fingerprint })
+  // 用户在连接编辑之后又手工改了模型：撤销该恢复连接，但不吞掉连接编辑之外的独立改动。
+  profiles.cpa.models = [...profiles.cpa.models, { id: 'later', name: 'Later' }]
+  const preview = await routes['models2-undo-preview'].handle({ route: 'cpa' })
+  assert.equal(preview.ok, true)
+  assert.equal(preview.value.scope, 'full')
+  assert.equal(preview.value.connection.some((row) => row.field === 'baseURL' && row.restoreTo === before.baseURL), true)
+  const undone = await routes['models2-undo-commit'].handle({ route: 'cpa', dropAdded: false, restoreRemoved: false })
+  assert.equal(undone.ok, true)
+  assert.equal(profiles.cpa.baseURL, before.baseURL, 'connection field rolled back')
+  assert.equal(profiles.cpa.models.some((row) => row.id === 'later'), true, 'post-apply model addition kept unless the user asks to drop it')
+  assert.deepEqual(profiles.cpa.vendorExtra, before.vendorExtra, 'unknown key untouched by the undo write')
+  const second = await routes['models2-undo-commit'].handle({ route: 'cpa' })
+  assert.equal(second.ok, false, 'the slot is consumed by a successful undo')
+})
+
+test('workbench model removal: deleting the last model gives an actionable error, not a bare no-models', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-last-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = { solo: { api: 'openai-completions', baseURL: 'https://solo.example.com', models: [{ id: 'only' }] } }
+  const { routes } = await createRoutes({ dshHome, profiles, mutate: async () => { throw new Error('must not write') } })
+  const preview = await routes['models2-remove-preview'].handle({ route: 'solo', removeIds: ['only'] })
+  assert.equal(preview.ok, false)
+  assert.equal(preview.error, 'last-model-undeletable', 'the empty-list semantics are named explicitly (0.1.6-alpha.2: empty models falls back to the catalog)')
+  const plan = await routes['models2-remove-plan'].handle({ route: 'solo', removeIds: ['only'] })
+  assert.equal(plan.error, 'last-model-undeletable')
+})
+
+test('workbench snapshot: config save, runtime load and real-call test are reported separately', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-snap-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = fidelityProfiles()
+  const { routes, ctx } = await createRoutes({ dshHome, profiles })
+  const plain = await routes['models2-snapshot'].handle({})
+  assert.equal(plain.ok, true)
+  assert.equal(plain.value.routes[0].runtimeLoaded, false, 'no llm service in this fixture → not loaded, reported as a distinct fact')
+  assert.equal(typeof plain.value.routes[0].runtimeError, 'string')
+  assert.equal(plain.value.routes[0].lastValidation, undefined, 'a saved config never implies a successful call test')
+  ctx.get = ((original) => (name) => (name === 'llm' ? { listProviders: async () => [{ id: 'cpa', name: 'CPA' }] } : original(name)))(ctx.get)
+  const loaded = await routes['models2-snapshot'].handle({})
+  assert.equal(loaded.value.routes[0].runtimeLoaded, true)
+  assert.equal(loaded.value.routes[0].undoScope, 'none')
+})
+
+test('workbench add flow: manual-only ids are accepted (discovery failure never blocks manual entry)', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-manualonly-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [{ id: 'm1' }] } }
+  let written = null
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, list) => { written = list[0].value; profiles.cpa.models = written },
+  })
+  // 纯手填（additions 为空）必须能准备计划——发现失败/协议不支持时这是唯一出路。
+  const prep = await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [], manualIds: ['brand-new', 'brand-new-2'] })
+  assert.equal(prep.ok, true, 'a manual-only add is a legitimate submission')
+  assert.deepEqual(prep.value.diff.added, ['brand-new', 'brand-new-2'])
+  const commit = await routes['models2-model-commit'].handle({ planId: prep.value.planId })
+  assert.equal(commit.ok, true)
+  assert.deepEqual(written.map((row) => row.id), ['m1', 'brand-new', 'brand-new-2'])
+  // 目录里没有的 ID 只写 id，绝不猜能力字段。
+  assert.equal(written[1].input, undefined)
+  assert.equal(written[1].reasoningEfforts, undefined)
+  // 什么都没有时仍然拒绝。
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [], manualIds: [] })).error, 'no-models')
+  // id 契约刻意放宽（`dsh-llm-pi-ai` 只要求非空字符串，见 model-workbench.js 头部说明），
+  // 所以带空格的 id 是合法的；真正被拒的是控制字符、空串与超长。
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [], manualIds: ['has space is fine'] })).ok, true, 'the id contract stays as loose as the host schema')
+  const control = await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [], manualIds: ['bad\u0007id'] })
+  assert.equal(control.ok, false)
+  assert.equal(control.error.startsWith('bad-model-id'), true, 'control characters are refused')
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [], manualIds: ['m1'] })).error, 'duplicate-model')
+})
+
+test('workbench add flow: a builtin route inheriting the catalog refuses the append that would replace it', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-builtin-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 0.1.6-alpha.2 的 `resolveRouteModels`：非空 models[] 替换继承清单，空数组回落目录。
+  // 所以「未声明 models 的内置渠道 + 追加一个」会把整份内置清单挤掉 → 必须拒绝。
+  const profiles = { 'opencode-go': { displayName: 'OpenCode Go' } }
+  let touched = false
+  const host = createWorkbenchHost({ profiles, mutate: async () => { touched = true } })
+  const routes = createModelWorkbenchRoutes({
+    ctx: host.ctx,
+    randomUUID,
+    loadPiCatalog: async () => ({ channels: [], channelIds: new Set(['opencode-go']), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
+    workbenchStore: createWorkbenchStore(dshHome),
+    loadSubagentRoute: async () => ({ version: 1, mode: 'inherit' }),
+    loadAgentDefaultModelSelection: () => undefined,
+    writeSubagentRoute: async () => ({}),
+    listSubagentModels: async () => ({ models: [] }),
+    dshHome,
+    pluginVersion: 'test',
+  })
+  const refused = await routes['models2-model-prepare'].handle({ route: 'opencode-go', additions: [], manualIds: ['brand-new'] })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error, 'builtin-inherited-list', 'the inherited catalog is protected instead of silently replaced')
+  assert.equal(touched, false, 'nothing is written when the guard refuses')
+
+  // 一旦该内置渠道显式声明了 models（用户已接管），追加就落在那份显式清单上。
+  profiles['opencode-go'] = { displayName: 'OpenCode Go', models: [{ id: 'existing' }] }
+  let written = null
+  const host2 = createWorkbenchHost({ profiles, mutate: async (_ns, ops) => { written = ops[0].value; profiles['opencode-go'].models = written } })
+  const routes2 = createModelWorkbenchRoutes({
+    ctx: host2.ctx,
+    randomUUID,
+    loadPiCatalog: async () => ({ channels: [], channelIds: new Set(['opencode-go']), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
+    workbenchStore: createWorkbenchStore(dshHome),
+    loadSubagentRoute: async () => ({ version: 1, mode: 'inherit' }),
+    loadAgentDefaultModelSelection: () => undefined,
+    writeSubagentRoute: async () => ({}),
+    listSubagentModels: async () => ({ models: [] }),
+    dshHome,
+    pluginVersion: 'test',
+  })
+  const allowed = await routes2['models2-model-prepare'].handle({ route: 'opencode-go', additions: [], manualIds: ['brand-new'] })
+  assert.equal(allowed.ok, true)
+  await routes2['models2-model-commit'].handle({ planId: allowed.value.planId })
+  assert.deepEqual(written.map((row) => row.id), ['existing', 'brand-new'])
 })

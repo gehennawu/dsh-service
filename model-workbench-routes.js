@@ -33,6 +33,11 @@ import {
   arbitrateModelSuggestions,
   buildRouteCreateProfile,
   consensusFields,
+  connectionPatch,
+  connectionSnapshotOf,
+  connectionUndoOps,
+  undoScopeOf,
+  routeRestoreValue,
   createFreshnessManager,
   deriveKeyRefFor,
   diffModelLists,
@@ -45,6 +50,7 @@ import {
   openRouterVerifySource,
   pickOpenRouterMatch,
   piRecordsForRoute,
+  probeBaseURLCheck,
   simpleModelObserved,
   simpleModelOption,
   modelMetaCandidates,
@@ -111,6 +117,23 @@ export function createModelWorkbenchRoutes({
     () => modelParamsState,
     () => refreshModelParamsSnapshot(dshHome, modelParamsState, { userAgent: `dsh-service/${pluginVersion} (DeepSeek Harness plugin)` }),
   )
+
+  /**
+   * 客户端回传指纹的复检基线。
+   *
+   * 坑（v1.11 实测）：客户端能拿到的 profile 是 `models2-route` 的**归一投影**
+   * （`readLlmProfiles` 补默认、裁类型），而 `profileFingerprint` 是对原始对象做的
+   * 规范化哈希——直接拿客户端算的指纹比对必然 mismatch（地址编辑永远 conflict）。
+   * 所以对外只下发**本函数算出的**指纹（`models2-route` / 各预览端点），客户端原样回传；
+   * 客户端绝不自算指纹，服务端也不接受自造值。
+   */
+  const routeFingerprint = (profile) => profileFingerprint({
+    displayName: profile.displayName,
+    api: profile.api,
+    baseURL: profile.baseURL,
+    apiKeyEnv: profile.apiKeyEnv,
+    models: profile.models,
+  })
 
   /**
    * 目录候选（含 P3.5 补充源），按优先级排序：同渠道 pi-ai → 跨渠道 pi-ai → modelparams
@@ -287,6 +310,23 @@ export function createModelWorkbenchRoutes({
           if (sidecar.recovery?.[profile.route] !== undefined) attention.push('recovery-pending')
           if (!structureOk) attention.push('invalid-profile')
           const undoSnapshot = sidecar.providers?.[profile.route]
+          const undoScope = undoSnapshot === undefined ? 'none' : undoScopeOf(undoSnapshot)
+          const rawRemove = sidecar.removed?.[profile.route]
+          // 三种状态分开呈现（配置保存 / 运行时加载 / 真实调用测试），不用一个「已验证」笼统代替。
+          let runtimeLoaded = false
+          let runtimeError
+          const llmService = ctx.get('llm')
+          if (llmService !== undefined && typeof llmService.listProviders === 'function') {
+            try {
+              const providers = await llmService.listProviders()
+              runtimeLoaded = Array.isArray(providers) && providers.some((entry) => (entry !== null && typeof entry === 'object' ? entry.id === profile.route || entry.provider === profile.route : String(entry) === profile.route))
+              if (!runtimeLoaded) runtimeError = 'provider-missing'
+            } catch (_) {
+              runtimeError = 'list-providers-failed'
+            }
+          } else {
+            runtimeError = 'llm-service-missing'
+          }
           // 内置渠道的能力计数按「显式值或目录已提供」的有效口径算（避免带思考等级却显示 0）。
           const catalogRecordFor = (modelId) => {
             for (const record of piIndex.byModelId.get(modelId) ?? []) {
@@ -311,7 +351,11 @@ export function createModelWorkbenchRoutes({
             metaCounts,
             credentialState,
             lastValidation,
+            runtimeLoaded,
+            ...(runtimeError !== undefined ? { runtimeError } : {}),
             undoable: undoSnapshot !== undefined,
+            undoScope,
+            restorableDeletion: rawRemove !== undefined && rawRemove !== null && typeof rawRemove === 'object',
             ...(undoSnapshot !== undefined ? { undoAt: undoSnapshot.at } : {}),
             attention,
             needsAttention: attention.length > 0,
@@ -325,7 +369,20 @@ export function createModelWorkbenchRoutes({
           if (atA !== atB) return atB - atA
           return a.displayName.localeCompare(b.displayName)
         })
-        return { ok: true, value: { routes } }
+        const removedRoutes = Object.entries(sidecar.removed ?? {})
+          .filter(([, entry]) => entry !== null && typeof entry === 'object')
+          .map(([route, entry]) => ({
+            route,
+            displayName: typeof entry.displayName === 'string' ? entry.displayName : route,
+            modelCount: Number.isInteger(entry.modelCount) ? entry.modelCount : 0,
+            at: entry.at,
+            ...(typeof entry.credentialRef === 'string' ? { credentialRef: entry.credentialRef } : {}),
+            // 同名路由被重新创建后不能再恢复（拒绝覆盖），前端据此禁用按钮并给原因。
+            taken: routes.some((row) => row.route === route),
+          }))
+          .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+          .slice(0, 32)
+        return { ok: true, value: { routes, removedRoutes } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -347,6 +404,9 @@ export function createModelWorkbenchRoutes({
             api: profile.api,
             apiKeyEnv: profile.apiKeyEnv,
             models: profile.models,
+            apiProtocols: [...MODELS_PROTOCOLS],
+            // 服务端签发的写前基线：客户端原样回传，绝不自算。
+            fingerprint: routeFingerprint(profile),
           },
         }
       } catch (error) {
@@ -470,7 +530,318 @@ export function createModelWorkbenchRoutes({
       }
     } },
 
-    // ── 撤销预览：快照 vs 当前，逐字段列出可恢复项 ─────────────────────────────
+    // ── 单模型行写入（独立编辑面板）：只改这一个模型的字段，其余行原字节保留 ─────────
+    // 与 models2-edit-prepare 的区别：那条要求客户端回传**整张**模型表（长列表底部统一保存的
+    // 旧形状）；本端点只收一行补丁，宿主在读到的 profile 上原位替换该行。零输入拼接：`id`
+    // 必须已存在于服务端读到的清单；未列出的字段不参与写入，未知高级键原样保留。
+    'models2-model-patch': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const modelId = typeof payload?.modelId === 'string' ? payload.modelId.trim() : ''
+        if (modelId === '' || modelId.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(modelId)) return fail('bad-model-id')
+        const settingsService = ctx.get('settings')
+        const profile = profileFor(route, settingsService)
+        if (profile === undefined) return fail('route-gone')
+        if (workbenchStore !== undefined && (await workbenchStore.load()).recovery?.[route] !== undefined) return fail('recovery-pending')
+        const index = profile.models.findIndex((model) => model?.id === modelId)
+        if (index === -1) return fail('unknown-model', modelId.slice(0, 64))
+        const patch = payload?.patch
+        if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return fail('bad-models')
+        // 只接受能力/元数据字段；id 不可改写（改 id 是增删，不是编辑）。
+        const nextRow = { ...profile.models[index] }
+        for (const field of ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts']) {
+          if (!(field in patch)) continue
+          if (patch[field] === undefined) delete nextRow[field]
+          else nextRow[field] = patch[field]
+        }
+        if (payload?.clearUnknownField !== undefined) return fail('bad-models')
+        const nextModels = profile.models.map((model, i) => (i === index ? nextRow : model))
+        const checked = selfCheckModelsPatch(nextModels)
+        if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
+        const diff = diffModelLists(profile.models, nextModels)
+        if (diff.changes.length === 0) return { ok: true, value: { noop: true } }
+        try {
+          await mutateModels(settingsService, route, nextModels, settingsRevisionOf(settingsService))
+        } catch (error) {
+          if (isSettingsConflict(error)) return fail('conflict')
+          throw error
+        }
+        // 写前快照（模型数组）：单模型编辑同样可撤销。
+        let undoable = true
+        if (workbenchStore !== undefined) {
+          try {
+            await workbenchStore.mutate((sidecar) => {
+              if (sidecar.providers === undefined) sidecar.providers = {}
+              sidecar.providers[route] = { models: profile.models, at: Date.now() }
+            })
+          } catch (_) { undoable = false }
+        } else { undoable = false }
+        return { ok: true, value: { route, modelId, diff, undoable } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 连接信息编辑（地址/协议/显示名）与换密钥：字段级写，未知键与模型数组不动 ──────
+    'models2-connection-preview': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const piIndex = await ensurePiCatalog()
+        const patch = connectionPatch(profile, payload?.next ?? {})
+        if (patch.badBaseURL === true) return { ok: true, value: { route, patch, clearBaseURL: true, fingerprint: routeFingerprint(profile) } }
+        if (patch.badApi === true) return fail('bad-api')
+        if (patch.badDisplayName === true) return fail('bad-display-name')
+        const effectiveBaseURL = typeof patch.baseURL === 'string' ? patch.baseURL : resolveLlmProfileBaseURL(profile, piIndex)
+        const probe = probeBaseURLCheck(effectiveBaseURL)
+        // 换密钥：只看宿主侧真实契约（describe），不回显旧值、不落草稿。
+        const credentials = ctx.get('credentials')
+        const keyRef = MODELS_KEY_REF_RE.test(payload?.keyRef ?? '') ? payload.keyRef : (MODELS_KEY_REF_RE.test(profile.apiKeyEnv) ? profile.apiKeyEnv : deriveKeyRefFor(route))
+        let credential = { ref: keyRef, configured: false, writable: true, shadowed: false }
+        if (credentials !== undefined && typeof credentials.describe === 'function') {
+          try {
+            const info = await credentials.describe(keyRef)
+            credential = {
+              ref: keyRef,
+              configured: info?.configured === true,
+              writable: info?.writable !== false,
+              shadowed: info?.source === 'env',
+              ...(typeof info?.source === 'string' ? { source: info.source } : {}),
+            }
+          } catch (_) {
+            credential = { ref: keyRef, configured: false, writable: true, shadowed: false, state: 'describe-failed' }
+          }
+        } else {
+          credential = { ref: keyRef, configured: false, writable: true, shadowed: false, state: 'service-missing' }
+        }
+        return {
+          ok: true,
+          value: {
+            route,
+            patch,
+            fingerprint: routeFingerprint(profile),
+            effectiveBaseURL,
+            // 允许保存但禁在线发现：非公网/HTTP/非 443 地址照常写入 settings，只是不给探测。
+            probeAllowed: probe.ok === true,
+            ...(probe.ok === true ? {} : { probeBlocked: probe.code }),
+            credential,
+            references: await inspectRemoveReferences(route),
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    'models2-connection-commit': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const settingsService = ctx.get('settings')
+        const profile = profileFor(route, settingsService)
+        if (profile === undefined) return fail('route-gone')
+        if (workbenchStore !== undefined && (await workbenchStore.load()).recovery?.[route] !== undefined) return fail('recovery-pending')
+        const fingerprint = typeof payload?.baseFingerprint === 'string' ? payload.baseFingerprint : ''
+        if (fingerprint === '' || routeFingerprint(profile) !== fingerprint) return fail('conflict')
+        const patch = connectionPatch(profile, payload?.next ?? {})
+        if (patch.badApi === true) return fail('bad-api')
+        if (patch.badDisplayName === true) return fail('bad-display-name')
+        const ops = []
+        for (const field of ['displayName', 'api']) {
+          if (patch[field] !== undefined) ops.push({ op: 'set', path: ['providers', route, field], value: patch[field] })
+        }
+        // 地址：空值 = 清除键（回落目录 baseUrl），与「写空串」语义不同，故走 unset。
+        if (patch.badBaseURL === true) ops.push({ op: 'unset', path: ['providers', route, 'baseURL'] })
+        else if (patch.baseURL !== undefined) ops.push({ op: 'set', path: ['providers', route, 'baseURL'], value: patch.baseURL })
+        const key = typeof payload?.key === 'string' ? payload.key : ''
+        if (key.length > MAX_MODELS_KEY_LENGTH) return fail('bad-key')
+        const credentials = ctx.get('credentials')
+        const keyRef = MODELS_KEY_REF_RE.test(profile.apiKeyEnv) ? profile.apiKeyEnv : deriveKeyRefFor(route)
+        const snapshot = connectionSnapshotOf(profile)
+        let credentialReplaced = false
+        if (key !== '') {
+          if (credentials === undefined || typeof credentials.set !== 'function' || !MODELS_KEY_REF_RE.test(keyRef)) return fail('credential-rejected')
+          // 换密钥先行：写失败时 settings 一字未动，天然无半提交（与新建同一条纪律）。
+          try {
+            await credentials.set(keyRef, key)
+          } catch (error) {
+            // 环境变量遮蔽等真实拒绝：照实上报，不假装成功。
+            return fail('credential-rejected', error?.message || String(error))
+          }
+          credentialReplaced = true
+          // 首次落引用：只有目标路由自己的 apiKeyEnv 会被写，其他路由不触碰。
+          if (profile.apiKeyEnv !== keyRef) ops.push({ op: 'set', path: ['providers', route, 'apiKeyEnv'], value: keyRef })
+        }
+        if (ops.length > 0) {
+          try {
+            await settingsService.mutate('llm-pi-ai', ops, settingsRevisionOf(settingsService))
+          } catch (error) {
+            if (isSettingsConflict(error)) return fail('conflict')
+            return fail('connection-failed', error?.message || String(error))
+          }
+        }
+        // 写前快照：连接 + 模型一起进撤销槽（撤销可回滚连接字段与模型数组）。
+        let undoable = true
+        if (workbenchStore !== undefined) {
+          try {
+            await workbenchStore.mutate((sidecar) => {
+              if (sidecar.providers === undefined) sidecar.providers = {}
+              sidecar.providers[route] = { kind: 'full', ...snapshot, models: profile.models, at: Date.now() }
+            })
+          } catch (_) { undoable = false }
+        } else { undoable = false }
+        return { ok: true, value: { route, changed: ops.length, credentialReplaced, undoable, keyRef: credentialReplaced ? keyRef : undefined } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 渠道删除预览：引用清单 + 凭据保留说明（两段式确认的第一段）────────────────
+    'models2-route-remove-preview': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const references = await inspectRemoveReferences(route)
+        const credentials = ctx.get('credentials')
+        let credential
+        if (profile.apiKeyEnv === '' || !MODELS_KEY_REF_RE.test(profile.apiKeyEnv)) credential = { state: 'none' }
+        // 删除一律不 unset 凭据：服务缺席时同样承诺保留（只报引用名，不读值）。
+        else if (credentials === undefined || typeof credentials.describe !== 'function') credential = { ref: profile.apiKeyEnv, state: 'service-missing', retained: true }
+        else {
+          try {
+            const info = await credentials.describe(profile.apiKeyEnv)
+            credential = { ref: profile.apiKeyEnv, state: info?.configured === true ? 'kept' : 'unconfigured', retained: true }
+          } catch (_) {
+            credential = { ref: profile.apiKeyEnv, state: 'kept', retained: true }
+          }
+        }
+        return {
+          ok: true,
+          value: {
+            route,
+            displayName: profile.displayName,
+            modelCount: profile.models.length,
+            fingerprint: routeFingerprint(profile),
+            references,
+            // 删除渠道保留凭据（避免影响共享使用者）：只列出引用名，绝不回显、不删除。
+            credential,
+            blocked: references.some((ref) => ref.kind === 'agent-default-model'),
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 渠道删除：整份 profile 进撤销槽（删除入口不随行消失），凭据一律保留 ──────────
+    'models2-route-remove-commit': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const settingsService = ctx.get('settings')
+        const profile = profileFor(route, settingsService)
+        if (profile === undefined) return fail('route-gone')
+        const fingerprint = typeof payload?.baseFingerprint === 'string' ? payload.baseFingerprint : ''
+        if (fingerprint === '' || routeFingerprint(profile) !== fingerprint) return fail('conflict')
+        const references = await inspectRemoveReferences(route)
+        if (references.some((ref) => ref.kind === 'agent-default-model')) return fail('removal-blocked')
+        // 读取宿主原始 profile（保真，含未知高级键）——恢复时按原样写回。
+        const rawProviders = ctx.get('settings')?.get?.('llm-pi-ai')?.providers ?? {}
+        const rawProfile = rawProviders[route]
+        if (rawProfile === undefined || typeof rawProfile !== 'object') return fail('route-gone')
+        if (workbenchStore !== undefined) {
+          // 删除前先落快照：快照写失败即拒绝删除（没有可回滚状态就不做破坏性动作）。
+          await workbenchStore.mutate((sidecar) => {
+            if (sidecar.removed === undefined) sidecar.removed = {}
+            sidecar.removed[route] = {
+              kind: 'removed',
+              profile: rawProfile,
+              displayName: profile.displayName,
+              modelCount: profile.models.length,
+              credentialRef: MODELS_KEY_REF_RE.test(profile.apiKeyEnv) ? profile.apiKeyEnv : undefined,
+              at: Date.now(),
+            }
+            if (sidecar.providers !== undefined) delete sidecar.providers[route]
+          })
+        }
+        try {
+          await settingsService.mutate('llm-pi-ai', [{ op: 'unset', path: ['providers', route] }], settingsRevisionOf(settingsService))
+        } catch (error) {
+          // 写失败 → 清掉刚落的删除快照，避免留下指向不存在删除的幽灵撤销项。
+          if (workbenchStore !== undefined) {
+            try { await workbenchStore.mutate((sidecar) => { if (sidecar.removed !== undefined) delete sidecar.removed[route] }) } catch (_) {}
+          }
+          if (isSettingsConflict(error)) return fail('conflict')
+          return fail('remove-failed', error?.message || String(error))
+        }
+        // 异步写者（llm-pi-ai 适配器）可能把并发写入带回已删路由 → 二次清扫由用户重试覆盖。
+        return { ok: true, value: { route, removed: true, credentialRetained: MODELS_KEY_REF_RE.test(profile.apiKeyEnv) } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 删除恢复清单：即使路由行已消失，恢复入口仍从侧车读得到 ────────────────────
+    'models2-route-removed-list': { feature: 'modelCatalog', handle: async () => {
+      try {
+        if (workbenchStore === undefined) return { ok: true, value: { removed: [] } }
+        const sidecar = await workbenchStore.load()
+        const current = new Set(readLlmProfiles(ctx.get('settings')).map((profile) => profile.route))
+        const removed = Object.entries(sidecar.removed ?? {})
+          .filter(([, entry]) => entry !== null && typeof entry === 'object')
+          .map(([route, entry]) => ({
+            route,
+            displayName: typeof entry.displayName === 'string' ? entry.displayName : route,
+            modelCount: Number.isInteger(entry.modelCount) ? entry.modelCount : 0,
+            at: entry.at,
+            ...(typeof entry.credentialRef === 'string' ? { credentialRef: entry.credentialRef } : {}),
+            taken: current.has(route),
+          }))
+          .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+          .slice(0, 32)
+        return { ok: true, value: { removed } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 删除恢复：整份 profile 写回；同名路由已被重新创建时拒绝覆盖 ──────────────────
+    'models2-route-restore': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        if (workbenchStore === undefined) return fail('nothing-to-restore')
+        const settingsService = ctx.get('settings')
+        const sidecar = await workbenchStore.load()
+        const entry = sidecar.removed?.[route]
+        const restoreValue = routeRestoreValue(entry)
+        if (entry === undefined || restoreValue === undefined) {
+          return fail('nothing-to-restore')
+        }
+        if (profileFor(route, settingsService) !== undefined) return fail('route-taken')
+        try {
+          await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', route], value: restoreValue }], settingsRevisionOf(settingsService))
+        } catch (error) {
+          if (isSettingsConflict(error)) return fail('conflict')
+          // 校验失败（schema 拒收）→ 保留快照，回报真实原因，绝不「清标记后声称已恢复」。
+          return fail('restore-failed', error?.message || String(error))
+        }
+        await workbenchStore.mutate((current) => { if (current.removed !== undefined) delete current.removed[route] })
+        return {
+          ok: true,
+          value: {
+            route,
+            restored: true,
+            // 凭据引用随 profile 恢复；旧密钥值不在快照内，需重新输入才能调用。
+            credentialRef: typeof entry.credentialRef === 'string' ? entry.credentialRef : undefined,
+            credentialValueRestored: false,
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 撤销预览：快照 vs 当前，逐字段列出可恢复项（含连接字段）─────────────────
     'models2-undo-preview': { feature: 'modelCatalog', handle: async (payload) => {
       try {
         const route = typeof payload?.route === 'string' ? payload.route : ''
@@ -479,7 +850,33 @@ export function createModelWorkbenchRoutes({
         if (snapshot === undefined) return fail('nothing-to-undo')
         const profile = profileFor(route, ctx.get('settings'))
         if (profile === undefined) return fail('route-gone')
-        return { ok: true, value: { route, at: snapshot.at, ...undoPreviewModels(snapshot.models, profile.models) } }
+        const scope = undoScopeOf(snapshot)
+        // 连接字段差异：复用 connectionUndoOps 的判定（它决定真正会写哪些键），
+        // 预览展示的是同一份依据——不另立一套「会恢复什么」的口径。
+        const connection = scope === 'full'
+          ? connectionUndoOps(snapshot, profile).map((op) => ({
+            field: op.path[0],
+            current: profile[op.path[0]],
+            ...(op.op === 'unset' ? { remove: true } : { restoreTo: op.value }),
+          }))
+          : []
+        return {
+          ok: true,
+          value: {
+            route,
+            at: snapshot.at,
+            scope,
+            connection,
+            // 旧快照（无 models 数组的「连接编辑」槽）不该展示成模型撤销。
+            ...(scope === 'models' || scope === 'full'
+              ? undoPreviewModels(snapshot.models ?? profile.models, profile.models)
+              : { restorable: [], addedSince: [], removedSince: [] }),
+            // 密钥值不在快照内：撤销恢复的是引用名，不是旧密钥。
+            ...(scope === 'full' && connection.some((row) => row.field === 'apiKeyEnv')
+              ? { credentialNote: 'reference-only' }
+              : {}),
+          },
+        }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -496,23 +893,36 @@ export function createModelWorkbenchRoutes({
         const settingsService = ctx.get('settings')
         const profile = profileFor(route, settingsService)
         if (profile === undefined) return fail('route-gone')
-        const nextModels = applyUndo(snapshot.models, profile.models, {
+        const scope = undoScopeOf(snapshot)
+        if (scope === 'none') return fail('nothing-to-undo')
+        // 撤销没有前置计划句柄可携带 revision：这里刚读过 profile，直接取当前 revision
+        // （撤销写入同样是 read-modify-write，仍需关掉并发窗口）。
+        const undoRevision = settingsRevisionOf(settingsService)
+        const ops = []
+        if (scope === 'full') {
+          // 连接字段与模型数组同处一次写入：撤销可回滚连接配置与模型编辑，未知键不动。
+          for (const op of connectionUndoOps(snapshot, profile)) {
+            ops.push({ op: op.op, path: ['providers', route, ...op.path], ...(op.op === 'set' ? { value: op.value } : {}) })
+          }
+        }
+        const nextModels = applyUndo(snapshot.models ?? profile.models, profile.models, {
           dropAdded: payload?.dropAdded === true,
           restoreRemoved: payload?.restoreRemoved === true,
         })
         const checked = selfCheckModelsPatch(nextModels)
         if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
-        // 撤销没有前置计划句柄可携带 revision：这里刚读过 profile，直接取当前 revision
-        // （撤销写入同样是 read-modify-write，仍需关掉并发窗口）。
-        const undoRevision = settingsRevisionOf(settingsService)
+        if (ops.length > 0 || scope === 'full') {
+          ops.push({ op: 'set', path: ['providers', route, 'models'], value: nextModels })
+        }
         try {
-          await mutateModels(settingsService, route, nextModels, undoRevision)
+          if (ops.length === 0) await mutateModels(settingsService, route, nextModels, undoRevision)
+          else await settingsService.mutate('llm-pi-ai', ops, undoRevision)
         } catch (error) {
           if (isSettingsConflict(error)) return fail('conflict')
           throw error
         }
         await workbenchStore.mutate((sidecar) => { if (sidecar.providers !== undefined) delete sidecar.providers[route] })
-        return { ok: true, value: { route, restored: true } }
+        return { ok: true, value: { route, restored: true, scope } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
       }
@@ -1011,7 +1421,21 @@ export function createModelWorkbenchRoutes({
         const profile = profileFor(route, ctx.get('settings'))
         if (profile === undefined) return fail('route-gone')
         const additions = Array.isArray(payload?.additions) ? payload.additions : []
-        if (additions.length === 0 || additions.length > 200) return fail('no-models')
+        // 手填 ID 也必须算作「有东西要加」：只看 additions 会让「纯手填」提交被 no-models 挡死，
+        // 而手填是发现失败/协议不支持时的唯一出路（规格 §3「始终保留手动输入 ID 的路径」）。
+        const manualIds = Array.isArray(payload?.manualIds) ? payload.manualIds.filter((id) => typeof id === 'string') : []
+        if (additions.length + manualIds.length === 0) return fail('no-models')
+        if (additions.length > 200 || manualIds.length > 200) return fail('no-models')
+        // ── 内置渠道的继承清单保护（规格 §4）──────────────────────────────────────
+        // `dsh-llm-pi-ai/lib/index.js:652` 是 `configured.length > 0 ? configured : defaults`：
+        // 非空 models[] **替换**继承清单。所以对「未显式声明 models、正在继承目录」的内置渠道追加
+        // 一个模型，写下去的 `models: [新模型]` 会把整份内置清单挤掉——这正是 §4 禁止的默认路径，
+        // 也是 §8「不把未配置映射为空清单再写回」要挡的操作。这里明确拒绝并给出可执行的两条路，
+        // 而不是裸报错或偷偷复制整份目录（§4 同时否掉了「复制全部内置模型后追加」）。
+        const piIndexForGuard = await ensurePiCatalog()
+        if (piIndexForGuard.channelIds.has(route) && profile.models.length === 0) {
+          return fail('builtin-inherited-list')
+        }
         const nextModels = profile.models.map((model) => (model !== null && typeof model === 'object' ? { ...model } : model))
         const sources = []
         const seen = new Set(profile.models.map((model) => model?.id).filter((id) => typeof id === 'string'))
@@ -1046,6 +1470,24 @@ export function createModelWorkbenchRoutes({
             : (typeof candidate?.name === 'string' && candidate.name !== '' ? candidate.name : '')
           nextModels.push({ id: modelId, ...(explicitName !== '' ? { name: explicitName } : {}), ...explicit })
           sources.push({ modelId, source, ...(candidate.providerId ? { providerId: candidate.providerId } : {}) })
+        }
+        // 手填 ID：只接受 ID 文本，wire-id 契约校验 + 去重；字段值一律由宿主从目录补，
+        // 客户端既不能自造字段值，也不能凭空塞入未知键。
+        for (const rawId of manualIds) {
+          const modelId = rawId.trim().slice(0, MAX_MODEL_ID_LENGTH)
+          if (modelId === '' || !MODEL_ID_RE.test(modelId)) return fail('bad-model-id')
+          if (seen.has(modelId)) return fail('duplicate-model')
+          seen.add(modelId)
+          const meta = modelMetaCandidates(await ensurePiCatalog(), modelId)
+            .find((candidate) => candidate.source === 'pi-ai' && candidate.providerId === route)
+            ?? modelMetaCandidates(await ensurePiCatalog(), modelId)[0]
+          if (meta === undefined) {
+            // 目录无此模型：只写 ID（后续可在单模型面板补参数），不猜任何能力字段。
+            nextModels.push({ id: modelId })
+          } else {
+            nextModels.push({ id: modelId, ...(typeof meta.name === 'string' && meta.name !== '' ? { name: meta.name } : {}), ...abilityPatch({ image: 'observed', reasoning: 'observed', observed: { input: meta.input, reasoningEfforts: meta.reasoningEfforts } }) })
+          }
+          sources.push({ modelId, source: 'manual' })
         }
         const checked = selfCheckModelsPatch(nextModels)
         if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
@@ -1126,7 +1568,9 @@ export function createModelWorkbenchRoutes({
         }
         if (removeIds.length === 0) return fail('no-models')
         const remaining = profile.models.filter((model) => !removeIds.includes(model?.id))
-        if (remaining.length === 0) return fail('no-models')
+        // 最后一个模型的语义（0.1.6-alpha.2 核实：`resolveRouteModels` 的空数组回落内置目录，
+        // 删字段与空数组都不等于禁用渠道）。这里不裸报 no-models，而是给出宿主侧可执行的两条路。
+        if (remaining.length === 0) return fail('last-model-undeletable')
         const references = await inspectRemoveReferences(route)
         const hardBlocked = references.some((ref) => ref.kind === 'agent-default-model')
         // 子代理引用只在「被移除的模型正是引用模型」时才需要迁移。
@@ -1163,7 +1607,7 @@ export function createModelWorkbenchRoutes({
           if (!currentIds.has(id)) return fail('unknown-model', id.slice(0, 64))
         }
         if (removeIds.length === 0) return fail('no-models')
-        if (profile.models.filter((model) => !removeIds.includes(model?.id)).length === 0) return fail('no-models')
+        if (profile.models.filter((model) => !removeIds.includes(model?.id)).length === 0) return fail('last-model-undeletable')
         const references = await inspectRemoveReferences(route)
         if (references.some((ref) => ref.kind === 'agent-default-model')) return fail('removal-blocked')
         const hasSubagentRef = references.some((ref) => ref.kind === 'subagent-route' && removeIds.includes(ref.model))

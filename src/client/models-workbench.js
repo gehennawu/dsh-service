@@ -59,6 +59,12 @@ function createModelsWorkbench({ useTranslation, rpcCall, SvcTabs, useFeatures }
           'builtin-only': 'models.error.builtin-only',
           'online-custom-only': 'models.error.online-custom-only',
           'probe-protocol-unsupported': 'models.error.probe-protocol-unsupported',
+          'last-model-undeletable': 'models.error.last-model-undeletable',
+          'builtin-inherited-list': 'models.error.builtin-inherited-list',
+          'nothing-to-restore': 'models.error.nothing-to-restore',
+          'restore-failed': 'models.error.restore-failed',
+          'connection-failed': 'models.error.connection-failed',
+          'removal-blocked': 'models.error.removal-blocked',
         }
         if (code?.startsWith('schema-invalid:')) return translate('models.error.unknown').replace('{detail}', code)
         if (code?.startsWith('unknown-suggestion:')) return translate('models.error.unknown-suggestion')
@@ -773,450 +779,107 @@ function createModelsWorkbench({ useTranslation, rpcCall, SvcTabs, useFeatures }
       }
 
       /** 简化模型配置：首页仅负责供应商列表；进入详情后再选择来源与能力。 */
-      function ProvidersWorkbench({ snapshot, reload }) {
-        let legacy = false
-        try { legacy = localStorage.getItem('dsh-service-models-workbench') === 'legacy' } catch (_) {}
-        return React.createElement(legacy ? LegacyProvidersWorkbench : SimpleProvidersWorkbench, { snapshot, reload })
-      }
+      // ── 统一界面（v1.11）：渠道优先，一套界面，无 localStorage 模式分流 ─────────
+      //
+      // 结构（对应规格 §3）：
+      //   渠道列表 / 添加自定义渠道
+      //   └─ 渠道详情：连接信息（编辑 / 换密钥）· 可搜索紧凑模型列表（勾选批量添加 / 手动 ID）
+      //      · 单模型独立编辑面板 · 最近变更 / 预览并撤销 · 删除渠道
+      //    删除后的恢复入口常驻列表底部（撤销入口不随渠道行消失）。
+      //
+      // 状态纪律：草稿只留在当前详情页；离开有未保存编辑时先确认。保存失败/冲突不清空草稿。
 
-function SimpleProvidersWorkbench({ snapshot, reload }) {
+      /** 错误码 → 文案；已存在的 mapModelsError 复用，新码在此补充。 */
+      function UnifiedProvidersWorkbench({ snapshot, reload }) {
         const translate = useTranslation()
         const el = React.createElement
-        const { useState } = React
+        const { useState, useEffect, useRef } = React
+        const freshKeyRef = useRef('')
+        if (freshKeyRef.current === '') freshKeyRef.current = Math.random().toString(36).slice(2) + Date.now().toString(36)
         const [detailRoute, setDetailRoute] = useState(null)
-        const [detail, setDetail] = useState(null)
-        const [editModels, setEditModels] = useState(null)
-        const [suggestions, setSuggestions] = useState({})
-        const [expanded, setExpanded] = useState(new Set())
-        const [source, setSource] = useState(null)
-        const [candidates, setCandidates] = useState([])
-        const [selected, setSelected] = useState(null)
-        const [detection, setDetection] = useState(null)
-        const [plan, setPlan] = useState(null)
-        const [editPlan, setEditPlan] = useState(null)
-        const [busy, setBusy] = useState(false)
-        const [armed, setArmed] = useState(false)
-        const [editArmed, setEditArmed] = useState(false)
-        const [error, setError] = useState('')
-        const [image, setImage] = useState('observed')
-        const [reasoning, setReasoning] = useState('observed')
-        const [manualContext, setManualContext] = useState('')
-        const [manualMaxTokens, setManualMaxTokens] = useState('')
-        const [manualName, setManualName] = useState('')
-        const [allowUnverified, setAllowUnverified] = useState(false)
-        const [savedNotice, setSavedNotice] = useState(false)
-        // 联网查证（v0.43）：{ modelId → {busy, sources} }；结果仅参考展示，不自动写入。
-        const [verify, setVerify] = useState({})
-        const runVerifyOnline = (modelId) => {
-          if (detailRoute === null || typeof modelId !== 'string' || modelId === '') return
-          setVerify((current) => ({ ...current, [modelId]: { busy: true, sources: [] } }))
-          rpcCall('models2-model-verify-online', { route: detailRoute, modelId }).then((res) => {
-            setVerify((current) => ({ ...current, [modelId]: {
-              busy: false,
-              ...(res.ok === true ? { sources: res.value.sources ?? [] } : { error: mapModelsError(translate, res.error) }),
-            } }))
-          }).catch(() => setVerify((current) => ({ ...current, [modelId]: { busy: false, error: translate('models.wb.verifyOnline.error').replace('{error}', 'network') } })))
-        }
+        const [rescueOpen, setRescueOpen] = useState(false)
         const routes = snapshot?.routes ?? []
-        const active = routes.find((row) => row.route === detailRoute)
-        const fmtChangeValue = (value) => (typeof value === 'object' && value !== null ? Object.keys(value).join('+') : String(value))
-        const resetFlow = (nextSource = null) => {
-          setSource(nextSource); setCandidates([]); setSelected(null); setDetection(null); setPlan(null); setArmed(false); setError('')
-          setManualContext(''); setManualMaxTokens(''); setManualName(''); setAllowUnverified(false); setVerify({})
-        }
-        const openDetail = (row) => {
-          setDetailRoute(row.route); resetFlow()
-          setDetail(null); setEditModels(null); setSuggestions({}); setExpanded(new Set()); setEditPlan(null); setEditArmed(false); setSavedNotice(false)
-          rpcCall('models2-route', { route: row.route }).then((res) => {
-            if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
-            setDetail(res.value)
-            const models = (res.value.models ?? []).map((model) => (model !== null && typeof model === 'object' ? { ...model } : model))
-            setEditModels(models)
-            const ids = models.map((model) => model.id).filter((id) => typeof id === 'string' && id !== '')
-            if (ids.length === 0) return
-            rpcCall('models2-model-suggestions', { route: row.route, modelIds: ids }).then((sres) => {
-              if (sres.ok === true) setSuggestions(sres.value.suggestions ?? {})
-            }).catch(() => {})
-          }).catch(() => { setError(mapModelsError(translate, 'internal')) })
-        }
-        const closeDetail = () => { setDetailRoute(null); setDetail(null); setEditModels(null); resetFlow(); setSavedNotice(false) }
-        const toggleModel = (index) => setExpanded((current) => {
-          const next = new Set(current)
-          if (next.has(index)) next.delete(index); else next.add(index)
-          return next
-        })
-        const patchModel = (index, patch) => {
-          setEditModels((current) => (current === null ? current : current.map((model, i) => (i === index ? { ...model, ...patch } : model))))
-          setEditPlan(null); setEditArmed(false)
-        }
-        const applySuggestion = (index, field, value) => {
-          if (value === undefined || value === null) return
-          patchModel(index, { [field]: value })
-        }
-        const applyEdits = async () => {
-          if (editModels === null) return
-          setBusy(true); setError(''); setEditPlan(null); setEditArmed(false)
-          const res = await rpcCall('models2-edit-prepare', { route: detailRoute, models: editModels })
-          setBusy(false)
-          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
-          if (res.value.noop === true) { setSavedNotice(true); return }
-          setEditPlan(res.value)
-        }
-        const finalCommit = async () => {
-          if (editPlan === null) return
-          if (!editArmed) { setEditArmed(true); return }
-          setBusy(true); setError('')
-          const res = await rpcCall('models2-commit', { planId: editPlan.planId })
-          setBusy(false)
-          if (res.ok !== true) { if (res.error === 'conflict') setEditPlan(null); if (res.error === 'schema-invalid' || String(res.error).startsWith('schema-invalid')) setEditPlan(null); setError(mapModelsError(translate, res.error)); return }
-          setSavedNotice(true); setEditPlan(null); setEditArmed(false)
-          if (reload !== undefined) reload()
-        }
-        const loadSource = async (nextSource) => {
-          resetFlow(nextSource); setBusy(true)
-          const res = await rpcCall('models2-model-options', { route: detailRoute, source: nextSource })
-          setBusy(false)
-          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
-          setCandidates(res.value.candidates ?? [])
-        }
-        const detect = async () => {
-          if (selected?.id === undefined || selected.id === '') return
-          setBusy(true); setError(''); setDetection(null); setPlan(null); setArmed(false); setAllowUnverified(false)
-          const res = await rpcCall('models2-model-detect', { route: detailRoute, modelId: selected.id })
-          setBusy(false)
-          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
-          // 检测成功：一致（agreed）的字段自动预填表单；分叉（split）留给用户逐源选择。
-          const fields = res.value?.fields ?? {}
-          if (fields.name?.status === 'agreed') setManualName(fields.name.value)
-          if (fields.contextWindow?.status === 'agreed') setManualContext(fields.contextWindow.value)
-          if (fields.maxTokens?.status === 'agreed') setManualMaxTokens(fields.maxTokens.value)
-          setDetection(res.value)
-        }
-        const prepare = async () => {
-          if (selected === null) return
-          const abilities = { image, reasoning }
-          if (Number.isInteger(manualContext) && manualContext > 0) abilities.contextWindow = manualContext
-          if (Number.isInteger(manualMaxTokens) && manualMaxTokens > 0) abilities.maxTokens = manualMaxTokens
-          if (typeof manualName === 'string' && manualName.trim() !== '') abilities.name = manualName.trim()
-          const item = source === 'builtin' ? { optionHandle: selected.optionHandle, abilities } : { detectionId: detection?.detectionId, abilities, ...(allowUnverified ? { allowUnverified: true } : {}) }
-          setBusy(true); setError(''); setPlan(null); setArmed(false)
-          const res = await rpcCall('models2-model-prepare', { route: detailRoute, additions: [item] })
-          setBusy(false)
-          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
-          setPlan(res.value)
-        }
-        const commit = async () => {
-          if (plan === null) return
-          if (!armed) { setArmed(true); return }
-          setBusy(true)
-          const res = await rpcCall('models2-model-commit', { planId: plan.planId })
-          setBusy(false)
-          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); setPlan(null); setArmed(false); return }
-          closeDetail(); if (reload !== undefined) reload()
-        }
-        if (detailRoute !== null && active !== undefined) {
-          const detailTitle = detail?.displayName ?? active.displayName
-          const detailBase = detail?.baseURL ?? active.baseURL ?? ''
-          const detailApi = detail?.api ?? active.api ?? ''
-          const modelList = editModels ?? []
-          const suggestionFor = (model) => suggestions[model?.id]?.fields ?? undefined
-          const sourceName = (entry) => (entry.source === 'pi-ai' ? 'pi-ai' : entry.source === 'modelparams' ? 'modelparams' : entry.source === 'runtime' ? translate('models.wb.detail.runtime') : entry.source ?? '')
-          const adviceButton = (model, field, label, display) => {
-            const advice = suggestionFor(model)?.[field]
-            if (advice === undefined) return null
-            // 协商（agreed）：单按钮，标注来源数量；分叉（split）：展开各来源按钮，不武断给单一值。
-            if (advice.status === 'agreed') {
-              const value = advice.value
-              const applied = (model?.[field] !== undefined && JSON.stringify(model[field]) === JSON.stringify(value))
-              return el('button', {
-                key: 'advice-' + field, type: 'button', 'data-testid': 'models-advice-' + field + '-' + model.id,
-                style: Object.assign({}, svcButtonStyle(applied ? 'primary' : 'neutral'), { padding: '3px 8px', fontSize: '12px' }),
-                title: translate('models.wb.detail.adviceSource').replace('{source}', advice.sources.map(sourceName).join(' + ')),
-                onClick: () => applySuggestion(modelList.indexOf(model), field, value),
-              }, `${translate('models.wb.detail.advice')} ${display(value)}`)
-            }
-            // split：来源取值不同 — 按取值分组聚合。众数主按钮（点击填入），
-            // 其余值折叠展示（≤2 个次要按钮），不再逐源平铺几十个按钮。
-            const groups = []
-            for (const entry of advice.sources) {
-              const key = JSON.stringify(entry.value)
-              let group = groups.find((g) => g.key === key)
-              if (group === undefined) {
-                group = { key, value: entry.value, count: 0, entries: [] }
-                groups.push(group)
-              }
-              group.count += 1
-              group.entries.push(entry)
-            }
-            groups.sort((a, b) => b.count - a.count || groups.indexOf(a) - groups.indexOf(b))
-            const total = advice.sources.length
-            const lead = groups[0]
-            // split：来源取值不同 — 傻瓜式取众数（最多来源同意的值）做主建议，不显示命中数字。
-            // 分歧详情收进 title 悬浮提示；不再平铺其他值按钮。
-            const differentDists = groups.length - 1
-            return el('span', { key: 'advice-' + field, 'data-testid': 'models-advice-split-' + field + '-' + model.id, style: { display: 'inline-flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' } }, [
-              el('button', {
-                key: 'lead', type: 'button', 'data-testid': 'models-advice-' + field + '-lead-' + model.id,
-                style: Object.assign({}, svcButtonStyle('primary'), { padding: '3px 8px', fontSize: '12px' }),
-                title: translate('models.wb.detail.hitCount').replace('{count}', String(lead.count)).replace('{total}', String(total)) + (differentDists > 0 ? '\n' + translate('models.wb.detail.othersCount').replace('{n}', String(differentDists)) : ''),
-                onClick: () => applySuggestion(modelList.indexOf(model), field, lead.value),
-              }, `${translate('models.wb.detail.advice')} ${display(lead.value)}`),
-            ])
-          }
-          const imageSelectValue = (model) => (Array.isArray(model?.input) ? (model.input.includes('image') ? 'yes' : 'no') : 'detected')
-          const reasoningSelectValue = (model) => (model?.reasoningEfforts === false ? 'unsupported' : model?.reasoningEfforts !== undefined ? 'yes' : 'detected')
-          // 联网查证结果块：厂商文档来源列表（固定名单，仅参考展示）。
-          const verifyBlock = (modelId) => {
-            const state = verify[modelId] ?? null
-            const busy = state?.busy === true
-            return el('div', { key: 'verify-' + modelId, 'data-testid': 'models-verify-' + modelId, style: { marginTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: '6px' } }, [
-              el('div', { key: 'row', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
-                el('button', { key: 'btn', type: 'button', 'data-testid': 'models-verify-btn-' + modelId, style: svcButtonStyle('ghost'), disabled: busy, onClick: () => runVerifyOnline(modelId) }, busy ? translate('models.wb.verifyOnline.busy') : translate('models.wb.verifyOnline')),
-              ]),
-              state?.error !== undefined ? el('p', { key: 'err', 'data-testid': 'models-verify-error-' + modelId, style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, state.error) : null,
-              (state?.sources ?? []).length > 0 ? el('div', { key: 'results', 'data-testid': 'models-verify-results-' + modelId, style: { marginTop: '6px' } }, [
-                el('p', { key: 'title', style: { margin: '0 0 4px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.verifyOnline.title').replace('{model}', modelId)),
-                ...state.sources.map((source, i) => el('div', { key: 'src-' + i, 'data-testid': 'models-verify-src-' + i + '-' + modelId, style: { fontSize: '12px', margin: '4px 0', padding: '6px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' } }, [
-                  el('div', { key: 'head', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' } }, [
-                    el('b', { key: 'name', style: { fontSize: '12px' } }, translate('models.wb.verifyOnline.source').replace('{name}', source.name ?? '')),
-                    el('a', { key: 'href', href: source.href ?? source.url, target: '_blank', rel: 'noreferrer', 'data-testid': 'models-verify-open-' + i + '-' + modelId, style: { fontSize: '12px', color: 'var(--dsw-alias-link-primary, var(--dsw-alias-brand-primary))' } }, translate('models.wb.verifyOnline.open')),
-                  ]),
-                  source.status === 'ok'
-                    ? (source.snippets ?? []).map((snippet, j) => el('p', { key: 's-' + j, 'data-testid': 'models-verify-snippet-' + i + '-' + j + '-' + modelId, style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, snippet))
-                    : source.status === 'no-match'
-                      ? el('p', { key: 'nm', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.verifyOnline.noMatch'))
-                      : source.status === 'not-found'
-                        ? el('p', { key: 'nf', 'data-testid': 'models-verify-nf-' + modelId, style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.verifyOnline.notFound'))
-                        : el('p', { key: 'er', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.verifyOnline.error').replace('{error}', source.error ?? source.status)),
-                ])),
-                el('p', { key: 'note', style: Object.assign({}, WB_MUTED, { marginTop: '6px' }) }, translate('models.wb.verifyOnline.note')),
-              ]) : null,
-            ])
-          }
-
-          const modelCards = modelList.map((model, index) => {
-            const isOpen = expanded.has(index)
-            const sug = suggestionFor(model)
-            const fieldRow = (children) => el('div', { key: 'row-' + index, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '3px 0' } }, children)
-            const numberInput = (field, testId) => el('input', { key: field, 'data-testid': testId, style: Object.assign({}, WB_INPUT, { width: '110px', padding: '4px 8px', fontSize: '12px' }), type: 'number', min: '1', value: model[field] ?? '', onChange: (event) => patchModel(index, { [field]: event.target.value === '' ? undefined : Number(event.target.value) }) })
-            const fmt = (value) => (typeof value === 'object' && value !== null ? Object.keys(value).join('+') : String(value))
-            return el('div', { key: model.id ?? 'model-' + index, 'data-testid': 'models-model-card-' + (model.id ?? index), style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', padding: '8px 12px', marginTop: '8px', background: 'var(--dsw-alias-bg-layer-2)' } }, [
-              el('div', { key: 'head', 'data-testid': 'models-model-' + (model.id ?? index), style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }, onClick: () => toggleModel(index) }, [
-                el('code', { key: 'id', style: { fontSize: '13px', fontWeight: 600 } }, model.id ?? ''),
-                typeof model?.name === 'string' && model.name !== '' ? el('span', { key: 'name', style: { fontSize: '12px', color: 'var(--dsh-svc-text-muted)' } }, model.name) : null,
-                Array.isArray(model?.input) && model.input.includes('image') ? el('span', { key: 'image', style: svcBadgeStyle('info') }, 'Image') : null,
-                model?.reasoningEfforts !== undefined ? el('span', { key: 'thinking', style: svcBadgeStyle('neutral') }, translate('models.wb.reasoning')) : null,
-                Number.isInteger(model?.contextWindow) && model.contextWindow > 0 ? el('span', { key: 'ctx', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, `${model.contextWindow}`) : null,
-                isOpen ? el('span', { key: 'arrow', style: { marginLeft: 'auto', fontSize: '12px' } }, '▴') : el('span', { key: 'arrow', style: { marginLeft: 'auto', fontSize: '12px' } }, '▾'),
-              ]),
-              isOpen ? el('div', { key: 'params', 'data-testid': 'models-model-params-' + (model.id ?? index), style: { marginTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: '6px' } }, [
-                fieldRow([
-                  el('label', { key: 'l', style: { fontSize: '12px', width: '80px' } }, translate('models.wb.detail.context')),
-                  numberInput('contextWindow', 'models-edit-context-' + (model.id ?? index)),
-                  adviceButton(model, 'contextWindow', 'context', fmt),
-                ]),
-                fieldRow([
-                  el('label', { key: 'l', style: { fontSize: '12px', width: '80px' } }, translate('models.wb.detail.maxTokens')),
-                  numberInput('maxTokens', 'models-edit-maxtokens-' + (model.id ?? index)),
-                  adviceButton(model, 'maxTokens', 'maxTokens', fmt),
-                ]),
-                fieldRow([
-                  el('label', { key: 'l', style: { fontSize: '12px', width: '80px' } }, translate('models.wb.detail.image')),
-                  el('select', { key: 's', 'data-testid': 'models-edit-image-' + (model.id ?? index), style: Object.assign({}, WB_INPUT, { width: 'auto', padding: '4px 8px', fontSize: '12px' }), value: imageSelectValue(model), onChange: (event) => { const v = event.target.value; patchModel(index, { input: v === 'yes' ? ['text', 'image'] : v === 'no' ? ['text'] : undefined }) } }, [
-                    el('option', { key: 'detected', value: 'detected' }, translate('models.wb.detail.imageState.detected')),
-                    el('option', { key: 'yes', value: 'yes' }, translate('models.wb.detail.imageState.yes')),
-                    el('option', { key: 'no', value: 'no' }, translate('models.wb.detail.imageState.no')),
-                  ]),
-                  adviceButton(model, 'input', 'input', (v) => (Array.isArray(v) && v.includes('image') ? translate('models.wb.detail.imageState.yes') : translate('models.wb.detail.imageState.no'))),
-                ]),
-                fieldRow([
-                  el('label', { key: 'l', style: { fontSize: '12px', width: '80px' } }, translate('models.wb.detail.thinking')),
-                  el('select', { key: 's', 'data-testid': 'models-edit-reasoning-' + (model.id ?? index), style: Object.assign({}, WB_INPUT, { width: 'auto', padding: '4px 8px', fontSize: '12px' }), value: reasoningSelectValue(model), onChange: (event) => { const v = event.target.value; patchModel(index, { reasoningEfforts: v === 'unsupported' ? false : v === 'yes' ? (suggestionFor(model)?.reasoningEfforts?.value ?? model.reasoningEfforts) : undefined }) } }, [
-                    el('option', { key: 'detected', value: 'detected' }, translate('models.wb.detail.thinkingState.detected')),
-                    el('option', { key: 'yes', value: 'yes' }, translate('models.wb.detail.thinkingState.yes')),
-                    el('option', { key: 'unsupported', value: 'unsupported' }, translate('models.wb.detail.thinkingState.no')),
-                  ]),
-                  adviceButton(model, 'reasoningEfforts', 'reasoningEfforts', fmt),
-                ]),
-                sug !== undefined ? el('div', { key: 'advice-from', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)', marginTop: '4px' } }, translate('models.wb.detail.adviceSource').replace('{source}', 'pi-ai / modelparams')) : null,
-                typeof model?.id === 'string' && model.id !== '' ? verifyBlock(model.id) : null,
-              ]) : null,
-            ])
-          })
-          const changedRows = (editPlan?.diff?.changes ?? []).map((change) => el('div', { key: change.modelId + '-' + change.field, 'data-testid': 'models-edit-change-' + change.field + '-' + change.modelId, style: { fontSize: '12px', margin: '2px 0' } }, `${change.modelId} · ${change.field}${change.from !== undefined ? '：' + fmtChangeValue(change.from) : ''} → ${fmtChangeValue(change.to)}`))
-          const diffBlock = editPlan !== null ? el('div', { key: 'diff', 'data-testid': 'models-edit-diff', style: WB_CARD }, [
-            el('p', { key: 'summary', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.detail.changeSummary').replace('{changes}', String(editPlan.diff.changes.length)).replace('{added}', String(editPlan.diff.added.length)).replace('{removed}', String(editPlan.diff.removed.length))),
-            ...changedRows,
-            (editPlan.diff.added ?? []).map((id) => el('div', { key: 'added-' + id, 'data-testid': 'models-edit-added-' + id, style: { fontSize: '12px', margin: '2px 0', color: 'var(--dsw-alias-state-success-primary)' } }, `+ ${id}`)),
-            (editPlan.diff.removed ?? []).map((id) => el('div', { key: 'removed-' + id, 'data-testid': 'models-edit-removed-' + id, style: { fontSize: '12px', margin: '2px 0', color: 'var(--dsw-alias-state-error-primary)' } }, `- ${id}`)),
-            el('p', { key: 'recheck', style: Object.assign({}, WB_MUTED, { marginTop: '6px' }) }, translate('models.wb.detail.recheck')),
-            el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '8px' } }, [
-              el('button', { key: 'back', type: 'button', 'data-testid': 'models-edit-plan-back', style: svcButtonStyle('ghost'), disabled: busy, onClick: () => setEditPlan(null) }, translate('models.wb.create.cancel')),
-              el('button', { key: 'confirm', type: 'button', 'data-testid': 'models-edit-confirm', style: svcButtonStyle(editArmed ? 'danger' : 'primary'), disabled: busy, onClick: () => void finalCommit() }, editArmed ? translate('models.plan.confirmArmed') : translate('models.wb.detail.finalConfirm')),
-            ]),
-          ]) : null
-          const addAbilities = selected !== null ? el('div', { key: 'abilities', 'data-testid': 'models-add-abilities', style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' } }, [
-            source === 'manual' ? el('input', { key: 'name', 'data-testid': 'models-add-name', style: Object.assign({}, WB_INPUT, { width: '180px', padding: '4px 8px', fontSize: '12px' }), placeholder: translate('models.wb.add.probeName'), value: manualName, onChange: (event) => { setManualName(event.target.value); setPlan(null); setArmed(false) } }) : null,
-            el('input', { key: 'ctx', 'data-testid': 'models-add-context', style: Object.assign({}, WB_INPUT, { width: '130px', padding: '4px 8px', fontSize: '12px' }), type: 'number', min: '1', placeholder: translate('models.wb.detail.context'), value: manualContext, onChange: (event) => { setManualContext(event.target.value === '' ? '' : Number(event.target.value)); setPlan(null); setArmed(false) } }),
-            el('input', { key: 'out', 'data-testid': 'models-add-maxtokens', style: Object.assign({}, WB_INPUT, { width: '130px', padding: '4px 8px', fontSize: '12px' }), type: 'number', min: '1', placeholder: translate('models.wb.detail.maxTokens'), value: manualMaxTokens, onChange: (event) => { setManualMaxTokens(event.target.value === '' ? '' : Number(event.target.value)); setPlan(null); setArmed(false) } }),
-            el('select', { key: 'image', 'data-testid': 'models-add-image', style: WB_INPUT, value: image, onChange: (event) => { setImage(event.target.value); setPlan(null); setArmed(false) } }, [el('option', { value: 'observed' }, translate('models.wb.detail.imageState.detected')), el('option', { value: 'image' }, translate('models.wb.detail.imageState.yes')), el('option', { value: 'text' }, translate('models.wb.detail.imageState.no'))]),
-            el('select', { key: 'reasoning', 'data-testid': 'models-add-reasoning', style: WB_INPUT, value: reasoning, onChange: (event) => { setReasoning(event.target.value); setPlan(null); setArmed(false) } }, [el('option', { value: 'observed' }, translate('models.wb.detail.thinkingState.detected')), el('option', { value: 'unsupported' }, translate('models.wb.detail.thinkingState.no')), el('option', { value: 'follow' }, translate('models.wb.detail.thinkingState.follow'))]),
-            el('button', { key: 'prepare', type: 'button', 'data-testid': 'models-add-prepare', style: svcButtonStyle('primary'), disabled: busy || (source !== 'builtin' && detection === null) || (source !== 'builtin' && detection?.verified !== true && !allowUnverified), onClick: () => void prepare() }, translate('models.wb.add.prepare')),
-          ]) : null
-          // 手动检测详情卡：检测结果、未验证原因、split 来源选择（按取值聚合，众数主按钮）。
-          const splitPicks = (field, setter, emptyLabel) => {
-            const advice = (detection?.fields ?? {})[field]
-            if (advice?.status !== 'split') return null
-            const groups = []
-            for (const entry of advice.sources) {
-              const key = JSON.stringify(entry.value)
-              let group = groups.find((g) => g.key === key)
-              if (group === undefined) {
-                group = { key, value: entry.value, count: 0, entries: [] }
-                groups.push(group)
-              }
-              group.count += 1
-              group.entries.push(entry)
-            }
-            groups.sort((a, b) => b.count - a.count || groups.indexOf(a) - groups.indexOf(b))
-            const total = advice.sources.length
-            const lead = groups[0]
-            const differentDists = groups.length - 1
-            return el('div', { key: 'split-' + field, style: { display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center', marginTop: '6px' } }, [
-              el('span', { key: 'label', style: { fontSize: '12px' } }, emptyLabel),
-              el('button', {
-                key: 'lead', type: 'button', 'data-testid': 'models-add-' + field + '-lead',
-                style: Object.assign({}, svcButtonStyle('primary'), { padding: '3px 8px', fontSize: '12px' }),
-                title: translate('models.wb.detail.hitCount').replace('{count}', String(lead.count)).replace('{total}', String(total)) + (differentDists > 0 ? '\n' + translate('models.wb.detail.othersCount').replace('{n}', String(differentDists)) : ''),
-                onClick: () => { setter(lead.value); setPlan(null); setArmed(false) },
-              }, `${translate('models.wb.detail.advice')} ${lead.value}`),
-            ])
-          }
-          const probeCard = source === 'manual' && selected !== null && detection !== null ? el('div', { key: 'probe', 'data-testid': 'models-add-probe', style: Object.assign({}, WB_CARD, { marginTop: '8px' }) }, [
-            el('p', { key: 'id', 'data-testid': 'models-add-probe-id', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.add.probeModel').replace('{id}', detection.modelId)),
-            detection?.verified === true
-              ? el('span', { key: 'ok', 'data-testid': 'models-add-probe-verified', style: svcBadgeStyle('info') }, translate('models.wb.add.detected'))
-              : el('span', { key: 'fail', 'data-testid': 'models-add-probe-unverified', style: svcBadgeStyle('neutral') }, translate('models.wb.add.unverified').replace('{error}', detection?.error ?? translate('models.error.unknown').replace('{detail}', detection?.error ?? ''))),
-            detection?.error !== undefined && detection?.verified !== true ? el('p', { key: 'why', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.add.unverifiedReason').replace('{error}', detection.error)) : null,
-            splitPicks('contextWindow', setManualContext, translate('models.wb.detail.context')),
-            splitPicks('maxTokens', setManualMaxTokens, translate('models.wb.detail.maxTokens')),
-            splitPicks('name', setManualName, translate('models.wb.add.probeName')),
-            verifyBlock(detection.modelId),
-            detection?.verified !== true ? el('label', { key: 'unverified', style: { display: 'flex', gap: '6px', alignItems: 'center', marginTop: '8px', fontSize: '12px', cursor: 'pointer' } }, [
-              el('input', { key: 'box', type: 'checkbox', 'data-testid': 'models-add-allow-unverified', checked: allowUnverified, onChange: (event) => { setAllowUnverified(event.target.checked); setPlan(null); setArmed(false) } }),
-              translate('models.wb.add.allowUnverified'),
-            ]) : null,
-          ]) : null
+        const removedRoutes = snapshot?.removedRoutes ?? []
+        const activeRow = routes.find((row) => row.route === detailRoute)
+        if (detailRoute !== null && activeRow !== undefined) {
           return el('div', { 'data-testid': 'models-section' }, [
-            el('button', { key: 'back', type: 'button', 'data-testid': 'models-detail-back', style: svcButtonStyle('ghost'), onClick: closeDetail }, translate('models.wb.create.cancel')),
-            el('h3', { key: 'title', 'data-testid': 'models-provider-detail-title', style: { margin: '12px 0 4px' } }, detailTitle),
-            el('p', { key: 'summary', 'data-testid': 'models-provider-detail-summary', style: WB_MUTED }, [detailBase, detailApi !== '' ? ` · ${detailApi}` : '', ` · ${modelList.length}`]),
-            (active.attention ?? []).length > 0 ? el('div', { key: 'todos', 'data-testid': 'models-detail-todos', style: Object.assign({}, WB_CARD, { marginTop: '8px' }) }, [
-              el('p', { key: 'head', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.detail.todos').replace('{n}', String(active.attention.length))),
-              ...(active.attention ?? []).map((flag) => {
-              const labelKey = flag === 'dangling-credential' ? 'dangling' : flag === 'invalid-profile' ? 'invalid' : flag === 'validation-failed' ? 'validation' : flag === 'recovery-pending' ? 'recovery' : flag
-              return el('div', { key: flag, 'data-testid': 'models-detail-todo-' + flag, style: { fontSize: '12px', margin: '2px 0' } }, [
-                el('b', { key: 'label', style: { marginRight: '6px' } }, translate('models.wb.attention.' + labelKey)),
-                el('span', { key: 'hint', style: { color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.attention.' + labelKey + 'Hint')),
-              ])
+            el(RouteDetail, {
+              key: detailRoute,
+              row: activeRow,
+              freshKey: freshKeyRef.current,
+              onBack: () => setDetailRoute(null),
+              onChanged: reload,
             }),
-            ]) : null,
-            el('div', { key: 'models', 'data-testid': 'models-provider-models' }, modelList.length === 0 && detail === null ? el('p', { key: 'loading', style: WB_MUTED }, '…') : modelList.length === 0 ? el('p', { key: 'empty', 'data-testid': 'models-provider-models-empty', style: WB_MUTED }, translate('models.wb.detail.empty')) : [el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { margin: '8px 0 4px' }) }, translate('models.wb.detail.models')), ...modelCards]),
-            diffBlock,
-            savedNotice === true ? el('div', { key: 'saved', 'data-testid': 'models-edit-saved', style: WB_CARD }, translate('models.wb.detail.saved')) : null,
-            error !== '' ? el('p', { key: 'error', 'data-testid': 'models-detail-error', role: 'alert', style: WB_ERROR }, error) : null,
-            editPlan === null ? el('div', { key: 'apply-row', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } }, [
-              el('button', { key: 'apply', type: 'button', 'data-testid': 'models-edit-apply', style: svcButtonStyle('primary'), disabled: busy || editModels === null, onClick: () => void applyEdits() }, translate('models.wb.detail.apply')),
-            ]) : null,
-            el('div', { key: 'sources', 'data-testid': 'models-add-source', style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '14px' } }, [
-              active.source === 'builtin' ? el('button', { key: 'builtin', type: 'button', 'data-testid': 'models-add-source-builtin', style: svcButtonStyle(source === 'builtin' ? 'primary' : 'neutral'), disabled: busy, onClick: () => void loadSource('builtin') }, translate('models.wb.builtin')) : null,
-              active.source !== 'builtin' ? el('button', { key: 'online', type: 'button', 'data-testid': 'models-add-source-online', style: svcButtonStyle(source === 'online' ? 'primary' : 'neutral'), disabled: busy, onClick: () => void loadSource('online') }, translate('models.wb.add.online')) : null,
-              el('button', { key: 'manual', type: 'button', 'data-testid': 'models-add-source-manual', style: svcButtonStyle(source === 'manual' ? 'primary' : 'neutral'), disabled: busy, onClick: () => resetFlow('manual') }, translate('models.wb.add.manual')),
-            ]),
-            source !== null ? el('div', { key: 'flow', 'data-testid': 'models-add-flow', style: WB_CARD }, [
-              source === 'manual' ? el('div', { key: 'manual-row', style: { display: 'flex', gap: '8px' } }, [
-                el('input', { key: 'manual-id', 'data-testid': 'models-add-manual-id', style: WB_INPUT, value: selected?.id ?? '', placeholder: 'model-id', onChange: (event) => { setSelected({ id: event.target.value }); setDetection(null); setPlan(null); setArmed(false); setManualContext(''); setManualMaxTokens(''); setManualName(''); setAllowUnverified(false) }, onKeyDown: (event) => { if (event.key === 'Enter') void detect() } }),
-                el('button', { key: 'go', type: 'button', 'data-testid': 'models-add-detect', style: svcButtonStyle('neutral'), disabled: busy || (selected?.id ?? '') === '', onClick: () => void detect() }, translate('models.wb.add.detect')),
-              ]) : null,
-              source !== 'manual' ? el('select', { key: 'candidate', 'data-testid': 'models-add-candidate', style: WB_INPUT, value: selected?.id ?? '', onChange: (event) => { setSelected(candidates.find((candidate) => candidate.id === event.target.value) ?? null); setPlan(null); setArmed(false); setManualContext(''); setManualMaxTokens(''); setManualName(''); setAllowUnverified(false) } }, [el('option', { key: '', value: '' }, translate('models.wb.add.choose')), ...candidates.map((candidate) => el('option', { key: candidate.id, value: candidate.id }, candidate.name || candidate.id))]) : null,
-              source !== 'builtin' && selected !== null ? el('button', { key: 'detect', type: 'button', 'data-testid': 'models-add-detect-alt', style: svcButtonStyle('neutral'), disabled: busy, onClick: () => void detect() }, translate('models.wb.add.detect')) : null,
-              detection?.verified === true ? el('span', { key: 'detected', 'data-testid': 'models-add-detected', style: svcBadgeStyle('info') }, translate('models.wb.add.detected')) : null,
-              addAbilities,
-              probeCard,
-              error !== '' ? el('p', { key: 'error', 'data-testid': 'models-add-error', style: WB_ERROR }, error) : null,
-              plan !== null ? el('div', { key: 'plan', 'data-testid': 'models-add-plan' }, [
-                el('p', { key: 'summary' }, translate('models.wb.add.confirmSummary')),
-                ...(plan.warnings?.includes('unverified-model') === true ? [el('p', { key: 'unverified-warn', 'data-testid': 'models-add-plan-unverified', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.add.unverified'))] : []),
-                el('button', { key: 'commit', type: 'button', 'data-testid': 'models-add-commit', style: svcButtonStyle(armed ? 'danger' : 'primary'), disabled: busy, onClick: () => void commit() }, armed ? translate('models.plan.confirmArmed') : translate('models.wb.add.commit')),
-              ]) : null,
-            ]) : null,
           ])
         }
         return el('div', { 'data-testid': 'models-section' }, [
           el('div', { key: 'routes', style: WB_CARD }, [
-            el('h3', { key: 'title', 'data-testid': 'models-routes-title' }, translate('models.routes.title')),
-            el('p', { key: 'legend', 'data-testid': 'models-routes-legend', style: Object.assign({}, WB_MUTED, { margin: '4px 0 0' }) }, translate('models.wb.legend')),
-            snapshot === null ? el('p', { key: 'loading', 'data-testid': 'models-routes-loading', style: WB_MUTED }, '…') : routes.length === 0 ? el('p', { key: 'empty', 'data-testid': 'models-routes-empty', style: WB_MUTED }, translate('models.wb.empty')) : routes.map((row) => {
-            const badges = []
-            if (row.source === 'builtin') badges.push({ key: 'source', label: translate('models.wb.builtinUser') })
-            if (row.metaCounts?.inputImage > 0) badges.push({ key: 'image', label: translate('models.wb.seeImage') })
-            if (row.metaCounts?.reasoning > 0) badges.push({ key: 'thinking', label: translate('models.wb.canThink') })
-            return el('div', { key: row.route, 'data-testid': 'models-route-row-' + row.route, style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)' } }, [
-              el('button', { key: 'open', type: 'button', 'data-testid': 'models-route-' + row.route, style: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, textAlign: 'left', border: '0', background: 'transparent', color: 'inherit', padding: '0', font: 'inherit', cursor: 'pointer' }, onClick: () => openDetail(row) }, [
-                el('b', { key: 'name' }, row.displayName),
-                el('span', { key: 'count', style: { marginLeft: '10px', color: 'var(--dsh-svc-text-muted)' } }, String(row.modelCount)),
-                ...badges.map((badge) => el('span', { key: badge.key, style: { marginLeft: '8px', color: 'var(--dsh-svc-text-muted)', fontSize: '12px' } }, badge.label)),
-              ]),
-              (row.attention ?? []).map((flag) => {
-            const labelKey = flag === 'dangling-credential' ? 'dangling' : flag === 'invalid-profile' ? 'invalid' : flag === 'validation-failed' ? 'validation' : flag === 'recovery-pending' ? 'recovery' : flag
-            return el('span', { key: 'flag-' + flag, 'data-testid': 'models-route-attention-' + flag + '-' + row.route, style: { marginLeft: '8px', color: 'var(--dsh-svc-text-muted)', fontSize: '12px', textDecoration: 'underline dotted' }, title: translate('models.wb.attention.' + labelKey + 'Hint') }, translate('models.wb.attention.' + labelKey))
-          }),
-            ])
-          }),
+            el('div', { key: 'title', 'data-testid': 'models-routes-title', style: { fontSize: '15px', fontWeight: 600, marginBottom: '6px' } }, translate('models.routes.title')),
+            el('p', { key: 'legend', 'data-testid': 'models-routes-legend', style: { margin: '0 0 6px', fontSize: '12px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.legend')),
+            snapshot === null
+              ? el('p', { key: 'loading', 'data-testid': 'models-routes-loading', style: WB_MUTED }, '…')
+              : routes.length === 0
+                ? el('p', { key: 'empty', 'data-testid': 'models-routes-empty', style: WB_MUTED }, translate('models.wb.empty'))
+                : routes.map((row) => el(RouteRow, { key: row.route, row, onOpen: () => setDetailRoute(row.route), reload })),
+          ]),
+          el(CreateProviderCard, { key: 'create', onCreated: reload }),
+          // 删除恢复入口：常驻，不随渠道行消失。
+          el('div', { key: 'rescue', 'data-testid': 'models-route-rescue', style: WB_CARD }, [
+            el('button', {
+              key: 'toggle', type: 'button', 'data-testid': 'models-route-rescue-toggle',
+              'aria-expanded': String(rescueOpen),
+              style: Object.assign({}, svcButtonStyle('ghost'), { width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }),
+              onClick: () => setRescueOpen(!rescueOpen),
+            }, [
+              el('span', { key: 'label', style: { fontWeight: 600 } }, translate('models.wb.rescue.title')),
+              el('span', { key: 'count', style: { fontSize: '12px', color: 'var(--dsh-svc-text-muted)' } }, String(removedRoutes.length)),
+            ]),
+            rescueOpen
+              ? (removedRoutes.length === 0
+                  ? el('p', { key: 'none', 'data-testid': 'models-route-rescue-empty', style: Object.assign({}, WB_MUTED, { marginTop: '8px' }) }, translate('models.wb.rescue.empty'))
+                  : el('div', { key: 'list', style: { marginTop: '8px' } }, removedRoutes.map((entry) => el(RestoreRow, { key: entry.route, entry, reload }))))
+              : null,
           ]),
         ])
       }
-      function LegacyProvidersWorkbench({ snapshot, reload }) {
+
+      /** 渠道行：名字 + 数量 + 能力徽章 + 需处理标记 + 进入详情。 */
+      function RouteRow({ row, onOpen, reload }) {
         const translate = useTranslation()
         const el = React.createElement
-        const { useState, useRef } = React
-        const freshKeyRef = useRef('')
-        if (freshKeyRef.current === '') freshKeyRef.current = Math.random().toString(36).slice(2) + Date.now().toString(36)
-        const [taskRoute, setTaskRoute] = useState(null)
-        const [undoRoute, setUndoRoute] = useState(null)
-        const [editRoute, setEditRoute] = useState(null)
-        const [removeRoute, setRemoveRoute] = useState(null)
-        const [securityOpen, setSecurityOpen] = useState(false)
-        const [resolveArmedRoute, setResolveArmedRoute] = useState(null)
-        const [resolveError, setResolveError] = useState('')
-        const routes = snapshot?.routes ?? []
-        const activeRow = routes.find((row) => row.route === taskRoute)
-        if (taskRoute !== null && activeRow !== undefined) {
-          return el('div', { 'data-testid': 'models-section' }, [
-            el(WorkbenchTaskPage, { key: taskRoute, row: activeRow, freshKey: freshKeyRef.current, onBack: () => setTaskRoute(null), onChanged: reload }),
-          ])
+        const { useState } = React
+        const [resolveArmed, setResolveArmed] = useState(false)
+        const [error, setError] = useState('')
+        const needsResolve = (row.attention ?? []).includes('recovery-pending')
+        const resolveFlag = async () => {
+          if (!resolveArmed) { setResolveArmed(true); return }
+          setResolveArmed(false)
+          const res = await rpcCall('models2-recovery-resolve', { route: row.route })
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          if (reload !== undefined) reload()
         }
-        const routeRow = (row) => {
-          const needsResolve = (row.attention ?? []).includes('recovery-pending')
-          const resolveFlag = async () => {
-            if (resolveArmedRoute !== row.route) { setResolveArmedRoute(row.route); return }
-            setResolveArmedRoute(null)
-            setResolveError('')
-            const res = await rpcCall('models2-recovery-resolve', { route: row.route })
-            if (res.ok !== true) { setResolveError(mapModelsError(translate, res.error)); return }
-            if (reload !== undefined) reload()
-          }
-          return el('div', { key: row.route, 'data-testid': 'models-route-' + row.route, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '6px' } }, [
-          el('div', { key: 'name', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, [
-            el('span', { key: 'display', style: { fontWeight: 600, fontSize: '14px' } }, row.displayName),
-            row.source === 'builtin' ? el('span', { key: 'src', style: svcBadgeStyle('info') }, translate('models.wb.builtin')) : null,
-            el('code', { key: 'url', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)', maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.baseURL || ''),
-            el('span', { key: 'api', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, row.api || ''),
+        const badges = []
+        if (row.source === 'builtin') badges.push({ key: 'builtin', label: translate('models.wb.builtinUser'), style: svcBadgeStyle('info') })
+        if (row.metaCounts?.inputImage > 0) badges.push({ key: 'image', label: translate('models.wb.seeImage'), style: svcBadgeStyle('neutral') })
+        if (row.metaCounts?.reasoning > 0) badges.push({ key: 'thinking', label: translate('models.wb.canThink'), style: svcBadgeStyle('neutral') })
+        return el('div', { key: row.route, 'data-testid': 'models-route-row-' + row.route, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '12px 0' } }, [
+          el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } }, [
+            el('button', {
+              key: 'open', type: 'button', 'data-testid': 'models-route-' + row.route,
+              style: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1, textAlign: 'left', border: '0', background: 'transparent', color: 'inherit', padding: '0', font: 'inherit', cursor: 'pointer' },
+              onClick: onOpen,
+            }, [
+              el('b', { key: 'name' }, row.displayName),
+              el('span', { key: 'count', style: { color: 'var(--dsh-svc-text-muted)', fontSize: '12px' } }, translate('models.wb.modelCount').replace('{n}', String(row.modelCount))),
+              ...badges.map((badge) => el('span', { key: badge.key, style: badge.style }, badge.label)),
+            ]),
             row.needsAttention === true ? el('span', { key: 'attention', 'data-testid': 'wb-attention-' + row.route, style: svcBadgeStyle('danger') }, translate('models.wb.needsAttention')) : null,
           ]),
-          el('div', { key: 'stats', 'data-testid': 'wb-stats-' + row.route, style: { display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--dsh-svc-text-muted)', alignItems: 'center' } }, [
-            el('span', { key: 'count' }, translate('models.wb.modelCount').replace('{n}', String(row.modelCount))),
-            el('span', { key: 'meta' }, translate('models.wb.meta').replace('{ctx}', String(row.metaCounts?.contextWindow ?? 0)).replace('{vision}', String(row.metaCounts?.inputImage ?? 0)).replace('{reasoning}', String(row.metaCounts?.reasoning ?? 0))),
+          el('div', { key: 'stats', 'data-testid': 'wb-stats-' + row.route, style: { display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--dsh-svc-text-muted)', alignItems: 'center', marginTop: '4px' } }, [
+            row.baseURL !== '' ? el('code', { key: 'url', style: { fontSize: '11px', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.baseURL) : null,
+            row.api !== '' ? el('span', { key: 'api' }, row.api) : null,
+            // 三种状态分开显示：配置保存（本行存在）· 运行时加载 · 真实调用测试。
+            el('span', { key: 'runtime', 'data-testid': 'wb-runtime-' + row.route }, row.runtimeLoaded === true ? translate('models.wb.state.runtimeLoaded') : translate('models.wb.state.runtimeMissing')),
             row.lastValidation !== undefined && row.lastValidation.ok === false
               ? el('span', { key: 'validation', style: { color: 'var(--dsw-alias-state-warn-label)' } }, translate('models.wb.validationFailed'))
               : row.lastValidation !== undefined
@@ -1224,52 +887,669 @@ function SimpleProvidersWorkbench({ snapshot, reload }) {
                 : el('span', { key: 'validation' }, translate('models.wb.neverValidated')),
             row.undoable === true ? el('span', { key: 'undoable', style: svcBadgeStyle('neutral') }, translate('models.wb.undoAvailable')) : null,
           ]),
-          row.needsAttention === true ? el('div', { key: 'flags', style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } }, [
-            ...(row.attention ?? []).map((flag) => el('span', { key: flag, 'data-testid': 'wb-flag-' + flag + '-' + row.route, style: svcBadgeStyle('warning') }, translate('models.wb.attention.' + flag))),
-            needsResolve ? el('button', { key: 'resolve', type: 'button', 'data-testid': 'wb-resolve-' + row.route, style: svcRowActionStyle({ color: resolveArmedRoute === row.route ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-text-muted)' }), onClick: () => void resolveFlag() },
-              resolveArmedRoute === row.route ? translate('models.plan.confirmArmed') : translate('models.wb.recovery.resolve')) : null,
+          row.needsAttention === true ? el('div', { key: 'flags', style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', marginTop: '4px' } }, [
+            ...(row.attention ?? []).map((flag) => {
+              const labelKey = flag === 'dangling-credential' ? 'dangling' : flag === 'invalid-profile' ? 'invalid' : flag === 'validation-failed' ? 'validation' : flag === 'recovery-pending' ? 'recovery' : flag
+              return el('span', { key: flag, 'data-testid': 'wb-flag-' + flag + '-' + row.route, style: svcBadgeStyle('warning'), title: translate('models.wb.attention.' + labelKey + 'Hint') }, translate('models.wb.attention.' + labelKey))
+            }),
+            needsResolve ? el('button', {
+              key: 'resolve', type: 'button', 'data-testid': 'wb-resolve-' + row.route,
+              style: svcRowActionStyle({ color: resolveArmed ? 'var(--dsh-svc-danger)' : 'var(--dsh-svc-text-muted)' }),
+              onClick: () => void resolveFlag(),
+            }, resolveArmed ? translate('models.plan.confirmArmed') : translate('models.wb.recovery.resolve')) : null,
           ]) : null,
-          resolveError !== '' ? el('p', { key: 'resolveError', 'data-testid': 'wb-resolve-error-' + row.route, style: Object.assign({}, WB_ERROR, { margin: 0 }) }, resolveError) : null,
-          el('div', { key: 'actions', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
-            el('button', { key: 'check', type: 'button', 'data-testid': 'wb-check-' + row.route, style: svcButtonStyle('primary'), onClick: () => { setUndoRoute(null); setTaskRoute(row.route) } }, translate('models.wb.checkFix')),
-            el('button', { key: 'edit', type: 'button', 'data-testid': 'wb-edit-' + row.route, style: svcButtonStyle('neutral'), onClick: () => { setUndoRoute(null); setEditRoute(row.route) } }, translate('models.wb.edit.btn')),
-            el('button', { key: 'remove', type: 'button', 'data-testid': 'wb-remove-' + row.route, style: svcButtonStyle('dangerGhost'), onClick: () => { setUndoRoute(null); setRemoveRoute(row.route) } }, translate('models.wb.remove.btn')),
-            row.undoable === true && undoRoute !== row.route
-              ? el('button', { key: 'undo', type: 'button', 'data-testid': 'wb-undo-' + row.route, style: svcButtonStyle('dangerGhost'), onClick: () => setUndoRoute(row.route) }, translate('models.wb.undoWrite'))
-              : null,
-          ]),
-          undoRoute === row.route
-            ? el(UndoPanel, { key: 'undo-panel', route: row.route, onUndone: reload, onCancel: () => setUndoRoute(null) })
-            : null,
-          editRoute === row.route
-            ? el(ManualEditor, { key: 'edit-panel', route: row.route, onDone: reload, onCancel: () => setEditRoute(null) })
-            : null,
-          removeRoute === row.route
-            ? el(RemovePanel, { key: 'remove-panel', route: row.route, onDone: reload, onCancel: () => setRemoveRoute(null) })
-            : null,
+          error !== '' ? el('p', { key: 'error', 'data-testid': 'wb-resolve-error-' + row.route, style: Object.assign({}, WB_ERROR, { marginTop: '4px' }) }, error) : null,
         ])
+      }
+
+      /** 删除恢复行：整份 profile 写回；引用被占用时给原因而不是静默失败。 */
+      function RestoreRow({ entry, reload }) {
+        const translate = useTranslation()
+        const el = React.createElement
+        const { useState } = React
+        const [busy, setBusy] = useState(false)
+        const [error, setError] = useState('')
+        const [done, setDone] = useState(false)
+        const restore = async () => {
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-route-restore', { route: entry.route })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setDone(true)
+          if (reload !== undefined) reload()
         }
-        return el('div', { 'data-testid': 'models-section' }, [
-          el('div', { key: 'security', 'data-testid': 'models-security-card', style: WB_CARD }, [
-            el('button', { key: 'toggle', type: 'button', 'data-testid': 'models-security-toggle', 'aria-expanded': String(securityOpen), onClick: () => setSecurityOpen(!securityOpen), style: Object.assign({}, svcButtonStyle('ghost'), { width: '100%', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }) },
-              el('span', { style: { fontWeight: 600 } }, translate('models.security.title')),
-              el('span', { 'aria-hidden': 'true' }, securityOpen ? '▾' : '▸')),
-            securityOpen ? el('div', { key: 'body', 'data-testid': 'models-security-body', style: { marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.6 } }, [
-              el('div', { key: 'url' }, el('b', null, translate('models.security.urlTitle')), el('p', { style: { margin: '2px 0 0' } }, translate('models.security.urlBody'))),
-              el('div', { key: 'key' }, el('b', null, translate('models.security.keyTitle')), el('p', { style: { margin: '2px 0 0' } }, translate('models.security.keyBody'))),
-              el('div', { key: 'revert' }, el('b', null, translate('models.security.revertTitle')), el('p', { style: { margin: '2px 0 0' } }, translate('models.security.revertBody'))),
-            ]) : null,
+        return el('div', { key: entry.route, 'data-testid': 'models-route-removed-' + entry.route, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '8px 0', fontSize: '12px' } }, [
+          el('div', { key: 'head', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
+            el('b', { key: 'name' }, entry.displayName),
+            el('span', { key: 'count', style: { color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.modelCount').replace('{n}', String(entry.modelCount))),
+            el('span', { key: 'at', style: { color: 'var(--dsh-svc-text-muted)' } }, formatRelativeTime(translate, entry.at)),
+            entry.credentialRef !== undefined ? el('span', { key: 'key', style: { color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.keyRef').replace('{ref}', entry.credentialRef)) : null,
           ]),
-          el('div', { key: 'routes', style: WB_CARD }, [
-            el('div', { key: 'title', 'data-testid': 'models-routes-title', style: { fontSize: '15px', fontWeight: 600, marginBottom: '6px' } }, translate('models.routes.title')),
-            snapshot === null
-              ? el('p', { key: 'loading', 'data-testid': 'models-routes-loading', style: WB_MUTED }, '…')
-              : routes.length === 0
-                ? el('p', { key: 'empty', 'data-testid': 'models-routes-empty', style: WB_MUTED }, translate('models.wb.empty'))
-                : routes.map(routeRow),
-          ]),
-          el(CreateProviderCard, { key: 'create', onCreated: reload }),
+          entry.taken === true ? el('p', { key: 'taken', 'data-testid': 'models-route-removed-taken-' + entry.route, style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.rescue.taken')) : null,
+          done ? el('p', { key: 'done', 'data-testid': 'models-route-restored-' + entry.route, style: { margin: '4px 0 0', color: 'var(--dsw-alias-state-success-primary)' } }, translate('models.wb.rescue.done')) : null,
+          error !== '' ? el('p', { key: 'error', role: 'alert', 'data-testid': 'models-route-restore-error-' + entry.route, style: WB_ERROR }, error) : null,
+          el('button', {
+            key: 'go', type: 'button', 'data-testid': 'models-route-restore-' + entry.route,
+            style: Object.assign({}, svcButtonStyle('primary'), { marginTop: '6px' }),
+            disabled: busy || done || entry.taken === true,
+            onClick: () => void restore(),
+          }, translate('models.wb.rescue.restore')),
+          el('p', { key: 'note', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.rescue.note')),
         ])
+      }
+
+      /**
+       * 渠道详情：一个页面完成连接编辑、换密钥、模型管理、撤销与删除。
+       * 草稿语义：`draft`（连接字段 + 密钥）与 `rows`（模型行）都只在本页；
+       * 离开前若有未保存改动，先确认（离开提醒），不在跨刷新后假装恢复草稿。
+       */
+      function RouteDetail({ row, freshKey, onBack, onChanged }) {
+        const translate = useTranslation()
+        const el = React.createElement
+        const { useState, useEffect, useRef } = React
+        const route = row.route
+        const aliveRef = useRef(true)
+        useEffect(() => () => { aliveRef.current = false }, [])
+        const [detail, setDetail] = useState(null)
+        const [loadError, setLoadError] = useState('')
+        const [tab, setTab] = useState('models')
+        const [busy, setBusy] = useState(false)
+        const [error, setError] = useState('')
+        const [notice, setNotice] = useState('')
+
+        // 连接草稿
+        const [conn, setConn] = useState(null)
+        const [keyDraft, setKeyDraft] = useState('')
+        const [connPreview, setConnPreview] = useState(null)
+        const [connPlan, setConnPlan] = useState(null)
+        // 模型列表 / 草稿
+        const [rows, setRows] = useState(null)
+        const [search, setSearch] = useState('')
+        const [editing, setEditing] = useState(null)
+        const [removing, setRemoving] = useState(null)
+        const [addOpen, setAddOpen] = useState(false)
+        const [leaveAsk, setLeaveAsk] = useState(false)
+        const [removeConfirms, setRemoveConfirms] = useState(0)
+
+        const load = async () => {
+          const res = await rpcCall('models2-route', { route })
+          if (!aliveRef.current) return
+          if (res.ok !== true) { setLoadError(mapModelsError(translate, res.error)); return }
+          setDetail(res.value)
+          setConn({
+            displayName: res.value.displayName ?? route,
+            api: res.value.api ?? '',
+            baseURL: res.value.baseURL ?? '',
+          })
+          setRows((res.value.models ?? []).map((model) => (model !== null && typeof model === 'object' ? { ...model } : model)))
+        }
+        useEffect(() => { void load() }, [])
+        const refresh = () => { void load(); if (onChanged !== undefined) onChanged() }
+
+        const connDirty = conn !== null && detail !== null && (
+          conn.displayName !== (detail.displayName ?? route) || conn.api !== (detail.api ?? '') || conn.baseURL !== (detail.baseURL ?? '') || keyDraft !== ''
+        )
+        const dirty = connDirty
+        const attemptBack = () => {
+          if (dirty) { setLeaveAsk(true); return }
+          onBack()
+        }
+
+        // ── 连接：预览（含出网可用性、凭据可写性）→ 提交 ──────────────────────────
+        const previewConnection = async (nextKey) => {
+          setBusy(true); setError(''); setNotice('')
+          const res = await rpcCall('models2-connection-preview', { route, next: conn ?? {}, ...(nextKey !== undefined && nextKey !== '' ? {} : {}) })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return null }
+          setConnPreview(res.value)
+          return res.value
+        }
+        const saveConnection = async () => {
+          setBusy(true); setError(''); setNotice('')
+          const preview = connPreview ?? await rpcCall('models2-connection-preview', { route, next: conn ?? {} }).then((res) => (res.ok === true ? res.value : null))
+          if (preview === null) { setBusy(false); setError(mapModelsError(translate, 'internal')); return }
+          setConnPreview(preview)
+          setConnPlan({ preview, key: keyDraft })
+          setBusy(false)
+        }
+        const commitConnection = async () => {
+          if (connPlan === null) return
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-connection-commit', {
+            route, next: conn ?? {}, key: connPlan.key, baseFingerprint: connPlan.preview.fingerprint,
+          })
+          setBusy(false)
+          if (res.ok !== true) {
+            // 冲突/失败都不清空草稿：对照最新值后重新确认即可再次提交。
+            setError(mapModelsError(translate, res.error))
+            return
+          }
+          setKeyDraft(''); setConnPreview(null); setConnPlan(null)
+          setNotice(translate('models.wb.conn.saved'))
+          refresh()
+        }
+
+        // ── 模型：单行独立编辑（面板内保存）────────────────────────────────────────
+        const patchRow = async (modelId, patch) => {
+          setBusy(true); setError(''); setNotice('')
+          const res = await rpcCall('models2-model-patch', { route, modelId, patch })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return false }
+          if (res.value?.noop === true) { setNotice(translate('models.wb.edit.noop')); return true }
+          setNotice(translate('models.wb.edit.done'))
+          refresh()
+          return true
+        }
+
+        // ── 模型：删除（预览后果 → 一次最终确认）──────────────────────────────────
+        const previewRemove = async (modelId, removeIds) => {
+          setBusy(true); setError(''); setNotice('')
+          const res = await rpcCall('models2-remove-preview', { route, removeIds })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setRemoving({ modelId, removeIds, preview: res.value, plan: null })
+          setRemoveConfirms(0)
+        }
+        const planRemove = async () => {
+          if (removing === null) return
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-remove-plan', { route, removeIds: removing.removeIds })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setRemoving({ ...removing, plan: res.value })
+          setRemoveConfirms(1)
+        }
+        const commitRemove = async () => {
+          if (removing?.plan === null || removing?.plan === undefined) return
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-remove-commit', { planId: removing.plan.planId })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setRemoving(null); setRemoveConfirms(0)
+          setNotice(translate('models.wb.remove.done').replace('{n}', String(res.value.removed)))
+          refresh()
+        }
+
+        // ── 删除渠道：后果预览 → 最终确认（凭据保留）───────────────────────────────
+        const [deletePlan, setDeletePlan] = useState(null)
+        const [deleteArmed, setDeleteArmed] = useState(false)
+        const previewDelete = async () => {
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-route-remove-preview', { route })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setDeletePlan(res.value)
+        }
+        const commitDelete = async () => {
+          if (deletePlan === null) return
+          if (!deleteArmed) { setDeleteArmed(true); return }
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-route-remove-commit', { route, baseFingerprint: deletePlan.fingerprint })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); setDeleteArmed(false); return }
+          onChanged !== undefined && onChanged()
+          onBack()
+        }
+
+        // ── 撤销：预览 → 确认 ─────────────────────────────────────────────────────
+        const [undoOpen, setUndoOpen] = useState(false)
+        const [previewUndo, setPreviewUndo] = useState(false)
+        const undoPreview = async () => {
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-undo-preview', { route })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setUndoOpen(true)
+        }
+        const commitUndo = async () => {
+          if (!previewUndo) { setPreviewUndo(true); return }
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-undo-commit', { route })
+          setBusy(false)
+          setPreviewUndo(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setUndoOpen(false); setNotice(translate('models.wb.undo.done'))
+          refresh()
+        }
+
+        // ── 测试：保存后主动触发；发起前说明内容与费用 ─────────────────────────────
+        const [testState, setTestState] = useState(null)
+        const [testArmed, setTestArmed] = useState(false)
+        const runValidate = async (deep) => {
+          if (deep && !testArmed) { setTestArmed(true); return }
+          setBusy(true); setError(''); setTestArmed(false)
+          const res = await rpcCall('models2-validate', { route, ...(deep ? { deep: true } : {}) })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setTestState(res.value)
+          refresh()
+        }
+
+        if (detail === null && loadError === '') {
+          return el('div', { 'data-testid': 'models-section' }, [
+            el('button', { key: 'back', type: 'button', 'data-testid': 'models-detail-back', style: svcButtonStyle('ghost'), onClick: onBack }, translate('models.wb.create.cancel')),
+            el('p', { key: 'loading', style: WB_MUTED }, '…'),
+          ])
+        }
+        if (loadError !== '') {
+          return el('div', { 'data-testid': 'models-section' }, [
+            el('button', { key: 'back', type: 'button', 'data-testid': 'models-detail-back', style: svcButtonStyle('ghost'), onClick: onBack }, translate('models.wb.create.cancel')),
+            el('p', { key: 'error', role: 'alert', 'data-testid': 'models-detail-error', style: WB_ERROR }, loadError),
+          ])
+        }
+
+        const visibleRows = (rows ?? []).filter((model) => {
+          const q = search.trim().toLowerCase()
+          if (q === '') return true
+          return String(model?.id ?? '').toLowerCase().includes(q) || String(model?.name ?? '').toLowerCase().includes(q)
+        })
+        const attention = row.attention ?? []
+        const tabs = [
+          { id: 'models', label: translate('models.wb.tab.models'), count: (rows ?? []).length },
+          { id: 'connection', label: translate('models.wb.tab.connection') },
+          { id: 'danger', label: translate('models.wb.tab.danger') },
+        ]
+        return el('div', { 'data-testid': 'models-section' }, [
+          el('div', { key: 'head', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [
+            el('button', { key: 'back', type: 'button', 'data-testid': 'models-detail-back', style: svcButtonStyle('ghost'), onClick: attemptBack }, translate('models.wb.create.cancel')),
+            el('h3', { key: 'title', 'data-testid': 'models-provider-detail-title', style: { margin: '8px 0 0' } }, detail.displayName ?? route),
+            row.source === 'builtin' ? el('span', { key: 'builtin', style: svcBadgeStyle('info') }, translate('models.wb.builtinUser')) : null,
+          ]),
+          el('p', { key: 'summary', 'data-testid': 'models-provider-detail-summary', style: WB_MUTED }, [detail.baseURL ?? '', detail.api !== '' ? ` · ${detail.api}` : '', ` · ${(rows ?? []).length}`]),
+          attention.length > 0 ? el('div', { key: 'todos', 'data-testid': 'models-detail-todos', style: WB_CARD }, [
+            el('p', { key: 'head', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.detail.todos').replace('{n}', String(attention.length))),
+            ...attention.map((flag) => {
+              const labelKey = flag === 'dangling-credential' ? 'dangling' : flag === 'invalid-profile' ? 'invalid' : flag === 'validation-failed' ? 'validation' : flag === 'recovery-pending' ? 'recovery' : flag
+              return el('div', { key: flag, 'data-testid': 'models-detail-todo-' + flag, style: { fontSize: '12px', margin: '2px 0' } }, [
+                el('b', { key: 'label', style: { marginRight: '6px' } }, translate('models.wb.attention.' + labelKey)),
+                el('span', { key: 'hint', style: { color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.attention.' + labelKey + 'Hint')),
+              ])
+            }),
+          ]) : null,
+          leaveAsk ? el('div', { key: 'leave', 'data-testid': 'models-leave-ask', style: WB_CARD }, [
+            el('p', { key: 'msg', style: { margin: '0 0 6px', fontSize: '12px' } }, translate('models.wb.leave.body')),
+            el('div', { key: 'row', style: { display: 'flex', gap: '8px' } }, [
+              el('button', { key: 'stay', type: 'button', 'data-testid': 'models-leave-stay', style: svcButtonStyle('ghost'), onClick: () => setLeaveAsk(false) }, translate('models.wb.leave.stay')),
+              el('button', { key: 'go', type: 'button', 'data-testid': 'models-leave-go', style: svcButtonStyle('danger'), onClick: onBack }, translate('models.wb.leave.go')),
+            ]),
+          ]) : null,
+          el('div', { key: 'tabs', style: { display: 'flex', gap: '6px', marginTop: '10px', flexWrap: 'wrap' } },
+            tabs.map((item) => el('button', {
+              key: item.id, type: 'button', 'data-testid': 'models-detail-tab-' + item.id,
+              style: svcButtonStyle(tab === item.id ? 'primary' : 'neutral'),
+              onClick: () => setTab(item.id),
+            }, item.count === undefined ? item.label : `${item.label} (${item.count})`))),
+          error !== '' ? el('p', { key: 'error', role: 'alert', 'data-testid': 'models-detail-error', style: WB_ERROR }, error) : null,
+          notice !== '' ? el('p', { key: 'notice', 'data-testid': 'models-detail-notice', style: { margin: '8px 0 0', fontSize: '12px', color: 'var(--dsw-alias-state-success-primary)' } }, notice) : null,
+
+          // ── 连接信息 ──────────────────────────────────────────────────────────
+          tab === 'connection' ? el('div', { key: 'conn', 'data-testid': 'models-connection-panel', style: WB_CARD }, [
+            el('div', { key: 'name', style: { marginBottom: '6px' } }, [
+              el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.conn.displayName')),
+              el('input', { key: 'i', 'data-testid': 'models-conn-name', style: WB_INPUT, value: conn?.displayName ?? '', onChange: (event) => { setConn({ ...conn, displayName: event.target.value }); setConnPreview(null); setConnPlan(null) } }),
+            ]),
+            el('div', { key: 'api', style: { marginBottom: '6px' } }, [
+              el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.conn.api')),
+              el('select', { key: 's', 'data-testid': 'models-conn-api', style: WB_INPUT, value: conn?.api ?? '', onChange: (event) => { setConn({ ...conn, api: event.target.value }); setConnPreview(null); setConnPlan(null) } },
+                (detail.apiProtocols ?? []).map((protocol) => el('option', { key: protocol, value: protocol }, protocol))),
+            ]),
+            el('div', { key: 'url', style: { marginBottom: '6px' } }, [
+              el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.conn.baseURL')),
+              el('input', { key: 'i', 'data-testid': 'models-conn-baseurl', style: WB_INPUT, value: conn?.baseURL ?? '', placeholder: 'https://…', onChange: (event) => { setConn({ ...conn, baseURL: event.target.value }); setConnPreview(null); setConnPlan(null) } }),
+              el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.conn.urlHint')),
+            ]),
+            el('div', { key: 'key', style: { marginBottom: '6px' } }, [
+              el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.conn.key')),
+              el('input', {
+                key: 'i', 'data-testid': 'models-conn-key', style: WB_INPUT, type: 'password', value: keyDraft,
+                autoComplete: 'new-password', placeholder: translate('models.wb.conn.keyPlaceholder'),
+                onChange: (event) => { setKeyDraft(event.target.value); setConnPlan(null) },
+              }),
+              el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.conn.keyHint')),
+            ]),
+            connPreview !== null ? el('div', { key: 'preview', 'data-testid': 'models-conn-preview', style: { fontSize: '12px', marginTop: '6px' } }, [
+              el('p', { key: 'probe', style: { margin: 0 } }, connPreview.probeAllowed === true ? translate('models.wb.conn.probeOk') : translate('models.wb.conn.probeBlocked').replace('{reason}', connPreview.probeBlocked ?? '')),
+              el('p', { key: 'cred', style: { margin: '2px 0 0' } }, translate('models.wb.conn.credState')
+                .replace('{ref}', connPreview.credential?.ref ?? '')
+                .replace('{state}', connPreview.credential?.shadowed === true ? translate('models.wb.conn.credShadowed') : connPreview.credential?.configured === true ? translate('models.wb.conn.credConfigured') : translate('models.wb.conn.credAbsent'))),
+            ]) : null,
+            el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+              el('button', { key: 'save', type: 'button', 'data-testid': 'models-conn-save', style: svcButtonStyle('primary'), disabled: busy, onClick: () => void saveConnection() }, translate('models.wb.conn.save')),
+            ]),
+          ]) : null,
+          // 连接保存的后果预览：写哪些键、出网是否可用、凭据会怎样。
+          connPlan !== null ? el('div', { key: 'connPlan', 'data-testid': 'models-conn-plan', style: WB_CARD }, [
+            el('p', { key: 'title', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.conn.planTitle')),
+            el('p', { key: 'fields', style: Object.assign({}, WB_MUTED) }, translate('models.wb.conn.planFields').replace('{fields}', Object.keys(connPlan.preview.patch ?? {}).filter((k) => k !== 'badBaseURL').join(' / ') || translate('models.wb.conn.planNothing'))),
+            el('p', { key: 'key', style: Object.assign({}, WB_MUTED, { marginTop: '2px' }) }, connPlan.key !== '' ? translate('models.wb.conn.planKey') : translate('models.wb.conn.planNoKey')),
+            connPlan.preview.credential?.shadowed === true ? el('p', { key: 'shadow', 'data-testid': 'models-conn-plan-shadow', style: Object.assign({}, WB_ERROR, { marginTop: '4px' }) }, translate('models.wb.conn.shadowWarn').replace('{ref}', connPlan.preview.credential.ref)) : null,
+            el('div', { key: 'row', style: { display: 'flex', gap: '8px', marginTop: '8px' } }, [
+              el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-conn-plan-cancel', style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setConnPlan(null); setConnPreview(null) } }, translate('models.wb.create.cancel')),
+              el('button', { key: 'go', type: 'button', 'data-testid': 'models-conn-confirm', style: svcButtonStyle('primary'), disabled: busy, onClick: () => void commitConnection() }, translate('models.wb.conn.confirm')),
+            ]),
+          ]) : null,
+
+          // ── 模型列表 ──────────────────────────────────────────────────────────
+          tab === 'models' ? el('div', { key: 'models', 'data-testid': 'models-provider-models', style: WB_CARD }, [
+            el('div', { key: 'tools', style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, [
+              el('input', {
+                key: 'search', 'data-testid': 'models-model-search', style: Object.assign({}, WB_INPUT, { flex: 1, minWidth: '160px' }),
+                value: search, placeholder: translate('models.wb.search.placeholder'),
+                onChange: (event) => setSearch(event.target.value),
+              }),
+              el('button', { key: 'add', type: 'button', 'data-testid': 'models-add-open', style: svcButtonStyle(addOpen ? 'primary' : 'neutral'), onClick: () => setAddOpen(!addOpen) }, translate('models.wb.add.title')),
+            ]),
+            addOpen ? el(AddModelsPanel, { key: 'add-panel', row, detail, existingIds: new Set((rows ?? []).map((model) => model?.id)), onDone: () => { setAddOpen(false); refresh() }, onCancel: () => setAddOpen(false) }) : null,
+            rows === null
+              ? el('p', { key: 'loading', style: WB_MUTED }, '…')
+              : (rows ?? []).length === 0
+                ? el('p', { key: 'empty', 'data-testid': 'models-provider-models-empty', style: WB_MUTED }, translate('models.wb.detail.empty'))
+                : el('div', { key: 'list', 'data-testid': 'models-model-list', style: { marginTop: '8px' } }, [
+                    visibleRows.length === 0 ? el('p', { key: 'nomatch', 'data-testid': 'models-model-nomatch', style: WB_MUTED }, translate('models.wb.search.none')) : null,
+                    ...visibleRows.map((model) => el(ModelRow, {
+                      key: model.id, model, route, busy,
+                      expanded: editing === model.id,
+                      onToggle: () => setEditing(editing === model.id ? null : model.id),
+                      onSave: (patch) => patchRow(model.id, patch),
+                      onRemove: () => void previewRemove(model.id, [model.id]),
+                    })),
+                  ]),
+          ]) : null,
+          // 删除模型：后果清单 → 一次最终确认。
+          removing !== null ? el('div', { key: 'remove', 'data-testid': 'models-remove-panel', style: WB_CARD }, [
+            el('p', { key: 'title', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.remove.title').replace('{route}', removing.modelId)),
+            el('p', { key: 'after', 'data-testid': 'models-remove-after', style: WB_MUTED }, translate('models.wb.remove.after').replace('{n}', String(removing.preview.remainingCount))),
+            (removing.preview.references ?? []).some((ref) => ref.kind === 'agent-default-model')
+              ? el('p', { key: 'blocked', 'data-testid': 'models-remove-blocked', style: { margin: '4px 0 0', fontSize: '12px', color: 'var(--dsw-alias-state-warn-label)' } }, translate('models.wb.remove.ref.default'))
+              : null,
+            (removing.preview.blocked === true)
+              ? el('p', { key: 'blockedHint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.remove.blockedHint'))
+              : null,
+            removing.plan !== null ? el('p', { key: 'plan', 'data-testid': 'models-remove-plan-summary', style: { margin: '6px 0 0', fontSize: '12px' } }, translate('models.wb.remove.done').replace('{n}', String(removing.plan.removed))) : null,
+            error !== '' ? null : null,
+            el('div', { key: 'row', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+              el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-remove-cancel', style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setRemoving(null); setRemoveConfirms(0) } }, translate('models.wb.create.cancel')),
+              removing.plan === null
+                ? el('button', { key: 'plan', type: 'button', 'data-testid': 'models-remove-prepare', style: svcButtonStyle('primary'), disabled: busy || removing.preview.blocked === true, onClick: () => void planRemove() }, translate('models.wb.remove.plan'))
+                : el('button', { key: 'go', type: 'button', 'data-testid': 'models-remove-confirm', style: svcButtonStyle('danger'), disabled: busy, onClick: () => void commitRemove() }, removeConfirms > 0 ? translate('models.wb.remove.confirm') : translate('models.wb.remove.confirm')),
+            ]),
+          ]) : null,
+
+          // ── 撤销 ──────────────────────────────────────────────────────────────
+          undoOpen ? el(UndoPanel, { key: 'undo', route, onUndone: () => { setUndoOpen(false); refresh() }, onCancel: () => { setUndoOpen(false); setPreviewUndo(false) } }) : null,
+
+          // ── 测试 ──────────────────────────────────────────────────────────────
+          tab === 'models' ? el('div', { key: 'test', 'data-testid': 'models-test-panel', style: WB_CARD }, [
+            el('p', { key: 'title', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.test.title')),
+            el('p', { key: 'note', style: WB_MUTED }, translate('models.wb.test.note')),
+            el('div', { key: 'row', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+              el('button', { key: 'shallow', type: 'button', 'data-testid': 'models-test-run', style: svcButtonStyle('neutral'), disabled: busy, onClick: () => void runValidate(false) }, translate('models.wb.verify.run')),
+              el('button', { key: 'deep', type: 'button', 'data-testid': 'models-test-deep', style: svcButtonStyle(testArmed ? 'danger' : 'neutral'), disabled: busy, onClick: () => void runValidate(true) }, testArmed ? translate('models.wb.test.deepArmed') : translate('models.wb.test.deep')),
+            ]),
+            testArmed ? el('p', { key: 'armed', 'data-testid': 'models-test-cost', style: Object.assign({}, WB_MUTED, { marginTop: '6px' }) }, translate('models.wb.test.cost')) : null,
+            testState !== null ? el('div', { key: 'result', 'data-testid': 'models-test-result', style: { marginTop: '8px', fontSize: '12px' } }, [
+              ...(testState.checks ?? []).map((check, i) => el('div', { key: 'c' + i, 'data-testid': 'models-test-check-' + check.type, style: { margin: '2px 0' } },
+                `${check.type}: ${check.skipped === true ? translate('models.wb.verify.skipped') : check.ok === true ? translate('models.wb.verify.ok') : translate('models.wb.verify.fail')}${check.error !== undefined ? ` (${check.error})` : ''}`)),
+              el('p', { key: 'scope', 'data-testid': 'models-test-scope', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, testState.deep === true ? translate('models.wb.test.scopeDeep') : translate('models.wb.test.scopeShallow')),
+            ]) : null,
+          ]) : null,
+
+          // ── 危险区：撤销上次变更 + 删除渠道 ────────────────────────────────────
+          tab === 'danger' ? el('div', { key: 'danger', 'data-testid': 'models-danger-panel', style: WB_CARD }, [
+            el('p', { key: 'title', style: { margin: '0 0 6px', fontSize: '12px', fontWeight: 600 } }, translate('models.wb.danger.title')),
+            row.undoable === true
+              ? el('div', { key: 'undo', style: { marginBottom: '8px' } }, [
+                  el('p', { key: 'note', style: WB_MUTED }, translate('models.wb.undoWrite')),
+                  el('button', { key: 'go', type: 'button', 'data-testid': 'models-undo-open', style: svcButtonStyle('neutral'), disabled: busy, onClick: () => void undoPreview() }, translate('models.wb.undoWrite')),
+                ])
+              : el('p', { key: 'noundo', 'data-testid': 'models-undo-unavailable', style: WB_MUTED }, translate('models.wb.undo.nothing')),
+            deletePlan === null
+              ? el('button', { key: 'del', type: 'button', 'data-testid': 'models-route-delete', style: svcButtonStyle('dangerGhost'), disabled: busy, onClick: () => void previewDelete() }, translate('models.wb.routeDelete.btn'))
+              : el('div', { key: 'delPlan', 'data-testid': 'models-route-delete-plan', style: { marginTop: '8px', fontSize: '12px' } }, [
+                  el('p', { key: 'a', style: { margin: 0 } }, translate('models.wb.routeDelete.plan').replace('{n}', String(deletePlan.modelCount))),
+                  el('p', { key: 'b', style: { margin: '2px 0 0' } }, deletePlan.credential?.retained === true ? translate('models.wb.routeDelete.key').replace('{ref}', deletePlan.credential.ref ?? '') : translate('models.wb.routeDelete.noKey')),
+                  deletePlan.blocked === true ? el('p', { key: 'c', 'data-testid': 'models-route-delete-blocked', style: { margin: '2px 0 0', color: 'var(--dsw-alias-state-warn-label)' } }, translate('models.wb.routeDelete.blocked')) : null,
+                  deletePlan.references.length > 0 && deletePlan.blocked !== true ? el('p', { key: 'd', style: { margin: '2px 0 0', color: 'var(--dsw-alias-state-warn-label)' } }, translate('models.wb.routeDelete.refs').replace('{n}', String(deletePlan.references.length))) : null,
+                  el('div', { key: 'row', style: { display: 'flex', gap: '8px', marginTop: '8px' } }, [
+                    el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-route-delete-cancel', style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setDeletePlan(null); setDeleteArmed(false) } }, translate('models.wb.create.cancel')),
+                    el('button', { key: 'go', type: 'button', 'data-testid': 'models-route-delete-confirm', style: svcButtonStyle('danger'), disabled: busy || deletePlan.blocked === true, onClick: () => void commitDelete() }, deleteArmed ? translate('models.wb.routeDelete.confirmArmed') : translate('models.wb.routeDelete.confirm')),
+                  ]),
+                ]),
+          ]) : null,
+        ])
+      }
+
+      /** 模型行：折叠时只读一行；展开即**独立编辑面板**，保存按钮在面板内始终可达。 */
+      function ModelRow({ model, route, busy, expanded, onToggle, onSave, onRemove }) {
+        const translate = useTranslation()
+        const el = React.createElement
+        const { useState } = React
+        const [draft, setDraft] = useState(null)
+        const [error, setError] = useState('')
+        const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+        const current = draft ?? model
+        const open = () => {
+          if (!expanded) {
+            setDraft({
+              name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
+              input: model.input, reasoningEfforts: model.reasoningEfforts,
+            })
+            setError('')
+          }
+          onToggle()
+        }
+        const dirty = draft !== null && JSON.stringify({
+          name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens, input: model.input, reasoningEfforts: model.reasoningEfforts,
+        }) !== JSON.stringify(draft)
+        const effortRowValue = (level) => {
+          const efforts = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object' ? current.reasoningEfforts : null
+          if (efforts === null) return 'absent'
+          if (level === 'off') return Object.prototype.hasOwnProperty.call(efforts, 'off') ? 'mapped' : 'absent'
+          return typeof efforts[level] === 'string' && efforts[level] !== '' ? 'mapped' : 'absent'
+        }
+        /**
+         * 思考档位：每档一行，三选一单选（不提供 / 对应协议值 / 自定义）。
+         * `absent` = 该档不声明（不提供）；`mapped` = wire 值等于档位名；`custom` = 自填 wire 值。
+         * 未表态 ≠ 不支持：这里从不写 `undefined` 冒充「支持」，也不写字符串 'observed'。
+         */
+        const setEffort = (level, mode, custom) => {
+          const efforts = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object'
+            ? { ...current.reasoningEfforts }
+            : {}
+          if (mode === 'absent') delete efforts[level]
+          else if (mode === 'mapped') efforts[level] = level === 'off' ? null : level
+          else efforts[level] = custom ?? ''
+          const hasRealLevel = Object.entries(efforts).some(([key, wire]) => key !== 'off' && typeof wire === 'string' && wire !== '')
+          // 只剩 off = llm-pi-ai 校验必拒；此时不写回，明确提示缺映射而不是静默写一个非法值。
+          setError(hasRealLevel || Object.keys(efforts).length === 0 ? '' : translate('models.wb.effort.needLevel'))
+          setDraft({ ...draft ?? model, reasoningEfforts: Object.keys(efforts).length === 0 ? undefined : efforts })
+        }
+        const save = async () => {
+          if (draft === null) return
+          if (error !== '') return
+          const patch = {}
+          for (const field of ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts']) {
+            if (JSON.stringify(draft[field]) !== JSON.stringify(model[field])) patch[field] = draft[field]
+          }
+          if (Object.keys(patch).length === 0) { setError(translate('models.wb.edit.noop')); return }
+          const ok = await onSave(patch)
+          if (ok === true) { setDraft(null); onToggle() }
+        }
+        const badge = (label, style) => el('span', { key: label, style: style ?? svcBadgeStyle('neutral') }, label)
+        return el('div', { key: model.id, 'data-testid': 'models-model-card-' + model.id, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '8px 0' } }, [
+          el('div', { key: 'head', 'data-testid': 'models-model-' + model.id, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }, onClick: open }, [
+            el('code', { key: 'id', style: { fontSize: '13px', fontWeight: 600 } }, model.id),
+            typeof model.name === 'string' && model.name !== '' ? el('span', { key: 'name', style: { fontSize: '12px', color: 'var(--dsh-svc-text-muted)' } }, model.name) : null,
+            Array.isArray(model.input) && model.input.includes('image') ? badge(translate('models.wb.seeImage'), svcBadgeStyle('info')) : null,
+            model.reasoningEfforts !== undefined ? badge(translate('models.wb.reasoning')) : null,
+            Number.isInteger(model.contextWindow) && model.contextWindow > 0 ? el('span', { key: 'ctx', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, formatCapacity(model.contextWindow)) : null,
+            el('span', { key: 'arrow', style: { marginLeft: 'auto', fontSize: '12px' } }, expanded ? '▴' : '▾'),
+          ]),
+          expanded ? el('div', { key: 'panel', 'data-testid': 'models-model-panel-' + model.id, style: { marginTop: '8px' } }, [
+            el('div', { key: 'basic', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+              el('div', { key: 'name', style: { flex: 2, minWidth: '160px' } }, [
+                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.edit.name')),
+                el('input', { key: 'i', 'data-testid': 'models-edit-name-' + model.id, style: WB_INPUT, value: current.name ?? '', onChange: (event) => setDraft({ ...current, name: event.target.value === '' ? undefined : event.target.value }) }),
+              ]),
+              el('div', { key: 'ctx', style: { flex: 1, minWidth: '110px' } }, [
+                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.detail.context')),
+                el('input', { key: 'i', 'data-testid': 'models-edit-context-' + model.id, style: WB_INPUT, type: 'number', min: '1', value: current.contextWindow ?? '', onChange: (event) => setDraft({ ...current, contextWindow: event.target.value === '' ? undefined : Number(event.target.value) }) }),
+              ]),
+              el('div', { key: 'out', style: { flex: 1, minWidth: '110px' } }, [
+                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.detail.maxTokens')),
+                el('input', { key: 'i', 'data-testid': 'models-edit-maxtokens-' + model.id, style: WB_INPUT, type: 'number', min: '1', value: current.maxTokens ?? '', onChange: (event) => setDraft({ ...current, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) }) }),
+              ]),
+            ]),
+            el('div', { key: 'caps', style: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '8px' } }, [
+              el('label', { key: 'image', style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                el('input', { key: 'i', type: 'checkbox', 'data-testid': 'models-edit-image-' + model.id, checked: Array.isArray(current.input) && current.input.includes('image'), onChange: () => setDraft({ ...current, input: Array.isArray(current.input) && current.input.includes('image') ? undefined : ['text', 'image'] }) }),
+                translate('models.wb.edit.inputImage'),
+              ]),
+            ]),
+            el('div', { key: 'efforts', style: { marginTop: '8px' } }, [
+              el('p', { key: 'title', style: { margin: '0 0 4px', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.effort.title')),
+              ...THINKING_LEVELS.map((level) => {
+                const state = effortRowValue(level)
+                const currentWire = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object' ? current.reasoningEfforts[level] : undefined
+                return el('div', { key: level, 'data-testid': 'models-effort-row-' + level, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '2px 0' } }, [
+                  el('code', { key: 'l', style: { width: '64px', fontSize: '12px' } }, level),
+                  el('label', { key: 'absent', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-absent', checked: state === 'absent', onChange: () => setEffort(level, 'absent') }),
+                    translate('models.wb.effort.notOffered'),
+                  ]),
+                  el('label', { key: 'mapped', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-mapped', checked: state === 'mapped', onChange: () => setEffort(level, 'mapped') }),
+                    translate('models.wb.effort.protocolValue').replace('{value}', level === 'off' ? translate('models.wb.effort.offNoParam') : level),
+                  ]),
+                  el('label', { key: 'custom', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-custom', checked: state === 'custom', onChange: () => setEffort(level, 'custom', typeof currentWire === 'string' ? currentWire : '') }),
+                    translate('models.wb.effort.custom'),
+                  ]),
+                  state === 'custom' ? el('input', {
+                    key: 'v', 'data-testid': 'models-effort-' + level + '-value', style: Object.assign({}, WB_INPUT, { width: '140px', padding: '3px 8px', fontSize: '12px' }),
+                    value: typeof currentWire === 'string' ? currentWire : '',
+                    onChange: (event) => setEffort(level, 'custom', event.target.value),
+                  }) : null,
+                ])
+              }),
+              el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.effort.hint')),
+            ]),
+            error !== '' ? el('p', { key: 'error', role: 'alert', 'data-testid': 'models-edit-error-' + model.id, style: WB_ERROR }, error) : null,
+            el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+              el('button', { key: 'save', type: 'button', 'data-testid': 'models-edit-save-' + model.id, style: svcButtonStyle('primary'), disabled: busy || error !== '', onClick: () => void save() }, translate('models.wb.edit.save')),
+              el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-edit-cancel-' + model.id, style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setDraft(null); setError(''); onToggle() } }, translate('models.wb.create.cancel')),
+              el('button', { key: 'remove', type: 'button', 'data-testid': 'models-edit-remove-' + model.id, style: svcButtonStyle('dangerGhost'), disabled: busy, onClick: onRemove }, translate('models.wb.remove.btn')),
+              dirty ? el('span', { key: 'dirty', style: Object.assign({}, WB_MUTED, { alignSelf: 'center' }) }, translate('models.wb.edit.unsaved')) : null,
+            ]),
+          ]) : null,
+        ])
+      }
+
+      /**
+       * 添加入口：两条路都常开——在线发现（勾选批量添加，可搜索）与手动输入 ID。
+       * 发现失败/协议不支持/安全策略拒绝都只提示，手动路径照常可用；发现结果区分已添加与可添加。
+       */
+      function AddModelsPanel({ row, detail, existingIds, onDone, onCancel }) {
+        const translate = useTranslation()
+        const el = React.createElement
+        const { useState, useEffect } = React
+        const [source, setSource] = useState('online')
+        const [candidates, setCandidates] = useState(null)
+        const [busy, setBusy] = useState(false)
+        const [error, setError] = useState('')
+        const [search, setSearch] = useState('')
+        const [picked, setPicked] = useState(new Set())
+        const [manualIds, setManualIds] = useState('')
+        const [plan, setPlan] = useState(null)
+        const builtin = row.source === 'builtin'
+        const load = async (which) => {
+          // 换发现来源只重置发现结果；手动 ID 与已勾选项不受影响（两条路径同时可用）。
+          setSource(which); setBusy(true); setError(''); setCandidates(null); setPlan(null)
+          const res = await rpcCall('models2-model-options', { route: row.route, source: which })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setCandidates(res.value.candidates ?? [])
+        }
+        useEffect(() => { if (builtin) void load('builtin') }, [])
+        const submit = async () => {
+          setBusy(true); setError(''); setPlan(null)
+          const items = []
+          for (const candidate of candidates ?? []) {
+            if (!picked.has(candidate.optionHandle)) continue
+            items.push({ optionHandle: candidate.optionHandle, abilities: { image: 'observed', reasoning: 'observed' } })
+          }
+          // 手填：只接受 ID 文本，交给宿主做 wire-id 校验（客户端不自造字段值）。
+          const manual = manualIds.split(/[\s,]+/).map((id) => id.trim()).filter((id) => id !== '')
+          const res = await rpcCall('models2-model-prepare', { route: row.route, additions: items, ...(manual.length > 0 ? { manualIds: manual } : {}) })
+          void manual
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); return }
+          setPlan(res.value)
+        }
+        const commit = async () => {
+          if (plan === null) return
+          setBusy(true); setError('')
+          const res = await rpcCall('models2-model-commit', { planId: plan.planId })
+          setBusy(false)
+          if (res.ok !== true) { setError(mapModelsError(translate, res.error)); setPlan(null); return }
+          if (onDone !== undefined) onDone()
+        }
+        const filtered = (candidates ?? []).filter((candidate) => {
+          const q = search.trim().toLowerCase()
+          if (q === '') return true
+          return String(candidate.id ?? '').toLowerCase().includes(q) || String(candidate.name ?? '').toLowerCase().includes(q)
+        })
+        return el('div', { key: 'add', 'data-testid': 'models-add-panel', style: Object.assign({}, WB_CARD, { marginTop: '8px' }) }, [
+          el('div', { key: 'sources', style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, [
+            builtin ? el('button', { key: 'builtin', type: 'button', 'data-testid': 'models-add-source-builtin', style: svcButtonStyle(source === 'builtin' ? 'primary' : 'neutral'), disabled: busy, onClick: () => void load('builtin') }, translate('models.wb.builtin')) : null,
+            !builtin ? el('button', { key: 'online', type: 'button', 'data-testid': 'models-add-source-online', style: svcButtonStyle(source === 'online' ? 'primary' : 'neutral'), disabled: busy, onClick: () => void load('online') }, translate('models.wb.add.online')) : null,
+            el('button', { key: 'manual', type: 'button', 'data-testid': 'models-add-source-manual', style: svcButtonStyle(source === 'manual' ? 'primary' : 'neutral'), disabled: busy, onClick: () => { setSource('manual'); setError(''); setPlan(null) } }, translate('models.wb.add.manual')),
+          ]),
+          // 手动 ID 路径**始终可用**（发现失败、协议不支持、安全策略拒绝探测都不阻断它）。
+          el('div', { key: 'manual', style: { marginTop: '8px', display: source === 'manual' ? 'block' : 'none' } }, [
+            el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.add.manualIds')),
+            el('textarea', { key: 'i', 'data-testid': 'models-add-manual-ids', style: Object.assign({}, WB_INPUT, { minHeight: '60px' }), value: manualIds, placeholder: 'model-id-one\nmodel-id-two', onChange: (event) => { setManualIds(event.target.value); setPlan(null) } }),
+            el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.add.manualHint')),
+          ]),
+          el('div', { key: 'discovery', style: { marginTop: '8px', display: source === 'manual' && candidates === null ? 'none' : 'block' } }, [
+            busy && candidates === null ? el('p', { key: 'loading', style: WB_MUTED }, translate('models.wb.add.fetching')) : null,
+            candidates !== null ? el('div', { key: 'list' }, [
+              el('input', { key: 'search', 'data-testid': 'models-add-search', style: WB_INPUT, value: search, placeholder: translate('models.wb.search.placeholder'), onChange: (event) => setSearch(event.target.value) }),
+              el('p', { key: 'count', 'data-testid': 'models-add-count', style: Object.assign({}, WB_MUTED, { margin: '6px 0' }) }, translate('models.wb.add.count').replace('{n}', String(candidates.length)).replace('{added}', String(candidates.filter((c) => existingIds.has(c.id)).length))),
+              el('div', { key: 'rows', style: { maxHeight: '240px', overflow: 'auto' } }, filtered.map((candidate) => {
+                const added = existingIds.has(candidate.id)
+                const checked = picked.has(candidate.optionHandle)
+                return el('label', { key: candidate.id, 'data-testid': 'models-add-candidate-' + candidate.id, style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '12px', padding: '2px 0', cursor: added ? 'default' : 'pointer', opacity: added ? 0.6 : 1 } }, [
+                  el('input', {
+                    key: 'i', type: 'checkbox', 'data-testid': 'models-add-pick-' + candidate.id, checked, disabled: added,
+                    onChange: () => setPicked((current) => { const next = new Set(current); if (next.has(candidate.optionHandle)) next.delete(candidate.optionHandle); else next.add(candidate.optionHandle); return next }),
+                  }),
+                  el('code', { key: 'id' }, candidate.id),
+                  candidate.name !== undefined && candidate.name !== candidate.id ? el('span', { key: 'name', style: { color: 'var(--dsh-svc-text-muted)' } }, candidate.name) : null,
+                  added ? el('span', { key: 'added', style: svcBadgeStyle('neutral') }, translate('models.wb.add.already')) : null,
+                ])
+              })),
+            ]) : null,
+            // 发现失败不阻断：明确说明原因，并把手动 ID 路径摆在旁边。
+            error !== '' ? el('p', { key: 'error', role: 'alert', 'data-testid': 'models-add-error', style: WB_ERROR }, error) : null,
+            error !== '' ? el('p', { key: 'fallback', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.add.fallback')) : null,
+          ]),
+          plan !== null ? el('div', { key: 'plan', 'data-testid': 'models-add-plan', style: { marginTop: '8px', fontSize: '12px' } }, [
+            el('p', { key: 'summary', style: { margin: 0 } }, translate('models.wb.detail.changeSummary').replace('{changes}', String(plan.diff.changes.length)).replace('{added}', String(plan.diff.added.length)).replace('{removed}', String(plan.diff.removed.length))),
+            (plan.warnings ?? []).includes('unverified-model') ? el('p', { key: 'w', style: { margin: '4px 0 0', color: 'var(--dsw-alias-state-warn-label)' } }, translate('models.wb.add.unverified')) : null,
+            el('button', { key: 'go', type: 'button', 'data-testid': 'models-add-commit', style: Object.assign({}, svcButtonStyle('primary'), { marginTop: '6px' }), disabled: busy, onClick: () => void commit() }, translate('models.wb.add.commit')),
+          ]) : null,
+          plan === null && candidates !== null ? el('p', { key: 'note', style: Object.assign({}, WB_MUTED, { marginTop: '6px' }) }, translate('models.wb.add.note')) : null,
+          el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+            plan === null ? el('button', { key: 'prepare', type: 'button', 'data-testid': 'models-add-prepare', style: svcButtonStyle('primary'), disabled: busy || (picked.size === 0 && manualIds.trim() === ''), onClick: () => void submit() }, translate('models.wb.add.prepare')) : null,
+            el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-add-cancel', style: svcButtonStyle('ghost'), disabled: busy, onClick: onCancel }, translate('models.wb.create.cancel')),
+          ]),
+        ])
+      }
+
+      /** 兼容壳：v1.11 起只有一套界面（旧的 localStorage Simple/Legacy 分流已退役）。 */
+      function ProvidersWorkbench({ snapshot, reload }) {
+        return React.createElement(UnifiedProvidersWorkbench, { snapshot, reload })
       }
   /** 模型配置页：子标签「供应商与模型」（左，默认）+「子代理路由」（右）。
    * 只剩一个可用子页时整条子标签栏隐藏、直接渲染内容；两者全关时本页不可达（顶层标签已隐藏）。
@@ -1323,7 +1603,6 @@ function SimpleProvidersWorkbench({ snapshot, reload }) {
   return {
     ModelsSection,
     ProvidersWorkbench,
-    LegacyProvidersWorkbench,
     UndoPanel,
     WorkbenchTaskPage,
     CreateProviderCard,

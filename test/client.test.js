@@ -13998,6 +13998,12 @@ test('models page renders inside the primary tab, fetches a zero-network snapsho
     if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
     if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
     if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
     if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
     if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
@@ -14027,6 +14033,12 @@ test('models page sub-tabs switch between providers and subagent routing, and hi
     if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
     if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
     if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
     if (endpoint === 'subagent-route') return { ok: true, value: { mode: 'inherit' } }
     if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
@@ -14079,6 +14091,12 @@ test('models page detail view loads the full-fidelity route and renders configur
     if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
     if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
     if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
     // 详情页必须另拉全保真 route（快照的 routes 行不带 models 数组），且不能误用目录级数值。
     if (endpoint === 'models2-route') {
       return {
@@ -14113,11 +14131,23 @@ test('models page detail view loads the full-fidelity route and renders configur
   const text = renderer.text('settings.section')
   assert.match(text, /Full Model/, 'the configured model name renders')
   assert.match(text, /m-bare/, 'a bare model entry still renders (id only)')
-  // 详情页是**可编辑**基线，因此容量显示原始数值（1000000）而不是紧凑格式——
-  // 紧凑格式只用于只读展示（formatCapacity），可编辑输入框里必须是可回写的真实值。
-  assert.match(text, /1000000/, 'the editor shows the raw capacity it will write back')
-  assert.match(text, /Image/, 'the vision capability is surfaced')
-  assert.match(text, /思考/, 'the reasoning capability is surfaced')
+  // v1.11 统一界面：列表行是**紧凑只读**行（容量走 formatCapacity 紧凑展示），
+  // 可编辑的原始数值只出现在展开后的单模型独立编辑面板里。
+  assert.match(text, /1M/, 'the collapsed row shows the compact capacity')
+  // 展开单模型独立编辑面板：原始数值与能力控件都在面板内，保存按钮也在面板内。
+  renderer.findByTestId('models-model-m-full').props.onClick()
+  await renderer.flush()
+  // 输入框的 value 不进 textContent，按 props 断言：面板里必须是可回写的原始数值。
+  assert.equal(renderer.findByTestId('models-edit-context-m-full').props.value, 1000000, 'the editor panel shows the raw capacity it will write back')
+  assert.equal(renderer.hasTest('models-model-panel-m-full'), true, 'the per-model panel is independent of the long list')
+  assert.equal(renderer.hasTest('models-edit-save-m-full'), true, 'the save button lives inside the panel')
+  assert.equal(renderer.hasTest('models-effort-row-high'), true, 'reasoning levels are one row each')
+  // 每档三选一单选：不提供 / 对应协议值 / 自定义。
+  assert.equal(renderer.hasTest('models-effort-high-absent'), true)
+  assert.equal(renderer.hasTest('models-effort-high-mapped'), true)
+  assert.equal(renderer.hasTest('models-effort-high-custom'), true)
+  // 搜索框存在：数十个模型时列表可搜索。
+  assert.equal(renderer.hasTest('models-model-search'), true)
   // 返回列表。
   renderer.findByTestId('models-detail-back').props.onClick()
   await renderer.flush()
@@ -14145,4 +14175,276 @@ test('models page surfaces a failed snapshot without crashing the panel', async 
   // 端点缺席不得炸面板：页面照常渲染，只是没有路由行。
   assert.equal(renderer.hasTest('models-page'), true)
   assert.equal(renderer.findAllByTestIdPrefix('models-route-row-').length, 0)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.11 统一模型界面：连接编辑、换密钥、删除渠道与恢复、批量发现添加。
+// 全部走默认路径（不设任何 localStorage 模式），锁定「一套界面」这条产品决定。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('models page has one interface with no hidden localStorage mode switch', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-route') return { ok: true, value: { route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY', apiProtocols: ['openai-completions', 'openai-responses', 'anthropic-messages'], fingerprint: 'fp1', models: [{ id: 'm1' }] } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  }, { initialStorage: { 'dsh-service-models-workbench': 'legacy' } })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  // 即使浏览器里残留旧的 legacy 标记，默认路径也是同一套统一界面（该键已退役）。
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('models-detail-tab-connection'), true, 'connection editing is reachable from the default path')
+  assert.equal(renderer.hasTest('models-detail-tab-danger'), true, 'delete lives in the default path too')
+  assert.equal(renderer.hasTest('models-route-rescue'), false, 'rescue entry appears on the list page, not inside the detail page')
+})
+
+test('models page connection tab explains URL boundary, key handling and the write preview', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-route') return { ok: true, value: { route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY', apiProtocols: ['openai-completions', 'openai-responses', 'anthropic-messages'], fingerprint: 'fp1', models: [{ id: 'm1' }] } }
+    if (endpoint === 'models2-connection-preview') return {
+      ok: true,
+      value: {
+        route: 'cpa', patch: { baseURL: 'http://box.local/v1' }, fingerprint: 'fp2',
+        effectiveBaseURL: 'http://box.local/v1', probeAllowed: false, probeBlocked: 'probe-insecure',
+        credential: { ref: 'CPA_API_KEY', configured: true, writable: false, shadowed: true, source: 'env' },
+        references: [],
+      },
+    }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-detail-tab-connection').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  assert.match(text, /只有公网 HTTPS 地址才允许在线获取模型列表/, 'the URL boundary is stated in the UI')
+  assert.match(renderer.findByTestId('models-conn-key').props.placeholder, /不回显旧值/, 'the key field never echoes the old value')
+  // 密钥输入是 password 类型且初值为空：不预填、不回显。
+  const keyInput = renderer.findByTestId('models-conn-key')
+  assert.equal(keyInput.props.type, 'password')
+  assert.equal(keyInput.props.value, '')
+  // 改动连接 → 预览 → 展示将写入的字段、出网阻断原因与凭据遮蔽警告。
+  renderer.findByTestId('models-conn-baseurl').props.onChange({ target: { value: 'http://box.local/v1' } })
+  renderer.findByTestId('models-conn-save').props.onClick()
+  await renderer.flush()
+  const planText = renderer.text('settings.section')
+  assert.match(planText, /将写入以下字段/, 'the write preview names the fields it will touch')
+  assert.match(planText, /不可在线获取/, 'a blocked address is explained instead of silently failing')
+  assert.match(planText, /被环境变量遮蔽/, 'a shadowing environment is surfaced (real service refusal, not a fake success)')
+  // 确认提交时才真正写入，且回传服务端签发的指纹。
+  renderer.findByTestId('models-conn-confirm').props.onClick()
+  await renderer.flush()
+  const commit = calls.filter((call) => call.endpoint === 'models2-connection-commit')
+  assert.equal(commit.length, 1)
+  assert.equal(commit[0].payload.baseFingerprint, 'fp2', 'the client returns the server-issued fingerprint and never computes its own')
+})
+
+test('models page route deletion previews consequences and keeps the rescue entry on the list page', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-snapshot') {
+      return { ok: true, value: { routes: MODELS_SNAPSHOT.routes, removedRoutes: [{ route: 'gone', displayName: 'Old Relay', modelCount: 3, at: Date.now() - 60000, credentialRef: 'GONE_API_KEY', taken: false }] } }
+    }
+    if (endpoint === 'models2-route') return { ok: true, value: { route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY', apiProtocols: ['openai-completions'], fingerprint: 'fp1', models: [{ id: 'm1' }] } }
+    if (endpoint === 'models2-route-remove-preview') return { ok: true, value: { route: 'cpa', displayName: 'CPA Relay', modelCount: 1, fingerprint: 'fp1', references: [], credential: { ref: 'CPA_API_KEY', state: 'kept', retained: true }, blocked: false } }
+    if (endpoint === 'models2-route-remove-commit') return { ok: true, value: { route: 'cpa', removed: true, credentialRetained: true } }
+    if (endpoint === 'models2-route-restore') return { ok: true, value: { route: 'gone', restored: true, credentialRef: 'GONE_API_KEY', credentialValueRestored: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  // 恢复入口在列表页（渠道行消失后仍找得到）。
+  renderer.findByTestId('models-route-rescue-toggle').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /Old Relay/, 'a deleted route remains reachable for restore')
+  renderer.findByTestId('models-route-restore-gone').props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'models2-route-restore').length, 1)
+
+  // 详情页删除：先预览后果，再一次最终确认（没有第三次重复点击）。
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-detail-tab-danger').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-route-delete').props.onClick()
+  await renderer.flush()
+  const planText = renderer.text('settings.section')
+  assert.match(planText, /凭据 .* 会保留/, 'the credential-retention consequence is shown before deleting')
+  const confirm = renderer.findByTestId('models-route-delete-confirm')
+  confirm.props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'models2-route-remove-commit').length, 0, 'the first click only arms the destructive action')
+  // 第二击即执行：不做第三次确认。
+  const armed = renderer.findByTestId('models-route-delete-confirm')
+  armed.props.onClick()
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'models2-route-remove-commit').length, 1, 'the second click executes')
+})
+
+test('models page add panel discovers with search and multi-select while manual ids stay available', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-route') return { ok: true, value: { route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY', apiProtocols: ['openai-completions'], fingerprint: 'fp1', models: [{ id: 'm1' }] } }
+    if (endpoint === 'models2-model-options') return {
+      ok: true,
+      value: { route: 'cpa', source: 'online', candidates: [
+        { id: 'm1', name: 'Already Here', optionHandle: 'h1' },
+        { id: 'm2', name: 'Second', optionHandle: 'h2' },
+        { id: 'm3', name: 'Third', optionHandle: 'h3' },
+      ] },
+    }
+    if (endpoint === 'models2-model-prepare') return { ok: true, value: { planId: 'p1', route: 'cpa', diff: { changes: [], added: ['m2', 'm9'], removed: [] }, warnings: [] } }
+    if (endpoint === 'models2-model-commit') return { ok: true, value: { route: 'cpa', changed: true } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-add-open').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  const sourceCalls = calls.filter((call) => call.endpoint === 'models2-model-options')
+  assert.equal(sourceCalls.length, 0, 'entering the add panel does not probe the network by itself')
+  // 显式点击「在线获取」才出网。
+  renderer.findByTestId('models-add-source-online').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'models2-model-options').map((call) => call.payload), [{ route: 'cpa', source: 'online' }])
+  const text = renderer.text('settings.section')
+  assert.match(text, /3 个模型发现，其中 1 个已添加|发现 3 个模型/, 'already-added models are distinguished from addable ones')
+  // 已添加的行不可勾选。
+  assert.equal(renderer.findByTestId('models-add-pick-m1').props.disabled, true, 'an already-configured model cannot be picked twice')
+  // 搜索过滤 + 多选。
+  assert.equal(renderer.hasTest('models-add-search'), true)
+  renderer.findByTestId('models-add-search').props.onChange({ target: { value: 'sec' } })
+  await renderer.flush()
+  renderer.findByTestId('models-add-pick-m2').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  // 手动 ID 与勾选可同时提交。
+  renderer.findByTestId('models-add-source-manual').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-add-manual-ids').props.onChange({ target: { value: 'm9' } })
+  renderer.findByTestId('models-add-prepare').props.onClick()
+  await renderer.flush()
+  const prepare = calls.filter((call) => call.endpoint === 'models2-model-prepare')
+  assert.equal(prepare.length, 1)
+  assert.deepEqual(prepare[0].payload.manualIds, ['m9'], 'manual ids travel as plain id text')
+  assert.deepEqual(prepare[0].payload.additions, [{ optionHandle: 'h2', abilities: { image: 'observed', reasoning: 'observed' } }])
+})
+
+test('models page model row saves only the changed fields and never writes a literal observed', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-route') return {
+      ok: true,
+      value: {
+        route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY',
+        apiProtocols: ['openai-completions'], fingerprint: 'fp1',
+        models: [{ id: 'm1', name: 'One' }, { id: 'm2' }],
+      },
+    }
+    if (endpoint === 'models2-model-patch') return { ok: true, value: { route: 'cpa', modelId: payload.modelId, diff: { changes: [{ modelId: payload.modelId, field: 'contextWindow' }], added: [], removed: [] }, undoable: true } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-model-m1').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-edit-context-m1').props.onChange({ target: { value: '200000' } })
+  await renderer.flush()
+  renderer.findByTestId('models-edit-save-m1').props.onClick()
+  await renderer.flush()
+  const patch = calls.filter((call) => call.endpoint === 'models2-model-patch')
+  assert.equal(patch.length, 1)
+  assert.deepEqual(patch[0].payload.patch, { contextWindow: 200000 }, 'only the edited field is sent')
+  assert.equal('reasoningEfforts' in patch[0].payload.patch, false, 'untouched capabilities are not rewritten')
+
+  // 思考档位：单选「不提供」不写值；只留 off 时给出可读提示而不是静默写入非法映射。
+  renderer.findByTestId('models-model-m2').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-effort-high-mapped').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  renderer.findByTestId('models-edit-save-m2').props.onClick()
+  await renderer.flush()
+  const second = calls.filter((call) => call.endpoint === 'models2-model-patch')[1]
+  assert.deepEqual(second.payload.patch, { reasoningEfforts: { high: 'high' } }, 'a mapped level writes the protocol value, never the literal "observed"')
+  // 保存成功后面板收起 → 重新展开继续编辑（面板内按钮始终可达）。
+  renderer.findByTestId('models-model-m2').props.onClick()
+  await renderer.flush()
+  // off 单独选中 → 缺少非 off 档 → 面板给出提示并禁止保存。
+  renderer.findByTestId('models-effort-off-mapped').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  renderer.findByTestId('models-effort-high-absent').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /至少需要一档非 off 的映射值/, 'the missing mapping is explained instead of silently written')
+  assert.equal(renderer.findByTestId('models-edit-save-m2').props.disabled, true, 'saving an invalid mapping is blocked in the panel')
 })
