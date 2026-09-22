@@ -26,7 +26,7 @@
        * composer 座上。会话切换/模型切换/主题切换都自然跟随（数据属性驱动 CSS）。
        */
       const createModelProviderIcons = ({ ctx, getModelDirectories }) => {
-        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false }
+        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false, menuOpen: false }
 
         // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的那一枚 ────────────────
         // 官方「模型」二级列表把每个 provider 渲染成
@@ -56,6 +56,16 @@
           } catch (_) {}
         }
 
+        /** 摘掉一枚分组标题上的全部我方痕迹：插入的图标节点 + 标题上的门属性与就近变量。 */
+        const clearMenuGroupTitle = (title) => {
+          removeMenuGroupIcon(title)
+          iconDomRemoveAttr(title, MENU_GROUP_ATTR)
+          iconDomRemoveAttr(title, MODEL_ICON_ATTR)
+          iconDomRemoveAttr(title, MODEL_ICON_SEAT_ATTR)
+          iconDomRemoveVar(title, MODEL_ICON_VAR)
+          iconDomRemoveVar(title, MODEL_ICON_SIZE_VAR)
+        }
+
         /** 清空全部分组装饰（菜单关闭 / 切换会话 / 功能关闭 / 析构都走这里）。 */
         const clearMenuGroups = () => {
           const doc = docOrNull()
@@ -68,12 +78,7 @@
           let titles = []
           try { titles = Array.from(doc.querySelectorAll(`[${MENU_GROUP_ATTR}]`)) } catch (_) { titles = [] }
           for (const node of titles) {
-            removeMenuGroupIcon(node)
-            iconDomRemoveAttr(node, MENU_GROUP_ATTR)
-            iconDomRemoveAttr(node, MODEL_ICON_ATTR)
-            iconDomRemoveAttr(node, MODEL_ICON_SEAT_ATTR)
-            iconDomRemoveVar(node, MODEL_ICON_VAR)
-            iconDomRemoveVar(node, MODEL_ICON_SIZE_VAR)
+            clearMenuGroupTitle(node)
           }
         }
 
@@ -93,19 +98,25 @@
           if (doc === null || typeof doc.querySelectorAll !== 'function') return
           let titles = []
           try { titles = Array.from(doc.querySelectorAll(`[class*="_7KE1Ra_groupTitle"]`)) } catch (_) { return }
-          if (titles.length === 0) return
+          if (titles.length === 0) {
+            // 菜单关闭：规格口径是「菜单关闭也走 clearMenuGroups() 全量摘除」。官方 portal
+            // 卸载通常把整棵子树连同我方插入的节点一并带走，但那是官方实现细节；这里检测
+            // 「上一轮标题还在、这一轮没了」主动扫一遍，残留不依赖官方的卸载行为。
+            // 菜单从未开过时 menuOpen 为 false，零成本早退。
+            if (state.menuOpen) {
+              state.menuOpen = false
+              clearMenuGroups()
+            }
+            return
+          }
+          state.menuOpen = true
           for (const title of titles) {
             const provider = menuGroupProviderOf(title)
             if (provider === null) continue
             const resolved = resolveModelIcon(provider, { forComposer: true })
             if (resolved === null) {
               // 未适配渠道：官方标题零改动，顺带摘掉上一轮可能留下的残留。
-              removeMenuGroupIcon(title)
-              iconDomRemoveAttr(title, MENU_GROUP_ATTR)
-              iconDomRemoveAttr(title, MODEL_ICON_ATTR)
-              iconDomRemoveAttr(title, MODEL_ICON_SEAT_ATTR)
-              iconDomRemoveVar(title, MODEL_ICON_VAR)
-              iconDomRemoveVar(title, MODEL_ICON_SIZE_VAR)
+              clearMenuGroupTitle(title)
               continue
             }
             const useMask = resolved.spec.c !== 1
@@ -397,6 +408,7 @@
           state.lastSession = undefined
           state.lastProvider = null
           state.seat = null
+          state.menuOpen = false
         }
 
         return { start, stop, apply, clear, revive }

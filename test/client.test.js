@@ -13774,6 +13774,8 @@ test('model provider icons: model menu group titles get the provider mark before
   }
   const titles = ['DeepSeek', 'cpa', 'openrouter-f'].map((name) => makeNode(name))
   const titled = (name) => titles.find((t) => t.textContent === name)
+  // 菜单关闭 = 官方 portal 卸载，标题整体从文档消失（真机行为）。替身用这个开关模拟。
+  let menuClosed = false
   globalThis.document = {
     body: {},
     documentElement: {},
@@ -13786,7 +13788,7 @@ test('model provider icons: model menu group titles get the provider mark before
     },
     querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
     querySelectorAll: (sel) => {
-      if (sel.includes('groupTitle')) return titles
+      if (sel.includes('groupTitle')) return menuClosed ? [] : titles
       if (sel.includes('data-dshsvc-model-group-icon')) return titles.flatMap((t) => t.children)
       if (sel.includes('data-dshsvc-model-group')) return titles.filter((t) => t.hasAttribute('data-dshsvc-model-group'))
       if (sel.includes('model-icon-seat') && attrs.has('data-dshsvc-model-icon-seat')) return [seat]
@@ -13865,6 +13867,21 @@ test('model provider icons: model menu group titles get the provider mark before
       openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr),
       'openrouter',
       'hot re-enable must bring the title marks back (engine revival)',
+    )
+
+    // ⑦ 菜单关闭：规格口径是「菜单关闭也走 clearMenuGroups() 全量摘除」。替身把标题从
+    //    文档摘掉后，引擎须主动扫除我方留在标题上的节点与属性——不能依赖「官方卸载
+    //    顺带带走我方节点」这一实现细节；再开菜单要能重新装饰。
+    menuClosed = true
+    await rerun()
+    assert.equal(openrouterTitle.children.length, 0, 'menu close sweeps the inserted icon')
+    assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false, 'menu close sweeps the title gate attribute')
+    menuClosed = false
+    await rerun()
+    assert.equal(
+      openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr),
+      'openrouter',
+      'reopening the menu redecorates after a close sweep',
     )
 
     // ⑥ 析构：插入的节点与标题属性全部摘除（不留残影）。
