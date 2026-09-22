@@ -80,12 +80,39 @@ function createModelsWorkbench({ useTranslation, rpcCall, SvcTabs, useFeatures }
         input: 'models.plan.field.input',
         reasoningEfforts: 'models.plan.field.reasoningEfforts',
       }
+      /** 紧凑容量文案（列表行用）：1e6 → 1M、1e3 → 1K。 */
       function formatCapacity(value) {
         const number = Number(value)
         if (!Number.isFinite(number)) return ''
         if (number >= 1e6) return `${Math.round(number / 1e5) / 10}M`
         if (number >= 1e3) return `${Math.round(number / 1e2) / 10}K`
         return String(number)
+      }
+      /** 容量字段的可编辑文本（与官方设置页同款）：整数按 K/M 最短写法回显。 */
+      function capacityText(value) {
+        if (!Number.isInteger(value) || value <= 0) return value === undefined || value === null ? '' : String(value)
+        if (value % 1e6 === 0) return `${value / 1e6}M`
+        if (value % 1e3 === 0) return `${value / 1e3}K`
+        return String(value)
+      }
+      /**
+       * 解析容量文本：纯数字可带 K/M 后缀（1M = 1000K，与模型容量的通行写法一致）。
+       * 返回 `undefined` = 留空（继承目录默认值），`NaN` = 不可读（由调用方拒绝保存）。
+       */
+      function parseCapacity(text) {
+        const trimmed = String(text ?? '').trim()
+        if (trimmed === '') return undefined
+        const match = /^(\d+(?:\.\d+)?)([km])?$/i.exec(trimmed)
+        if (match === null) return NaN
+        const suffix = match[2] === undefined ? '' : match[2].toLowerCase()
+        const scale = suffix === 'k' ? 1e3 : suffix === 'm' ? 1e6 : 1
+        const scaled = Number(match[1]) * scale
+        const rounded = Math.round(scaled)
+        return Math.abs(scaled - rounded) < 1e-6 ? rounded : scaled
+      }
+      /** 模型行的输出模态（只读展示）：条目自带 output 才用，否则按适配器默认 text。 */
+      function outputModalitiesOf(model) {
+        return Array.isArray(model?.output) && model.output.length > 0 ? model.output : ['text']
       }
       /** 相对时间（v0.43 修复 en 硬编码中文）：统一走词典。 */
       function formatRelativeTime(translate, at) {
@@ -1319,126 +1346,268 @@ function createModelsWorkbench({ useTranslation, rpcCall, SvcTabs, useFeatures }
         ])
       }
 
-      /** 模型行：折叠时只读一行；展开即**独立编辑面板**，保存按钮在面板内始终可达。 */
+      /** 折叠行里的图标（内联 SVG，客户端半不引第三方图标包）：chevron + 垃圾桶。 */
+      function wbChevron(expanded) {
+        return React.createElement('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true, style: { transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 120ms ease' } },
+          React.createElement('path', { d: 'M6 3.5L10.5 8L6 12.5', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }))
+      }
+      function wbTrashIcon() {
+        return React.createElement('svg', { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+          React.createElement('path', { d: 'M2.5 4.5h11M6.5 4.5V3h3v1.5M4 4.5l.7 8.2a1 1 0 0 0 1 .8h4.6a1 1 0 0 0 1-.8L12 4.5M6.6 7v4M9.4 7v4', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' }))
+      }
+      /** 模态小方块（参考图形态）：选中=高亮描边，未选=弱化描边；`text` 末位不可取消。 */
+      function wbModalityBox({ testId, checked, disabled, label, glyph, onToggle }) {
+        const el = React.createElement
+        return el('label', {
+          key: testId, 'data-testid': testId + '-box', 'data-checked': checked ? 'true' : 'false',
+          title: label, 'aria-label': label,
+          style: {
+            position: 'relative',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+            minWidth: '38px', height: '34px', padding: '0 8px', cursor: disabled ? 'default' : 'pointer',
+            borderRadius: '9px',
+            border: checked ? '1px solid var(--dsh-svc-border-strong)' : '1px solid var(--dsw-alias-border-l2)',
+            background: checked ? 'var(--dsw-alias-bg-layer-3)' : 'var(--dsw-alias-bg-layer-2)',
+            color: checked ? 'var(--dsw-alias-label-primary)' : 'var(--dsh-svc-text-muted)',
+            opacity: disabled ? 0.55 : 1,
+          },
+        }, [
+          el('input', {
+            key: 'i', type: 'checkbox', 'data-testid': testId, checked, disabled,
+            style: { position: 'absolute', inset: 0, opacity: 0, margin: 0, cursor: disabled ? 'default' : 'pointer' },
+            onChange: () => { if (disabled !== true) onToggle() },
+          }),
+          typeof glyph === 'string' ? el('span', { key: 'g', style: { fontSize: '13px', fontWeight: 600, lineHeight: 1 } }, glyph) : glyph,
+        ])
+      }
+
+      /**
+       * 单模型独立编辑面板（参考图「模型目录」形态）：一行身份 + 展开的模型选项。
+       *
+       * 语义不变量（规格 §3）：未勾选任何推理档 = **不声明**（继承目录能力），
+       * 绝不把「未表态」写回成空映射或 `false`；显式声明非推理模型必须单独勾选。
+       * 保存按钮在面板内始终可达；草稿只在本页，保存失败不清空。
+       */
       function ModelRow({ model, route, busy, expanded, onToggle, onSave, onRemove }) {
         const translate = useTranslation()
         const el = React.createElement
         const { useState } = React
         const [draft, setDraft] = useState(null)
         const [error, setError] = useState('')
-        const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+        // 容量字段是文本（可写 `256K`/`1M`）：未提交的原始文本留在本地，失焦才归一。
+        const [capacityTexts, setCapacityTexts] = useState({})
+        const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+        const EDITABLE = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts']
         const current = draft ?? model
+        const snapshotOf = (source) => ({
+          name: source.name, contextWindow: source.contextWindow, maxTokens: source.maxTokens,
+          input: source.input, reasoningEfforts: source.reasoningEfforts,
+        })
         const open = () => {
-          if (!expanded) {
-            setDraft({
-              name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
-              input: model.input, reasoningEfforts: model.reasoningEfforts,
-            })
-            setError('')
-          }
+          if (!expanded) { setDraft(snapshotOf(model)); setCapacityTexts({}); setError('') }
           onToggle()
         }
-        const dirty = draft !== null && JSON.stringify({
-          name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens, input: model.input, reasoningEfforts: model.reasoningEfforts,
-        }) !== JSON.stringify(draft)
-        const effortRowValue = (level) => {
-          const efforts = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object' ? current.reasoningEfforts : null
-          if (efforts === null) return 'absent'
-          if (level === 'off') return Object.prototype.hasOwnProperty.call(efforts, 'off') ? 'mapped' : 'absent'
-          return typeof efforts[level] === 'string' && efforts[level] !== '' ? 'mapped' : 'absent'
+        const dirty = draft !== null && JSON.stringify(snapshotOf(model)) !== JSON.stringify(draft)
+        const patchDraft = (patch) => setDraft({ ...(draft ?? model), ...patch })
+        const effortsOf = () => {
+          const efforts = current.reasoningEfforts
+          return efforts !== undefined && efforts !== false && typeof efforts === 'object' && efforts !== null ? { ...efforts } : {}
+        }
+        const wireOf = (level) => {
+          const efforts = effortsOf()
+          if (!Object.prototype.hasOwnProperty.call(efforts, level)) return undefined
+          return efforts[level]
+        }
+        const levelChecked = (level) => wireOf(level) !== undefined
+        /** 档位勾选/取消：勾选即写同名协议值（off 写 null = 关闭时不发送参数），取消即删除该档。 */
+        const toggleLevel = (level) => {
+          const efforts = effortsOf()
+          if (Object.prototype.hasOwnProperty.call(efforts, level)) delete efforts[level]
+          else efforts[level] = level === 'off' ? null : level
+          applyEfforts(efforts)
+        }
+        /** 行内协议值：等于档位名即「默认」，改写成别的非空串即自定义。 */
+        const setWire = (level, text) => {
+          const efforts = effortsOf()
+          efforts[level] = text
+          applyEfforts(efforts)
+        }
+        const toggleNonReasoning = () => {
+          patchDraft({ reasoningEfforts: current.reasoningEfforts === false ? undefined : false })
+          setError('')
         }
         /**
-         * 思考档位：每档一行，三选一单选（不提供 / 对应协议值 / 自定义）。
-         * `absent` = 该档不声明（不提供）；`mapped` = wire 值等于档位名；`custom` = 自填 wire 值。
-         * 未表态 ≠ 不支持：这里从不写 `undefined` 冒充「支持」，也不写字符串 'observed'。
+         * 写回映射前先自检：只声明 off / 留空的自定义值 = llm-pi-ai 校验必拒。
+         * 这里不静默写入非法值，而是就地提示并禁止保存（规格 §3「不写伪值」）。
          */
-        const setEffort = (level, mode, custom) => {
-          const efforts = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object'
-            ? { ...current.reasoningEfforts }
-            : {}
-          if (mode === 'absent') delete efforts[level]
-          else if (mode === 'mapped') efforts[level] = level === 'off' ? null : level
-          else efforts[level] = custom ?? ''
-          const hasRealLevel = Object.entries(efforts).some(([key, wire]) => key !== 'off' && typeof wire === 'string' && wire !== '')
-          // 只剩 off = llm-pi-ai 校验必拒；此时不写回，明确提示缺映射而不是静默写一个非法值。
-          setError(hasRealLevel || Object.keys(efforts).length === 0 ? '' : translate('models.wb.effort.needLevel'))
-          setDraft({ ...draft ?? model, reasoningEfforts: Object.keys(efforts).length === 0 ? undefined : efforts })
+        const applyEfforts = (efforts) => {
+          const nonOff = Object.entries(efforts).some(([level, wire]) => level !== 'off' && typeof wire === 'string' && wire !== '')
+          const offOnly = Object.keys(efforts).length > 0 && Object.keys(efforts).every((level) => level === 'off')
+          const blankCustom = Object.entries(efforts).some(([level, wire]) => level !== 'off' && typeof wire === 'string' && wire === '')
+          setError(offOnly || blankCustom || (Object.keys(efforts).length > 0 && !nonOff) ? translate('models.wb.effort.needLevel') : '')
+          patchDraft({ reasoningEfforts: Object.keys(efforts).length === 0 ? undefined : efforts })
+        }
+        const setCapacity = (field, text) => {
+          setCapacityTexts((state) => ({ ...state, [field]: text }))
+          const parsed = parseCapacity(text)
+          setError(Number.isNaN(parsed) ? translate('models.wb.edit.capacityInvalid') : '')
+          if (Number.isNaN(parsed)) return
+          patchDraft({ [field]: parsed })
+        }
+        const settleCapacity = (field) => {
+          setCapacityTexts((state) => {
+            const next = { ...state }
+            delete next[field]
+            return next
+          })
+        }
+        const capacityValue = (field) => (Object.prototype.hasOwnProperty.call(capacityTexts, field)
+          ? capacityTexts[field]
+          : capacityTextOf(field))
+        const capacityTextOf = (field) => {
+          const value = (draft ?? model)[field]
+          return value === undefined || value === null ? '' : capacityText(value)
+        }
+        const inputModes = () => (Array.isArray(current.input) && current.input.length > 0 ? current.input : ['text'])
+        const toggleModality = (modality) => {
+          const selected = inputModes()
+          const next = ['text', 'image'].filter((value) => (value === modality ? !selected.includes(value) : selected.includes(value)))
+          // 空集合非法（schema 要求非空）；恒保留 text，与官方设置页同款。
+          patchDraft({ input: next.length === 0 ? ['text'] : next })
         }
         const save = async () => {
-          if (draft === null) return
-          if (error !== '') return
+          if (draft === null || error !== '') return
           const patch = {}
-          for (const field of ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts']) {
+          for (const field of EDITABLE) {
             if (JSON.stringify(draft[field]) !== JSON.stringify(model[field])) patch[field] = draft[field]
           }
           if (Object.keys(patch).length === 0) { setError(translate('models.wb.edit.noop')); return }
           const ok = await onSave(patch)
-          if (ok === true) { setDraft(null); onToggle() }
+          if (ok === true) { setDraft(null); setCapacityTexts({}); onToggle() }
         }
-        const badge = (label, style) => el('span', { key: label, style: style ?? svcBadgeStyle('neutral') }, label)
+        const fieldBox = (label, children, extra) => el('div', { key: label, style: Object.assign({ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 }, extra) }, [
+          el('label', { key: 'l', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, label),
+          children,
+        ])
+        const modes = inputModes()
+        // 输出模态读**源行**而不是草稿：草稿快照只含可编辑字段，`output` 不在其中。
+        const outputs = outputModalitiesOf(model)
+        const fieldset = (legend, children) => el('fieldset', { key: legend, style: { border: 'none', margin: 0, padding: 0, minWidth: 0 } }, [
+          el('legend', { key: 'g', style: { padding: 0, marginBottom: '4px', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, legend),
+          children,
+        ])
         return el('div', { key: model.id, 'data-testid': 'models-model-card-' + model.id, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '8px 0' } }, [
           el('div', { key: 'head', 'data-testid': 'models-model-' + model.id, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', cursor: 'pointer' }, onClick: open }, [
             el('code', { key: 'id', style: { fontSize: '13px', fontWeight: 600 } }, model.id),
             typeof model.name === 'string' && model.name !== '' ? el('span', { key: 'name', style: { fontSize: '12px', color: 'var(--dsh-svc-text-muted)' } }, model.name) : null,
-            Array.isArray(model.input) && model.input.includes('image') ? badge(translate('models.wb.seeImage'), svcBadgeStyle('info')) : null,
-            model.reasoningEfforts !== undefined ? badge(translate('models.wb.reasoning')) : null,
+            Array.isArray(model.input) && model.input.includes('image') ? el('span', { key: 'img', style: svcBadgeStyle('info') }, translate('models.wb.seeImage')) : null,
+            model.reasoningEfforts !== undefined ? el('span', { key: 'think', style: svcBadgeStyle('neutral') }, translate('models.wb.reasoning')) : null,
             Number.isInteger(model.contextWindow) && model.contextWindow > 0 ? el('span', { key: 'ctx', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, formatCapacity(model.contextWindow)) : null,
-            el('span', { key: 'arrow', style: { marginLeft: 'auto', fontSize: '12px' } }, expanded ? '▴' : '▾'),
+            el('span', { key: 'arrow', style: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '4px' } }, [
+              el('button', {
+                key: 'remove', type: 'button', 'data-testid': 'models-edit-remove-' + model.id,
+                title: translate('models.wb.remove.btn'), 'aria-label': translate('models.wb.remove.btn'),
+                disabled: busy,
+                style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '26px', height: '26px', padding: 0, borderRadius: '7px', border: '1px solid transparent', background: 'transparent', color: 'var(--dsh-svc-text-muted)', cursor: 'pointer' },
+                onClick: (event) => { event.stopPropagation(); onRemove() },
+              }, wbTrashIcon()),
+              el('span', { key: 'chev', style: { display: 'inline-flex', color: 'var(--dsh-svc-text-muted)' } }, wbChevron(expanded)),
+            ]),
           ]),
-          expanded ? el('div', { key: 'panel', 'data-testid': 'models-model-panel-' + model.id, style: { marginTop: '8px' } }, [
-            el('div', { key: 'basic', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
-              el('div', { key: 'name', style: { flex: 2, minWidth: '160px' } }, [
-                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.edit.name')),
-                el('input', { key: 'i', 'data-testid': 'models-edit-name-' + model.id, style: WB_INPUT, value: current.name ?? '', onChange: (event) => setDraft({ ...current, name: event.target.value === '' ? undefined : event.target.value }) }),
-              ]),
-              el('div', { key: 'ctx', style: { flex: 1, minWidth: '110px' } }, [
-                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.detail.context')),
-                el('input', { key: 'i', 'data-testid': 'models-edit-context-' + model.id, style: WB_INPUT, type: 'number', min: '1', value: current.contextWindow ?? '', onChange: (event) => setDraft({ ...current, contextWindow: event.target.value === '' ? undefined : Number(event.target.value) }) }),
-              ]),
-              el('div', { key: 'out', style: { flex: 1, minWidth: '110px' } }, [
-                el('label', { key: 'l', style: { display: 'block', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.detail.maxTokens')),
-                el('input', { key: 'i', 'data-testid': 'models-edit-maxtokens-' + model.id, style: WB_INPUT, type: 'number', min: '1', value: current.maxTokens ?? '', onChange: (event) => setDraft({ ...current, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) }) }),
-              ]),
+          expanded ? el('div', { key: 'panel', 'data-testid': 'models-model-panel-' + model.id, style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '10px' } }, [
+            // 身份行：ID 只读（改 id 是增删，不是编辑），显示名可改。
+            el('div', { key: 'identity', style: { display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: '8px' } }, [
+              fieldBox(translate('models.wb.edit.modelId'), el('code', { key: 'id', 'data-testid': 'models-edit-id-' + model.id, style: Object.assign({}, WB_INPUT, { display: 'block', color: 'var(--dsh-svc-text-muted)' }) }, model.id)),
+              fieldBox(translate('models.wb.edit.name'), el('input', {
+                key: 'i', 'data-testid': 'models-edit-name-' + model.id, style: WB_INPUT,
+                value: current.name ?? '', placeholder: translate('models.wb.edit.displayNamePlaceholder'),
+                onChange: (event) => patchDraft({ name: event.target.value === '' ? undefined : event.target.value }),
+              })),
             ]),
-            el('div', { key: 'caps', style: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '8px' } }, [
-              el('label', { key: 'image', style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
-                el('input', { key: 'i', type: 'checkbox', 'data-testid': 'models-edit-image-' + model.id, checked: Array.isArray(current.input) && current.input.includes('image'), onChange: () => setDraft({ ...current, input: Array.isArray(current.input) && current.input.includes('image') ? undefined : ['text', 'image'] }) }),
-                translate('models.wb.edit.inputImage'),
-              ]),
+            // 容量：文本 + K/M 后缀（与官方设置页同款），留空 = 继承目录默认值。
+            el('div', { key: 'capacity', style: { display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: '8px' } }, [
+              fieldBox(translate('models.wb.edit.context'), el('input', {
+                key: 'i', 'data-testid': 'models-edit-context-' + model.id, style: WB_INPUT,
+                value: capacityValue('contextWindow'), placeholder: translate('models.wb.edit.contextPlaceholder'),
+                onChange: (event) => setCapacity('contextWindow', event.target.value),
+                onBlur: () => settleCapacity('contextWindow'),
+              })),
+              fieldBox(translate('models.wb.edit.maxTokens'), el('input', {
+                key: 'i', 'data-testid': 'models-edit-maxtokens-' + model.id, style: WB_INPUT,
+                value: capacityValue('maxTokens'), placeholder: translate('models.wb.edit.maxTokensPlaceholder'),
+                onChange: (event) => setCapacity('maxTokens', event.target.value),
+                onBlur: () => settleCapacity('maxTokens'),
+              })),
             ]),
-            el('div', { key: 'efforts', style: { marginTop: '8px' } }, [
-              el('p', { key: 'title', style: { margin: '0 0 4px', fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.effort.title')),
-              ...THINKING_LEVELS.map((level) => {
-                const state = effortRowValue(level)
-                const currentWire = current.reasoningEfforts !== undefined && current.reasoningEfforts !== false && typeof current.reasoningEfforts === 'object' ? current.reasoningEfforts[level] : undefined
-                return el('div', { key: level, 'data-testid': 'models-effort-row-' + level, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '2px 0' } }, [
-                  el('code', { key: 'l', style: { width: '64px', fontSize: '12px' } }, level),
-                  el('label', { key: 'absent', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
-                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-absent', checked: state === 'absent', onChange: () => setEffort(level, 'absent') }),
-                    translate('models.wb.effort.notOffered'),
-                  ]),
-                  el('label', { key: 'mapped', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
-                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-mapped', checked: state === 'mapped', onChange: () => setEffort(level, 'mapped') }),
-                    translate('models.wb.effort.protocolValue').replace('{value}', level === 'off' ? translate('models.wb.effort.offNoParam') : level),
-                  ]),
-                  el('label', { key: 'custom', style: { display: 'inline-flex', gap: '4px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
-                    el('input', { key: 'i', type: 'radio', name: 'effort-' + model.id + '-' + level, 'data-testid': 'models-effort-' + level + '-custom', checked: state === 'custom', onChange: () => setEffort(level, 'custom', typeof currentWire === 'string' ? currentWire : '') }),
-                    translate('models.wb.effort.custom'),
-                  ]),
-                  state === 'custom' ? el('input', {
-                    key: 'v', 'data-testid': 'models-effort-' + level + '-value', style: Object.assign({}, WB_INPUT, { width: '140px', padding: '3px 8px', fontSize: '12px' }),
-                    value: typeof currentWire === 'string' ? currentWire : '',
-                    onChange: (event) => setEffort(level, 'custom', event.target.value),
-                  }) : null,
-                ])
-              }),
-              el('p', { key: 'hint', style: Object.assign({}, WB_MUTED, { marginTop: '4px' }) }, translate('models.wb.effort.hint')),
+            // 输入/输出模态：输入可勾（文本恒留至少一项），输出由适配器决定，只读展示。
+            el('div', { key: 'modes', style: { display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: '8px' } }, [
+              fieldset(translate('models.wb.edit.inputModalities'), el('div', { key: 'row', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+                wbModalityBox({ testId: 'models-edit-mode-text-' + model.id, checked: modes.includes('text'), disabled: modes.length === 1 && modes.includes('text'), label: translate('models.wb.edit.modalityText'), glyph: 'T', onToggle: () => toggleModality('text') }),
+                wbModalityBox({ testId: 'models-edit-mode-image-' + model.id, checked: modes.includes('image'), disabled: false, label: translate('models.wb.edit.modalityImage'), glyph: '▣', onToggle: () => toggleModality('image') }),
+              ])),
+              fieldset(translate('models.wb.edit.outputModalities'), el('div', { key: 'row', style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+                el('div', { key: 'out', 'data-testid': 'models-edit-output-' + model.id, style: { display: 'inline-flex', gap: '6px', flexWrap: 'wrap' } },
+                  outputs.map((modality) => el('span', {
+                    key: modality, 'data-testid': 'models-edit-output-' + modality + '-' + model.id,
+                    style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: '38px', height: '34px', padding: '0 8px', borderRadius: '9px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsh-svc-text-muted)', fontSize: '13px', fontWeight: 600 },
+                  }, modality === 'image' ? '▣' : 'T'))),
+              ])),
+            ]),
+            // 推理档位：胶囊勾选 + 行内协议值；另设显式「非推理模型」开关。
+            el('div', { key: 'efforts', style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, [
+              el('label', { key: 'title', style: { fontSize: '11px', color: 'var(--dsh-svc-text-muted)' } }, translate('models.wb.edit.reasoningLevels')),
+              current.reasoningEfforts === false ? null : el('div', { key: 'chips', style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } },
+                LEVELS.filter((level) => level !== 'off').map((level) => {
+                  const checked = levelChecked(level)
+                  return el('span', { key: level, style: { display: 'inline-flex', alignItems: 'center', gap: '6px' } }, [
+                    el('label', {
+                      key: 'chip', 'data-testid': 'models-effort-toggle-' + model.id + '-' + level + '-chip', 'data-checked': checked ? 'true' : 'false',
+                      style: {
+                        position: 'relative',
+                        display: 'inline-flex', alignItems: 'center', cursor: 'pointer',
+                        padding: '3px 10px', borderRadius: '999px', fontSize: '12px',
+                        border: checked ? '1px solid var(--dsh-svc-border-strong)' : '1px solid var(--dsw-alias-border-l2)',
+                        background: checked ? 'var(--dsw-alias-bg-layer-3)' : 'var(--dsw-alias-bg-layer-2)',
+                        color: checked ? 'var(--dsw-alias-label-primary)' : 'var(--dsh-svc-text-muted)',
+                      },
+                    }, [
+                      el('input', {
+                        key: 'i', type: 'checkbox', 'data-testid': 'models-effort-toggle-' + model.id + '-' + level, checked,
+                        style: { position: 'absolute', inset: 0, opacity: 0, margin: 0, cursor: 'pointer' },
+                        onChange: () => toggleLevel(level),
+                      }),
+                      level,
+                    ]),
+                    // 勾选后行内展开协议值：默认=同名档位，改写即自定义。
+                    checked ? el('input', {
+                      key: 'wire', 'data-testid': 'models-effort-wire-' + model.id + '-' + level,
+                      'aria-label': translate('models.wb.edit.wireCustom'),
+                      style: Object.assign({}, WB_INPUT, { width: '110px', padding: '3px 8px', fontSize: '12px' }),
+                      value: typeof wireOf(level) === 'string' ? wireOf(level) : '',
+                      placeholder: level,
+                      onChange: (event) => setWire(level, event.target.value),
+                    }) : null,
+                  ])
+                })),
+              el('label', { key: 'off', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                el('input', {
+                  key: 'i', type: 'checkbox', 'data-testid': 'models-effort-toggle-' + model.id + '-off', checked: levelChecked('off'),
+                  disabled: current.reasoningEfforts === false,
+                  onChange: () => toggleLevel('off'),
+                }),
+                translate('models.wb.edit.reasoningOff'),
+              ]),
+              el('label', { key: 'false', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', fontSize: '12px', cursor: 'pointer' } }, [
+                el('input', { key: 'i', type: 'checkbox', 'data-testid': 'models-effort-false-' + model.id, checked: current.reasoningEfforts === false, onChange: toggleNonReasoning }),
+                translate('models.wb.edit.reasoningFalse'),
+              ]),
+              el('p', { key: 'hint', style: Object.assign({}, WB_MUTED) }, translate('models.wb.edit.reasoningNoneHint')),
+              el('p', { key: 'wirehint', style: WB_MUTED }, translate('models.wb.edit.wireHint')),
             ]),
             error !== '' ? el('p', { key: 'error', role: 'alert', 'data-testid': 'models-edit-error-' + model.id, style: WB_ERROR }, error) : null,
-            el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' } }, [
+            el('div', { key: 'actions', style: { display: 'flex', gap: '8px', marginTop: '2px', flexWrap: 'wrap', alignItems: 'center' } }, [
               el('button', { key: 'save', type: 'button', 'data-testid': 'models-edit-save-' + model.id, style: svcButtonStyle('primary'), disabled: busy || error !== '', onClick: () => void save() }, translate('models.wb.edit.save')),
-              el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-edit-cancel-' + model.id, style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setDraft(null); setError(''); onToggle() } }, translate('models.wb.create.cancel')),
-              el('button', { key: 'remove', type: 'button', 'data-testid': 'models-edit-remove-' + model.id, style: svcButtonStyle('dangerGhost'), disabled: busy, onClick: onRemove }, translate('models.wb.remove.btn')),
+              el('button', { key: 'cancel', type: 'button', 'data-testid': 'models-edit-cancel-' + model.id, style: svcButtonStyle('ghost'), disabled: busy, onClick: () => { setDraft(null); setCapacityTexts({}); setError(''); onToggle() } }, translate('models.wb.create.cancel')),
               dirty ? el('span', { key: 'dirty', style: Object.assign({}, WB_MUTED, { alignSelf: 'center' }) }, translate('models.wb.edit.unsaved')) : null,
             ]),
           ]) : null,

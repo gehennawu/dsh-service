@@ -14138,14 +14138,24 @@ test('models page detail view loads the full-fidelity route and renders configur
   renderer.findByTestId('models-model-m-full').props.onClick()
   await renderer.flush()
   // 输入框的 value 不进 textContent，按 props 断言：面板里必须是可回写的原始数值。
-  assert.equal(renderer.findByTestId('models-edit-context-m-full').props.value, 1000000, 'the editor panel shows the raw capacity it will write back')
+  // 容量按官方设置页形态以文本回显（可写 256K/1M），1e6 → `1M`。
+  assert.equal(renderer.findByTestId('models-edit-context-m-full').props.value, '1M', 'the editor shows the capacity in its K/M text form')
   assert.equal(renderer.hasTest('models-model-panel-m-full'), true, 'the per-model panel is independent of the long list')
   assert.equal(renderer.hasTest('models-edit-save-m-full'), true, 'the save button lives inside the panel')
-  assert.equal(renderer.hasTest('models-effort-row-high'), true, 'reasoning levels are one row each')
-  // 每档三选一单选：不提供 / 对应协议值 / 自定义。
-  assert.equal(renderer.hasTest('models-effort-high-absent'), true)
-  assert.equal(renderer.hasTest('models-effort-high-mapped'), true)
-  assert.equal(renderer.hasTest('models-effort-high-custom'), true)
+  // 推理档位：每档一个胶囊勾选（参考图形态），勾选后行内展开协议值输入。
+  assert.equal(renderer.hasTest('models-effort-toggle-m-full-high'), true, 'reasoning levels are one toggle each')
+  assert.equal(renderer.hasTest('models-effort-toggle-m-full-minimal'), true)
+  // m-full 的目录里 high 已映射 → 勾选态且协议值输入就地可达。
+  assert.equal(renderer.findByTestId('models-effort-toggle-m-full-high-chip').props['data-checked'], 'true')
+  assert.equal(renderer.hasTest('models-effort-wire-m-full-high'), true, 'a checked level exposes its wire value inline')
+  // 输入模态：文本/图像两个方块；输出模态只读展示。
+  assert.equal(renderer.hasTest('models-edit-mode-text-m-full'), true)
+  assert.equal(renderer.hasTest('models-edit-mode-image-m-full'), true)
+  assert.equal(renderer.hasTest('models-edit-output-text-m-full'), true)
+  // 输入模态勾选态：m-full 的目录声明了 image → 图像方块为勾选态；两模态并存时文本可取消。
+  assert.equal(renderer.findByTestId('models-edit-mode-image-m-full-box').props['data-checked'], 'true')
+  assert.equal(renderer.findByTestId('models-edit-mode-text-m-full').props.disabled, false, 'text is only pinned while it is the sole modality')
+  assert.equal(renderer.findByTestId('models-edit-mode-text-m-full-box').props['data-checked'], 'true')
   // 搜索框存在：数十个模型时列表可搜索。
   assert.equal(renderer.hasTest('models-model-search'), true)
   // 返回列表。
@@ -14428,23 +14438,86 @@ test('models page model row saves only the changed fields and never writes a lit
   assert.deepEqual(patch[0].payload.patch, { contextWindow: 200000 }, 'only the edited field is sent')
   assert.equal('reasoningEfforts' in patch[0].payload.patch, false, 'untouched capabilities are not rewritten')
 
-  // 思考档位：单选「不提供」不写值；只留 off 时给出可读提示而不是静默写入非法映射。
+  // 推理档位：胶囊勾选即写同名协议值；另设显式「非推理模型」开关。
   renderer.findByTestId('models-model-m2').props.onClick()
   await renderer.flush()
-  renderer.findByTestId('models-effort-high-mapped').props.onChange({ target: { checked: true } })
+  renderer.findByTestId('models-effort-toggle-m2-high').props.onChange({ target: { checked: true } })
   await renderer.flush()
   renderer.findByTestId('models-edit-save-m2').props.onClick()
   await renderer.flush()
   const second = calls.filter((call) => call.endpoint === 'models2-model-patch')[1]
-  assert.deepEqual(second.payload.patch, { reasoningEfforts: { high: 'high' } }, 'a mapped level writes the protocol value, never the literal "observed"')
+  assert.deepEqual(second.payload.patch, { reasoningEfforts: { high: 'high' } }, 'a checked level writes the protocol value, never the literal "observed"')
   // 保存成功后面板收起 → 重新展开继续编辑（面板内按钮始终可达）。
+  // 宿主刷新回的仍是目录原值（夹具不含刚才那次写入），故这里重新勾选该档再改协议值。
   renderer.findByTestId('models-model-m2').props.onClick()
   await renderer.flush()
-  // off 单独选中 → 缺少非 off 档 → 面板给出提示并禁止保存。
-  renderer.findByTestId('models-effort-off-mapped').props.onChange({ target: { checked: true } })
+  renderer.findByTestId('models-effort-toggle-m2-high').props.onChange({ target: { checked: true } })
   await renderer.flush()
-  renderer.findByTestId('models-effort-high-absent').props.onChange({ target: { checked: true } })
+  // 自定义协议值：改写行内输入框即写自定义 wire 值。
+  renderer.findByTestId('models-effort-wire-m2-high').props.onChange({ target: { value: 'high-2024' } })
+  await renderer.flush()
+  renderer.findByTestId('models-edit-save-m2').props.onClick()
+  await renderer.flush()
+  const custom = calls.filter((call) => call.endpoint === 'models2-model-patch')[2]
+  assert.deepEqual(custom.payload.patch, { reasoningEfforts: { high: 'high-2024' } }, 'editing the inline field sends a custom protocol value')
+  // off 单独勾选（没有任何非 off 档）→ 缺少非 off 档 → 面板给出提示并禁止保存。
+  renderer.findByTestId('models-model-m2').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-effort-toggle-m2-off').props.onChange({ target: { checked: true } })
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /至少需要一档非 off 的映射值/, 'the missing mapping is explained instead of silently written')
   assert.equal(renderer.findByTestId('models-edit-save-m2').props.disabled, true, 'saving an invalid mapping is blocked in the panel')
+})
+
+test('models page model panel reads output modalities from the source row and parses K/M capacity', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-route') return {
+      ok: true,
+      value: {
+        route: 'cpa', displayName: 'CPA Relay', baseURL: 'https://gw.example.com/v1', api: 'openai-completions', apiKeyEnv: 'CPA_API_KEY',
+        apiProtocols: ['openai-completions'], fingerprint: 'fp1',
+        // `output` 不在可编辑字段白名单里（pi-ai profile 无该字段）：只读展示必须读**源行**。
+        models: [{ id: 'm-out', contextWindow: 131072, output: ['text', 'image'] }],
+      },
+    }
+    if (endpoint === 'models2-model-patch') return { ok: true, value: { route: 'cpa', modelId: payload.modelId, diff: { changes: [], added: [], removed: [] }, undoable: true } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-model-m-out').props.onClick()
+  await renderer.flush()
+  // 展开后草稿快照不含 output；展示仍须来自源行，不能被草稿遮成默认 text。
+  assert.equal(renderer.hasTest('models-edit-output-text-m-out'), true)
+  assert.equal(renderer.hasTest('models-edit-output-image-m-out'), true, 'the source row output modalities survive opening the draft')
+  // 容量字段是文本（K/M 后缀按官方规则只在整倍数时缩写）：131072 不是 1000 的整倍数 → 原样回显。
+  assert.equal(renderer.findByTestId('models-edit-context-m-out').props.value, '131072')
+  renderer.findByTestId('models-edit-context-m-out').props.onChange({ target: { value: '256K' } })
+  await renderer.flush()
+  renderer.findByTestId('models-edit-save-m-out').props.onClick()
+  await renderer.flush()
+  const patch = calls.filter((call) => call.endpoint === 'models2-model-patch')
+  assert.deepEqual(patch[0].payload.patch, { contextWindow: 256000 }, 'a K-suffixed capacity is parsed into a token count')
+  // 不可读的容量文本给出可读提示并禁止保存，而不是写回 NaN。
+  renderer.findByTestId('models-model-m-out').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('models-edit-maxtokens-m-out').props.onChange({ target: { value: '12X' } })
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /容量需为正数/, 'an unreadable capacity is explained')
+  assert.equal(renderer.findByTestId('models-edit-save-m-out').props.disabled, true, 'an unreadable capacity blocks the save')
 })

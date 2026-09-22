@@ -85,13 +85,89 @@ try {
     step('modelPanel', await page.evaluate((id) => ({
       panelPresent: document.querySelector(`[data-testid="models-model-panel-${CSS.escape(id)}"]`) !== null,
       saveInPanel: document.querySelector(`[data-testid="models-edit-save-${CSS.escape(id)}"]`) !== null,
-      effortRows: [...document.querySelectorAll('[data-testid^="models-effort-row-"]')].map((n) => n.getAttribute('data-testid')),
-      effortRadios: ['absent', 'mapped', 'custom'].every((mode) => document.querySelector(`[data-testid="models-effort-high-${mode}-x"]`) !== null
-        || document.querySelector(`[data-testid="models-effort-high-${mode}"]`) !== null),
+      // 推理档位改为胶囊勾选：每档一个 checkbox（不再是一档三选一单选）。
+      effortToggles: [...document.querySelectorAll(`[data-testid^="models-effort-toggle-${CSS.escape(id)}-"]`)]
+        .filter((n) => n.tagName === 'INPUT')
+        .map((n) => n.getAttribute('data-testid')),
+      // 已勾选的档位就地暴露协议值输入框。
+      wireInputs: [...document.querySelectorAll(`[data-testid^="models-effort-wire-${CSS.escape(id)}-"]`)]
+        .map((n) => n.getAttribute('data-testid')),
+      nonReasoningToggle: document.querySelector(`[data-testid="models-effort-false-${CSS.escape(id)}"]`) !== null,
+      noneHint: document.querySelector(`[data-testid="models-model-panel-${CSS.escape(id)}"]`)?.textContent?.includes('不勾选即视为非推理模型') ?? false,
+      // 输入模态方块 + 只读的输出模态展示。
+      modalityText: document.querySelector(`[data-testid="models-edit-mode-text-${CSS.escape(id)}"]`) !== null,
+      modalityImage: document.querySelector(`[data-testid="models-edit-mode-image-${CSS.escape(id)}"]`) !== null,
+      outputShown: document.querySelector(`[data-testid="models-edit-output-${CSS.escape(id)}"]`) !== null,
       contextValue: document.querySelector(`[data-testid="models-edit-context-${CSS.escape(id)}"]`)?.value ?? null,
+      maxTokensValue: document.querySelector(`[data-testid="models-edit-maxtokens-${CSS.escape(id)}"]`)?.value ?? null,
     }), modelId))
     await shot('03-model-panel')
   }
+
+  // 勾选态证据：换一个已声明推理档的模型/渠道，确认「胶囊为勾选态 + 行内协议值输入可达」。
+  // 首个渠道的首个模型常是无推理声明的裸条目（wireInputs 为空），故需要单独扫描取证。
+  step('reasoningMapped', await (async () => {
+    await page.click('[data-testid="models-detail-back"]')
+    await page.waitForTimeout(1200)
+    const routeIds = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="models-route-row-"]')]
+      .map((n) => n.getAttribute('data-testid').replace('models-route-row-', '')))
+    for (const routeId of routeIds) {
+      await page.click(`[data-testid="models-route-${routeId}"]`)
+      await page.waitForTimeout(1500)
+      const found = await page.evaluate(() => {
+        const card = document.querySelector('[data-testid^="models-model-card-"]')
+        return card === null ? null : card.getAttribute('data-testid').replace('models-model-card-', '')
+      })
+      if (found !== null) {
+        await page.evaluate((mid) => { document.querySelector(`[data-testid="models-model-${CSS.escape(mid)}"]`)?.click() }, found)
+        await page.waitForTimeout(1000)
+        const probe = await page.evaluate((mid) => {
+          const wires = [...document.querySelectorAll(`[data-testid^="models-effort-wire-${CSS.escape(mid)}-"]`)]
+          const checkedChips = [...document.querySelectorAll(`[data-testid^="models-effort-toggle-${CSS.escape(mid)}-"][data-testid$="-chip"]`)]
+            .filter((n) => n.getAttribute('data-checked') === 'true')
+          return {
+            modelId: mid,
+            checkedChips: checkedChips.map((n) => n.getAttribute('data-testid')),
+            wireInputs: wires.map((n) => n.getAttribute('data-testid')),
+          }
+        }, found)
+        if (probe.checkedChips.length > 0) return { route: routeId, ...probe }
+        // 该模型无可编辑的已声明档：换下一个模型再试。
+        const nextModel = await page.evaluate((skip) => {
+          const cards = [...document.querySelectorAll('[data-testid^="models-model-card-"]')]
+            .map((n) => n.getAttribute('data-testid').replace('models-model-card-', ''))
+            .filter((id) => id !== skip)
+          return cards[0] ?? null
+        }, found)
+        if (nextModel !== null) {
+          await page.evaluate((mid) => { document.querySelector(`[data-testid="models-model-${CSS.escape(mid)}"]`)?.click() }, nextModel)
+          await page.waitForTimeout(1000)
+          const second = await page.evaluate((mid) => ({
+            modelId: mid,
+            checkedChips: [...document.querySelectorAll(`[data-testid^="models-effort-toggle-${CSS.escape(mid)}-"][data-testid$="-chip"]`)]
+              .filter((n) => n.getAttribute('data-checked') === 'true').map((n) => n.getAttribute('data-testid')),
+            wireInputs: [...document.querySelectorAll(`[data-testid^="models-effort-wire-${CSS.escape(mid)}-"]`)].map((n) => n.getAttribute('data-testid')),
+          }), nextModel)
+          if (second.checkedChips.length > 0) return { route: routeId, ...second }
+        }
+      }
+      await page.click('[data-testid="models-detail-back"]')
+      await page.waitForTimeout(1200)
+    }
+    return { route: null, modelId: null, checkedChips: [], wireInputs: [], note: 'no reasoning-mapped model among the listed routes' }
+  })())
+  await shot('03b-reasoning-mapped')
+  // 扫描可能停在某个渠道详情里：先退回列表，再回到第一个渠道供后续步骤使用。
+  const backToList = async () => {
+    if (await page.evaluate(() => document.querySelector('[data-testid="models-detail-back"]') !== null)) {
+      await page.click('[data-testid="models-detail-back"]')
+      await page.waitForTimeout(1200)
+    }
+  }
+  await backToList()
+  if (await page.evaluate(() => document.querySelector('[data-testid="models-detail-back"]') !== null)) await backToList()
+  await page.click(`[data-testid="models-route-${firstRouteId}"]`)
+  await page.waitForTimeout(1500)
 
   // 连接信息页：地址边界文案 + 密钥字段不回显。
   await page.click('[data-testid="models-detail-tab-connection"]')
