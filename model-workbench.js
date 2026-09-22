@@ -61,6 +61,13 @@ const MAX_FRESH_SESSIONS = 8
 /** modelparams.dev 中表达「档位式思考」的参数路径（其余 thinking.* 为 toggle/预算制，不表态）。 */
 const MODEL_PARAMS_EFFORT_PATHS = new Set(['reasoning_effort', 'output_config.effort', 'reasoning.effort'])
 
+// ── 联网查证：OpenRouter 模型档案查询（唯一源，固定域名，不抓厂商文档）────────────
+// 安全链：只请求固定域名 openrouter.ai（档案端点或目录搜索端点），https.request 直接连，
+// 不跟随重定向（响应 3xx 视为失败）、10s 超时、4MB 上限、解压后 8MB 上限。
+const MODEL_VERIFY_TIMEOUT_MS = 10000
+const MAX_MODEL_VERIFY_BYTES = 4 * 1024 * 1024
+const OPENROUTER_SEARCH_LIMIT = 50
+
 /** 在线发现（{baseURL}/models）与响应上限。 */
 const MODELS_PROBE_TIMEOUT_MS = 10000
 const MAX_MODELS_PROBE_BYTES = 4 * 1024 * 1024
@@ -845,6 +852,156 @@ export function modelParamsCandidates(catalog, modelId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 联网查证：OpenRouter 模型档案（固定域名，唯一源）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * OpenRouter 模型 ID 是 author/slug 形态；渠道 ID 常不带作者前缀（如 glm-5.3-flash），
+ * 无法直接查档案端点。故分两条**固定** URL：ID 含 `/` 直查单模型档案，其余走目录搜索 +
+ * `pickOpenRouterMatch` 精确匹配。，浏览器永远不参与 URL 拼装。
+ */
+export function openRouterVerifySource(modelId) {
+  const encoded = encodeURIComponent(modelId)
+  if (modelId.includes('/')) {
+    return {
+      name: 'OpenRouter',
+      kind: 'model',
+      url: `https://openrouter.ai/api/v1/model/${encoded}`,
+      href: `https://openrouter.ai/models/${encoded}`,
+    }
+  }
+  return {
+    name: 'OpenRouter',
+    kind: 'search',
+    url: `https://openrouter.ai/api/v1/models?q=${encoded}&limit=${OPENROUTER_SEARCH_LIMIT}`,
+  }
+}
+
+/**
+ * 从搜索结果里选与输入 ID 对应的条目（列表项与单模型端点同构）：
+ * 精确相等（id / canonical_slug / hugging_face_id）→ id 以 `/<ID>` 结尾（排除 :variant 变体
+ * 与其它作者的同名项）→ canonical_slug 后缀 → hugging_face_id 大小写不敏感。同名多作者取首条。
+ */
+export function pickOpenRouterMatch(modelId, rows) {
+  if (!Array.isArray(rows)) return undefined
+  for (const row of rows) {
+    if (row?.id === modelId || row?.canonical_slug === modelId || row?.hugging_face_id === modelId) return row
+  }
+  for (const row of rows) {
+    if (typeof row?.id === 'string' && row.id.endsWith('/' + modelId)) return row
+  }
+  for (const row of rows) {
+    if (typeof row?.canonical_slug === 'string' && row.canonical_slug.endsWith('/' + modelId)) return row
+  }
+  for (const row of rows) {
+    if (typeof row?.hugging_face_id === 'string' && row.hugging_face_id.toLowerCase() === modelId.toLowerCase()) return row
+  }
+  return undefined
+}
+
+/** 单模型 JSON 的事实抽取：压成人类可读片段（与片段渲染同一通道）。一个字段都没抽到返回 []。 */
+export function openRouterModelFacts(payload) {
+  const model = payload?.data ?? payload
+  if (!isPlainObject(model)) return []
+  const facts = []
+  const push = (label, value) => {
+    if (value !== undefined && value !== null && value !== '') facts.push(`${label}: ${String(value).trim()}`)
+  }
+  push('name', model.name)
+  if (Number.isFinite(model.context_length)) push('context length', String(model.context_length))
+  const architecture = model.architecture
+  if (Array.isArray(architecture?.input_modalities) && architecture.input_modalities.length > 0) push('input', architecture.input_modalities.join(', '))
+  if (Number.isFinite(model.top_provider?.max_completion_tokens)) push('max output', String(model.top_provider.max_completion_tokens))
+  const reasoning = model.reasoning
+  if (isPlainObject(reasoning)) {
+    if (Array.isArray(reasoning.supported_efforts) && reasoning.supported_efforts.length > 0) push('efforts', reasoning.supported_efforts.join(', '))
+    if (typeof reasoning.default_effort === 'string' && reasoning.default_effort !== '') push('default effort', reasoning.default_effort)
+  }
+  if (Array.isArray(model.supported_parameters) && model.supported_parameters.includes('reasoning_effort')) facts.push('parameter: reasoning_effort')
+  return facts
+}
+
+/** 抓取查证 URL：HTTPS 直连、禁重定向、10s 超时、传输 ≤4MB 且解压后 ≤8MB。返回纯文本。 */
+export function fetchDocText(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (_) {
+      reject(new Error('bad-url'))
+      return
+    }
+    if (parsed.protocol !== 'https:' || parsed.hostname === '') {
+      reject(new Error('insecure'))
+      return
+    }
+    const request = https.request(url, {
+      method: 'GET',
+      timeout: MODEL_VERIFY_TIMEOUT_MS,
+      headers: {
+        Accept: typeof options.accept === 'string' && options.accept !== '' ? options.accept : 'application/json',
+        'Accept-Encoding': 'gzip, br',
+        'user-agent': typeof options.userAgent === 'string' && options.userAgent !== '' ? options.userAgent : 'dsh-service',
+      },
+    }, (response) => {
+      const status = response.statusCode || 0
+      // 禁重定向：不跟随第三方跳转（安全教义）。3xx 先于 4xx 判定，避免被当成「未收录」。
+      if (status >= 300 && status < 400) {
+        response.resume()
+        reject(new Error('redirect'))
+        return
+      }
+      if (status < 200 || status >= 400) {
+        response.resume()
+        reject(new Error(`http-status:${status}`))
+        return
+      }
+      const chunks = []
+      let bytes = 0
+      response.on('data', (chunk) => {
+        bytes += chunk.length
+        if (bytes > MAX_MODEL_VERIFY_BYTES) {
+          request.destroy()
+          reject(new Error('too-large'))
+          return
+        }
+        chunks.push(chunk)
+      })
+      response.on('error', () => reject(new Error('network')))
+      response.on('end', () => {
+        const encoding = String(response.headers['content-encoding'] || '').toLowerCase()
+        const body = Buffer.concat(chunks)
+        const finish = (text) => {
+          if (Buffer.byteLength(text, 'utf8') > MAX_MODELS_CATALOG_BYTES) reject(new Error('too-large'))
+          else resolve(text)
+        }
+        if (encoding === 'gzip') {
+          gunzip(body, (error, decoded) => {
+            if (error) reject(new Error('bad-gzip'))
+            else finish(decoded.toString('utf8'))
+          })
+        } else if (encoding === 'br') {
+          brotliDecompress(body, (error, decoded) => {
+            if (error) reject(new Error('bad-br'))
+            else finish(decoded.toString('utf8'))
+          })
+        } else {
+          finish(body.toString('utf8'))
+        }
+      })
+    })
+    request.on('error', (error) => {
+      reject(new Error(error?.code === 'ABORT_ERR' ? 'cancelled' : 'network'))
+    })
+    request.on('timeout', () => {
+      request.destroy()
+      reject(new Error('timeout'))
+    })
+    request.end()
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 写前自检
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1210,6 +1367,78 @@ export function applyUndo(snapshotModels, currentModels, { dropAdded = false, re
     }
   }
   return kept
+}
+
+/**
+ * 窄化能力补丁（简易添加流）：只生成 `input`/`reasoningEfforts`。
+ * `follow`/`undefined` = 跟随 adapter 默认（既不声明 text-only 也不声明不支持推理）——
+ * 省略与显式声明语义不同，绝不能把「未表态」写成 `input:["text"]`。
+ */
+export function abilityPatch({ image = 'follow', reasoning = 'follow', observed } = {}) {
+  const patch = {}
+  if (image === 'image') patch.input = ['text', 'image']
+  else if (image === 'text') patch.input = ['text']
+  else if (image === 'observed' && Array.isArray(observed?.input) && observed.input.includes('image')) patch.input = ['text', 'image']
+  if (reasoning === 'unsupported') patch.reasoningEfforts = false
+  else if (reasoning === 'observed' && observed?.reasoningEfforts !== undefined) patch.reasoningEfforts = observed.reasoningEfforts
+  // 'observed' 但运行时没报出任何档位（如 llm 服务缺席、adapter 不表态）时**什么都不写**：
+  // 观察不到 ≠ 不支持。缺了这条排除，'observed' 会掉进下面这支被当成 wire 值原样写入，
+  // selfCheck 随即以 bad-efforts 整体拒绝——表现为「添加未验证模型永远失败」。
+  else if (reasoning !== 'follow' && reasoning !== 'observed' && reasoning !== undefined) patch.reasoningEfforts = reasoning
+  return patch
+}
+
+/**
+ * 运行时实测能力（`llm.resolveModelInfo` 返回）→ 归一观察值。
+ *
+ * `off` 的 wire 值取决于上游：pi-ai 目录里 off 缺省即「支持关闭」→ 补 `off: null`；
+ * 而运行时上报的档位里 `off` 若带了自己的 wire 串（如 openai 的 `"none"`）必须原样保留，
+ * 否则会把「关闭时发 none」写成「关闭时不发参数」，语义变了。
+ */
+export function simpleModelObserved(info) {
+  const observed = {}
+  const input = info?.input ?? info?.modalities?.input
+  if (Array.isArray(input) && input.includes('image')) observed.input = ['text', 'image']
+  const efforts = info?.reasoning?.efforts
+  if (Array.isArray(efforts) && efforts.length > 0) {
+    const map = {}
+    for (const effort of efforts) {
+      const id = typeof effort?.id === 'string' ? effort.id : ''
+      if (!THINKING_LEVELS_SET.has(id)) continue
+      if (id === 'off') map.off = null
+      else {
+        const wire = typeof effort?.value === 'string' && effort.value !== '' ? effort.value : id
+        map[id] = wire
+      }
+    }
+    if (Object.keys(map).length > 0) observed.reasoningEfforts = map
+  }
+  return observed
+}
+
+/** 目录候选统一选项形状（简易添加流的下拉/候选行）。 */
+export function simpleModelOption(record, source, providerId) {
+  return {
+    id: record.id,
+    ...(record.name ? { name: record.name } : {}),
+    ...(Array.isArray(record.input) && record.input.includes('image') ? { inputImage: true } : {}),
+    ...(record.reasoningEfforts !== undefined ? { reasoningEfforts: record.reasoningEfforts } : {}),
+    ...(Number.isInteger(record.contextWindow) && record.contextWindow > 0 ? { contextWindow: record.contextWindow } : {}),
+    ...(Number.isInteger(record.maxTokens) && record.maxTokens > 0 ? { maxTokens: record.maxTokens } : {}),
+    source,
+    ...(typeof providerId === 'string' && providerId !== '' ? { providerId } : {}),
+  }
+}
+
+/** 该 route 在 pi-ai 内置目录里的模型记录（简易添加流的「内置目录」来源）。 */
+export function piRecordsForRoute(piIndex, route) {
+  const out = []
+  for (const records of piIndex?.byModelId?.values() ?? []) {
+    for (const record of records) {
+      if (record.channel === route) out.push({ ...record, id: record.id ?? record.modelId })
+    }
+  }
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -39,6 +39,14 @@ import {
   fetchModelsProbe,
   hostnameOf,
   loadModelParamsSnapshot,
+  abilityPatch,
+  fetchDocText,
+  openRouterModelFacts,
+  openRouterVerifySource,
+  pickOpenRouterMatch,
+  piRecordsForRoute,
+  simpleModelObserved,
+  simpleModelOption,
   modelMetaCandidates,
   modelParamsCandidates,
   profileFingerprint,
@@ -85,6 +93,10 @@ export function createModelWorkbenchRoutes({
   const inspections = new Map()
   const plans = new Map()
   const drafts = new Map()
+  // 简易添加流的句柄表：目录/在线候选、运行时检测、模型添加计划。
+  const optionHandles = new Map()
+  const detections = new Map()
+  const modelPlans = new Map()
 
   // P3.5 补充源状态（modelparams.dev）：快照式、动作驱动、零网络默认。
   // 状态挂在工厂闭包（随 Fiber 销毁），退避标志由新鲜度管理器写入。
@@ -734,6 +746,310 @@ export function createModelWorkbenchRoutes({
         return { ok: false, error: error?.message || String(error) }
       }
     } },
+    // ── 简易添加流：候选来源（内置目录 / 在线探测）────────────────────────────────
+    'models2-model-options': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const source = payload?.source === 'builtin' || payload?.source === 'online' ? payload.source : ''
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const piIndex = await ensurePiCatalog()
+        const builtins = piIndex.channelIds
+        if (source === 'builtin') {
+          if (!builtins.has(route)) return fail('builtin-only')
+          const candidates = []
+          const seen = new Set()
+          // 内置目录记录 + 已配置模型（后者可能已被用户改名/补能力，仍要出现在列表里以免重复添加）。
+          for (const record of [...piRecordsForRoute(piIndex, route), ...profile.models.map((model) => ({ id: model?.id })).filter((model) => typeof model.id === 'string')]) {
+            if (typeof record.id !== 'string' || record.id === '' || seen.has(record.id)) continue
+            seen.add(record.id)
+            const candidate = simpleModelOption(record, 'builtin', route)
+            const handle = randomUUID()
+            rememberHandle(optionHandles, handle, {
+              route,
+              source,
+              candidate: { ...candidate, observed: { input: record.input, reasoningEfforts: record.reasoningEfforts } },
+              expires: Date.now() + WORKBENCH_PLAN_TTL_MS,
+            })
+            candidates.push({ ...candidate, optionHandle: handle })
+          }
+          return { ok: true, value: { route, source, candidates, expires: Date.now() + WORKBENCH_PLAN_TTL_MS } }
+        }
+        if (source !== 'online') return fail('bad-source')
+        // 在线发现只对自定义路由有意义：内置渠道的清单已在本地注册表里。
+        if (builtins.has(route)) return fail('online-custom-only')
+        if (!MODELS_PROBE_PROTOCOLS.has(profile.api)) return fail('probe-protocol-unsupported')
+        const baseURL = resolveLlmProfileBaseURL(profile, piIndex)
+        if (baseURL === '') return fail('no-base-url')
+        // 显式点击在线获取即授权使用已存凭据（仅发往该路由当前地址）。
+        const apiKey = await resolveCredential(profile)
+        let gatewayRows
+        try {
+          gatewayRows = await fetchModelsProbe(baseURL, apiKey)
+        } catch (error) {
+          return fail(error?.message || String(error))
+        }
+        const candidates = []
+        const seen = new Set()
+        for (const row of gatewayRows) {
+          if (seen.has(row.id)) continue
+          seen.add(row.id)
+          // 元数据补充仅取同渠道 pi-ai；探测行自带字段优先。
+          const meta = modelMetaCandidates(piIndex, row.id).find((candidate) => candidate.source === 'pi-ai' && candidate.providerId === route)
+          const merged = {
+            id: row.id,
+            ...(row.name ? { name: row.name } : meta?.name ? { name: meta.name } : {}),
+            ...(Array.isArray(row.input) ? { input: row.input } : meta?.input !== undefined ? { input: meta.input } : {}),
+            ...(row.reasoningEfforts !== undefined ? { reasoningEfforts: row.reasoningEfforts } : meta?.reasoningEfforts !== undefined ? { reasoningEfforts: meta.reasoningEfforts } : {}),
+          }
+          const candidate = simpleModelOption(merged, 'online', meta?.providerId)
+          const handle = randomUUID()
+          rememberHandle(optionHandles, handle, {
+            route,
+            source,
+            candidate: { ...candidate, observed: { input: merged.input, reasoningEfforts: merged.reasoningEfforts } },
+            expires: Date.now() + WORKBENCH_PLAN_TTL_MS,
+          })
+          candidates.push({ ...candidate, optionHandle: handle })
+        }
+        return { ok: true, value: { route, source, candidates, connection: { ok: true, modelCount: candidates.length }, expires: Date.now() + WORKBENCH_PLAN_TTL_MS } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 简易添加流：单模型运行时检测（读 adapter 的权威元数据，零猜测）─────────────
+    'models2-model-detect': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const modelId = typeof payload?.modelId === 'string' ? payload.modelId.trim() : ''
+        if (modelId === '' || modelId.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(modelId)) return fail('bad-model-id')
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const llm = ctx.get('llm')
+        let verified = false
+        let observed = {}
+        let errorCode
+        if (llm !== undefined && typeof llm.resolveModelInfo === 'function') {
+          try {
+            const info = await llm.resolveModelInfo(route, modelId)
+            verified = true
+            observed = simpleModelObserved(info)
+          } catch (error) {
+            errorCode = error?.code || 'model-detection-failed'
+          }
+        } else {
+          errorCode = 'llm-service-missing'
+        }
+        const piIndex = await ensurePiCatalog()
+        // 多来源共识：目录候选（同渠道 pi-ai → 跨渠道 pi-ai → modelparams）+ 运行时实测（P3）。
+        const ordered = [
+          ...orderedCandidates(piIndex, route, modelId).filter((candidate) => candidate.source === 'pi-ai' && candidate.providerId === route),
+          ...orderedCandidates(piIndex, route, modelId).filter((candidate) => candidate.source === 'pi-ai' && candidate.providerId !== route),
+          ...modelParamsCandidates(modelParamsState.snapshot?.catalog, modelId),
+          ...(Object.keys(observed).length > 0 ? [{ source: 'runtime', providerId: route, ...observed }] : []),
+        ]
+        const fields = consensusFields(ordered)
+        const detectionId = randomUUID()
+        rememberHandle(detections, detectionId, { route, modelId, verified, observed, expires: Date.now() + WORKBENCH_PLAN_TTL_MS })
+        return {
+          ok: true,
+          value: {
+            detectionId,
+            route,
+            modelId,
+            verified,
+            ...(verified ? {} : { error: errorCode || 'model-detection-failed' }),
+            ...(observed.input?.includes('image') ? { observedImage: true } : {}),
+            ...(observed.reasoningEfforts !== undefined ? { reasoningEfforts: observed.reasoningEfforts } : {}),
+            ...(fields.contextWindow?.status === 'agreed' ? { suggestedContextWindow: fields.contextWindow.value } : {}),
+            ...(fields.maxTokens?.status === 'agreed' ? { suggestedMaxTokens: fields.maxTokens.value } : {}),
+            ...(fields.name?.status === 'agreed' ? { suggestedName: fields.name.value } : {}),
+            fields,
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 简易添加流：已配置模型的逐字段建议（零网络：纯目录多源共识）────────────────
+    'models2-model-suggestions': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const modelIds = Array.isArray(payload?.modelIds) ? payload.modelIds.filter((id) => typeof id === 'string' && id !== '') : []
+        if (modelIds.length === 0 || modelIds.length > 64) return fail('bad-model-ids')
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const piIndex = await ensurePiCatalog()
+        const suggestions = {}
+        for (const modelId of modelIds) {
+          const ordered = orderedCandidates(piIndex, route, modelId)
+          if (ordered.length === 0) continue
+          suggestions[modelId] = { fields: consensusFields(ordered) }
+        }
+        return { ok: true, value: { route, suggestions } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 简易添加流：联网查证（OpenRouter 模型档案，固定域名）────────────────────────
+    'models2-model-verify-online': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const modelId = typeof payload?.modelId === 'string' ? payload.modelId.trim() : ''
+        if (modelId === '' || modelId.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(modelId)) return fail('bad-model-id')
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        // ID 自带作者（author/slug）直查档案端点；否则目录搜索 + 精确匹配定位完整条目。
+        const source = openRouterVerifySource(modelId)
+        let result
+        try {
+          const text = await fetchDocText(source.url, { accept: 'application/json', userAgent: `dsh-service/${pluginVersion} (DeepSeek Harness plugin)` })
+          let parsed
+          try {
+            parsed = JSON.parse(text.trim())
+          } catch (_) {
+            result = { name: source.name, url: source.url, status: 'error', error: 'bad-json' }
+          }
+          if (result === undefined) {
+            let model
+            if (source.kind === 'search') {
+              const match = pickOpenRouterMatch(modelId, parsed?.data)
+              if (match === undefined) result = { name: source.name, url: source.url, status: 'not-found' }
+              else {
+                model = match
+                result = { name: source.name, url: source.url, href: `https://openrouter.ai/models/${encodeURIComponent(match.id)}` }
+              }
+            } else {
+              model = parsed
+              result = { name: source.name, url: source.url, href: source.href }
+            }
+            if (result.status !== 'not-found') {
+              const facts = openRouterModelFacts(model)
+              if (facts.length === 0) result = { name: source.name, url: source.url, status: 'no-match' }
+              else {
+                result.snippets = facts
+                result.status = 'ok'
+              }
+            }
+          }
+        } catch (error) {
+          const message = error?.message || String(error)
+          // HTTP 404 = 目录未收录（确定性否定）；其余错误照实上报，不伪装成 not-found。
+          result = message === 'http-status:404'
+            ? { name: source.name, url: source.url, status: 'not-found' }
+            : { name: source.name, url: source.url, status: 'error', error: message }
+        }
+        return { ok: true, value: { route, modelId, sources: [result] } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 简易添加流：准备（候选手柄/检测句柄 → 追加清洗后的模型行）───────────────────
+    'models2-model-prepare': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const route = typeof payload?.route === 'string' ? payload.route : ''
+        const profile = profileFor(route, ctx.get('settings'))
+        if (profile === undefined) return fail('route-gone')
+        const additions = Array.isArray(payload?.additions) ? payload.additions : []
+        if (additions.length === 0 || additions.length > 200) return fail('no-models')
+        const nextModels = profile.models.map((model) => (model !== null && typeof model === 'object' ? { ...model } : model))
+        const sources = []
+        const seen = new Set(profile.models.map((model) => model?.id).filter((id) => typeof id === 'string'))
+        for (const item of additions) {
+          if (item === null || typeof item !== 'object') return fail('bad-models')
+          let source = 'manual'
+          let candidate
+          if (typeof item.optionHandle === 'string') {
+            // 句柄是一次性的：取出即作废，防重放与跨路由挪用。
+            const handle = takeHandle(optionHandles, item.optionHandle)
+            if (handle === undefined || Date.now() > handle.expires || handle.route !== route) return fail('unknown-option')
+            candidate = handle.candidate
+            source = handle.source
+          } else if (typeof item.detectionId === 'string') {
+            const detection = takeHandle(detections, item.detectionId)
+            if (detection === undefined || Date.now() > detection.expires || detection.route !== route) return fail('unknown-detection')
+            if (!detection.verified && item.allowUnverified !== true) return fail('model-unverified')
+            candidate = { id: detection.modelId, observed: detection.observed, verified: detection.verified }
+          } else {
+            return fail('model-detection-required')
+          }
+          const modelId = typeof candidate?.id === 'string' ? candidate.id : ''
+          if (modelId === '' || modelId.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(modelId)) return fail('bad-model-id')
+          if (seen.has(modelId)) return fail('duplicate-model')
+          seen.add(modelId)
+          const abilities = item.abilities !== null && typeof item.abilities === 'object' ? item.abilities : item
+          const explicit = abilityPatch({ image: abilities?.image ?? 'observed', reasoning: abilities?.reasoning ?? 'observed', observed: candidate.observed })
+          if (Number.isInteger(abilities?.contextWindow) && abilities.contextWindow > 0) explicit.contextWindow = abilities.contextWindow
+          if (Number.isInteger(abilities?.maxTokens) && abilities.maxTokens > 0) explicit.maxTokens = abilities.maxTokens
+          const explicitName = typeof abilities?.name === 'string' && abilities.name.trim() !== '' && abilities.name.trim().length <= 128
+            ? abilities.name.trim()
+            : (typeof candidate?.name === 'string' && candidate.name !== '' ? candidate.name : '')
+          nextModels.push({ id: modelId, ...(explicitName !== '' ? { name: explicitName } : {}), ...explicit })
+          sources.push({ modelId, source, ...(candidate.providerId ? { providerId: candidate.providerId } : {}) })
+        }
+        const checked = selfCheckModelsPatch(nextModels)
+        if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
+        const planId = planIdFor(`simple:${route}:${randomUUID()}`)
+        const expires = Date.now() + WORKBENCH_PLAN_TTL_MS
+        rememberHandle(modelPlans, planId, { route, nextModels, sources, baseFingerprint: profileFingerprint(profile), expires })
+        return {
+          ok: true,
+          value: {
+            planId,
+            route,
+            expires,
+            diff: diffModelLists(profile.models, nextModels),
+            warnings: additions.some((item) => item.allowUnverified === true) ? ['unverified-model'] : [],
+          },
+        }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
+    // ── 简易添加流：提交（复检后有界写入；内置来源的绑定一并持久化）──────────────────
+    'models2-model-commit': { feature: 'modelCatalog', handle: async (payload) => {
+      try {
+        const planId = typeof payload?.planId === 'string' ? payload.planId : ''
+        const plan = takeHandle(modelPlans, planId)
+        if (plan === undefined) return fail('unknown-plan')
+        if (Date.now() > plan.expires) return fail('plan-expired')
+        const settingsService = ctx.get('settings')
+        const profile = profileFor(plan.route, settingsService)
+        if (profile === undefined) return fail('route-gone')
+        if (workbenchStore !== undefined && (await workbenchStore.load()).recovery?.[plan.route] !== undefined) return fail('recovery-pending')
+        if (profileFingerprint(profile) !== plan.baseFingerprint) return fail('conflict')
+        // 最终确认后的有效性复检：拒绝写入已失效的计划。
+        const recheck = selfCheckModelsPatch(plan.nextModels)
+        if (!recheck.ok) return fail('schema-invalid', recheck.errors.join(';'))
+        const undoSnapshot = { models: profile.models, at: Date.now() }
+        await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', plan.route, 'models'], value: plan.nextModels }])
+        if (workbenchStore !== undefined) {
+          try {
+            await workbenchStore.mutate((sidecar) => {
+              if (sidecar.providers === undefined) sidecar.providers = {}
+              sidecar.providers[plan.route] = undoSnapshot
+              // 内置目录来源的模型记绑定：下次仲裁可高置信定位到该渠道。
+              for (const entry of plan.sources) {
+                if (entry.source !== 'builtin') continue
+                if (sidecar.bindings === undefined) sidecar.bindings = {}
+                const bound = sidecar.bindings[plan.route]
+                if (bound === null || typeof bound !== 'object' || Array.isArray(bound)) sidecar.bindings[plan.route] = {}
+                sidecar.bindings[plan.route][entry.modelId] = { source: 'pi-ai', providerId: entry.providerId ?? plan.route }
+              }
+            })
+          } catch (_) {}
+        }
+        return { ok: true, value: { route: plan.route, changed: true, modelsChanged: plan.sources.length, undoable: true } }
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) }
+      }
+    } },
+
     // ── 移除预览（守卫）：静态引用检测 + 可迁移目标清单 ──────────────────────────
     'models2-remove-preview': { feature: 'modelCatalog', handle: async (payload) => {
       try {

@@ -12,6 +12,7 @@ import {
   applySuggestions,
   applyUndo,
   arbitrateModelSuggestions,
+  abilityPatch,
   createFreshnessManager,
   createWorkbenchStore,
   diffModelLists,
@@ -21,8 +22,12 @@ import {
   loadWorkbenchSidecar,
   modelParamsCandidates,
   modelParamsDevEfforts,
+  openRouterModelFacts,
+  openRouterVerifySource,
+  pickOpenRouterMatch,
   profileFingerprint,
   saveWorkbenchSidecar,
+  selfCheckModelsPatch,
   suggestionId,
   undoPreviewModels,
 } from '../index.js'
@@ -462,7 +467,7 @@ async function createRoutes(options = {}) {
 test('workbench routes: every models2-* endpoint is feature-gated on modelCatalog', async () => {
   const { routes } = await createRoutes({ dshHome: '/nonexistent' })
   const endpoints = Object.keys(routes)
-  assert.equal(endpoints.length, 16)
+  assert.equal(endpoints.length, 22)
   for (const name of endpoints) {
     assert.equal(name.startsWith('models2-'), true, `${name} uses the models2- namespace`)
     assert.equal(routes[name].feature, 'modelCatalog', `${name} is behind the modelCatalog gate`)
@@ -655,4 +660,129 @@ test('workbench routes: provider check reads the 0.1.6 provider id field, not th
   assert.equal(providers.skipped, undefined)
   const models = result.value.checks.find((check) => check.type === 'models')
   assert.equal(models.ok, true)
+})
+
+test('workbench simple flow: option and detection handles are single-use and route-bound', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-simple-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles: { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1' }] } },
+  })
+
+  // 伪造句柄一路拒绝（浏览器无法自造 optionHandle / detectionId）。
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [{ optionHandle: 'forged' }] })).ok, false)
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [{ detectionId: 'forged' }] })).ok, false)
+  assert.equal((await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [{}] })).ok, false, 'an addition with no handle is rejected')
+  // 非 HTTPS 的在线获取被护栏挡下（不会发网）。
+  const online = await routes['models2-model-options'].handle({ route: 'cpa', source: 'online' })
+  assert.equal(online.ok, false)
+  // 内置来源只对内置渠道开放；未知来源名被拒。
+  assert.equal((await routes['models2-model-options'].handle({ route: 'cpa', source: 'builtin' })).ok, false)
+  assert.equal((await routes['models2-model-options'].handle({ route: 'cpa', source: 'nonsense' })).ok, false)
+  const badIds = await routes['models2-model-suggestions'].handle({ route: 'cpa', modelIds: [] })
+  assert.equal(badIds.ok, false)
+})
+
+test('workbench simple flow: detection reports the skipped llm service and unverified state', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-detect-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles: { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [] } },
+  })
+  // llm 缺席：检测照常返回，但 verified=false 且带明确错误码——不是「检测通过」。
+  const result = await routes['models2-model-detect'].handle({ route: 'cpa', modelId: 'm1' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.verified, false)
+  assert.equal(result.value.error, 'llm-service-missing')
+  // 非法模型 id 在检测前就被拒。
+  assert.equal((await routes['models2-model-detect'].handle({ route: 'cpa', modelId: 'bad\u0000id' })).ok, false)
+})
+
+test('workbench simple flow: prepare warns about unverified models and commit persists builtin bindings', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-bind-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [] } }
+  const store = createWorkbenchStore(dshHome)
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles,
+    workbenchStore: store,
+    mutate: async (_ns, ops) => { profiles.cpa.models = ops[0].value },
+  })
+
+  // detection → prepare：未验证模型必须显式 allowUnverified 才放行，并带 warning。
+  const detection = await routes['models2-model-detect'].handle({ route: 'cpa', modelId: 'manual-model' })
+  const detectionId = detection.value.detectionId
+  const blocked = await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [{ detectionId }] })
+  assert.equal(blocked.ok, false, 'an unverified detection needs explicit consent')
+
+  const detection2 = await routes['models2-model-detect'].handle({ route: 'cpa', modelId: 'manual-model' })
+  const prepared = await routes['models2-model-prepare'].handle({ route: 'cpa', additions: [{ detectionId: detection2.value.detectionId, allowUnverified: true }] })
+  assert.equal(prepared.ok, true)
+  assert.deepEqual(prepared.value.warnings, ['unverified-model'])
+  assert.equal(prepared.value.diff.added.includes('manual-model'), true)
+
+  const committed = await routes['models2-model-commit'].handle({ planId: prepared.value.planId })
+  assert.equal(committed.ok, true)
+  assert.equal(profiles.cpa.models.some((model) => model.id === 'manual-model'), true, 'the plan is written')
+  // 提交后撤销槽可用。
+  const preview = await routes['models2-undo-preview'].handle({ route: 'cpa' })
+  assert.equal(preview.ok, true)
+})
+
+test('workbench simple flow: verification maps 404 to not-found and rejects bad model ids', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-verify-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { routes } = await createRoutes({
+    dshHome,
+    profiles: { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [] } },
+  })
+  assert.equal((await routes['models2-model-verify-online'].handle({ route: 'cpa', modelId: '' })).ok, false)
+  assert.equal((await routes['models2-model-verify-online'].handle({ route: 'ghost', modelId: 'm1' })).ok, false)
+})
+
+test('workbench verification: OpenRouter source selection and match scoring are deterministic', () => {
+  // 含作者前缀直查档案端点；否则走目录搜索。
+  const direct = openRouterVerifySource('anthropic/claude-sonnet-4')
+  assert.equal(direct.kind, 'model')
+  assert.match(direct.url, /^https:\/\/openrouter\.ai\/api\/v1\/model\//)
+  const search = openRouterVerifySource('glm-5.3-flash')
+  assert.equal(search.kind, 'search')
+  assert.match(search.url, /^https:\/\/openrouter\.ai\/api\/v1\/models\?q=/)
+  assert.equal(openRouterVerifySource('a/b/c').url.endsWith(encodeURIComponent('a/b/c')), true, 'slashes are encoded, never path segments')
+
+  // 精确相等优先于后缀匹配；:variant 变体不被当成同模型。
+  const rows = [
+    { id: 'other/glm-5.3-flash:free' },
+    { id: 'zai/glm-5.3-flash', canonical_slug: 'zai/glm-5.3-flash' },
+    { id: 'glm-5.3-flash', name: 'exact' },
+  ]
+  assert.equal(pickOpenRouterMatch('glm-5.3-flash', rows).name, 'exact', 'exact id wins')
+  assert.equal(pickOpenRouterMatch('glm-5.3-flash', [{ id: 'zai/glm-5.3-flash' }]).id, 'zai/glm-5.3-flash', 'suffix match works')
+  assert.equal(pickOpenRouterMatch('missing', rows), undefined)
+
+  // 事实抽取：字段缺失即跳过；一个都抽不到返回 []（调用方判 no-match）。
+  assert.deepEqual(openRouterModelFacts({ data: { name: 'M', context_length: 200000 } }), ['name: M', 'context length: 200000'])
+  assert.deepEqual(openRouterModelFacts({ data: {} }), [])
+  assert.deepEqual(openRouterModelFacts(null), [])
+})
+
+test('workbench ability patch: follow never fabricates a text-only or no-reasoning claim', () => {
+  // 「未表态」与「显式不支持」语义不同：follow 必须产出空补丁。
+  assert.deepEqual(abilityPatch({}), {})
+  assert.deepEqual(abilityPatch({ image: 'follow', reasoning: 'follow' }), {})
+  assert.deepEqual(abilityPatch({ image: 'image' }), { input: ['text', 'image'] })
+  assert.deepEqual(abilityPatch({ image: 'text' }), { input: ['text'] })
+  assert.deepEqual(abilityPatch({ reasoning: 'unsupported' }), { reasoningEfforts: false })
+  // observed：只在运行时确实观测到 image 时才写多模态。
+  assert.deepEqual(abilityPatch({ image: 'observed', observed: { input: ['text'] } }), {})
+  assert.deepEqual(abilityPatch({ image: 'observed', observed: { input: ['text', 'image'] } }), { input: ['text', 'image'] })
+  assert.deepEqual(abilityPatch({ reasoning: 'observed', observed: { reasoningEfforts: { off: null, low: 'low' } } }), { reasoningEfforts: { off: null, low: 'low' } })
+  // 回归：观测不到档位时绝不能把 'observed' 当 wire 值写进去——否则 selfCheck 以 bad-efforts
+  // 整体拒绝，表现为「添加未验证模型永远失败」（llm 服务缺席或 adapter 不表态时必现）。
+  assert.deepEqual(abilityPatch({ reasoning: 'observed', observed: {} }), {})
+  assert.deepEqual(abilityPatch({ reasoning: 'observed' }), {})
+  assert.equal(selfCheckModelsPatch([{ id: 'm', ...abilityPatch({ reasoning: 'observed', observed: {} }) }]).ok, true)
 })
