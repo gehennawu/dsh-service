@@ -130,6 +130,47 @@ export function createModelWorkbenchRoutes({
 
   const profileFor = (route, settings) => readLlmProfiles(settings).find((candidate) => candidate.route === route)
 
+  /**
+   * 读 `llm-pi-ai` 命名空间的当前 revision（settings 服务 `describe()` 的 descriptor 字段）。
+   * 0.1.6-alpha.2 的 `mutate(ns, ops, expectedRevision)` **真正实现**了该参数：不匹配即抛
+   * `SettingsConflictError`（`code: 'SETTINGS_CONFLICT'`）。
+   *
+   * 为什么不只用 profile 指纹：指纹只能证明「我读到的内容」没变，挡不住「检查之后、
+   * 写入之前」这段窗口里的并发写（TOCTOU）。expectedRevision 由服务端在**写队列内部、
+   * 落盘之前**比对，把这段窗口关掉；两者互补——指纹还能覆盖 revision 未变但结构漂移的
+   * 情形（如外部手改同值），revision 覆盖并发写。
+   *
+   * 服务缺席/未实现 describe/revision 时返回 undefined：调用方退回指纹单闸，
+   * 不因老宿主缺能力而拒绝写入。
+   */
+  const settingsRevisionOf = (settings, ns = 'llm-pi-ai') => {
+    try {
+      if (settings === undefined || typeof settings.describe !== 'function') return undefined
+      const descriptors = settings.describe()
+      if (!Array.isArray(descriptors)) return undefined
+      const found = descriptors.find((descriptor) => descriptor?.ns === ns)
+      return typeof found?.revision === 'number' && Number.isFinite(found.revision) ? found.revision : undefined
+    } catch (_) {
+      return undefined
+    }
+  }
+
+  /** 并发写被服务端拒绝（expectedRevision 不匹配）→ 统一映射为工作台的 conflict 语义。 */
+  const isSettingsConflict = (error) => error?.code === 'SETTINGS_CONFLICT' || error?.name === 'SettingsConflictError'
+
+  /**
+   * 写某路由的模型数组：优先带 expectedRevision（服务端在写队列内、落盘前比对，
+   * 关掉「检查 → 写入」之间的并发写窗口）。
+   *
+   * `expectedRevision` 为 undefined（老宿主无 describe/revision）时退化为不带该参数的
+   * 普通写——指纹闸仍在调用方生效，绝不因宿主缺能力而拒绝写入。
+   */
+  const mutateModels = (settings, route, models, expectedRevision) => settings.mutate(
+    'llm-pi-ai',
+    [{ op: 'set', path: ['providers', route, 'models'], value: models }],
+    expectedRevision,
+  )
+
   /** 凭据解析（仅本机凭据库，不发网）；未配置/解析失败返回 undefined。 */
   const resolveCredential = async (profile) => {
     if (profile?.apiKeyEnv === '' || !MODELS_KEY_REF_RE.test(profile?.apiKeyEnv ?? '')) return undefined
@@ -381,7 +422,7 @@ export function createModelWorkbenchRoutes({
         if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
         const planId = planIdFor(`${inspection.route}:${randomUUID()}`)
         const expires = Date.now() + WORKBENCH_PLAN_TTL_MS
-        rememberHandle(plans, planId, { route: inspection.route, nextModels, sids, baseFingerprint: profileFingerprint(profile), expires })
+        rememberHandle(plans, planId, { route: inspection.route, nextModels, sids, baseFingerprint: profileFingerprint(profile), baseRevision: settingsRevisionOf(ctx.get('settings')), expires })
         return { ok: true, value: { planId, route: inspection.route, expires, diff: diffModelLists(profile.models, nextModels), selected: sids.length } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -403,7 +444,12 @@ export function createModelWorkbenchRoutes({
         // 冲突检测：计划生成后配置有任何漂移（含 baseURL/凭据引用/未知字段）→ 拒绝并要求重算。
         if (profileFingerprint(profile) !== plan.baseFingerprint) return fail('conflict')
         const undoSnapshot = { models: profile.models, at: Date.now() }
-        await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', plan.route, 'models'], value: plan.nextModels }])
+        try {
+          await mutateModels(settingsService, plan.route, plan.nextModels, plan.baseRevision)
+        } catch (error) {
+          if (isSettingsConflict(error)) return fail('conflict')
+          throw error
+        }
         // 写后持久化撤销快照（只存模型数组，不含密钥值）；落盘失败仅降级撤销能力。
         let undoable = true
         if (workbenchStore !== undefined) {
@@ -456,7 +502,15 @@ export function createModelWorkbenchRoutes({
         })
         const checked = selfCheckModelsPatch(nextModels)
         if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
-        await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', route, 'models'], value: nextModels }])
+        // 撤销没有前置计划句柄可携带 revision：这里刚读过 profile，直接取当前 revision
+        // （撤销写入同样是 read-modify-write，仍需关掉并发窗口）。
+        const undoRevision = settingsRevisionOf(settingsService)
+        try {
+          await mutateModels(settingsService, route, nextModels, undoRevision)
+        } catch (error) {
+          if (isSettingsConflict(error)) return fail('conflict')
+          throw error
+        }
         await workbenchStore.mutate((sidecar) => { if (sidecar.providers !== undefined) delete sidecar.providers[route] })
         return { ok: true, value: { route, restored: true } }
       } catch (error) {
@@ -563,6 +617,8 @@ export function createModelWorkbenchRoutes({
           storesKey: credentialStored,
         })
         try {
+          // 新建不带 expectedRevision：revision 是**命名空间级**的，用草稿生成时的值会在
+          // 用户于其它路由上做了任何改动后误拒；新建的并发冲突由上面的 route-taken 复检覆盖。
           await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', draft.routeId], value: profile }])
         } catch (error) {
           // settings 失败 → 逐级补偿：删新凭据；连回滚都失败 → 人工恢复阻断态。
@@ -740,7 +796,7 @@ export function createModelWorkbenchRoutes({
         const planId = planIdFor(`${route}:edit:${randomUUID()}`)
         const expires = Date.now() + WORKBENCH_PLAN_TTL_MS
         const appliedCount = diff.changes.length + diff.added.length + diff.removed.length
-        rememberHandle(plans, planId, { route, nextModels, sids: [], baseFingerprint: profileFingerprint(profile), appliedCount, expires })
+        rememberHandle(plans, planId, { route, nextModels, sids: [], baseFingerprint: profileFingerprint(profile), baseRevision: settingsRevisionOf(ctx.get('settings')), appliedCount, expires })
         return { ok: true, value: { planId, route, expires, diff, appliedCount } }
       } catch (error) {
         return { ok: false, error: error?.message || String(error) }
@@ -995,7 +1051,7 @@ export function createModelWorkbenchRoutes({
         if (!checked.ok) return fail('schema-invalid', checked.errors.join(';'))
         const planId = planIdFor(`simple:${route}:${randomUUID()}`)
         const expires = Date.now() + WORKBENCH_PLAN_TTL_MS
-        rememberHandle(modelPlans, planId, { route, nextModels, sources, baseFingerprint: profileFingerprint(profile), expires })
+        rememberHandle(modelPlans, planId, { route, nextModels, sources, baseFingerprint: profileFingerprint(profile), baseRevision: settingsRevisionOf(ctx.get('settings')), expires })
         return {
           ok: true,
           value: {
@@ -1027,7 +1083,12 @@ export function createModelWorkbenchRoutes({
         const recheck = selfCheckModelsPatch(plan.nextModels)
         if (!recheck.ok) return fail('schema-invalid', recheck.errors.join(';'))
         const undoSnapshot = { models: profile.models, at: Date.now() }
-        await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', plan.route, 'models'], value: plan.nextModels }])
+        try {
+          await mutateModels(settingsService, plan.route, plan.nextModels, plan.baseRevision)
+        } catch (error) {
+          if (isSettingsConflict(error)) return fail('conflict')
+          throw error
+        }
         if (workbenchStore !== undefined) {
           try {
             await workbenchStore.mutate((sidecar) => {
@@ -1127,6 +1188,7 @@ export function createModelWorkbenchRoutes({
           removeIds,
           originalModels: profile.models.map((model) => (model !== null && typeof model === 'object' ? { ...model } : model)),
           baseFingerprint: profileFingerprint(profile),
+          baseRevision: settingsRevisionOf(ctx.get('settings')),
           appliedCount: removeIds.length,
           ...(normalizedMigration !== undefined ? { migrateTo: normalizedMigration } : {}),
           expires,
@@ -1160,8 +1222,10 @@ export function createModelWorkbenchRoutes({
         if (profileFingerprint(profile) !== plan.baseFingerprint) return fail('conflict')
         const nextModels = profile.models.filter((model) => !plan.removeIds.includes(model?.id))
         try {
-          await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', plan.route, 'models'], value: nextModels }])
+          await mutateModels(settingsService, plan.route, nextModels, plan.baseRevision)
         } catch (error) {
+          // 并发漂移与「写失败」是两种后果：前者要客户端重算计划，不该混进 remove-failed。
+          if (isSettingsConflict(error)) return fail('conflict')
           return fail('remove-failed', error?.message || String(error))
         }
         if (plan.migrateTo !== undefined) {
@@ -1176,6 +1240,8 @@ export function createModelWorkbenchRoutes({
             })
           } catch (error) {
             try {
+              // 补偿写回**不带 expectedRevision**：此刻 revision 已被我们自己的主写推进，
+              // 带上旧值必然失败；回滚是尽力而为，不能因版本比对而放弃。
               await settingsService.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', plan.route, 'models'], value: plan.originalModels }])
             } catch (compError) {
               // 补偿也失败 → 人工恢复阻断态，恢复前禁止对该路由的自动写入。

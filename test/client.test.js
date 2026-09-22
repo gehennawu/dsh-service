@@ -5006,6 +5006,18 @@ test('ring keeps its panel open while refreshing and shows reset times once data
 test('the ring panel shows only each account\'s nearest reset card and collapses the rest', async () => {
   // 复现多账号场景：CPA 下两个 codex 账号各有多张卡。每账号默认只显示最近要到期的那张，
   // 其余折叠在「另有 N 张」后面（此前把所有卡混成一长串，多账号下分不清归属）。
+  //
+  // 到期时刻一律**相对当下**生成（见下方 resetAt）：本用例断言的是「按最近到期挑选并排序」，
+  // 与具体日历日期无关；写死日期会让用例在那些日期过后必然变红。
+  const pad = (n) => String(n).padStart(2, '0')
+  const resetAt = (minutesFromNow) => {
+    const at = new Date(Date.now() + minutesFromNow * 60000)
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+  }
+  const labelFor = (minutesFromNow) => {
+    const at = new Date(Date.now() + minutesFromNow * 60000)
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`
+  }
   const store = {
     snapshot: { current: { provider: 'cpa' } },
     subscribe: () => () => {},
@@ -5026,12 +5038,16 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
               { id: 'r-1-codex-5h', kindKey: 'codex-5h', label: 'relient8888@gmail.com', percent: 0 },
             ],
             // 刻意乱序：最近到期的排在中间，验证展示取「最近」而不是原序第一张。
+            //
+            // 日期**相对当前时间**推导，不写死字面量：写死会随日历腐烂——卡一旦落到过去就被
+            // 判为已过期并 prune 掉，断言随之失败（本用例 2026-09-22 即因此变红，产品行为正确）。
+            // 偏移量保持原有的相对次序（g1 最近 → g2 → r1 → r2 → g3）。
             resetCards: [
-              { id: 'g2', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-10-04T13:42' },
-              { id: 'g1', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-09-21T08:30' },
-              { id: 'g3', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: '2026-10-05T07:12' },
-              { id: 'r2', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: '2026-10-05T06:18' },
-              { id: 'r1', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: '2026-10-04T10:34' },
+              { id: 'g2', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: resetAt(240) },
+              { id: 'g1', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: resetAt(30) },
+              { id: 'g3', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: resetAt(600) },
+              { id: 'r2', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: resetAt(480) },
+              { id: 'r1', provider: 'cpa', account: 'relient8888@gmail.com', expiresAt: resetAt(180) },
             ],
           }],
         },
@@ -5058,8 +5074,8 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
   assert.equal(renderer.findByTestId('quota-panel-reset-title').props['aria-expanded'], 'true')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-0').children), 'gehenna8888@gmail.com')
   assert.equal(String(renderer.findByTestId('quota-panel-reset-owner-1').children), 'relient8888@gmail.com')
-  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), /2026-09-21 08:30/)
-  assert.match(String(renderer.findByTestId('quota-panel-reset-card-1-0').children[1].children), /2026-10-04 10:34/)
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-0').children[1].children), new RegExp(labelFor(30)))
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-1-0').children[1].children), new RegExp(labelFor(180)))
   // 弹窗侧同款配色：图标绿色锚点、文字中性（与额度页同一份 resetCardContent）。
   assert.equal(renderer.findByTestId('quota-panel-reset-card-0-0').children[0].props.stroke, 'var(--dsw-alias-state-success-primary)')
   assert.equal(renderer.findByTestId('quota-panel-reset-card-0-0').props.style.color, 'var(--dsw-alias-label-secondary)')
@@ -5071,8 +5087,8 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
   renderer.findByTestId('quota-panel-reset-more-0').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('quota-panel-reset-more-0'), false)
-  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-1').children[1].children), /2026-10-04 13:42/)
-  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-2').children[1].children), /2026-10-05 07:12/)
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-1').children[1].children), new RegExp(labelFor(240)))
+  assert.match(String(renderer.findByTestId('quota-panel-reset-card-0-2').children[1].children), new RegExp(labelFor(600)))
   assert.equal(String(renderer.findByTestId('quota-panel-reset-more-1').children), '另有 1 张', 'the other account stays collapsed')
 
   // 收起恢复默认。

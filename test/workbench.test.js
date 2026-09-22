@@ -431,25 +431,39 @@ test('modelparams: freshness manager coalesces in-flight requests, honours backo
 // 便于逐条锁定「客户端伪造输入被拒」这条安全不变量。
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createWorkbenchHost({ profiles = {}, mutate = async () => {} } = {}) {
+function createWorkbenchHost({ profiles = {}, mutate = async () => {}, revision = 0 } = {}) {
+  // 模型 0.1.6-alpha.2 的真实 settings 服务：describe() 暴露命名空间 revision，
+  // mutate(ns, ops, expectedRevision) 在写队列内比对，不匹配抛 SETTINGS_CONFLICT。
+  let currentRevision = revision
   const settings = {
     get: (ns) => (ns === 'llm-pi-ai' ? { providers: profiles } : undefined),
-    mutate,
+    describe: () => [{ ns: 'llm-pi-ai', revision: currentRevision }],
+    mutate: async (ns, ops, expectedRevision) => {
+      if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+        const error = new Error(`settings namespace "${ns}" changed since it was read`)
+        error.name = 'SettingsConflictError'
+        error.code = 'SETTINGS_CONFLICT'
+        throw error
+      }
+      const result = await mutate(ns, ops)
+      currentRevision += 1
+      return result
+    },
   }
   const services = new Map([['settings', settings]])
   const ctx = {
     get: (name) => services.get(name),
     logger: { info() {}, warn() {}, error() {} },
   }
-  return { ctx, services, settings }
+  return { ctx, services, settings, bumpRevision: () => { currentRevision += 1 }, revision: () => currentRevision }
 }
 
 async function createRoutes(options = {}) {
-  const { ctx } = createWorkbenchHost(options)
+  const host = createWorkbenchHost(options)
   const dshHome = options.dshHome
   const store = options.workbenchStore ?? createWorkbenchStore(dshHome)
   const routes = createModelWorkbenchRoutes({
-    ctx,
+    ctx: host.ctx,
     randomUUID,
     // 空目录：本组用例只关心路由层契约，不依赖真实装机目录。
     loadPiCatalog: async () => ({ channels: [], channelIds: new Set(), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
@@ -461,7 +475,7 @@ async function createRoutes(options = {}) {
     dshHome,
     pluginVersion: 'test',
   })
-  return { routes, ctx, store }
+  return { routes, ctx: host.ctx, store, host }
 }
 
 test('workbench routes: every models2-* endpoint is feature-gated on modelCatalog', async () => {
@@ -785,4 +799,147 @@ test('workbench ability patch: follow never fabricates a text-only or no-reasoni
   assert.deepEqual(abilityPatch({ reasoning: 'observed', observed: {} }), {})
   assert.deepEqual(abilityPatch({ reasoning: 'observed' }), {})
   assert.equal(selfCheckModelsPatch([{ id: 'm', ...abilityPatch({ reasoning: 'observed', observed: {} }) }]).ok, true)
+})
+
+test('workbench routes: expectedRevision closes the read-check-write race a fingerprint alone cannot', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-rev-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1', name: 'M1' }] } }
+  const { routes, host } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, ops) => { profiles.cpa.models = ops[0].value },
+  })
+
+  const inspected = await routes['models2-inspect'].handle({ route: 'cpa' })
+  const prepared = await routes['models2-prepare'].handle({ inspectId: inspected.value.inspectId, sids: [] })
+  assert.equal(prepared.ok, true)
+
+  // 关键构造：只在**别的**命名空间内容上做了改动，profile 指纹不变（models 数组一字未改），
+  // 但 settings revision 前进了——这正是指纹闸看不见、并发窗口真实存在的场景。
+  host.bumpRevision()
+  assert.equal(profiles.cpa.models[0].name, 'M1', 'the profile itself is byte-identical')
+
+  const committed = await routes['models2-commit'].handle({ planId: prepared.value.planId })
+  assert.equal(committed.ok, false, 'the stale plan is refused')
+  assert.match(committed.error, /conflict/, 'and surfaces as the workbench conflict code')
+})
+
+test('workbench routes: a live revision still commits, and revision-less hosts fall back to the fingerprint gate', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-rev-ok-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1' }] } }
+  const { routes, host } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, ops) => { profiles.cpa.models = ops[0].value },
+  })
+  const inspected = await routes['models2-inspect'].handle({ route: 'cpa' })
+  const prepared = await routes['models2-prepare'].handle({ inspectId: inspected.value.inspectId, sids: [] })
+  // 未发生任何并发写 → 带 revision 的提交照常成功，且写后 revision 前进。
+  const before = host.revision()
+  const committed = await routes['models2-commit'].handle({ planId: prepared.value.planId })
+  assert.equal(committed.ok, true)
+  assert.equal(host.revision(), before + 1, 'a real write advances the namespace revision')
+
+  // 老宿主形态：settings 服务没有 describe/revision → 退化为不带 expectedRevision 的写，
+  // 指纹闸仍在（这里内容未漂移，故成功）。
+  const legacyProfiles = { cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1' }] } }
+  const legacyCtx = {
+    get: (name) => (name === 'settings'
+      ? { get: () => ({ providers: legacyProfiles }), mutate: async (_ns, ops) => { legacyProfiles.cpa.models = ops[0].value } }
+      : undefined),
+    logger: { info() {}, warn() {}, error() {} },
+  }
+  const legacyRoutes = createModelWorkbenchRoutes({
+    ctx: legacyCtx,
+    randomUUID,
+    loadPiCatalog: async () => ({ channels: [], channelIds: new Set(), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
+    workbenchStore: createWorkbenchStore(dshHome),
+    loadSubagentRoute: async () => ({ version: 1, mode: 'inherit' }),
+    loadAgentDefaultModelSelection: () => undefined,
+    writeSubagentRoute: async () => ({ saved: true }),
+    listSubagentModels: async () => ({ models: [] }),
+    dshHome,
+    pluginVersion: 'test',
+  })
+  const legacyInspect = await legacyRoutes['models2-inspect'].handle({ route: 'cpa' })
+  const legacyPrepare = await legacyRoutes['models2-prepare'].handle({ inspectId: legacyInspect.value.inspectId, sids: [] })
+  const legacyCommit = await legacyRoutes['models2-commit'].handle({ planId: legacyPrepare.value.planId })
+  assert.equal(legacyCommit.ok, true, 'a revision-less host still writes (fingerprint gate only)')
+})
+
+test('workbench routes: undo reads the live revision so an unrelated write never falsely refuses it', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-rev-undo-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = {
+    cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1', name: 'Before' }] },
+  }
+  const { routes, host } = await createRoutes({
+    dshHome,
+    profiles,
+    mutate: async (_ns, ops) => { profiles.cpa.models = ops[0].value },
+  })
+
+  const inspected = await routes['models2-inspect'].handle({ route: 'cpa' })
+  const prepared = await routes['models2-prepare'].handle({ inspectId: inspected.value.inspectId, sids: [] })
+  assert.equal((await routes['models2-commit'].handle({ planId: prepared.value.planId })).ok, true)
+
+  // 撤销没有计划句柄可携带旧 revision，因此**写前现读**当前值：其它命名空间的
+  // 改动不该让撤销失败（否则用户改个无关开关就撤不回去了）。
+  host.bumpRevision()
+  const undone = await routes['models2-undo-commit'].handle({ route: 'cpa' })
+  assert.equal(undone.ok, true, 'a fresh read keeps undo usable')
+  assert.equal(profiles.cpa.models[0].name, 'Before', 'and it actually restored the snapshot')
+})
+
+test('workbench routes: a service-side revision rejection maps to conflict and preserves the undo slot', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-wb-rev-reject-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const profiles = {
+    cpa: { displayName: 'CPA', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', apiKeyEnv: '', models: [{ id: 'm1', name: 'Before' }] },
+  }
+  // 构造「读到的 revision 已经过时」：describe() 永远回 0，而真实写入要求 revision 5。
+  // 这模拟写前读取与真正落盘之间被别的写者插队——服务端据此拒绝。
+  const host = createWorkbenchHost({
+    profiles,
+    mutate: async (_ns, ops) => { profiles.cpa.models = ops[0].value },
+  })
+  host.ctx.get = (name) => {
+    if (name !== 'settings') return undefined
+    return {
+      get: () => ({ providers: profiles }),
+      describe: () => [{ ns: 'llm-pi-ai', revision: 0 }],
+      mutate: async (ns, ops, expectedRevision) => {
+        if (expectedRevision !== 5) {
+          const error = new Error(`settings namespace "${ns}" changed since it was read`)
+          error.name = 'SettingsConflictError'
+          error.code = 'SETTINGS_CONFLICT'
+          throw error
+        }
+        profiles.cpa.models = ops[0].value
+      },
+    }
+  }
+  const store = createWorkbenchStore(dshHome)
+  const routes = createModelWorkbenchRoutes({
+    ctx: host.ctx,
+    randomUUID,
+    loadPiCatalog: async () => ({ channels: [], channelIds: new Set(), byHost: new Map(), byModelId: new Map(), whiteHosts: new Set() }),
+    workbenchStore: store,
+    loadSubagentRoute: async () => ({ version: 1, mode: 'inherit' }),
+    loadAgentDefaultModelSelection: () => undefined,
+    writeSubagentRoute: async () => ({ saved: true }),
+    listSubagentModels: async () => ({ models: [] }),
+    dshHome,
+    pluginVersion: 'test',
+  })
+  // 手工放一个写前快照，激活撤销槽。
+  await store.mutate((sidecar) => { sidecar.providers.cpa = { models: [{ id: 'm1', name: 'Snapshot' }], at: Date.now() } })
+
+  const undone = await routes['models2-undo-commit'].handle({ route: 'cpa' })
+  assert.equal(undone.ok, false)
+  assert.match(undone.error, /conflict/, 'a service-side revision rejection reads as a workbench conflict')
+  const preview = await routes['models2-undo-preview'].handle({ route: 'cpa' })
+  assert.equal(preview.ok, true, 'the undo slot survives so the user can retry')
 })

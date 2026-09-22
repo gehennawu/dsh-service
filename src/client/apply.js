@@ -1443,7 +1443,7 @@
       // 两处共用同一分组与同一写入路径（featureScope.set，行级 saving 锁）。
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
-        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager'], true],
+        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager', 'modelCatalog'], true],
         ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor'], true],
         ['features.external', ['healthz'], false],
       ]
