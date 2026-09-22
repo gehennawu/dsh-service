@@ -6007,6 +6007,9 @@
           'time-hover-root': { since: '0.1.2-alpha.2', kind: 'attribute-removed' },
           'settings-plugin-item': { since: '0.1.6-alpha.2', kind: 'slot-retired' },
           'sessions-open-method': { since: '0.1.6-alpha.2', kind: 'method-removed' },
+          'settings-scope': { since: '0.1.7-alpha.1', kind: 'service-removed' },
+          'settings-register': { since: '0.1.7-alpha.1', kind: 'method-removed' },
+          'settings-get': { since: '0.1.7-alpha.1', kind: 'method-removed' },
         }
         const pluginCompatFindings = [
           ...pluginCompatIssues.map((issue) => ({ kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),

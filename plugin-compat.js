@@ -2,8 +2,8 @@
 //
 // 为什么不用 peerDependencies 判定（用户点名否掉的方向）：多数第三方插件根本不写 DSH peer
 // 声明，写了也未必反映真实兼容性。真实信号是「插件代码/清单是否依赖了已被 DSH alpha 移除或
-// 变更的接口」——破坏面清单来自 docs/research/dsh-v0.1.2-alpha.{1,2,3}-plugin-impact.md 与
-// AGENTS.md 已核实的 alpha.2 拆包事实：
+// 变更的接口」——破坏面清单来自 docs/research/ 的各版本 plugin-impact 报告（0.1.2-alpha.{1,2,3}、
+// 0.1.6-alpha.2、0.1.7-alpha.1）与 AGENTS.md 已核实的拆包事实：
 //
 //   manifest 层（package.json 的依赖键与 dsh.client.inject）：
 //   - @deepseek-ai/dsh-client-runtime：alpha.2 起官方 web roster 移除该 client supplier，
@@ -197,7 +197,66 @@ export const COMPAT_BREAKS = Object.freeze([
     since: '0.1.6-alpha.2',
     kind: 'method-removed',
   },
+  {
+    // 0.1.7-alpha.1 移除客户端设置服务 settingsScope，官方配置面改由 configForms 承载
+    // （研究 §2：dsh-v0.1.7-alpha.1-plugin-impact.md）：静态 inject 或直接绑定它的客户端半
+    // 在新版宿主上整个客户端激活挂起，面板不可用（P0，不只是「开关不可保存」）。
+    // kind 用新值 service-removed：整只客户端服务被移除，不是单个方法或槽位。
+    // selfExempt（警示档运行时豁免，见 collectPluginCompat）：本插件设置门面按能力探测动态
+    // 接入两个服务（createFeatureSettings → configForms / settingsScope / 内存兜底），老宿主
+    // 仍需旧面；探测形态 `ctx.get('settingsScope')` 与硬依赖在文本扫描上不可区分，豁免仅对
+    // 本插件自身生效，第三方命中照常上报。
+    id: 'settings-scope',
+    layer: 'code',
+    match: 'settingsScope',
+    since: '0.1.7-alpha.1',
+    kind: 'service-removed',
+    selfExempt: true,
+  },
+  {
+    // 0.1.7-alpha.1 宿主 settings 服务重构为 SettingsForms，移除旧 register（研究 §2.2 S2）：
+    // 命名空间注册失效（异常被插件 catch 则静默），功能开关停留在默认值、无法持久化。
+    // call: true = 方法名条目（同 sessions-open-method）。已知局限：`settings?.register` 守卫
+    // 形态不含该串扫不到——守卫本身是正确形态，漏报可接受。
+    // selfExempt：本插件宿主半保留旧协议守卫分支（老宿主权威路径，新宿主走 Config 双源叠放）。
+    id: 'settings-register',
+    layer: 'code',
+    match: 'settings.register',
+    call: true,
+    since: '0.1.7-alpha.1',
+    kind: 'method-removed',
+    selfExempt: true,
+  },
+  {
+    // 同上：settings.get 一并移除（研究 §5.1 M1）——读宿主命名空间配置（如 llm-pi-ai 的
+    // 自定义渠道）拿到空值，功能静默退化。词形较通用（本地 Map/缓存对象的同形调用会误报），
+    // 但真实破坏面（配置读取退化）值得上报；误报由「DSH ≥ 0.1.7-alpha.1」徽标与文案引导
+    // 人工复核，与 sessions-open-method 的粗粒度取舍同类。
+    // selfExempt：本插件 readLlmProviders 的旧源读取分支（settings.get 存在才走）。
+    id: 'settings-get',
+    layer: 'code',
+    match: 'settings.get',
+    call: true,
+    since: '0.1.7-alpha.1',
+    kind: 'method-removed',
+    selfExempt: true,
+  },
 ])
+
+/** 本插件包名：双版本兼容的运行时自证豁免只对 loader 里的这个条目生效。 */
+const SELF_PACKAGE = '@gehennawu/dsh-service'
+
+/**
+ * 警示档 selfExempt 条目（settings-scope / settings-register / settings-get）：本插件自身的
+ * 能力探测与守卫调用是刻意保留的旧面接入，不是破坏面命中，collectPluginCompat 扫到
+ * SELF_PACKAGE 自己时从 hits（可能不兼容档）剔除，避免诊断页把本插件标成「可能不兼容」、
+ * 检查项常挂 warning。提示档 selfExempt（settings-plugin-item，severity info）不豁免——
+ * 本插件自己的蓝色提示行正是给使用者的解释（2026-09-19 真机验证口径）。SCAN_CACHE 缓存
+ * 原始扫描结果，豁免在收集层做，纯函数 scanPluginCompatibility 保持无状态。
+ */
+const SELF_EXEMPT_HITS = new Set(
+  COMPAT_BREAKS.filter((b) => b.selfExempt === true && b.severity !== 'info').map((b) => b.id),
+)
 
 const MANIFEST_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
 
@@ -512,7 +571,9 @@ export async function collectPluginCompat(ctx, options = {}) {
     if (result.unknown !== null) {
       unknown.push({ moduleName, reason: result.unknown })
     } else {
-      if (result.hits.length > 0) issues.push({ moduleName, breaks: result.hits })
+      // 警示档自证豁免只作用于本插件自己（见 SELF_EXEMPT_HITS 注释）；第三方同名命中不受影响。
+      const hits = moduleName === SELF_PACKAGE ? result.hits.filter((id) => !SELF_EXEMPT_HITS.has(id)) : result.hits
+      if (hits.length > 0) issues.push({ moduleName, breaks: hits })
       if (result.softHits.length > 0) soft.push({ moduleName, breaks: result.softHits })
       if (result.declaredOnly.length > 0) declaredOnly.push({ moduleName, breaks: result.declaredOnly })
     }

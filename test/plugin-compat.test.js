@@ -33,7 +33,7 @@ test('COMPAT_BREAKS lists only verified alpha breakage with unique ids', () => {
     assert.ok(entry.match.length > 0)
     assert.equal(typeof entry.since, 'string', `${entry.id} has valid since string`)
     assert.ok(entry.since.length > 0)
-    assert.ok(['package-removed', 'slot-retired', 'method-removed', 'hash-migrated', 'event-removed', 'attribute-removed'].includes(entry.kind), `${entry.id} has known kind ${entry.kind}`)
+    assert.ok(['package-removed', 'slot-retired', 'method-removed', 'hash-migrated', 'event-removed', 'attribute-removed', 'service-removed'].includes(entry.kind), `${entry.id} has known kind ${entry.kind}`)
     assert.equal(ids.has(entry.id), false, `duplicate id ${entry.id}`)
     ids.add(entry.id)
   }
@@ -43,6 +43,9 @@ test('COMPAT_BREAKS lists only verified alpha breakage with unique ids', () => {
   assert.ok(ids.has('code-runtime'))
   assert.ok(ids.has('e2b-runtime'))
   assert.ok(ids.has('session-start-event'))
+  assert.ok(ids.has('settings-scope'))
+  assert.ok(ids.has('settings-register'))
+  assert.ok(ids.has('settings-get'))
 })
 
 test('compareSemver accurately determines whether a breakage is active under a given DSH version', async () => {
@@ -110,6 +113,27 @@ test('scanCodeHits flags 0.1.6-alpha.2 slot retirement and session-open removal 
   assert.equal(COMPAT_BREAKS.find((b) => b.id === 'sessions-open-method').selfExempt, undefined)
 })
 
+test('scanCodeHits flags 0.1.7-alpha.1 settings seams with documented limits', () => {
+  const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
+  // 第三方真实引用形态：客户端服务绑定/静态 inject、宿主注册与读取调用
+  assert.deepEqual([...scanCodeHits("ctx.settingsScope.bind({ namespace: 'x' })", codeBreaks)], ['settings-scope'])
+  assert.deepEqual([...scanCodeHits("inject: ['slots', 'settingsScope']", codeBreaks)], ['settings-scope'])
+  assert.deepEqual([...scanCodeHits("ctx.settings.register('ns', schema, { base })", codeBreaks)], ['settings-register'])
+  assert.deepEqual([...scanCodeHits("settings.get('llm-pi-ai')", codeBreaks)], ['settings-get'])
+  // 词典/提示的「提及」形态不计：标识后跟全角括号或空格
+  assert.deepEqual([...scanCodeHits('客户端设置服务 settingsScope 被 configForms 取代', codeBreaks)], [])
+  assert.deepEqual([...scanCodeHits('调用已移除的设置注册方法 settings.register（0.1.7-alpha.1 起失效）', codeBreaks)], [])
+  assert.deepEqual([...scanCodeHits('the removed config read method settings.get (legacy API dropped)', codeBreaks)], [])
+  // 已知局限：`settings?.register` 可选链守卫不含该串扫不到——守卫本身是正确形态，漏报可接受
+  assert.deepEqual([...scanCodeHits("typeof settings?.register === 'function'", codeBreaks)], [])
+  // 三条 0.1.7 条目均 selfExempt：本插件自身保留能力探测/守卫接入（运行时豁免见收集用例）
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-scope').selfExempt, true)
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-register').selfExempt, true)
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-get').selfExempt, true)
+  // settings.get 词形通用：本地 Map 同形调用会误报，这是已知取舍（文案引导人工复核）
+  assert.deepEqual([...scanCodeHits('this.settings.get(key)', codeBreaks)], ['settings-get'])
+})
+
 test('manifestCallRefs only matches real require/import calls, not stringified examples', () => {
   const manifestBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'manifest')
   // 真调用：require/import 的引号前无转义反斜杠 → 算引用
@@ -147,9 +171,72 @@ test('self-proof: scanning this plugin own manifest and built entries yields zer
   for (let i = 0; i < ROUTE_MODULES.length; i += 1) {
     assert.deepEqual(scanNonExempt(routeTexts[i]), [], `${ROUTE_MODULES[i]} must not reference changed interfaces`)
   }
-  // 豁免命中必须确实存在且仅来自客户端半：双版本注册是豁免的前提，注册消失了应删豁免。
-  const exemptHits = [...scanCodeHits(client, codeBreaks)].filter((id) => exemptIds.has(id))
-  assert.deepEqual(exemptHits, ['settings-plugin-item'], 'the self-exemption must stay tied to the retained dual-version slot registration')
+  // 豁免命中必须确实存在且只来自双版本兼容代码：客户端半是设置门面的旧面探测（settings-scope）
+  // 与退役槽位注册（settings-plugin-item）；宿主半是旧协议守卫分支（settings-register）与旧
+  // 读取分支（settings-get）。探测/守卫代码删除时应同步删豁免，而不是让豁免遮住真命中。
+  const clientExemptHits = [...scanCodeHits(client, codeBreaks)].filter((id) => exemptIds.has(id)).sort()
+  assert.deepEqual(clientExemptHits, ['settings-plugin-item', 'settings-scope'], 'client self-hits must stay tied to the dual-version settings facade and retired slot registration')
+  const hostExemptHits = [...scanCodeHits(host, codeBreaks)].filter((id) => exemptIds.has(id)).sort()
+  assert.deepEqual(hostExemptHits, ['settings-get', 'settings-register'], 'host self-hits must stay tied to the guarded legacy-protocol branches')
+})
+
+test('collectPluginCompat drops warning-tier selfExempt hits for this plugin only', async () => {
+  // 运行时豁免：本插件自身的双版本探测/守卫调用（settingsScope / settings.register /
+  // settings.get）不能把兼容性检查拉成 warning；第三方插件同形代码必须照常逐条上报。
+  // 提示档 selfExempt（settings-plugin-item）不在豁免之列：本插件自己的蓝色提示行是给
+  // 使用者的解释（2026-09-19 真机口径），保持原样。
+  const dir = await mkdtemp(join(tmpdir(), 'plugin-compat-self-'))
+  try {
+    const hostCode = "ctx.settings.register('ns', schema, {}); settings.get('k')"
+    const clientCode = "const scope = ctx.get('settingsScope')"
+    await mkdir(join(dir, 'node_modules', '@gehennawu', 'dsh-service'), { recursive: true })
+    await writeFile(join(dir, 'node_modules', '@gehennawu', 'dsh-service', 'package.json'), JSON.stringify({
+      name: '@gehennawu/dsh-service',
+      exports: { '.': './index.js', './client': './client.js' },
+    }))
+    await writeFile(join(dir, 'node_modules', '@gehennawu', 'dsh-service', 'index.js'), hostCode)
+    await writeFile(join(dir, 'node_modules', '@gehennawu', 'dsh-service', 'client.js'), clientCode)
+
+    await mkdir(join(dir, 'node_modules', 'third-party'), { recursive: true })
+    await writeFile(join(dir, 'node_modules', 'third-party', 'package.json'), JSON.stringify({ name: 'third-party', main: './index.js' }))
+    await writeFile(join(dir, 'node_modules', 'third-party', 'index.js'), hostCode)
+
+    const requireFn = (specifier) => join(dir, 'node_modules', specifier)
+    const loader = {
+      ctx: { baseUrl: `file://${dir}/` },
+      entries: () => [
+        { id: 'self', disabled: false, options: { name: '@gehennawu/dsh-service' }, fiber: { state: 2 } },
+        { id: 'other', disabled: false, options: { name: 'third-party' }, fiber: { state: 2 } },
+      ],
+    }
+    const report = await collectPluginCompat(createFakeCtx(loader), { requireFn, noCache: true })
+    assert.equal(report.available, true)
+    const selfIssue = report.issues.find((issue) => issue.moduleName === '@gehennawu/dsh-service')
+    assert.equal(selfIssue, undefined, 'warning-tier selfExempt hits must not surface for this plugin')
+    assert.deepEqual(report.issues, [{ moduleName: 'third-party', breaks: ['settings-register', 'settings-get'] }], 'identical third-party code is still reported item by item')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('every COMPAT_BREAKS entry has client metas and zh/en dictionary coverage', async () => {
+  // 客户端渲染依赖两张手工镜像表：apply.js 的 COMPAT_BREAK_METAS（since/kind 徽标）与
+  // src/client.js 的 zh/en 词典（行文案 + reason/impact/advice + category）。宿主清单、
+  // METAS、词典任何一侧漏配都应立即变红，而不是等真机渲染出裸 key 才发现。
+  const { readFile } = await import('node:fs/promises')
+  const clientSource = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
+  const applySource = await readFile(new URL('../src/client/apply.js', import.meta.url), 'utf8')
+  const countOccurrences = (text, needle) => text.split(needle).length - 1
+  for (const entry of COMPAT_BREAKS) {
+    const metaAnchor = `'${entry.id}': { since: '${entry.since}', kind: '${entry.kind}' }`
+    assert.ok(applySource.includes(metaAnchor), `apply.js COMPAT_BREAK_METAS missing or stale for ${entry.id}`)
+    for (const group of ['break', 'reason', 'impact', 'advice']) {
+      const key = `'plugin.compat.${group}.${entry.id}':`
+      assert.equal(countOccurrences(clientSource, key), 2, `${key} must exist in both zh and en dictionaries`)
+    }
+    const categoryKey = `'plugin.compat.category.${entry.kind}':`
+    assert.equal(countOccurrences(clientSource, categoryKey), 2, `${categoryKey} must exist in both zh and en dictionaries`)
+  }
 })
 
 test('collectManifestHits scans dependency keys and the dsh field', () => {
