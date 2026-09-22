@@ -41,7 +41,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 - [🚀 Features](#-features)
   - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
-  - [Quota lookup](#quota-lookup) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
+  - [Quota lookup](#quota-lookup) · [Model configuration](#model-configuration) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
   - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Model provider icons](#model-provider-icons) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
 - [🏗️ Architecture](#-architecture)
 - [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
@@ -51,7 +51,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Health · Maintenance · Configuration**; "Maintenance" aggregates five subpages — Sessions · Skills · Subagents · Backups · Restart — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
-Under **Plugins → Plugin configuration**, twelve host-level switches: **Health diagnostics, Model statistics, Quota lookup, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Model provider icons, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
+Under **Plugins → Plugin configuration**, thirteen host-level switches: **Health diagnostics, Model statistics, Quota lookup, Model configuration, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Model provider icons, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
 ![Plugin configuration](./screenshots/plugin-config_en.png)
 
@@ -164,6 +164,28 @@ Under **Plugins → Plugin configuration**, twelve host-level switches: **Health
 - Two switches edit the SKILL.md frontmatter directly (`disable-model-invocation` / `user-invocable`); changes go live within ~200 ms
 - Entries with legacy camelCase keys are dropped by the official parser: ⚠ warning + one-click canonical fix
 - ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled. Already-annotated skills are listed separately in the plan and are only overwritten after a "Confirm forced refill" second confirmation (annotating no longer blocks future batch fills forever); completion-log timestamps use your local timezone
+
+### Model configuration
+
+- A top-level **Model configuration** page: the left sub-tab **Providers & models** (default) plus the right **Subagent routing** (reusing the "Subagent model" block; the sub-tab bar disappears entirely when only one sub-page applies)
+- **Any channel can be managed**: every `llm-pi-ai.providers` route (custom relay gateways and enabled built-in channels), not limited to an official allowlist; independent namespaces such as `llm-deepseek` are read-only with a pointer to the official page
+- **Zero-network overview**: the status page reads only local settings, the bundled pi-ai catalog and the sidecar — each route shows configuration completeness, metadata completeness (capacity / vision / reasoning counted separately), last connection validation, model count, and "needs attention" flags (dangling credential ref, invalid structure, failed validation, unrecovered compensation)
+- **Check → suggest → apply → verify**: the network probe of `{baseURL}/models` runs only after you explicitly click "Check & fix". Suggestions fall into four classes — safe fills (checked by default), conflicts (unchecked by default), addable models, and unrecognized models (left untouched — the plugin **never suggests deleting**)
+- **Multi-source metadata consensus**: the bundled pi-ai catalog (primary) plus modelparams.dev (supplementary — reasoning levels and output ceiling only, never capacity/vision) plus runtime observation. A single suggestion appears only when sources agree; otherwise the sources are listed for you to choose, and your explicit config is never overridden on a guess
+- **Built-in inheritance is not a gap**: built-in channels inherit capability fields from the catalog at runtime, so "not written in settings" does not mean "missing capability" — you will not be nagged to fill in reasoning levels
+- **Manual editor**: id / name / context / max output always visible, capabilities collapsed (three-state vision, seven reasoning levels plus custom wire values); clearing a field removes the explicit override to inherit the default, and `reasoning: false` explicitly declares "not supported" (distinct from omitting it)
+- **Removal guard**: before removing models the plugin checks static references — a reference from `agent-default-model` **hard-blocks** the removal, and a subagent-routing reference requires choosing a replacement within the same plan; both are applied in one cross-sidecar transaction with automatic compensation if any step fails
+- **Every write is reversible**: one transaction per provider, a field-level diff behind a two-step confirmation ("Prepare apply" → consequence summary → "Confirm apply"), a re-read comparison before executing that refuses to overwrite concurrent changes (any drift returns `conflict`), and a per-route pre-write snapshot that can be undone. If compensation itself fails the route enters a "needs manual recovery" blocked state, and automatic writes to that route are refused until it is resolved
+- **Online verification**: looks a model up in the OpenRouter model directory by id (fixed domain, redirects not followed); results are shown for reference only and never change your config
+
+#### URL and credential safety
+
+- **No input concatenation**: the browser never supplies a URL, package name, command or path. Online discovery requests only the **baseURL the host reads from settings**; strings such as model ids and names are written to settings purely as data and never reach a shell, path or command argument
+- **Online discovery guardrails**: HTTPS-only, no userinfo, port empty or 443, IP literals refused, **every** DNS resolution result must be outside private/reserved ranges, redirects refused, the resolved address pinned for a direct connection with the correct Host header (anti DNS-rebinding), 10s timeout, ≤4MB transferred and ≤8MB decompressed. Non-public / plain-HTTP / non-443 endpoints can still be saved and written by hand — they are simply barred from online discovery and labelled "not verified by the plugin"
+- **Credentials never leave the host**: a temporary key for a new route lives only in host task memory and reaches the system credential store only after verification; it is never echoed, logged, or put into undo snapshots. Checks resolve the stored key from the local credential store via `settings apiKeyEnv` and send it only to that route's current address
+- **Only host-issued identifiers come back**: the browser submits `sid` / `planId` / `inspectId` / `draftId` handles issued by the host plus capability intent, and all values are replayed by the host from its own list — forged handles and unknown sids are rejected outright
+- **Structural write protection**: the only write path is `settings.mutate('llm-pi-ai', ops)` (official schema validation, atomic write, hot effect); the plugin never hand-writes `settings.yaml`
+- **Loopback only**: every endpoint is exposed through the single-segment `/dsh-service` channel with `loopback` authority
 
 ### Subagent model
 

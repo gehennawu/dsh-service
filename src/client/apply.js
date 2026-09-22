@@ -186,9 +186,11 @@
       const { SubagentModelsDock } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
       // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
       // 可见性/顺序/回退全部收敛为纯函数（可独立测试）；ServicePanel 只持状态与业务块。
-      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'diagnostics', 'maintenance', 'configuration']
-      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
-      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', diagnostics: 'healthDiagnostics' }
+      // v1.10 模型配置工作台：插入在「额度查询」之后、「诊断」之前（与旧分支的信息架构一致）。
+      // 门控 = modelCatalog（供应商与模型 + 子代理路由两个子标签都由本页承载）。
+      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'models', 'diagnostics', 'maintenance', 'configuration']
+      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', models: 'tabs.models', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
+      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', models: 'modelCatalog', diagnostics: 'healthDiagnostics' }
       const getVisiblePrimaryTabs = (features, warnings) => PRIMARY_TAB_ORDER
         .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || features[PRIMARY_TAB_FEATURES[id]] !== false)
         .map((id) => ({ id, labelKey: PRIMARY_TAB_LABELS[id], warning: warnings !== undefined && warnings[id] === true }))
@@ -4660,6 +4662,19 @@
       // 不是布尔值——同组失败关掉后不再提示，出现新的失败会话则指纹变化、告警重新出现。
       const USAGE_FAILURE_DISMISS_KEY = 'dsh-service-usage-failures-dismissed'
 
+      // ── 模型配置工作台（v1.10，src/client/models-workbench.js）─────────────────
+      // 页面内两个子标签：「供应商与模型」+「子代理路由」（复用既有 SubagentSection）。
+      // SubagentSection 是 apply 内的函数声明，晚于本处定义但早于 ServicePanel 调用，
+      // 而组件只在渲染期被引用（不是立即求值），故这里传引用是安全的。
+      const { ModelsSection } = createModelsWorkbench({
+        useTranslation,
+        rpcCall,
+        SvcTabs,
+        // 传 hook 本身而不是快照：ModelsSection 在自己的渲染期调用它，才能随开关热更新
+        // （工厂这里位于 ServicePanel 之外，拿不到它的局部 features 快照）。
+        useFeatures,
+      })
+
       function ServicePanel() {
         const translate = useTranslation()
         const { value: features } = useFeatures()
@@ -6555,6 +6570,9 @@
             ? usageBlock
             : visiblePrimaryTab === 'quota'
               ? React.createElement(RemoteQuotaCard, null)
+            : visiblePrimaryTab === 'models'
+              // SubagentSection 是 apply 内后置的函数声明；此处只在渲染期求值，不受声明顺序影响。
+              ? React.createElement(ModelsSection, { SubagentSection })
             : visiblePrimaryTab === 'diagnostics'
               ? healthBlock
             : visiblePrimaryTab === 'maintenance'

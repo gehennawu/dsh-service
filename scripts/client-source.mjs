@@ -26,6 +26,7 @@ const CLIENT_SOURCE_FILES = [
   'src/client/subagent-dispatch-ring.js',
   'src/client/settings-nav-tabs.js',
   'src/client/model-icons.js',
+  'src/client/models-workbench.js',
   'src/client/apply.js',
 ]
 

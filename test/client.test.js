@@ -49,6 +49,8 @@ function createRenderer(rpcCall, options = {}) {
     subagentRoute: true,
     // v1.8：模型厂家/渠道图标默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
     modelProviderIcons: true,
+    // v1.10：模型配置工作台默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
+    modelCatalog: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -1986,12 +1988,12 @@ test('tab and top alerts identify health and backup failures without treating an
   assert.equal(renderer.hasTest('tab-dot-overview'), false, 'overview has no failure')
   assert.equal(renderer.hasTest('tab-dot-configuration'), false, 'configuration has no failure')
   assert.equal(renderer.hasTest('tab-dot-usage'), false, 'usage has no failure')
-  // v0.39：单行六页分段条，容器 testid = service-tab-list，按钮 testid = service-tab-<id>。
+  // v1.10：模型配置页插在额度之后、诊断之前（旧分支的信息架构）。
   assert.deepEqual(renderer.findAllByTestIdPrefix('service-tab-').map((node) => node.props['data-testid']), [
     'service-tab-list',
-    'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-diagnostics',
-    'service-tab-maintenance', 'service-tab-configuration',
-  ], 'order: overview → usage → quota → diagnostics → maintenance → configuration')
+    'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-models',
+    'service-tab-diagnostics', 'service-tab-maintenance', 'service-tab-configuration',
+  ], 'order: overview → usage → quota → models → diagnostics → maintenance → configuration')
   // 重启不再是顶层标签：收敛为维护子页（maintenance-tab-*）。
   assert.equal(renderer.hasTest('top-tab-restart'), false, 'no legacy top tabs remain')
   assert.equal(renderer.hasTest('service-tab-restart'), false, 'restart is a maintenance subpage, not a primary tab')
@@ -13932,4 +13934,120 @@ test('holiday calendar settings are removed entirely; the generated table only d
   } finally {
     Date.now = realNow
   }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.10 模型配置工作台（客户端半）：页签门控、子标签、零网络快照与建议流。
+// 与宿主端 test/workbench.test.js 互补——那边锁协议与事务，这边锁渲染与交互。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODELS_SNAPSHOT = {
+  routes: [
+    {
+      route: 'cpa',
+      displayName: 'CPA Relay',
+      source: 'custom',
+      baseURL: 'https://gw.example.com/v1',
+      api: 'openai-completions',
+      modelCount: 2,
+      metaCounts: { contextWindow: 2, inputImage: 1, reasoning: 1 },
+      credentialState: 'ok',
+      undoable: false,
+      attention: [],
+      needsAttention: false,
+    },
+    {
+      route: 'broken',
+      displayName: 'Broken Route',
+      source: 'custom',
+      baseURL: '',
+      api: 'openai-completions',
+      modelCount: 1,
+      metaCounts: { contextWindow: 0, inputImage: 0, reasoning: 0 },
+      credentialState: 'dangling',
+      undoable: false,
+      attention: ['dangling-credential'],
+      needsAttention: true,
+    },
+  ],
+}
+
+test('models page renders inside the primary tab, fetches a zero-network snapshot, and lists routes', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  // 模型页在主标签里；切换过去才拉快照（进页才请求，符合「零网络默认」）。
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'models2-snapshot').map((call) => call.payload), [{}], 'the snapshot endpoint takes no payload')
+  const text = renderer.text('settings.section')
+  assert.match(text, /CPA Relay/)
+  assert.match(text, /Broken Route/)
+  // 排序是**宿主**职责（models2-snapshot 已按「需处理优先 → 最近验证 → 显示名」排好）：
+  // 客户端原样渲染服务端顺序，不自己重排——否则两边口径会各自漂移。
+  assert.ok(text.indexOf('CPA Relay') < text.indexOf('Broken Route'), 'the client renders the server order as-is')
+  // 悬空凭据路由的 ⚠ 标记渲染出来（需处理的可见信号）。
+  assert.match(text, /models\.wb\.attention\.dangling|凭据/)
+})
+
+test('models page sub-tabs switch between providers and subagent routing, and hide the bar when only one applies', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    if (endpoint === 'subagent-route') return { ok: true, value: { mode: 'inherit' } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  // 两个子页都可用 → 子标签栏出现，默认停在「供应商与模型」。
+  assert.equal(renderer.hasTest('models-tab-providers'), true)
+  assert.equal(renderer.hasTest('models-tab-subagent'), true)
+  assert.equal(renderer.findByTestId('models-tab-providers').props['aria-selected'], 'true')
+  // 切到子代理路由：内容换成子代理区块（复用既有 SubagentSection）。
+  renderer.findByTestId('models-tab-subagent').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('models-tab-subagent').props['aria-selected'], 'true')
+})
+
+test('models page disappears entirely when modelCatalog is off, and its endpoints are never called', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    return { ok: true, value: {} }
+  }, { featureSettings: { modelCatalog: false } })
+  await renderer.load()
+  assert.equal(renderer.hasTest('service-tab-models'), false, 'the tab disappears with the feature off')
+  assert.equal(calls.includes('models2-snapshot'), false, 'a disabled page never fetches its snapshot')
 })
