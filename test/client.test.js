@@ -14067,3 +14067,82 @@ test('models page disappears entirely when modelCatalog is off, and its endpoint
   assert.equal(renderer.hasTest('service-tab-models'), false, 'the tab disappears with the feature off')
   assert.equal(calls.includes('models2-snapshot'), false, 'a disabled page never fetches its snapshot')
 })
+
+test('models page detail view loads the full-fidelity route and renders configured models with their parameters', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'models2-snapshot') return { ok: true, value: MODELS_SNAPSHOT }
+    // 详情页必须另拉全保真 route（快照的 routes 行不带 models 数组），且不能误用目录级数值。
+    if (endpoint === 'models2-route') {
+      return {
+        ok: true,
+        value: {
+          route: 'cpa',
+          displayName: 'CPA Relay',
+          baseURL: 'https://gw.example.com/v1',
+          api: 'openai-completions',
+          apiKeyEnv: 'CPA_API_KEY',
+          models: [
+            { id: 'm-full', name: 'Full Model', contextWindow: 1000000, maxTokens: 128000, input: ['text', 'image'], reasoningEfforts: { off: null, high: 'high' }, compat: { keep: true } },
+            { id: 'm-bare' },
+          ],
+        },
+      }
+    }
+    if (endpoint === 'models2-model-suggestions') return { ok: true, value: { route: 'cpa', suggestions: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+
+  // 点进路由详情。
+  renderer.findByTestId('models-route-cpa').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'models2-route').map((call) => call.payload), [{ route: 'cpa' }])
+  const text = renderer.text('settings.section')
+  assert.match(text, /Full Model/, 'the configured model name renders')
+  assert.match(text, /m-bare/, 'a bare model entry still renders (id only)')
+  // 详情页是**可编辑**基线，因此容量显示原始数值（1000000）而不是紧凑格式——
+  // 紧凑格式只用于只读展示（formatCapacity），可编辑输入框里必须是可回写的真实值。
+  assert.match(text, /1000000/, 'the editor shows the raw capacity it will write back')
+  assert.match(text, /Image/, 'the vision capability is surfaced')
+  assert.match(text, /思考/, 'the reasoning capability is surfaced')
+  // 返回列表。
+  renderer.findByTestId('models-detail-back').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('models-route-row-cpa'), true)
+})
+
+test('models page surfaces a failed snapshot without crashing the panel', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    // 宿主未重启时的真实形态：端点还不存在 → unknown-endpoint。
+    if (endpoint === 'models2-snapshot') return rpcError('unknown-endpoint')
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    return { ok: true, value: {} }
+  })
+  await renderer.load()
+  renderer.findByTestId('service-tab-models').props.onClick()
+  await renderer.flush()
+  // 端点缺席不得炸面板：页面照常渲染，只是没有路由行。
+  assert.equal(renderer.hasTest('models-page'), true)
+  assert.equal(renderer.findAllByTestIdPrefix('models-route-row-').length, 0)
+})
