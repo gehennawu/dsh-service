@@ -26,6 +26,8 @@ const CLIENT_SOURCE_FILES = [
   'src/client/subagent-dispatch-ring.js',
   'src/client/settings-nav-tabs.js',
   'src/client/model-icons.js',
+  // 特性设置门面：必须在 apply.js 之前——apply 的同步函数体在声明处立即调用它。
+  'src/client/feature-settings.js',
   'src/client/apply.js',
 ]
 

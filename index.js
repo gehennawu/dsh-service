@@ -90,21 +90,24 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   // 窄态替换官方默认图标；未适配渠道保留官方默认图标）。
   modelProviderIcons: true,
 })
-const FeatureSettingsSchema = z.object({
-  healthDiagnostics: z.boolean().default(true),
-  modelUsage: z.boolean().default(true),
-  quotaLookup: z.boolean().default(true),
-  backupMaintenance: z.boolean().default(true),
-  taskNotifications: z.boolean().default(true),
-  healthz: z.boolean().default(true),
-  skillManager: z.boolean().default(true),
-  subagentRoute: z.boolean().default(true),
-  subagentModelsDock: z.boolean().default(true),
-  mobileAdaptation: z.boolean().default(false),
-  sessionManager: z.boolean().default(true),
-  fileEditor: z.boolean().default(true),
-  modelProviderIcons: z.boolean().default(true),
-})
+/** 标记为「可热更新」的 Config 字段（0.1.7-alpha.1 的表单与原地热更新以此为准）。 */
+const volatileField = (schema) => (typeof schema?.extra === 'function' ? schema.extra('volatile', true) : schema)
+/** 特性开关字段表：以 DEFAULT_FEATURE_SETTINGS 为唯一事实源，两条设置协议各自据此建 schema，
+ * 默认值不可能与运行期默认表漂移。 */
+const buildFeatureSettingsSchema = (wrapField) => z.object(Object.fromEntries(
+  Object.entries(DEFAULT_FEATURE_SETTINGS).map(([key, fallback]) => [key, wrapField(z.boolean().default(fallback))]),
+))
+/** 0.1.7-alpha.1 的插件 Config schema：字段声明 volatile，宿主据此原地提交新值 + 发
+ * 实例局部的 `loader/volatile-update`，开关改动无需重启插件。 */
+const FeatureSettingsSchema = buildFeatureSettingsSchema(volatileField)
+/** 0.1.5~0.1.6 的 settings 命名空间 schema：**字段必须是普通值，绝不能带 volatile**。
+ *
+ * 该版本的设置面是 `settings.register` → `describe()` → 客户端 `settingsScope`，整条链路
+ * 走 JSON 过线；而 volatile 字段解析出来是「不带自身可枚举数据的引用对象」，序列化即 `{}`。
+ * 官方客户端 `SettingsScopeController.decode()` 会用回填的 schema 校验该值，`{}` 必然不合格，
+ * 于是快照永远停在 `status='loading'`：开关全部 disabled、值退回 schema 默认（真机上表现为
+ * 「所有开关变灰、点不动，且与 settings.yaml 里的实际值不符」）。故本协议另建普通 schema。 */
+const FeatureSettingsSectionSchema = buildFeatureSettingsSchema((schema) => schema)
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const MAX_NPM_RESPONSE_BYTES = 256 * 1024
 // 「本次更新内容」：release 正文由宿主抓取后按纯文本下发，客户端就地渲染。
@@ -961,6 +964,9 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
     // 进度：复制阶段按真实字节上报；打包/校验阶段上报归档体积（大小 ≈ 源字节，zstd 数据近不可压缩）。
     const sessionsSource = join(dshHome, 'sessions')
     const configNames = ['settings.yaml', 'cordis.patch.yml', 'AGENTS.md', 'dsh-service-config.json']
+    // 每个 profile 的常驻常规文件：0.1.7-alpha.1 起 `cordis.patch.yml` 是 Profile 的用户配置层
+    // （bundle 之上、settings 的真正落点），只带 package.json 会「备份成功但配置全丢」。
+    const profileNames = ['package.json', 'cordis.patch.yml']
     let configBytes = 0
     for (const file of configNames) configBytes += await sumBackupTree(join(dshHome, file))
     let profilesBytes = 0
@@ -968,10 +974,12 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
     if (await pathExists(profilesRoot)) {
       for (const entry of await readdir(profilesRoot, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue
-        try {
-          const manifestInfo = await lstat(join(profilesRoot, entry.name, 'package.json'))
-          if (manifestInfo.isFile()) profilesBytes += manifestInfo.size
-        } catch (_) {}
+        for (const file of profileNames) {
+          try {
+            const info = await lstat(join(profilesRoot, entry.name, file))
+            if (info.isFile()) profilesBytes += info.size
+          } catch (_) {}
+        }
       }
     }
     // seam 探测 + 会话条目定位（失败即整体回退文件复制）。
@@ -1037,6 +1045,13 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
         const target = join(profilesTarget, entry.name)
         await mkdir(target, { recursive: true })
         await copyStableFile(manifest, join(target, 'package.json'), onCopied)
+        // Profile 补丁层：存在才收；符号链接/非常规文件一律拒绝（与 package.json 同护栏）。
+        const patch = join(profilesSource, entry.name, 'cordis.patch.yml')
+        if (await pathExists(patch)) {
+          const patchInfo = await lstat(patch)
+          if (!patchInfo.isFile() || patchInfo.isSymbolicLink()) throw Object.assign(new Error('backup-source-unsafe'), { code: 'backup-source-unsafe' })
+          await copyStableFile(patch, join(target, 'cordis.patch.yml'), onCopied)
+        }
       }
     }
 
@@ -1536,16 +1551,9 @@ function copyQuotaConfig(config) {
   }
 }
 
-/** settings llm-pi-ai 段 → provider 行；无 settings 服务、段落缺失或形状不符返回空表。 */
-function readLlmProviders(settings) {
-  let section
-  try {
-    section = typeof settings?.get === 'function' ? settings.get('llm-pi-ai') : undefined
-  } catch (_) {
-    return []
-  }
-  const providers = section?.providers
-  if (typeof providers !== 'object' || providers === null) return []
+/** 一个 provider 配置对象 → 额度行的统一归一化（两代配置源共用同一形状契约）。 */
+function normalizeLlmProviderEntries(providers) {
+  if (typeof providers !== 'object' || providers === null || Array.isArray(providers)) return []
   return Object.entries(providers)
     .filter(([providerName]) => typeof providerName === 'string' && providerName.length > 0 && providerName.length <= MAX_QUOTA_PROVIDER_NAME)
     .slice(0, MAX_QUOTA_PROVIDERS)
@@ -1555,6 +1563,42 @@ function readLlmProviders(settings) {
       baseURL: typeof profile?.baseURL === 'string' ? profile.baseURL.trim().replace(/\/+$/, '') : '',
       apiKeyEnv: typeof profile?.apiKeyEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.apiKeyEnv) ? profile.apiKeyEnv : '',
     }))
+}
+
+/** 从 `settings.describe()` 描述符里取 llm-pi-ai 段并归一（0.1.7-alpha.1 的读法）。 */
+function readLlmProvidersFromDescribe(settings) {
+  if (settings === null || typeof settings !== 'object' || typeof settings.describe !== 'function') return []
+  let descriptors
+  try {
+    descriptors = settings.describe()
+  } catch (_) {
+    return []
+  }
+  if (!Array.isArray(descriptors)) return []
+  const entry = descriptors.find((row) => row?.ns === 'llm-pi-ai')
+  if (entry === undefined) return []
+  // `value` 是 Host 已解析好的生效配置（bundle 默认 + 用户覆盖**已合并**，含 redaction 后的
+  // 非密字段），优先用它。不能用 user 浅盖在 value 之上——那会把 bundle 层声明的渠道整批挤掉
+  // （providers 是 dict，浅合并等于整体替换）。value 缺席时才退到 user 原始覆盖层。
+  const resolved = normalizeLlmProviderEntries(entry.value?.providers)
+  if (resolved.length > 0) return resolved
+  return normalizeLlmProviderEntries(entry.user?.providers)
+}
+
+/** settings llm-pi-ai 段 → provider 行；级联提取，任一代配置源不可用即安全降级为空表。
+ * 旧版（0.1.5~0.1.6）读 `settings.get`；新版（0.1.7-alpha.1）无 get，改读 `describe()`。
+ * 都没有时返回空表——调用方 `readQuotaProfiles` 会用运行时渠道别名兜底。 */
+function readLlmProviders(settings) {
+  try {
+    if (typeof settings?.get === 'function') {
+      const section = settings.get('llm-pi-ai')
+      const direct = normalizeLlmProviderEntries(section?.providers)
+      if (direct.length > 0) return direct
+    }
+  } catch (_) {
+    // 旧读法抛错（例如新版 services 的 get 已不可用）→ 继续尝试新版读法。
+  }
+  return readLlmProvidersFromDescribe(settings)
 }
 
 // 运行时 llm 渠道 → Adapter.recognize 判定是否形成额度行。listProviders() 真实契约是
@@ -2490,10 +2534,21 @@ function publicUsage(index, timezoneOffsetMinutes = 0) {
 
 function usageSessionFailure(id, error, stage, stale) {
   // Do not persist arbitrary exception text: it can contain paths, message bodies or credentials.
-  const migration = /dsh-session-format-.*refuses this format/.test(String(error?.message || ''))
-  const code = migration ? 'format-migration-failed' : stage === 'fold' ? 'session-fold-failed' : 'session-read-failed'
+  // 会话格式迁移拒绝的识别有**三条独立线索**，任一命中即归类为 format-migration-failed：
+  //   ① 官方错误类名 `SessionFormatUnsupportedMigrationError`（0.1.7-alpha.1 V3→V4 在缺少
+  //      历史 child facts 时 fail-closed 抛出）；
+  //   ② 稳定机器码（下游包装层可能把它挂到 error.code）；
+  //   ③ 错误文案里的 `dsh-session-format-* refuses this format`（0.1.3~0.1.6 既有口径）。
+  // 只认文案会在官方改措辞时静默退化成「读失败」，故优先认类名与码，文案仅作兜底。
+  const name = typeof error?.name === 'string' ? error.name : ''
+  const code = typeof error?.code === 'string' ? error.code : ''
+  const text = String(error?.message || '')
+  const migration = name === 'SessionFormatUnsupportedMigrationError'
+    || code === 'SESSION_FORMAT_UNSUPPORTED_MIGRATION'
+    || /dsh-session-format-.*refuses this format/.test(text)
+  const failureCode = migration ? 'format-migration-failed' : stage === 'fold' ? 'session-fold-failed' : 'session-read-failed'
   const message = migration ? 'Session format migration was refused.' : stage === 'fold' ? 'Session events could not be indexed.' : 'Session could not be opened or read.'
-  return { id, code, message, stale }
+  return { id, code: failureCode, message, stale }
 }
 
 async function refreshUsageIndex(ctx, dshHome, currentIndex) {
@@ -2503,7 +2558,14 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
   // This is our JSON-only usage cache, not a live Host object. Publish only after save succeeds.
   const index = structuredClone(currentIndex)
   index.failedSessions = []
-  const liveIds = new Set(snapshots.map((record) => String(record.header.id)))
+  // 快照缺 header（后端换代/损坏目录）时只跳过该条，不让整个折叠任务中断：
+  // 一条脏记录不该把其余健康会话的 Token 统计一起拖掉。
+  const usableSnapshots = snapshots.filter((record) => record?.header !== undefined && record.header !== null)
+  for (const record of snapshots) {
+    if (record?.header !== undefined && record.header !== null) continue
+    index.failedSessions.push({ id: 'unknown', code: 'session-read-failed', message: 'Session metadata was unreadable.', stale: false })
+  }
+  const liveIds = new Set(usableSnapshots.map((record) => String(record.header.id)))
   // 保留策略：会话被删（或项目文件夹被删）都不再扣减已统计的贡献——条目永久留在索引里，
   // 只打 detached 标记供界面区分，hours/lastSeq 等桶数据一字不动；会话回来时自动摘掉标记。
   // 这样总量与热力图始终是「索引建立以来的完整历史」，不再随删除缩水。
@@ -2526,7 +2588,7 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
   }
   const recentCutoff = Date.now() - USAGE_ERROR_WINDOW_MS
   for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
-  for (const record of snapshots) {
+  for (const record of usableSnapshots) {
     const id = String(record.header.id)
     const revision = revisionKey(record.revision)
     const previous = index.sessions[id]
@@ -4940,27 +5002,83 @@ function registerDirectRpcWebRoute(ctx, webServer, channel, dispatchRpc) {
   ctx.effect(() => webServer.register(route), `dsh-service: ${channel} direct rpc route`)
 }
 
-function apply(ctx) {
+function apply(ctx, featureConfig) {
   const dshHome = resolveDshHome()
   let featureSettings = DEFAULT_FEATURE_SETTINGS
   const featureSettingsListeners = new Set()
   const publishFeatureSettings = () => {
     for (const listener of featureSettingsListeners) listener(featureSettings)
   }
+  // 特性开关的宿主侧持久化接缝（跨版本能力探测，不做版本号分流）。两个来源按优先级叠放，
+  // 谁先/后到位都不互相覆盖：
+  //   • 0.1.5~0.1.6：`settings.register(ns, schema, {base})` → scope.get/watch（settings.yaml）。
+  //   • 0.1.7-alpha.1：`settings` 服务仍在但 register/get 已移除，配置改由当前 Profile 的
+  //     插件 Config 托管（`plugin.Config` + volatile 字段 + `loader/volatile-update`）。
+  // 注意 0.1.6 的 cordis 同样支持 `plugin.Config`，所以新老两条路可能同时存在；旧 register
+  // 才是该版本的权威来源，故它一旦注册成功就压过 Config 值（Config 只作新版兜底）。
+  // 两方都不在时（测试替身/精简环境）保持内存默认值，绝不抛非受控异常。
+  let legacyFeatureValue
+  let configFeatureValue
+  const refreshFeatureSettings = () => {
+    const next = legacyFeatureValue ?? configFeatureValue
+    featureSettings = next === undefined ? DEFAULT_FEATURE_SETTINGS : Object.assign({}, DEFAULT_FEATURE_SETTINGS, next)
+    publishFeatureSettings()
+  }
+  const readFeatureConfig = (config) => {
+    if (config === null || typeof config !== 'object') return undefined
+    const read = (key) => {
+      const field = config[key]
+      // 0.1.7 的 volatile 字段是引用对象（get()）；0.1.6 的同一 schema 被解释成普通值。
+      return field !== null && typeof field === 'object' && typeof field.get === 'function' ? field.get() : field
+    }
+    const next = {}
+    let present = false
+    for (const key of Object.keys(DEFAULT_FEATURE_SETTINGS)) {
+      const value = read(key)
+      if (typeof value === 'boolean') {
+        next[key] = value
+        present = true
+      }
+    }
+    return present ? next : undefined
+  }
+  // 旧协议（settings.register）的解析结果归一：正常情况就是普通布尔值，但若某代 schemastery
+  // 把字段解析成 volatile 引用（`.get()`），这里同样解引用——否则 `featureEnabled` 会因为
+  // 「引用对象 !== false」而把关闭的开关当成打开（真机曾以 /healthz 仍 200 的形式暴露）。
+  const readFeatureSection = (section) => readFeatureConfig(section)
   ctx.inject(['settings'], (settingsCtx) => {
     try {
-      const scope = settingsCtx.settings.register(SETTINGS_NAMESPACE, FeatureSettingsSchema, { base: DEFAULT_FEATURE_SETTINGS })
-      featureSettings = scope.get()
-      publishFeatureSettings()
+      const settings = settingsCtx.settings
+      // 新版 Host 的 SettingsForms 没有 register：配置由 plugin.Config 承载，跳过。
+      if (typeof settings?.register !== 'function') return
+      // 旧协议必须用**普通字段** schema：volatile 字段过线即 `{}`，会被官方客户端判为无效
+      // 表单而卡在 loading（见 FeatureSettingsSectionSchema 的注释）。
+      const scope = settings.register(SETTINGS_NAMESPACE, FeatureSettingsSectionSchema, { base: DEFAULT_FEATURE_SETTINGS })
+      legacyFeatureValue = readFeatureSection(scope.get())
+      refreshFeatureSettings()
       if (typeof scope.watch === 'function') settingsCtx.effect(() => scope.watch((value) => {
-        featureSettings = value ?? scope.get()
-        publishFeatureSettings()
+        legacyFeatureValue = readFeatureSection(value) ?? readFeatureSection(scope.get())
+        refreshFeatureSettings()
       }), 'dsh-service feature settings watch')
     } catch (error) {
       ctx.logger?.warn?.(`dsh-service: feature settings unavailable: ${error?.message || error}`)
     }
   })
   const featureEnabled = (key) => featureSettings?.[key] !== false
+  // 新版宿主的热更新入口：volatile Config 字段就地在引用上更新，事件只给路径；
+  // 恒从 config 读取当前值（与内存缓存无关），保证开关即时生效、无需重启。
+  const adoptFeatureConfig = (config) => {
+    const next = readFeatureConfig(config)
+    if (next === undefined) return
+    configFeatureValue = next
+    refreshFeatureSettings()
+  }
+  // 新版宿主把插件 Config 作为 apply 的第二实参传入（cordis runtime.callback(ctx, config)）；
+  // 老宿主不传或传 undefined，此时只走 register 路径。
+  if (featureConfig !== undefined && featureConfig !== null) {
+    adoptFeatureConfig(featureConfig)
+    ctx.on('loader/volatile-update', () => adoptFeatureConfig(featureConfig))
+  }
   // 进程运行环境在生命周期内不变：挂载时探测一次，version RPC 与升级分支共用。
   const runtimeEnv = detectRuntimeEnv()
   const permissionPlans = new Map()
@@ -5785,6 +5903,7 @@ function apply(ctx) {
 }
 
 export {
+  DEFAULT_FEATURE_SETTINGS,
   SKILL_SOURCE_RANK,
   appendVaryToken,
   apply,
@@ -5846,6 +5965,9 @@ export {
   quotaErrorCode,
   quotaProviderUnusable,
   readLlmProviders,
+  readLlmProvidersFromDescribe,
+  normalizeLlmProviderEntries,
+  usageSessionFailure,
   resolveFileEditorTarget,
   resolveSessionForDelete,
   resolveSkillInvocationState,
@@ -5868,10 +5990,18 @@ export {
   updateUnifiedConfigSection,
   sanitizeSettingsNavConfig,
 }
+// 插件 Config：0.1.7-alpha.1 起宿主配置面由 Profile 的插件 Config 托管；声明它即可让
+// 功能开关出现在插件管理页，并让宿主经 `loader/volatile-update` 热更新（无需重启）。
+// 0.1.5~0.1.6 的 cordis 同样识别 Config，但该版本仍以 `settings.register` 的命名空间为准
+// （installSection 兼容层之外的第二来源），故两边共存、由 apply 内的优先级叠放消歧。
 export default {
+  name,
+  inject,
+  Config: FeatureSettingsSchema,
+  DEFAULT_FEATURE_SETTINGS,
+  apply,
   SKILL_SOURCE_RANK,
   appendVaryToken,
-  apply,
   assistantMessageCarriesOnlyToolCalls,
   buildCliproxyAccountPlan,
   cliproxyFetchGuard,
@@ -5929,6 +6059,9 @@ export default {
   quotaErrorCode,
   quotaProviderUnusable,
   readLlmProviders,
+  readLlmProvidersFromDescribe,
+  normalizeLlmProviderEntries,
+  usageSessionFailure,
   resolveFileEditorTarget,
   resolveSessionForDelete,
   resolveSkillInvocationState,

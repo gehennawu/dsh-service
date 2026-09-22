@@ -14,7 +14,11 @@ import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+import pluginDefault from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+
+// 插件 Config（0.1.7-alpha.1 起的宿主配置面）：schema 契约在下面直接断言。
+const pluginConfig = pluginDefault.Config
 
 // 与 index.js 相同口径读取实际安装版本：DSH 包由宿主全局安装，插件版本来自本仓库。
 const requireCjs = createRequire(import.meta.url)
@@ -83,6 +87,22 @@ function validBackupArchive(overrides = {}) {
   return tarArchive(overrides.entries ?? entries)
 }
 
+// v2 归档（0.1.7-alpha.1 起）：额外携带 Profile 配置层 profiles/<name>/cordis.patch.yml。
+function backupArchiveWithProfilePatch(overrides = {}) {
+  const entries = [
+    { name: 'sessions/', type: '5' },
+    { name: 'sessions/workspace/', type: '5' },
+    { name: 'sessions/workspace/session-1.jsonl', data: '{"type":"restored"}\n' },
+    { name: 'config/', type: '5' },
+    { name: 'config/settings.yaml', data: 'theme: restored\n' },
+    { name: 'profiles/', type: '5' },
+    { name: 'profiles/web/', type: '5' },
+    { name: 'profiles/web/package.json', data: '{"name":"web-profile","restored":true}\n' },
+    { name: 'profiles/web/cordis.patch.yml', data: '- id: restored\n  config:\n    flag: true\n' },
+  ]
+  return tarArchive(overrides.entries ?? entries)
+}
+
 function localSubprocess() {
   return {
     resolveExecutable: async (command) => command,
@@ -119,6 +139,14 @@ function createHost(overrides = {}) {
   const services = new Map(Object.entries(overrides.services || {}))
   const injectors = []
   let settingsService
+  // 新版 Config 实参（settingsKind: 'forms'）：键为开关名，值为返回 { get() } 的引用对象
+  // （与真机 volatile 字段同形）；setters 用于模拟宿主就地提交新值。
+  let formsConfig
+  const formsConfigSetters = {}
+  const formsWatchers = new Set()
+  // settingsService 的形态：'legacy'（0.1.5~0.1.6，有 register/get）或 'forms'
+  // （0.1.7-alpha.1，register 与 get 均已移除，只留 describe/mutate 等表单面）。
+  const settingsKind = overrides.settingsKind ?? 'legacy'
   if (overrides.featureSettings !== undefined) {
     let current = {
       healthDiagnostics: true,
@@ -131,28 +159,62 @@ function createHost(overrides = {}) {
       subagentRoute: true,
       ...overrides.featureSettings,
     }
-    settingsService = {
+    // 已注册 schema 的解析口径（真机 SettingsProvider.resolve：base 与用户层并层后过 schema）。
+    // 替身原来直接把裸 section 当解析结果返回，跳过了 schema —— 于是「schema 解析出来的值过不了
+    // 线」这类缺陷（volatile → {}）在单测里完全不可见。下面统一补上解析步骤。
+    const resolveSection = () => {
+      const registration = registeredSettings.find((entry) => entry.namespace === 'dsh-service')
+      if (registration === undefined) return current
+      return registration.schema({ ...(registration.options?.base ?? {}), ...current })
+    }
+    const legacyService = {
       register(namespace, schema, options) {
         registeredSettings.push({ namespace, schema, options })
         const watchers = new Set()
         updateFeatureSettings = async (patch) => {
           const previous = current
           current = { ...current, ...patch }
-          for (const watcher of watchers) await watcher(current, previous)
+          for (const watcher of watchers) await watcher(resolveSection(), previous)
         }
         return {
-          get: () => current,
+          get: resolveSection,
           watch(callback) { watchers.add(callback); return () => watchers.delete(callback) },
           update: updateFeatureSettings,
           replace: async (section) => { current = { ...section } },
         }
       },
       get(namespace) {
-        return namespace === 'dsh-service' ? current : undefined
+        return namespace === 'dsh-service' ? resolveSection() : undefined
       },
+      describe() {
+        return registeredSettings.map(({ namespace, schema, options }) => ({ ns: namespace, schema: schema.toJSON(), value: schema({ ...(options?.base ?? {}), ...current }), revision: 0 }))
+      },
+    }
+    // 新版 SettingsForms：无 register/get（宿主读配置走 configEditor/describe，写走 mutate）。
+    const formsService = {
+      writable: true,
       describe() {
         return registeredSettings.map(({ namespace, schema }) => ({ ns: namespace, schema: schema.toJSON(), value: current, revision: 0 }))
       },
+      async mutate(namespace, ops) {
+        const patch = {}
+        for (const op of ops ?? []) if (op.op === 'set' && op.path.length === 1) patch[op.path[0]] = op.value
+        const previous = current
+        current = { ...current, ...patch }
+        for (const watcher of formsWatchers) await watcher(current, previous)
+        return { ok: true, value: { ns: namespace, revision: (updateFeatureSettings.revision = (updateFeatureSettings.revision ?? 0) + 1) } }
+      },
+    }
+    settingsService = settingsKind === 'forms' ? formsService : legacyService
+    if (settingsKind === 'forms') {
+      // 新版 apply 的第二实参：volatile Config 引用对象。这里用与真机同形的
+      // { get() } 引用，验证宿主按引用读值 + 事件热更新。
+      formsConfig = {}
+      for (const key of Object.keys(current)) {
+        let value = current[key]
+        Object.defineProperty(formsConfig, key, { enumerable: true, get: () => ({ get: () => value }) })
+        formsConfigSetters[key] = (next) => { value = next }
+      }
     }
     if (overrides.settingsInitiallyAvailable !== false) services.set('settings', settingsService)
   }
@@ -235,7 +297,8 @@ function createHost(overrides = {}) {
     },
   }
 
-  apply(ctx)
+  // 新版宿主把插件 Config 作为 apply 的第二实参传入（cordis 4 的 runtime.callback(ctx, config)）。
+  apply(ctx, settingsKind === 'forms' ? formsConfig : undefined)
   for (const [key, value] of Object.entries(previousEnv)) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -277,7 +340,16 @@ function createHost(overrides = {}) {
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()) }
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
+    // 新版（settingsKind: 'forms'）热更新替身：就地改 Config 引用值再发 loader/volatile-update，
+    // 与真机 Entry._commitVolatile 的事件形态一致（监听器只关心「变了」，值从引用读）。
+    pushVolatileConfig: async (patch) => {
+      for (const [key, value] of Object.entries(patch)) {
+        if (formsConfigSetters[key] !== undefined) formsConfigSetters[key](value)
+      }
+      await fire('loader/volatile-update', [Object.keys(patch).map((key) => [key])])
+    },
+  }
 }
 
 test('permission RPC signs a frozen Linux plan, rejects forged ids, and repairs directory and file modes', async (t) => {
@@ -1406,6 +1478,120 @@ test('manual runtime restore commits without scheduling exit and returns hand-re
   assert.deepEqual(scheduled, [])
 })
 
+test('backup archives carry each profile cordis.patch.yml and report the archive format', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-patch-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace', 'session-1'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session-1', 'events.jsonl'), '{"type":"test"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"web-profile"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), '- id: local\n  config:\n    flag: true\n')
+  // 无补丁的第二个 profile：只应带 package.json，不该被伪造出一个空 patch。
+  await mkdir(join(dshHome, 'profiles', 'headless'), { recursive: true })
+  await writeFile(join(dshHome, 'profiles', 'headless', 'package.json'), '{"name":"headless-profile"}\n')
+
+  const { handler } = createHost({ services: { subprocess: localSubprocess() }, env: { DSH_HOME: dshHome } })
+  const created = await handler('backup-create', {})
+  assert.equal(created.ok, true, JSON.stringify(created))
+
+  const archiveEntries = await new Promise((resolve, reject) => {
+    const child = spawn('tar', ['-tzf', join(dshHome, 'backups', created.value.item.name)])
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (code) => code === 0 ? resolve(stdout.trim().split('\n')) : reject(new Error(stderr)))
+  })
+  assert.ok(archiveEntries.includes('profiles/web/package.json'))
+  assert.ok(archiveEntries.includes('profiles/web/cordis.patch.yml'), 'the profile patch layer must ship in the archive')
+  assert.ok(archiveEntries.includes('profiles/headless/package.json'))
+  assert.equal(archiveEntries.includes('profiles/headless/cordis.patch.yml'), false)
+
+  const inspected = await handler('backup-inspect', { id: created.value.item.id })
+  assert.equal(inspected.value.validForRestore, true, JSON.stringify(inspected))
+  assert.equal(inspected.value.archiveFormat, 'v2')
+  assert.deepEqual(inspected.value.sections.profiles.patchFiles.map((item) => item.name), ['web'])
+
+  const plan = await handler('backup-restore-prepare', { id: created.value.item.id })
+  assert.equal(plan.ok, true, JSON.stringify(plan))
+  assert.deepEqual(plan.value.targets.profiles.patches, ['web'])
+  assert.ok(plan.value.consequences.includes('profile-patches-replaced'))
+  assert.equal(plan.value.reportSummary.profilePatches, 1)
+})
+
+test('restoring a v2 archive writes the profile patch back, and an old v1 archive leaves it untouched', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-restore-patch-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web'), { recursive: true })
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"current"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), '- id: current\n')
+  // 用户在执行恢复前又改了一版配置：v2 恢复必须把它换成快照内容。
+  const { handler } = createHost({ env: { DSH_HOME: dshHome, DSH_SERVICE_RUNTIME_ENV: 'manual' } })
+
+  const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data: backupArchiveWithProfilePatch().toString('base64') })
+  assert.equal(imported.ok, true, JSON.stringify(imported))
+  const v2Id = (await handler('backup-list', {})).value.items.find((item) => item.name === 'dsh-backup-20250819-120000.tar.gz').id
+  const v2Inspect = await handler('backup-inspect', { id: v2Id })
+  assert.equal(v2Inspect.value.archiveFormat, 'v2')
+  const v2Plan = await handler('backup-restore-prepare', { id: v2Id })
+  assert.equal(v2Plan.ok, true, JSON.stringify(v2Plan))
+  assert.deepEqual(v2Plan.value.targets.profiles.patches, ['web'])
+  assert.equal((await handler('backup-restore-commit', { planId: v2Plan.value.planId })).ok, true)
+  assert.equal(await readFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8'), '- id: restored\n  config:\n    flag: true\n')
+  assert.equal(JSON.parse(await readFile(join(dshHome, 'profiles', 'web', 'package.json'), 'utf8')).restored, true)
+
+  // 旧版 v1 归档：不含补丁层。恢复成功，但现有 patch 必须原样保留（既不覆盖也不删除）。
+  const userEdited = '- id: user-edited-after-snapshot\n'
+  await writeFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), userEdited)
+  await writeFile(join(dshHome, 'backups', 'dsh-backup-20250819-130000.tar.gz'), validBackupArchive())
+  const v1Id = (await handler('backup-list', {})).value.items.find((item) => item.name === 'dsh-backup-20250819-130000.tar.gz').id
+  const v1Inspect = await handler('backup-inspect', { id: v1Id })
+  assert.equal(v1Inspect.value.archiveFormat, 'v1')
+  assert.deepEqual(v1Inspect.value.sections.profiles.patchFiles, [])
+  const v1Plan = await handler('backup-restore-prepare', { id: v1Id })
+  assert.equal(v1Plan.ok, true, JSON.stringify(v1Plan))
+  assert.deepEqual(v1Plan.value.targets.profiles.patches, [])
+  assert.ok(v1Plan.value.consequences.includes('profile-patches-absent'))
+  assert.equal((await handler('backup-restore-commit', { planId: v1Plan.value.planId })).ok, true)
+  assert.equal(await readFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8'), userEdited, 'a v1 archive must not remove the profile patch it never carried')
+})
+
+test('profile patch entries outside the exact whitelist stay rejected', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-restore-patch-guard-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+
+  let index = 0
+  for (const [label, entries] of [
+    ['nested', [
+      { name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' },
+      { name: 'profiles/web/', type: '5' },
+      { name: 'profiles/web/package.json', data: '{"name":"web"}\n' },
+      { name: 'profiles/web/nested/cordis.patch.yml', data: '- id: x\n' },
+    ]],
+    ['other-name', [
+      { name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' },
+      { name: 'profiles/web/', type: '5' },
+      { name: 'profiles/web/package.json', data: '{"name":"web"}\n' },
+      { name: 'profiles/web/cordis.patch.yaml', data: '- id: x\n' },
+    ]],
+    ['symlink', [
+      { name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' },
+      { name: 'profiles/web/', type: '5' },
+      { name: 'profiles/web/cordis.patch.yml', type: '2', linkname: '/etc/passwd' },
+    ]],
+  ]) {
+    // 恢复白名单是精确文件名匹配：白名单外的条目在**导入/检查**阶段即被拒，不进入暂存树，
+    // 更不会在提交时落到磁盘（nested 子目录、别名后缀、符号链接三条都不能绕过）。
+    const imported = await handler('backup-import', { name: `dsh-backup-20250819-14000${index++}.tar.gz`, data: tarArchive(entries).toString('base64') })
+    assert.deepEqual(imported, { ok: false, error: 'backup-archive-invalid' }, label)
+  }
+  assert.deepEqual(await handler('backup-list', {}).then((value) => value.value.items), [])
+})
+
 test('feature gate covers backup integrity and restore preflight endpoints', async () => {
   const { handler } = createHost({ featureSettings: { backupMaintenance: false } })
   for (const endpoint of ['backup-inspect', 'backup-restore-prepare', 'backup-restore-commit']) {
@@ -1538,6 +1724,110 @@ test('feature settings namespace registers when the settings service appears aft
   assert.equal(registeredSettings[0].namespace, 'dsh-service')
 })
 
+test('plugin Config declares one hot-updatable field per feature switch, portable to both host generations', () => {
+  // 0.1.7-alpha.1 把配置面搬到 Profile 的插件 Config；此处以 schema 事实钉住契约：
+  // 每个开关都是可热更新字段（.extra('volatile', true)），且默认值与运行期默认表逐项一致。
+  assert.ok(pluginConfig, 'the plugin must export its Config schema')
+  const json = pluginConfig.toJSON()
+  const fields = Object.values(json.refs ?? {}).filter((row) => row?.type === 'boolean')
+  assert.equal(fields.length, Object.keys(DEFAULT_FEATURE_SETTINGS).length)
+  for (const field of fields) assert.equal(field.meta?.volatile, true, 'every switch must be hot-updatable')
+  // 直接调用 schema 得到 volatile 引用（get()）；宿主 apply 侧的 readFeatureConfig 负责解引用。
+  const resolved = pluginConfig({})
+  const plain = {}
+  for (const [key, value] of Object.entries(resolved)) {
+    plain[key] = value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
+  }
+  assert.deepEqual(plain, DEFAULT_FEATURE_SETTINGS)
+})
+
+test('legacy settings section schema resolves to plain JSON booleans, never volatile references', () => {
+  // 回归护栏（真机缺陷：所有开关变灰且点不动、值与 settings.yaml 不符）：
+  // 0.1.5~0.1.6 的开关值要经 settings.register → describe() → JSON 过线 → 客户端
+  // settingsScope.decode() 用 schema 校验。volatile 字段解析出来是「无可枚举数据的引用
+  // 对象」，JSON.stringify 即 `{}`，官方 decode 校验必然失败 → 快照永远停在 status='loading'
+  // → 开关全 disabled、值退回 schema 默认。
+  //
+  // 这里走 createHost 的**注册替身**（不是另取的副本），并断言 JSON 往返后的形状：
+  // 只有过线形状才能暴露引用对象被序列化成 {} 这一类缺陷。真机取证见
+  // docs/knowledge/settings-slots.md。
+  const host = createHost({ featureSettings: {} })
+  assert.equal(host.registeredSettings.length, 1)
+  const schema = host.registeredSettings[0].schema
+
+  const json = schema.toJSON()
+  const fields = Object.values(json.refs ?? {}).filter((row) => row?.type === 'boolean')
+  assert.equal(fields.length, Object.keys(DEFAULT_FEATURE_SETTINGS).length)
+  for (const field of fields) assert.notEqual(field.meta?.volatile, true, 'the legacy section must not declare volatile fields')
+
+  // 用户改动（含被显式打开的默认关闭项）必须原样过线，而不是退化成 {}。
+  const resolved = schema({ healthz: false, mobileAdaptation: true })
+  assert.equal(resolved.healthz, false)
+  assert.equal(resolved.mobileAdaptation, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(resolved)), {
+    healthDiagnostics: true,
+    modelUsage: true,
+    quotaLookup: true,
+    backupMaintenance: true,
+    taskNotifications: true,
+    healthz: false,
+    skillManager: true,
+    subagentRoute: true,
+    subagentModelsDock: true,
+    mobileAdaptation: true,
+    sessionManager: true,
+    fileEditor: true,
+    modelProviderIcons: true,
+  })
+})
+
+test('feature switches activate from the plugin Config on 0.1.7-alpha.1 hosts without settings.register', async () => {
+  const routes = []
+  const host = createHost({
+    featureSettings: { healthDiagnostics: false, modelUsage: false, quotaLookup: false, backupMaintenance: false, healthz: false },
+    settingsKind: 'forms',
+    services: { webServer: { register(route) { routes.push(route); return () => {} } } },
+  })
+
+  // 新版 SettingsForms 没有 register：旧的命名空间注册不该发生，也不该报错。
+  assert.deepEqual(host.registeredSettings, [])
+  assert.deepEqual(host.logs.error, [])
+  // 关闭的开关经 Config 生效（apply 第二实参读入），对应端点回 feature-disabled。
+  assert.deepEqual(await host.handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+  assert.deepEqual(await host.handler('usage', {}), { ok: false, error: 'feature-disabled' })
+  assert.equal(routes.some((route) => route.path === '/healthz'), false)
+})
+
+test('plugin Config edits reach the Host through loader/volatile-update without a restart', async () => {
+  const host = createHost({
+    featureSettings: { healthDiagnostics: false, modelUsage: false },
+    settingsKind: 'forms',
+  })
+
+  assert.deepEqual(await host.handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+  assert.deepEqual(await host.handler('usage', {}), { ok: false, error: 'feature-disabled' })
+
+  // 宿主就地提交 volatile 值并广播事件：插件应重读引用、无需重启即放行端点。
+  await host.pushVolatileConfig({ healthDiagnostics: true, modelUsage: true })
+  assert.notDeepEqual(await host.handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+  assert.notDeepEqual(await host.handler('usage', {}), { ok: false, error: 'feature-disabled' })
+})
+
+test('legacy settings.register stays authoritative when a host exposes both registration and plugin Config', async () => {
+  // 0.1.6 的 cordis 同样识别 plugin.Config：若把 Config 当权威，老宿主上 settings.yaml 里
+  // 用户改过的开关会被 schema 默认值压回去。契约：register 一旦成功，压过 Config 值。
+  const host = createHost({
+    featureSettings: { healthDiagnostics: false },
+    settingsKind: 'legacy',
+  })
+  assert.equal(host.registeredSettings.length, 1)
+  assert.deepEqual(await host.handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+
+  // 旧路径热更新照常生效（命名空间 watch）。
+  await host.updateFeatureSettings({ healthDiagnostics: true })
+  assert.notDeepEqual(await host.handler('diagnostics', {}), { ok: false, error: 'feature-disabled' })
+})
+
 test('feature settings namespace defaults on and disabled capabilities hot-enable through public Host seams', async () => {
   const routes = []
   const { handler, registeredSettings, updateFeatureSettings } = createHost({
@@ -1569,7 +1859,12 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     fileEditor: true,
     modelProviderIcons: true,
   })
-  assert.deepEqual(registeredSettings[0].schema({}), {
+  // schema 解析产物：0.1.7 语义下每个开关是 volatile 引用（get()），这里逐项解引用再比对
+  // 默认值——与宿主 apply 的 readFeatureConfig 同一读法。
+  const schemaDefaults = registeredSettings[0].schema({})
+  assert.deepEqual(Object.fromEntries(Object.entries(schemaDefaults).map(([key, value]) => [
+    key, value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value,
+  ])), {
     healthDiagnostics: true,
     modelUsage: true,
     quotaLookup: true,
@@ -3026,6 +3321,63 @@ test('pruneExpiredResetCards drops only expired cards and reports whether anythi
   assert.equal(pruneExpiredResetCards({ resetCards: [] }, Date.now(), 0), false)
   assert.equal(pruneExpiredResetCards({}, Date.now(), 0), false)
   assert.equal(pruneExpiredResetCards(undefined, Date.now(), 0), false)
+})
+
+test('readLlmProviders cascades from the legacy settings.get to the 0.1.7 describe face', () => {
+  const providers = { cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } }
+  const expected = [{ name: 'cpa', displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' }]
+
+  // 旧路径（0.1.5~0.1.6）照常命中，且不依赖 describe。
+  let describeCalls = 0
+  assert.deepEqual(readLlmProviders({
+    get: (ns) => (ns === 'llm-pi-ai' ? { providers } : undefined),
+    describe: () => { describeCalls += 1; return [] },
+  }), expected)
+  assert.equal(describeCalls, 0, 'a working legacy read must not fall through to describe')
+
+  // 新版（0.1.7-alpha.1）：无 get，只有 describe；user 层覆盖 value 层。
+  const descriptors = [{
+    ns: 'llm-pi-ai',
+    schema: {},
+    value: { providers: { bundle: { baseURL: 'https://bundle.example' }, cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } } },
+    user: { providers: { cpa: { displayName: 'CPA', baseURL: 'https://cli.example.org/api', apiKeyEnv: 'CPA_API_KEY' } } },
+    revision: 3,
+  }]
+  assert.deepEqual(readLlmProvidersFromDescribe({ describe: () => descriptors }), [
+    { name: 'bundle', displayName: 'bundle', baseURL: 'https://bundle.example', apiKeyEnv: '' },
+    ...expected,
+  ])
+  assert.deepEqual(readLlmProviders({ describe: () => descriptors }), [
+    { name: 'bundle', displayName: 'bundle', baseURL: 'https://bundle.example', apiKeyEnv: '' },
+    ...expected,
+  ])
+
+  // 两代都不可用 / 形状不符 / describe 抛错：一律安全降级为空表，不抛。
+  assert.deepEqual(readLlmProviders({}), [])
+  assert.deepEqual(readLlmProviders({ get: () => { throw new Error('removed') } }), [])
+  assert.deepEqual(readLlmProviders({ get: () => { throw new Error('removed') }, describe: () => { throw new Error('boom') } }), [])
+  assert.deepEqual(readLlmProvidersFromDescribe({ describe: () => [{ ns: 'other', value: {} }] }), [])
+  assert.deepEqual(readLlmProvidersFromDescribe({ describe: () => 'nope' }), [])
+  assert.deepEqual(readLlmProvidersFromDescribe(undefined), [])
+})
+
+test('usageSessionFailure classifies V4 migration refusals by class name, machine code, and legacy wording', () => {
+  // 0.1.7-alpha.1 的 V3→V4 fail-closed：错误类名是稳定标识，不能只认文案。
+  const named = Object.assign(new Error('somewhere deep'), { name: 'SessionFormatUnsupportedMigrationError' })
+  assert.equal(usageSessionFailure('s1', named, 'read', false).code, 'format-migration-failed')
+  assert.equal(usageSessionFailure('s1', named, 'fold', true).code, 'format-migration-failed')
+  // 机器码（下游包装层把类名拍成码）。
+  assert.equal(usageSessionFailure('s1', Object.assign(new Error('x'), { code: 'SESSION_FORMAT_UNSUPPORTED_MIGRATION' }), 'read', false).code, 'format-migration-failed')
+  // 旧口径文案兜底（0.1.3~0.1.6）。
+  assert.equal(usageSessionFailure('s1', new Error('@deepseek-ai/dsh-session-format-v2-to-v3 refuses this format v2 Session: x'), 'read', false).code, 'format-migration-failed')
+  // 其余错误仍按阶段分档，不被迁移规则吞掉。
+  assert.equal(usageSessionFailure('s1', new Error('random'), 'read', false).code, 'session-read-failed')
+  assert.equal(usageSessionFailure('s1', new Error('random'), 'fold', true).code, 'session-fold-failed')
+  // 绝不把原始异常文本落盘（可能含路径/凭据）。
+  const leaky = new Error('path=/home/node/.dsh/secret token=abc')
+  const failure = usageSessionFailure('s1', leaky, 'read', false)
+  assert.equal(JSON.stringify(failure).includes('secret'), false)
+  assert.equal(JSON.stringify(failure).includes('abc'), false)
 })
 
 test('readLlmProviders normalizes profiles and tolerates missing settings service', () => {

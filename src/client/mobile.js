@@ -177,6 +177,10 @@ html[data-dshsvc-mobile] [class*="uV2eYG_tools"],
 html[data-dshsvc-mobile] [class*="uV2eYG_modes"],
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-width: 0 !important; }
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { margin-left: auto !important; }
+/* 0.1.7-alpha.1 在 trailing 内新包了一层 standardControls（会话右槽 + 模型触发钮同组，
+   官方 gap:12px）。外层 trailing 的 gap 收紧管不到它，≤480px 时这 12px 会把整组顶出
+   容器、触发换行错位。老宿主没有这个类，规则不命中，纯增量。 */
+html[data-dshsvc-mobile] [class*="uV2eYG_standardControls"] { gap: 6px !important; min-width: 0 !important; flex: 0 1 auto !important; }
 html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"],
 html[data-dshsvc-mobile] [class*="JObwrW_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }

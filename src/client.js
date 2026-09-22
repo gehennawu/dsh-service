@@ -1064,9 +1064,14 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'backup.integrity.ok': '完整性检查通过',
       'backup.integrity.invalid': '归档不可恢复',
       'backup.integrity.summary': '共 {entries} 个条目，解压后 {size}；会话文件 {sessions}，配置文件 {config}，profile 清单 {profiles}。',
+      'backup.integrity.format': '归档格式 {format}',
+      'backup.format.v1': 'v1（不含 Profile 补丁层）',
+      'backup.format.v2': 'v2（含 Profile 补丁层）',
       'backup.plan.sessions': '会话目录将整体替换',
       'backup.plan.config': '配置覆盖 {replace} 项，移除 {remove} 项',
       'backup.plan.profiles': '覆盖 {count} 个 profile 的 package.json，保留 node_modules 与其他文件',
+      'backup.plan.profilePatches': '恢复 {count} 个 profile 的 cordis.patch.yml（Profile 配置层）',
+      'backup.plan.profilePatchesAbsent': '该归档来自旧版备份，未包含 Profile 补丁层（cordis.patch.yml）：现有配置保持不变，不会被覆盖或删除。',
       'backup.plan.expires': '恢复计划有效至 {time}',
       'backup.manualRestartTitle': '恢复完成，需要手动重启',
       'backup.manualRestartBody': '数据已恢复，但当前进程仍在运行旧状态。请在运行 dsh 的终端按 Ctrl+C，然后重新启动 dsh。',
@@ -2000,9 +2005,14 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'backup.integrity.ok': 'Integrity check passed',
       'backup.integrity.invalid': 'Archive cannot be restored',
       'backup.integrity.summary': '{entries} entries, {size} expanded; {sessions} session file(s), {config} config file(s), {profiles} profile manifest(s).',
+      'backup.integrity.format': 'Archive format {format}',
+      'backup.format.v1': 'v1 (no Profile patch layer)',
+      'backup.format.v2': 'v2 (includes the Profile patch layer)',
       'backup.plan.sessions': 'The sessions directory will be replaced in full',
       'backup.plan.config': 'Replace {replace} config file(s), remove {remove}',
       'backup.plan.profiles': 'Replace package.json for {count} profile(s); keep node_modules and all other files',
+      'backup.plan.profilePatches': 'Restore cordis.patch.yml (the Profile configuration layer) for {count} profile(s)',
+      'backup.plan.profilePatchesAbsent': 'This archive predates the Profile patch layer: it carries no cordis.patch.yml, so your current configuration is left untouched rather than overwritten or removed.',
       'backup.plan.expires': 'Restore plan expires at {time}',
       'backup.manualRestartTitle': 'Restore completed — manual restart required',
       'backup.manualRestartBody': 'The data is restored, but the current process is still running its old state. Press Ctrl+C in the terminal running dsh, then start dsh again.',
@@ -2520,7 +2530,10 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       }
     }
 
-    const inject = ['slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope']
+    // 设置服务不在这里：0.1.7-alpha.1 移除了 settingsScope、0.1.6 及更早没有 configForms，
+    // 静态声明任一方都会在另一版本上阻断整个客户端激活。改为运行时能力探测
+    // （createFeatureSettings -> configForms / settingsScope / 内存兜底）。
+    const inject = ['slots', 'connection', 'timer', 'locale', 'sessions']
 
     // ── 子代理行纯逻辑（模块级便于单测）──────────────────────────────────
     /** 按 provider/model/effort 聚合记录为展示条目（保持首个出现的顺序，同名路由计数）。 */

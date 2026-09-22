@@ -148,15 +148,17 @@
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
       const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true }
-      const featureScope = ctx.settingsScope.bind({ namespace: NS })
-      const featureSnapshot = () => featureScope.getSnapshot()
-      const featureValue = () => Object.assign({}, DEFAULT_FEATURES, featureSnapshot().value || {})
-      const featureEnabled = (key) => featureValue()[key] !== false
-      const useFeatures = () => {
-        const [snapshot, setSnapshot] = React.useState(featureSnapshot())
-        React.useEffect(() => featureScope.subscribe(() => setSnapshot(featureSnapshot())), [])
-        return { snapshot, value: Object.assign({}, DEFAULT_FEATURES, snapshot.value || {}) }
-      }
+      // 特性设置门面：静态 inject 不带任何设置服务，运行时按能力探测接入
+      // （configForms → settingsScope → 内存兜底；见 src/client/feature-settings.js）。
+      // 0.1.7-alpha.1 移除了 settingsScope，静态依赖它会在该版本阻断整个客户端激活；
+      // 反向静态依赖 configForms 又会在 0.1.5~0.1.6 上同样阻断，故只走动态探测。
+      const { featureScope, featureSnapshot, featureValue, featureEnabled, useFeatures } = createFeatureSettings({
+        ctx,
+        namespace: NS,
+        defaults: DEFAULT_FEATURES,
+        React,
+      })
+      ctx.effect(() => () => featureScope.dispose(), 'dsh-service feature settings facade')
       // 设置页左列三行打标记，配合上方样式换成各自图标；label 走 locale 绑定值。
       ctx.effect(
         () => markSettingsNavRows([
@@ -6275,6 +6277,9 @@
                                   config: backupRestoreReport.sections?.config?.files?.length || 0,
                                   profiles: backupRestoreReport.sections?.profiles?.count || 0,
                                 })),
+                                // 归档格式标签：v1（旧版所出、不含 Profile 补丁层）与 v2 在恢复语义上
+                                // 不同——旧归档不覆盖现有 patch，界面必须讲清楚，避免误判「恢复了但没生效」。
+                                React.createElement('p', { 'data-testid': 'backup-archive-format', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.format', { format: translate(backupRestoreReport.archiveFormat === 'v2' ? 'backup.format.v2' : 'backup.format.v1') })),
                                 backupRestoreReport.validForRestore !== true
                                   ? React.createElement('ul', { style: Object.assign({}, hint, { margin: '6px 0 0', paddingLeft: '18px', color: 'var(--dsh-svc-danger)' }) }, (backupRestoreReport.issues || []).map((issue, index) => React.createElement('li', { key: index }, mapBackupRestoreError(issue.code))))
                                   : null)
@@ -6284,7 +6289,12 @@
                           React.createElement('ul', { style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px' }) },
                             React.createElement('li', null, translate('backup.plan.sessions')),
                             React.createElement('li', null, translate('backup.plan.config', { replace: backupRestorePlan.targets?.config?.replace?.length || 0, remove: backupRestorePlan.targets?.config?.remove?.length || 0 })),
-                            React.createElement('li', null, translate('backup.plan.profiles', { count: backupRestorePlan.targets?.profiles?.upsert?.length || 0 }))),
+                            React.createElement('li', null, translate('backup.plan.profiles', { count: backupRestorePlan.targets?.profiles?.upsert?.length || 0 })),
+                            // 补丁层单独一行：为 0 时用「旧归档不覆盖现有配置」的说明替代，不能让
+                            // 用户以为 patch 也被回滚了（实际是刻意保留）。
+                            React.createElement('li', { 'data-testid': 'backup-plan-profile-patches' }, (backupRestorePlan.targets?.profiles?.patches?.length || 0) > 0
+                              ? translate('backup.plan.profilePatches', { count: backupRestorePlan.targets.profiles.patches.length })
+                              : translate('backup.plan.profilePatchesAbsent'))),
                           React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('backup.plan.expires', { time: new Date(backupRestorePlan.expiresAt).toLocaleTimeString() })),
                           React.createElement('div', { style: { display: 'flex', gap: '8px' } },
                             React.createElement('button', { style: danger, disabled: backupBusy, onClick: commitBackupRestore }, translate('backup.restoreConfirm')),
@@ -7664,6 +7674,8 @@
     exports.apply = apply
     // 子代理行纯逻辑出口：仅供自动化测试直达，运行时无消费者。
     exports.subagentLine = { aggregateSubagentRoutes, subagentRouteListText }
+    // 特性设置门面的具名工厂：供单测在隔离 ctx 上直接覆盖三条能力探测分支。
+    exports.featureSettings = { create: createFeatureSettings }
     // 右栏文件编辑（v1.6/v1.6.1）：档位 id、可编辑后缀表与入口引擎的纯函数面，供测试与排障复用。
     exports.fileEditor = { id: FILE_EDITOR_ID, extensions: FILE_EDITOR_EXTENSION_TABLE, selectViewerItem, editorExtensionMatches, attr: EDITOR_ENTRY_ATTR, menuItemAttr: EDITOR_MENU_ITEM_ATTR }
     // v1.8 模型厂家/渠道图标：纯解析面 + 图标数据规模，供自动化测试与排障直视。

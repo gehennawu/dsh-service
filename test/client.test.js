@@ -39,6 +39,13 @@ function createRenderer(rpcCall, options = {}) {
   let focuses = 0
   const storage = new Map(Object.entries(options.initialStorage || {}))
   const featureListeners = new Set()
+  // 设置服务拓扑替身：默认 'settingsScope'（0.1.5~0.1.6），可切 'configForms'（0.1.7+，
+  // settingsScope 缺席）或 'memory'（两方皆无），用于覆盖门面的三条能力探测分支。
+  // 计数用于证明门面「按能力探测」真的consulted 了对应服务，而不是兜底到内存。
+  const settingsBackend = options.settingsBackend ?? 'settingsScope'
+  const settingsProbes = { settingsScope: 0, configForms: 0 }
+  // 实际发生的绑定次数：与探测次数分开，证明「探测到了」之后确实接入了该服务。
+  const settingsBinds = { settingsScope: 0, configForms: 0 }
   let featureSettings = {
     modelUsage: true,
     quotaLookup: true,
@@ -405,12 +412,6 @@ function createRenderer(rpcCall, options = {}) {
             return new Promise((resolve) => timers.push({ delay: callbackOrDelay, resolve }))
           },
         },
-        settingsScope: {
-          bind(spec) {
-            assert.equal(spec.namespace, 'dsh-service')
-            return featureScope
-          },
-        },
         slots: {
           inject(key, callback) {
             // 与 cordis 的 slot 注入同语义：回调返回的 disposer 是这条注入的效应，
@@ -483,6 +484,11 @@ function createRenderer(rpcCall, options = {}) {
         },
         get(service) {
           if (service === 'modelDirectories') return activeModelDirectories
+          // 设置服务：门面按能力探测读取，故这里也走 get。默认老版路径（settingsScope），
+          // `settingsBackend: 'configForms'` 模拟 0.1.7-alpha.1（只有 configForms），
+          // `settingsBackend: 'memory'` 模拟两方皆无的引导竞态/精简环境。
+          if (service === 'settingsScope') { settingsProbes.settingsScope += 1; return settingsBackend === 'settingsScope' ? { bind: (spec) => { assert.equal(spec.namespace, 'dsh-service'); settingsBinds.settingsScope += 1; return featureScope } } : undefined }
+          if (service === 'configForms') { settingsProbes.configForms += 1; return settingsBackend === 'configForms' ? { get: (entryId) => { assert.equal(entryId, 'dsh-service'); settingsBinds.configForms += 1; return featureScope } } : undefined }
           if (service === 'uiSession') {
             return options.legacyRuntime ? undefined : {
               sessionStatus: {
@@ -519,8 +525,10 @@ function createRenderer(rpcCall, options = {}) {
       }
       // 真实 Cordis 运行时行为守卫：对未在 inject 声明的服务进行直接属性访问必须抛错，
       // 防止写出看似安全却在真机触发 cannot get property without inject 的代码。
+      // 设置服务**不在**其中：它们是可选服务，只能经 ctx.get / ctx.inject 动态探测
+      // （0.1.7 移除了 settingsScope，静态声明会阻断整个客户端激活）。
       const declaredInjectedServices = new Set([
-        'slots', 'connection', 'timer', 'locale', 'sessions', 'settingsScope',
+        'slots', 'connection', 'timer', 'locale', 'sessions',
         'effect', 'on', 'inject', 'get', 'baseUrl', 'logger',
       ])
       const guardedCtx = new Proxy(ctx, {
@@ -536,6 +544,18 @@ function createRenderer(rpcCall, options = {}) {
       moduleExports = plugin
       renderAll()
       await this.flush()
+    },
+    settingsBackend() {
+      return settingsBackend
+    },
+    settingsProbes() {
+      return { ...settingsProbes }
+    },
+    settingsScopeBinds() {
+      return settingsBinds.settingsScope
+    },
+    configFormsBinds() {
+      return settingsBinds.configForms
     },
     async flush() {
       await new Promise((resolve) => setImmediate(resolve))
@@ -743,6 +763,121 @@ function createRenderer(rpcCall, options = {}) {
     },
   }
 }
+
+// 特性设置门面的隔离测试入口：工厂在模块加载时即挂上 exports（与 apply 无关），
+// 因此借一个一次性 renderer 取到它，再在自定义 ctx 上覆盖三条能力探测分支。
+// mountOnly: [] 不渲染任何槽——这里只验证门面本身，不牵动面板组件。
+const facadeReact = { useState: (value) => [value, () => {}], useEffect: () => {} }
+
+async function featureSettingsFactory() {
+  const renderer = createRenderer(async () => ({ ok: true, value: {} }), { featureSettings: {}, mountOnly: [] })
+  await renderer.load()
+  const factory = renderer.moduleExports().featureSettings.create
+  renderer.disposeFactory()
+  return factory
+}
+
+test('feature settings facade binds the static inject list to no settings service on any host version', async () => {
+  const renderer = createRenderer(async () => ({ ok: true, value: {} }), { featureSettings: {}, mountOnly: [] })
+  await renderer.load()
+  // 0.1.7-alpha.1 移除 settingsScope；静态声明它会在该版本阻断客户端激活。
+  // 0.1.5~0.1.6 没有 configForms，静态声明它在老宿主上同样阻断。
+  assert.deepEqual(renderer.moduleExports().inject, ['slots', 'connection', 'timer', 'locale', 'sessions'])
+  // 真实 apply 路径确实做了能力探测（老宿主命中 settingsScope，configForms 缺席）。
+  assert.ok(renderer.settingsProbes().settingsScope > 0, 'the facade must probe settingsScope')
+  renderer.disposeFactory()
+})
+
+test('feature settings facade reads and writes through settingsScope on 0.1.5-0.1.6 hosts', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { featureSettings: { modelUsage: true } })
+  await renderer.load()
+  assert.equal(renderer.settingsBackend(), 'settingsScope')
+  assert.ok(renderer.settingsProbes().settingsScope > 0, 'the facade must bind the settingsScope backend')
+  // configForms 会被探测（新版优先）但在老宿主上缺席——探测不等于接入，实际接入方是 settingsScope。
+  assert.ok(renderer.settingsScopeBinds() > 0)
+  assert.equal(renderer.configFormsBinds(), 0)
+
+  // 老宿主路径照常读写：开关落回同一个 scope。
+  await renderer.setFeature('modelUsage', false)
+  assert.equal(renderer.featureSettings().modelUsage, false)
+  await renderer.setFeature('modelUsage', true)
+  assert.equal(renderer.featureSettings().modelUsage, true)
+  renderer.disposeFactory()
+})
+
+test('feature settings facade reads and writes through configForms on 0.1.7-alpha.1 hosts', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { featureSettings: { modelUsage: true }, settingsBackend: 'configForms' })
+  await renderer.load()
+  assert.equal(renderer.settingsBackend(), 'configForms')
+
+  // 新版路径：settingsScope 缺席时仍激活、仍能读写（get('dsh-service') 命中同一形态快照）。
+  assert.ok(renderer.configFormsBinds() > 0, 'the facade must bind the configForms backend')
+  assert.equal(renderer.settingsScopeBinds(), 0)
+  await renderer.setFeature('modelUsage', false)
+  assert.equal(renderer.featureSettings().modelUsage, false)
+  await renderer.setFeature('modelUsage', true)
+  assert.equal(renderer.featureSettings().modelUsage, true)
+  renderer.disposeFactory()
+})
+
+test('feature settings facade falls back to an in-memory machine when no settings service exists', async () => {
+  const create = await featureSettingsFactory()
+  const ctx = {
+    get: () => undefined,
+    inject: () => () => {},
+  }
+  const facade = create({ ctx, namespace: 'dsh-service', defaults: { modelUsage: true }, React: facadeReact })
+  assert.equal(facade.featureScope.kind(), 'memory')
+  // 两方皆无时不抛错、不发未受控异常；开关在内存里读写一致地退化（writable=false 表示
+  // 没有持久化面，但读取值仍然跟随本地写入，界面不会凭空跳回默认值）。
+  assert.equal(facade.featureEnabled('modelUsage'), true)
+  assert.equal(facade.featureScope.getSnapshot().writable, false)
+  await facade.featureScope.set('modelUsage', false)
+  assert.equal(facade.featureEnabled('modelUsage'), false)
+  await facade.featureScope.unset('modelUsage')
+  assert.equal(facade.featureEnabled('modelUsage'), true)
+  assert.equal(facade.featureScope.getSnapshot().status, 'ready')
+})
+
+test('feature settings facade upgrades to a late settings service and prefers configForms over settingsScope', async () => {
+  const create = await featureSettingsFactory()
+  const listeners = []
+  const services = new Map()
+  const ctx = {
+    get: (name) => services.get(name),
+    inject: (deps, callback) => {
+      const name = Array.isArray(deps) ? deps[0] : deps
+      listeners.push({ name, callback })
+      return () => {}
+    },
+  }
+  const facade = create({ ctx, namespace: 'dsh-service', defaults: { modelUsage: true }, React: facadeReact })
+  assert.equal(facade.featureScope.kind(), 'memory')
+
+  // settingsScope 晚到：平滑接入并读取其快照。
+  const scopeSnapshot = { status: 'ready', value: { modelUsage: false }, revision: 0, writable: true, mode: 'host' }
+  const scope = { getSnapshot: () => scopeSnapshot, subscribe: () => () => {}, set: async () => {} }
+  services.set('settingsScope', { bind: () => scope })
+  for (const listener of listeners.filter((entry) => entry.name === 'settingsScope')) listener.callback({ settingsScope: services.get('settingsScope') })
+  assert.equal(facade.featureScope.kind(), 'settingsScope')
+  assert.equal(facade.featureEnabled('modelUsage'), false)
+
+  // configForms 随后出现：接管（新版优先），此后不再被 settingsScope 覆盖。
+  const forms = { getSnapshot: () => ({ status: 'ready', value: { modelUsage: true }, revision: 0, writable: true, mode: 'host' }), subscribe: () => () => {}, set: async () => {} }
+  services.set('configForms', { get: () => forms })
+  for (const listener of listeners.filter((entry) => entry.name === 'configForms')) listener.callback({ configForms: services.get('configForms') })
+  assert.equal(facade.featureScope.kind(), 'configForms')
+  assert.equal(facade.featureEnabled('modelUsage'), true)
+
+  for (const listener of listeners.filter((entry) => entry.name === 'settingsScope')) listener.callback({ settingsScope: services.get('settingsScope') })
+  assert.equal(facade.featureScope.kind(), 'configForms', 'configForms must not be displaced by a later settingsScope')
+})
 
 test('plugin configuration card saves feature switches and disabled features disappear from Client public slots', async () => {
   const calls = []
@@ -3323,13 +3458,14 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
     validForRestore: true,
     status: 'ok',
     archive: { entryCount: 12, logicalBytes: 4096 },
-    sections: { sessions: { files: 3, dirs: 2, bytes: 2048 }, config: { files: [{ name: 'settings.yaml' }] }, profiles: { count: 1 } },
+    archiveFormat: 'v2',
+    sections: { sessions: { files: 3, dirs: 2, bytes: 2048 }, config: { files: [{ name: 'settings.yaml' }] }, profiles: { count: 1, patchFiles: [{ name: 'web' }] } },
     issues: [],
   }
   const plan = {
     planId: 'restore-plan-1',
     expiresAt: Date.now() + 300000,
-    targets: { sessions: { action: 'replace' }, config: { replace: ['settings.yaml'], remove: ['AGENTS.md'] }, profiles: { upsert: ['web'], untouched: true } },
+    targets: { sessions: { action: 'replace' }, config: { replace: ['settings.yaml'], remove: ['AGENTS.md'] }, profiles: { upsert: ['web'], patches: ['web'], untouched: true } },
   }
   const renderer = createRenderer(async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
@@ -3359,11 +3495,38 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
   assert.match(text, /会话目录将整体替换/)
   assert.match(text, /配置覆盖 1 项，移除 1 项/)
   assert.match(text, /覆盖 1 个 profile/)
+  // 归档格式标签 + Profile 补丁层恢复行：v2 归档必须明说会恢复 cordis.patch.yml。
+  assert.match(renderer.findByTestId('backup-archive-format').children.join(''), /v2（含 Profile 补丁层）/)
+  assert.match(renderer.findByTestId('backup-plan-profile-patches').children.join(''), /恢复 1 个 profile 的 cordis\.patch\.yml/)
 
   await renderer.findButton('确认恢复').props.onClick()
   await renderer.flush()
   assert.equal(calls.filter((call) => call.endpoint === 'backup-restore-commit').length, 1)
   assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [1000])
+})
+
+test('backup restore explains that a v1 archive carries no profile patch layer', async () => {
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    // 旧版插件所出的归档：没有 archiveFormat 字段也没有 patchFiles（向后兼容的缺省形状）。
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: true, archive: { entryCount: 3, logicalBytes: 10 }, sections: { sessions: { files: 1 }, config: { files: [] }, profiles: { count: 1, patchFiles: [] } }, issues: [] } }
+    if (endpoint === 'backup-restore-prepare') return { ok: true, value: { planId: 'legacy-plan', expiresAt: Date.now() + 300000, targets: { config: { replace: [], remove: [] }, profiles: { upsert: ['web'], patches: [] } }, consequences: ['sessions-replaced', 'profile-manifests-replaced', 'profile-patches-absent', 'service-restart-required'] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+
+  // 缺字段按 v1 展示（不是空白，也不是 v2）；计划里明说 patch 不会被覆盖或删除。
+  assert.match(renderer.findByTestId('backup-archive-format').children.join(''), /v1（不含 Profile 补丁层）/)
+  assert.match(renderer.findByTestId('backup-plan-profile-patches').children.join(''), /现有配置保持不变，不会被覆盖或删除/)
 })
 
 test('backup restore blocks confirmation for an invalid integrity report', async () => {
@@ -8802,6 +8965,10 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="wSkVaW_headerUtilities"\] \{ margin-left: 4px !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="wSkVaW_titleCluster"\] \{ gap: 6px !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\] \{ gap: 4px !important; \}/)
+    // 0.1.7-alpha.1 的 composer 底行在 trailing 内新包了一层 standardControls（官方 gap:12px）：
+    // 外层 trailing 的收紧管不到它，≤480px 会把「圆环槽 + 模型触发钮」顶出容器。规则必须
+    // 无条件在场（老宿主没有该元素，不命中即无副作用），且同时收窄间距与允许收缩。
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_standardControls"\] \{ gap: 6px !important; min-width: 0 !important; flex: 0 1 auto !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{ flex: none !important; \}/)
     // 动作芯片泊位 v2（方案二，2026-09-19 用户定稿）：模式回标题行（headerActions
     // 保持官方在流不泊），子代理+任务两枚计数芯片 ≤560 右锚泊入标签行成对

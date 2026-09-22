@@ -6,6 +6,10 @@ import { promisify } from 'node:util'
 import { gunzip } from 'node:zlib'
 
 const CONFIG_FILES = Object.freeze(['settings.yaml', 'cordis.patch.yml', 'AGENTS.md', 'dsh-service-config.json'])
+// 每个 profile 允许打包/恢复的常规文件白名单（精确匹配文件名，不许通配或子目录）。
+// `cordis.patch.yml` 是 0.1.7-alpha.1 起的 Profile 用户配置层：漏掉它会出现「备份成功、
+// 恢复后个性化配置全丢」。package.json 承载 bundle 启停清单，两者必须成对。
+const PROFILE_FILES = Object.freeze(['package.json', 'cordis.patch.yml'])
 const PLAN_TTL_MS = 5 * 60 * 1000
 const MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
 const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
@@ -90,7 +94,7 @@ function emptySections() {
   return {
     sessions: { files: 0, dirs: 0, bytes: 0 },
     config: { files: [], missing: [...CONFIG_FILES], bytes: 0 },
-    profiles: { items: [], count: 0, bytes: 0 },
+    profiles: { items: [], count: 0, bytes: 0, patchFiles: [] },
   }
 }
 
@@ -122,11 +126,18 @@ function validateEntry(path, type, data, state) {
   if (parts.length === 1) return
   if (parts[1] === '.' || parts[1] === '..') throw domainError('backup-entry-traversal')
   if (parts.length === 2 && type === 'directory') return
-  if (parts.length !== 3 || parts[2] !== 'package.json' || type !== 'file') throw domainError('backup-entry-unexpected')
-  let manifest
-  try { manifest = JSON.parse(data.toString('utf8')) } catch (_) { throw domainError('backup-profile-invalid') }
-  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) throw domainError('backup-profile-invalid')
-  sections.profiles.items.push({ name: parts[1], sizeBytes: data.length })
+  if (parts.length !== 3 || type !== 'file' || !PROFILE_FILES.includes(parts[2])) throw domainError('backup-entry-unexpected')
+  if (parts[2] === 'package.json') {
+    let manifest
+    try { manifest = JSON.parse(data.toString('utf8')) } catch (_) { throw domainError('backup-profile-invalid') }
+    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) throw domainError('backup-profile-invalid')
+    sections.profiles.items.push({ name: parts[1], sizeBytes: data.length })
+    sections.profiles.bytes += data.length
+    return
+  }
+  // Profile 补丁：内容是用户手写的 YAML patch 层，此处只记清单与字节，不做语义校验
+  // （解析失败应仍可恢复——恢复的是「用户当时的文件」，不是「合法的 patch」）。
+  sections.profiles.patchFiles.push({ name: parts[1], sizeBytes: data.length })
   sections.profiles.bytes += data.length
 }
 
@@ -213,8 +224,12 @@ function parseTar(expanded, options = {}) {
   for (const root of ['sessions', 'config', 'profiles']) if (!state.present.has(root)) throw domainError('backup-section-missing', root)
   state.sections.config.files.sort((a, b) => a.name.localeCompare(b.name))
   state.sections.profiles.items.sort((a, b) => a.name.localeCompare(b.name))
+  state.sections.profiles.patchFiles.sort((a, b) => a.name.localeCompare(b.name))
   state.sections.profiles.count = state.sections.profiles.items.length
-  return { entries, sections: state.sections, logicalBytes, entryCount: entries.length }
+  // 归档格式标签：v1 = 不含 Profile 补丁（0.1.7-alpha.1 之前的插件所出）；v2 = 含补丁层。
+  // 恢复旧归档时据此给出「未包含项」提示而不判损坏。
+  const archiveFormat = state.sections.profiles.patchFiles.length > 0 ? 'v2' : 'v1'
+  return { entries, sections: state.sections, logicalBytes, entryCount: entries.length, archiveFormat }
 }
 
 async function inspectArchive(source, options = {}) {
@@ -226,6 +241,7 @@ async function inspectArchive(source, options = {}) {
     validForRestore: false,
     status: 'error',
     archive: { entryCount: 0, compressedBytes: source.sizeBytes, logicalBytes: 0 },
+    archiveFormat: 'v1',
     sections: emptySections(),
     issues: [],
     issueCount: 0,
@@ -254,6 +270,7 @@ async function inspectArchive(source, options = {}) {
         validForRestore: true,
         status: 'ok',
         archive: { entryCount: parsed.entryCount, compressedBytes: compressed.length, logicalBytes: parsed.logicalBytes },
+        archiveFormat: parsed.archiveFormat,
         sections: parsed.sections,
       },
       parsed,
@@ -365,7 +382,9 @@ async function fingerprintTargets(dshHome, profileNames) {
   for (const name of profileNames) {
     const profileRoot = join(profilesRoot, name)
     await assertDirectoryOrMissing(profileRoot)
-    await fingerprintNode(join(profileRoot, 'package.json'), `profiles/${name}/package.json`, hash, summary)
+    // 目标指纹覆盖白名单里的每个文件：漏掉补丁会让「恢复期间用户改了配置」检测不到
+    // （指纹相同 → 覆盖写，用户的新改动被旧快照悄悄顶掉）。
+    for (const file of PROFILE_FILES) await fingerprintNode(join(profileRoot, file), `profiles/${name}/${file}`, hash, summary)
   }
   return { fingerprint: hash.digest('hex'), bytes: summary.bytes }
 }
@@ -510,7 +529,13 @@ export function createBackupIntegrity(options) {
     if (source === undefined) throw domainError('unknown-backup')
     const inspected = await inspectArchive(source, { collectEntries: true })
     if (!inspected.report.validForRestore || inspected.parsed === null) throw domainError('backup-archive-invalid')
-    const profileNames = inspected.report.sections.profiles.items.map((item) => item.name)
+    // 归档可能带补丁而不带 manifest（外部工具所出）：指纹与恢复操作都按并集处理，
+    // 否则「只改了补丁的 profile」在 target 变更检测里是盲区。
+    const profileNames = [...new Set([
+      ...inspected.report.sections.profiles.items.map((item) => item.name),
+      ...inspected.report.sections.profiles.patchFiles.map((item) => item.name),
+    ])].sort()
+    const patchProfileNames = inspected.report.sections.profiles.patchFiles.map((item) => item.name)
     const targetState = await fingerprintTargets(dshHome, profileNames)
     const planId = randomUUID()
     const staging = join(dshHome, 'backups', `.restore-plan-${planId}`)
@@ -530,19 +555,23 @@ export function createBackupIntegrity(options) {
       sourceFingerprint: inspected.report.source.sha256,
       targetFingerprint: targetState.fingerprint,
       profileNames,
+      patchProfileNames,
       reportSummary: {
         entryCount: inspected.report.archive.entryCount,
         logicalBytes: inspected.report.archive.logicalBytes,
         sessions: inspected.report.sections.sessions,
         configFiles: inspected.report.sections.config.files.length,
         profiles: profileNames.length,
+        profilePatches: patchProfileNames.length,
+        archiveFormat: inspected.report.archiveFormat,
       },
       targets: {
         sessions: { action: 'replace', currentBytes: targetState.bytes, newBytes: inspected.report.sections.sessions.bytes },
         config: { replace: inspected.report.sections.config.files.map((item) => item.name), remove: configRemove, newBytes: inspected.report.sections.config.bytes },
-        profiles: { upsert: profileNames, untouched: true, newBytes: inspected.report.sections.profiles.bytes },
+        profiles: { upsert: profileNames, patches: patchProfileNames, untouched: true, newBytes: inspected.report.sections.profiles.bytes },
       },
-      consequences: ['sessions-replaced', ...(configRemove.length > 0 ? ['config-files-removed'] : []), ...(profileNames.length > 0 ? ['profile-manifests-replaced'] : []), 'service-restart-required'],
+      // 旧归档（v1，不含补丁层）恢复时显式告知「哪些文件没带」，不判损坏、不阻断。
+      consequences: ['sessions-replaced', ...(configRemove.length > 0 ? ['config-files-removed'] : []), ...(profileNames.length > 0 ? ['profile-manifests-replaced'] : []), ...(patchProfileNames.length > 0 ? ['profile-patches-replaced'] : ['profile-patches-absent']), 'service-restart-required'],
       previousInstanceId,
       runtime: { supervisorKind: runtimeEnv?.supervisorKind ?? null, manualStartLikely: runtimeEnv?.manualStartLikely === true },
     }
@@ -588,7 +617,17 @@ export function createBackupIntegrity(options) {
     }
     await addOperation(join(dshHome, 'sessions'), join(plan.staging, 'sessions'), 'sessions')
     for (const name of CONFIG_FILES) await addOperation(join(dshHome, name), join(plan.staging, 'config', name), `config/${name}`)
-    for (const name of plan.profileNames) await addOperation(join(dshHome, 'profiles', name, 'package.json'), join(plan.staging, 'profiles', name, 'package.json'), `profiles/${name}/package.json`)
+    for (const name of plan.profileNames) {
+      await addOperation(join(dshHome, 'profiles', name, 'package.json'), join(plan.staging, 'profiles', name, 'package.json'), `profiles/${name}/package.json`)
+      // 补丁层白名单恢复。归档没带（旧版 v1 所出）时**不登记**这一步：登记了就代表
+      // 「按快照覆盖」，operation 循环会先把目标侧 patch 挪走、再因 staged 缺席而不回填，
+      // 等于用一份对配置毫无意见的旧归档静默删掉用户当前配置。缺席只记入计划报告
+      // （consequences: profile-patches-absent），不改成删除。
+      const stagedPatch = join(plan.staging, 'profiles', name, 'cordis.patch.yml')
+      if (await pathExists(stagedPatch)) {
+        await addOperation(join(dshHome, 'profiles', name, 'cordis.patch.yml'), stagedPatch, `profiles/${name}/cordis.patch.yml`)
+      }
+    }
     const journalPath = join(dshHome, JOURNAL_FILE)
     await mkdir(rollbackDir, { recursive: true, mode: 0o700 })
     await writeJournal(journalPath, { version: 1, rollbackDir, operations })
