@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { createModelWorkbenchRoutes } from '../model-workbench-routes.js'
+import { assertPublicHost, modelsProbeLookup } from '../model-workbench.js'
 
 import {
   WORKBENCH_SIDECAR_VERSION,
@@ -18,6 +19,7 @@ import {
   diffModelLists,
   emptyWorkbenchSidecar,
   indexModelParamsDev,
+  isPrivateIpAddress,
   loadModelParamsSnapshot,
   loadWorkbenchSidecar,
   modelParamsCandidates,
@@ -25,6 +27,7 @@ import {
   openRouterModelFacts,
   openRouterVerifySource,
   pickOpenRouterMatch,
+  probeBaseURLCheck,
   profileFingerprint,
   saveWorkbenchSidecar,
   selfCheckModelsPatch,
@@ -942,4 +945,58 @@ test('workbench routes: a service-side revision rejection maps to conflict and p
   assert.match(undone.error, /conflict/, 'a service-side revision rejection reads as a workbench conflict')
   const preview = await routes['models2-undo-preview'].handle({ route: 'cpa' })
   assert.equal(preview.ok, true, 'the undo slot survives so the user can retry')
+})
+
+test('workbench probe guard: rejects every non-public-https shape before any request is made', () => {
+  // 安全教义「零输入拼接」的核心闸：地址合法性完全在宿主侧判定，浏览器给什么都要过这里。
+  const cases = [
+    ['https://gw.example.com/v1', true, 'ordinary public https'],
+    ['http://gw.example.com/v1', false, 'plain http'],
+    ['https://1.2.3.4/v1', false, 'ipv4 literal (bypasses the DNS gate)'],
+    ['https://[::1]/v1', false, 'ipv6 literal'],
+    ['https://user:pw@gw.example.com/v1', false, 'embedded credentials'],
+    ['https://gw.example.com:8443/v1', false, 'non-443 port'],
+    ['https://gw.example.com:443/v1', true, 'explicit 443 is fine'],
+    ['https://{location}-api.example.com/v1', false, 'unresolved template host'],
+    ['file:///etc/passwd', false, 'file scheme'],
+    ['javascript:alert(1)', false, 'javascript scheme'],
+    ['', false, 'empty'],
+    ['not a url', false, 'unparseable'],
+  ]
+  for (const [url, want, label] of cases) {
+    assert.equal(probeBaseURLCheck(url).ok, want, `${label}: ${url}`)
+  }
+})
+
+test('workbench probe guard: every private and reserved address range is refused', () => {
+  const privateOnes = [
+    '127.0.0.1', '10.0.0.5', '169.254.1.1', '172.16.0.1', '192.168.1.1', '100.64.0.1',
+    '224.0.0.1', '240.0.0.1', '0.0.0.0', '192.0.2.1', '198.51.100.5', '203.0.113.9',
+    '::1', '::', 'fe80::1', 'fd00::1', 'ff02::1', '2001:db8::1', '::ffff:10.0.0.1',
+  ]
+  for (const address of privateOnes) assert.equal(isPrivateIpAddress(address), true, `${address} must be refused`)
+  const publicOnes = ['8.8.8.8', '1.1.1.1', '2606:4700::1', '::ffff:1.1.1.1']
+  for (const address of publicOnes) assert.equal(isPrivateIpAddress(address), false, `${address} is public`)
+})
+
+test('workbench probe guard: DNS resolution is refused unless every answer is public', async () => {
+  const original = modelsProbeLookup.impl
+  const t2 = (impl) => { modelsProbeLookup.impl = impl }
+  try {
+    // 单条私网答案即整体拒绝（防 rebinding 的首道：解析结果全量校验）。
+    t2(async () => [{ address: '10.0.0.1' }])
+    await assert.rejects(() => assertPublicHost('gw.example.com'), /probe-not-public/)
+    // 多答案里混入一条私网同样拒绝。
+    t2(async () => [{ address: '1.1.1.1' }, { address: '192.168.0.1' }])
+    await assert.rejects(() => assertPublicHost('gw.example.com'), /probe-not-public/)
+    // 空解析结果拒绝。
+    t2(async () => [])
+    await assert.rejects(() => assertPublicHost('gw.example.com'), /probe-dns-empty/)
+    // 全部公网才放行。
+    t2(async () => [{ address: '1.1.1.1' }, { address: '8.8.8.8' }])
+    const rows = await assertPublicHost('gw.example.com')
+    assert.equal(rows.length, 2)
+  } finally {
+    t2(original)
+  }
 })
