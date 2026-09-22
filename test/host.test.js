@@ -2727,6 +2727,99 @@ test('release-notes does not cache a missing release, so it appears as soon as i
   assert.notEqual(second.value.cached, true)
 })
 
+test('release-notes-latest resolves the available new version on the host side and reuses the check-update cache', async (t) => {
+  // 「有新版本」时点状态文本读的是**可升级到的那一版**的正文。版本号一律宿主侧解析：
+  // 先用 check-update 的 10 分钟缓存里的 latest，缓存冷时直接读 npm dist-tags。
+  // 浏览器只送闭集 kind——不放宽到版本串，安全教义的「零输入拼接」在这条路上同样成立。
+  const home = await makeHome(t, 'dsh-service-notes-latest-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '1.9.5' })
+  const npmRequests = []
+  const releaseRequests = []
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    const target = String(url)
+    const isNpm = target.startsWith('https://registry.npmjs.org/')
+    const response = new EventEmitter()
+    // statusCode 必须在 callback 之前定好：宿主在回调里就读它判 2xx。
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (isNpm) {
+        npmRequests.push(target)
+        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '1.9.9', next: '1.9.9' } }))
+        response.emit('end')
+        return
+      }
+      releaseRequests.push(target)
+      response.emit('data', JSON.stringify({ tag_name: 'v1.9.9', name: 'v1.9.9', body: '新版正文', published_at: '2026-09-22T01:52:00Z', prerelease: false }))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+
+  // 先走一次 check-update 把缓存种上（模拟用户看到「有新版本」的那一刻）。
+  const update = await handler('check-update', {})
+  assert.equal(update.value.plugin.latest, '1.9.9')
+  const beforeNpm = npmRequests.length
+
+  const result = await handler('release-notes-latest', { kind: 'plugin' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.version, '1.9.9', 'the body belongs to the version the user can upgrade to')
+  assert.equal(result.value.notes, '新版正文')
+  assert.deepEqual(releaseRequests, ['https://api.github.com/repos/gehennawu/dsh-service/releases/tags/v1.9.9'])
+  assert.equal(npmRequests.length, beforeNpm, 'the check-update cache supplies latest — no extra registry round trip')
+
+  // 同版本重复点开走缓存；当前版入口的正文各占一槽，不会互相驱逐。
+  const again = await handler('release-notes-latest', { kind: 'plugin' })
+  assert.equal(again.value.cached, true)
+  assert.equal(releaseRequests.length, 1)
+  const current = await handler('release-notes', { kind: 'plugin' })
+  assert.equal(current.value.version, '1.9.5', 'the current-version entry still reads the installed version')
+  assert.equal(releaseRequests.length, 2, 'the two version faces keep separate cache slots')
+})
+
+test('release-notes-latest falls back to the current version when npm reports nothing newer', async (t) => {
+  // 客户端状态可能已过期（check-update 缓存来自上一次），或 registry 抖动取不到 latest：
+  // 这时不该弹空错——回落读当前版本正文，点开仍有内容，且不出网拼任何浏览器输入。
+  const home = await makeHome(t, 'dsh-service-notes-latest-fallback-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: '1.9.5' })
+  const releaseRequests = mockReleaseApi(t, {
+    body: { tag_name: 'v1.9.5', name: 'v1.9.5', body: '当前版正文' },
+  })
+  const originalGet = https.get
+  https.get = (url, options, callback) => {
+    if (String(url).startsWith('https://registry.npmjs.org/')) {
+      // registry 抖动：不抛异常，走「拿不到 latest」的分支。
+      throw new Error('registry unreachable')
+    }
+    return originalGet.call(https, url, options, callback)
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost({ env: { DSH_HOME: home } })
+  const result = await handler('release-notes-latest', { kind: 'plugin' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.version, '1.9.5')
+  assert.equal(result.value.notes, '当前版正文')
+  assert.deepEqual(releaseRequests, ['https://api.github.com/repos/gehennawu/dsh-service/releases/tags/v1.9.5'])
+})
+
+test('release-notes-latest only accepts the closed kind set and never leaves the host for it', async (t) => {
+  const requests = mockReleaseApi(t, { body: { tag_name: 'x', body: 'x' } })
+  const { handler } = createHost()
+  for (const bad of [{ kind: 'https://evil.example/x' }, { kind: 'plugin@1.2.3' }, {}]) {
+    const result = await handler('release-notes-latest', bad)
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'unknown-kind')
+  }
+  assert.equal(requests.length, 0, 'a rejected kind must never leave the host')
+})
+
 test('optional commands service registers a guarded /restart command and cleans it up', async () => {
   const host = createHost({ commands: true })
   assert.equal(host.registeredCommands.length, 1)

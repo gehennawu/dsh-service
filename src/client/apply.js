@@ -331,7 +331,7 @@
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，
       // 清单见 scripts/client-source.mjs）。返回值解构回原名供 ServicePanel/导航入口/覆盖层消费；
       // upgradeInFlight/runtimeEnvState 两个 let 经访问器跨界（见下方调用点的 is/set/get 改写）。
-      const { RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState } = createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavToggle })
+      const { RestartOverlay, RestartSection, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState } = createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavToggle })
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
@@ -4726,14 +4726,18 @@
         // 模型列表口径：today=仅今日（默认，v0.31 用户点名）/ week=近 7 天 / all=宿主索引内全部日期累计。
         const [modelScope, setModelScope] = useState('today')
         const [activeTab, setActiveTab] = useState('overview')
-        // 版本详情行内展开（不用浮层：弹层会被设置模态盖住）
-        const [channelOpen, setChannelOpen] = useState(false)
         // 「本次更新内容」：GitHub 的 release 页面对 iframe 一律 `x-frame-options: deny`，
-        // 官方右栏浏览器 tab 载不出来；正文由宿主取回、客户端就地渲染。按 kind 分槽存快照，
+        // 官方右栏浏览器 tab 载不出来；正文由宿主取回、客户端就地渲染。两个版本面共用一条
+        // 状态机：`variant='current'`（版本号后的常驻入口，读当前这一版）与 `variant='latest'`
+        // （有新版本时点状态文本，读可升级到的那一版）。按 `kind@variant` 分槽存快照，
         // 状态机 loading/ready/error 由 notesState 三态表达（loading 只在请求飞行中）。
         const notesCacheRef = useRef({})
+        // 两个端点各自的能力事实：浏览器半刷新即换、宿主半要重启才换，升级落地未重启的窗口里
+        // 新端点必然缺席。分开记，才不至于因为「新版正文读不到」把**本来能用的**当前版入口
+        // 一起收掉——旧宿主（连 release-notes 都没有）则两个都缺席，入口与状态文本一并降级。
         const notesHostUnsupportedRef = useRef(false)
-        const [notesState, setNotesState] = useState({ kind: null, phase: 'idle', value: null, error: null })
+        const latestNotesHostUnsupportedRef = useRef(false)
+        const [notesState, setNotesState] = useState({ kind: null, variant: null, phase: 'idle', value: null, error: null })
         // 请求序号：收起（含外点关闭）与换行都 +1，让在飞的旧响应落地时自我作废——
         // 否则「关掉面板后才回来的 release 正文」会把面板又点亮，看起来像关不掉。
         const notesRequestRef = useRef(0)
@@ -4787,62 +4791,68 @@
         // 那段窗口里 release-notes 会回 unknown-endpoint。与其每次点开都报错，不如认下
         // 「这个宿主还不支持」并把入口整体收起（与其它「旧宿主缺字段静默降级」同规）。
         const notesErrorCode = (error) => (error === 'release-not-found' ? 'release-not-found' : 'release-unavailable')
-        const loadNotes = async (kind) => {
+        const notesSlot = (kind, variant) => `${kind}@${variant}`
+        // 客户端仍只送闭集字段（kind、variant），版本号一律宿主侧解析：`current` 走当前版本，
+        // `latest` 走该 kind 的可用新版本——两条线都不接受浏览器送来的版本串或 URL（安全教义）。
+        const loadNotes = async (kind, variant) => {
           const token = (notesRequestRef.current += 1)
           const stale = () => notesRequestRef.current !== token
-          setNotesState({ kind, phase: 'loading', value: null, error: null })
+          setNotesState({ kind, variant, phase: 'loading', value: null, error: null })
           let res = null
           try {
-            res = await rpcCall('release-notes', { kind })
+            res = await rpcCall(variant === 'latest' ? 'release-notes-latest' : 'release-notes', { kind })
           } catch (_) {
             res = null
           }
           if (res && res.ok !== false && res.value) {
             // 缓存先落、UI 后落：用户在飞行中收起时不该点亮面板，但拿到的正文仍值得留着——
             // 再展开直接命中缓存，不为一次外点关闭白扔一条已成功的请求。
-            notesCacheRef.current[kind] = res.value
+            notesCacheRef.current[notesSlot(kind, variant)] = res.value
             if (stale()) return
-            setNotesState({ kind, phase: 'ready', value: res.value, error: null })
+            setNotesState({ kind, variant, phase: 'ready', value: res.value, error: null })
             return
           }
           if (stale()) return
           if (res?.error === 'unknown-endpoint') {
             // 「这个宿主还不支持」是环境事实，与面板是否还被看着无关，照记不误。
-            notesHostUnsupportedRef.current = true
-            setNotesState({ kind: null, phase: 'idle', value: null, error: null })
+            // 按 variant 分别记：升级落地未重启时旧宿主缺的是 release-notes-latest，
+            // 当前版入口不该被它连坐。
+            if (variant === 'latest') latestNotesHostUnsupportedRef.current = true
+            else notesHostUnsupportedRef.current = true
+            setNotesState({ kind: null, variant: null, phase: 'idle', value: null, error: null })
             return
           }
           // `release-not-found` 不是故障而是上游发布时序：DSH 先发 npm、release 稍后补（实测最长
           // 95 分钟），这段窗口里 check-update 已经报「有新版本」而正文必然 404。落**待定态**：
           // 中性文案 + 重试按钮，不当错误渲染；宿主侧对 404 也不缓存，Release 一上线重试即得。
           const code = notesErrorCode(res?.error)
-          setNotesState({ kind, phase: code === 'release-not-found' ? 'pending' : 'error', value: null, error: code })
+          setNotesState({ kind, variant, phase: code === 'release-not-found' ? 'pending' : 'error', value: null, error: code })
         }
         // 面板收起（含点击面板外、Esc）：在飞的响应一并作废，避免关掉后又被旧响应点亮。
         // 缓存保留——再展开直接命中缓存，不重发请求。
         const collapseNotes = () => {
           notesRequestRef.current += 1
-          setNotesState({ kind: null, phase: 'idle', value: null, error: null })
+          setNotesState({ kind: null, variant: null, phase: 'idle', value: null, error: null })
         }
-        const toggleNotes = async (kind) => {
+        const toggleNotes = async (kind, variant) => {
           if (notesHostUnsupportedRef.current === true) return
-          const current = notesState.kind === kind ? notesState : null
+          const current = notesState.kind === kind && notesState.variant === variant ? notesState : null
           // 「已就绪」与「读取中」再点是收起；待定态再点是重试（内容还没拿到，收起没有意义）。
           if (current !== null && (current.phase === 'ready' || current.phase === 'loading')) {
             collapseNotes()
             return
           }
-          const cached = notesCacheRef.current[kind]
+          const cached = notesCacheRef.current[notesSlot(kind, variant)]
           if (cached !== undefined) {
             notesRequestRef.current += 1
-            setNotesState({ kind, phase: 'ready', value: cached, error: null })
+            setNotesState({ kind, variant, phase: 'ready', value: cached, error: null })
             return
           }
-          await loadNotes(kind)
+          await loadNotes(kind, variant)
         }
         // 面板展开期间：点击版本卡之外任意位置（pointerdown）或按 Esc 即收起。
         // 内点判定**收在版本卡整棵子树上**，不是「只要落在面板节点上」——版本卡里还有另一行
-        // 入口、升级按钮与通道下拉，点到它们面板不该自己关了（否则「切到 DSH 行」这类操作会被
+        // 入口与升级按钮，点到它们面板不该自己关了（否则「切到 DSH 行」这类操作会被
         // 自己的外点逻辑搅乱）。面板节点再做一层 ref.contains 元素级兜底。
         // 监听随展开/收起精确挂卸（依赖 [notesOpen]），收起后不留常驻 document 监听。
         const notesOpen = notesState.kind !== null && notesState.phase !== 'idle'
@@ -6303,11 +6313,25 @@
                     : null)))
             : null))
 
-        // 正式/预览/Alpha 通道信息在版本卡内下拉展开（不弹浮层：弹层会被设置模态盖住）。
-        // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换展开/收起。
+        // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换新版 release 内容的展开/收起。
         const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
           React.createElement('path', { d: 'M9 6l6 6-6 6' }))
-        const versionRow = (id, label, fallbackVersion, state, action, expandable, topBorder, notesKind) => {
+        // 「本次更新内容」入口：紧跟在当前版本号之后，有可解析版本就常驻——与是否有新版本无关，
+        // 用户想看的往往正是当前这一版改了什么。只服务 `variant='current'`（读当前这一版）；
+        // 「有新版本」那条路不在这里，它是状态文本本身可点（见 versionRow）。
+        const notesEntry = (id) => {
+          if (notesHostUnsupportedRef.current === true) return null
+          const open = notesState.kind === id && notesState.variant === 'current' && notesState.phase !== 'idle'
+          return React.createElement('button', {
+            type: 'button',
+            'data-testid': `version-${id}-notes-toggle`,
+            'aria-expanded': String(open),
+            title: translate(open ? 'update.notes.hide' : 'update.notes.button'),
+            onClick: () => { toggleNotes(id, 'current') },
+            style: Object.assign({}, ghost, { minHeight: '22px', padding: '1px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }),
+          }, open ? null : chevronIcon(false), React.createElement('span', null, translate('update.notes.button')))
+        }
+        const versionRow = (id, label, fallbackVersion, state, action, latestNotes, topBorder) => {
           const statusText = !state
             ? (updateError || translate('update.checking'))
             : state.restartPending ? translate('update.installedPendingRestart', { version: state.current || fallbackVersion || '' })
@@ -6316,36 +6340,28 @@
                   : state.upToDate ? translate('update.current')
                     : translate('update.available', { version: state.latest })
           const statusColor = !state ? 'var(--dsw-alias-label-secondary)' : state.restartPending ? 'var(--dsw-alias-state-warn-primary)' : state.upToDate ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)'
-          const clickable = expandable && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
+          // 状态文本在「有新版本」时可点击（小三角 + 文案整体）：读的是**新版**的 release 信息，
+          // 原「查看详情」弹层已由它取代——旧弹层放的当前/最新版本对比与 npmjs / npmmirror
+          // 链接整条移除，读者要的是新版改了什么，不是再来一串版本号。
+          const notesOpen = latestNotes !== undefined && notesState.kind === latestNotes && notesState.variant === 'latest' && notesState.phase !== 'idle'
+          const clickable = latestNotes !== undefined && latestNotesHostUnsupportedRef.current !== true && state && state.status !== 'unpublished' && state.status !== 'unavailable' && !state.upToDate
           const rightSide = clickable
-            ? React.createElement('button', { type: 'button', title: translate(channelOpen ? 'update.detailsHide' : 'update.detailsButton'), style: { background: 'transparent', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: statusColor }, onClick: () => setChannelOpen((value) => !value) },
-                chevronIcon(channelOpen),
+            ? React.createElement('button', { type: 'button', title: translate(notesOpen ? 'update.notes.hide' : 'update.notes.button'), style: { background: 'transparent', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: statusColor }, onClick: () => { toggleNotes(latestNotes, 'latest') } },
+                chevronIcon(notesOpen),
                 React.createElement('span', null, statusText))
             : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
-          // 「本次更新内容」入口与状态文本并列：有可解析版本就常驻（与是否有新版本无关——
-          // 用户想看的往往正是**当前这一版**改了什么）。正文由宿主取回，见 toggleNotes。
-          const notesOpen = notesKind !== undefined && notesState.kind === notesKind && notesState.phase !== 'idle'
-          const notesButton = notesKind === undefined || notesHostUnsupportedRef.current === true
-            ? null
-            : React.createElement('button', {
-                type: 'button',
-                'data-testid': `version-${id}-notes-toggle`,
-                'aria-expanded': String(notesOpen),
-                title: translate(notesOpen ? 'update.notes.hide' : 'update.notes.button'),
-                onClick: () => { toggleNotes(notesKind) },
-                style: Object.assign({}, ghost, { minHeight: '22px', padding: '1px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }),
-              }, notesOpen ? null : chevronIcon(false), React.createElement('span', null, translate('update.notes.button')))
           return React.createElement('div', { key: id, className: 'dshsvc-version-row', style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px 16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
             React.createElement('div', { className: 'dshsvc-version-identity', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 } },
               React.createElement('span', { style: { fontSize: '13px', fontWeight: 650, whiteSpace: 'nowrap' } }, `${label} `),
               state?.url
                 ? React.createElement('a', { 'data-testid': `version-${id}-link`, href: state.url, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', fontSize: '12px', whiteSpace: 'nowrap', marginLeft: '16px' } }, state.current || fallbackVersion || translate('version.loading'))
-                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading'))),
-            React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, notesButton, action || null))
+                : React.createElement('code', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginLeft: '16px', whiteSpace: 'nowrap' } }, state?.current || fallbackVersion || translate('version.loading')),
+              // 入口紧跟在当前版本号之后：读作「这一版改了什么」的注脚。
+              notesEntry(id)),
+            React.createElement('div', { className: 'dshsvc-version-status', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' } }, rightSide, action || null))
         }
-        // 版本信息区块：DSH 行在有更新时状态文本（小三角 + 有新版本）整体可点击，行内下拉展开
+        // 版本信息区块：两行都在有更新时由状态文本（小三角 + 有新版本）行内下拉展开新版 release 信息
         const dshUpdate = updateInfo?.dsh
-        const dshExpandable = dshUpdate && dshUpdate.status !== 'unpublished' && dshUpdate.status !== 'unavailable' && !dshUpdate.upToDate
         const pluginUpdate = updateInfo?.plugin && !updateInfo.plugin.upToDate && updateInfo.plugin.status === 'available'
         // 磁盘已装版本比运行进程新 = 升级已落地、只差重启（手动启动环境尤其常见）：这是宿主事实，
         // 不是本次点击的临时状态——重挂载、刷新页面后依然成立，升级按钮不再冒出来骗人
@@ -6366,33 +6382,41 @@
         // 「本次更新内容」正文：折叠面板挂在触发它的那一行下方（`notesState.kind` 决定归属），
         // 正文按不可信文本渲染——能复用官方 MarkdownText 就用（与官方聊天观感一致、
         // 默认拒原始 HTML/危险链接），官方 seed 缺席的老外壳回落 pre-wrap 纯文本。
+        // 同一 kind 的两种版本面（当前 / 新版）共用一个显示槽：面板归属由 variant 区分，
+        // 测试 id 用 variant 后缀，两处入口各自命中自己的面板与状态节点。
         const releaseNotesPanel = (kind) => {
           if (notesState.kind !== kind || notesState.phase === 'idle') return null
+          const variant = notesState.variant === 'latest' ? 'latest' : 'current'
+          const testId = (suffix) => `version-${kind}-notes-${variant}${suffix}`
           const meta = notesState.phase === 'ready' ? notesState.value : null
           const body = notesState.phase === 'loading'
-            ? React.createElement('p', { 'data-testid': `version-${kind}-notes-loading`, style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.loading'))
+            ? React.createElement('p', { 'data-testid': testId('-loading'), style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.loading'))
             // 待定态（上游先发 npm、release 稍后补）：中性文字 + 「重试」按钮，不是错误。
             // 红色 + role="alert" 会把它讲成故障，而这里既不是故障、用户也无事可做。
             : notesState.phase === 'pending'
-              ? React.createElement('div', { 'data-testid': `version-${kind}-notes-pending`, style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' } },
+              ? React.createElement('div', { 'data-testid': testId('-pending'), style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' } },
                   React.createElement('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
                     translate('update.notes.error.release-not-found')),
                   React.createElement('button', {
                     type: 'button',
-                    'data-testid': `version-${kind}-notes-retry`,
-                    onClick: () => { loadNotes(kind) },
+                    'data-testid': testId('-retry'),
+                    onClick: () => { loadNotes(kind, variant) },
                     style: Object.assign({}, ghost, { minHeight: '22px', padding: '1px 8px', fontSize: '11px' }),
                   }, translate('update.notes.retry')))
               : notesState.phase === 'error'
-                ? React.createElement('p', { 'data-testid': `version-${kind}-notes-error`, role: 'alert', style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
+                ? React.createElement('p', { 'data-testid': testId('-error'), role: 'alert', style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } },
                     translate('update.notes.error.' + (typeof notesState.error === 'string' && notesState.error !== '' ? notesState.error : 'release-unavailable')))
                 : typeof meta?.notes === 'string' && meta.notes.trim() !== ''
-                  ? React.createElement('div', { 'data-testid': `version-${kind}-notes-body`, style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' } },
+                  ? React.createElement('div', { 'data-testid': testId('-body'), style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' } },
                       sessionMarkdownText !== null
                         ? React.createElement(sessionMarkdownText, { text: meta.notes, labels: sessionMarkdownLabels(translate) })
                         : React.createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 } }, meta.notes))
-                  : React.createElement('p', { 'data-testid': `version-${kind}-notes-empty`, style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.empty'))
+                  : React.createElement('p', { 'data-testid': testId('-empty'), style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('update.notes.empty'))
           const metaLine = meta === null ? [] : [
+            // 新版正文先把版本号摆出来：状态行只写「有新版本：x」，正文头部再明确这一份是哪一版。
+            variant === 'latest' && typeof meta.version === 'string' && meta.version !== ''
+              ? React.createElement('span', { key: 'version', style: { color: 'var(--dsw-alias-label-secondary)', fontWeight: 600 } }, translate('update.notes.version', { version: meta.version }))
+              : null,
             meta.publishedAt
               ? React.createElement('span', { key: 'published' }, translate('update.notes.publishedAt', { date: String(meta.publishedAt).slice(0, 10) }))
               : null,
@@ -6409,16 +6433,10 @@
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
           React.createElement('div', { style: displaySurface },
-            versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, false, false, 'plugin'),
+            versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, 'plugin', false),
             releaseNotesPanel('plugin'),
-            versionRow('dsh', 'DSH', version, dshUpdate, null, dshExpandable === true, true, 'dsh'),
+            versionRow('dsh', 'DSH', version, dshUpdate, null, 'dsh', true),
             releaseNotesPanel('dsh'),
-            channelOpen
-              ? React.createElement('div', { 'data-testid': 'version-channel-details', style: { marginTop: '6px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l1)', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
-                  React.createElement('div', null, translate('update.details.current', { version: dshUpdate?.current || version || '—' })),
-                  React.createElement('div', null, translate('update.details.latest', { version: dshUpdate?.latest || '—' })),
-                  channelLines(translate, dshUpdate?.tags))
-              : null,
             upgradeManualConfirm
               ? React.createElement('div', { 'data-testid': 'upgrade-manual-confirm', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.08)', border: '1px solid rgba(211,51,51,0.3)' } },
                   React.createElement('p', { style: { margin: '0 0 6px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } }, translate('update.manualConfirmTitle')),

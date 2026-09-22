@@ -5142,7 +5142,8 @@ function apply(ctx, featureConfig) {
   let usageRefreshPromise
   let updateCache
   let updatePromise
-  // release 正文缓存：键 kind，值带 version（版本一变即整体失效，不必手工清理）。
+  // release 正文缓存：键 `kind@版本`——同一 kind 的「当前版本」与「可用新版本」各占一槽，
+  // 版本一变即自然失效，不必手工清理。
   const releaseNotesCache = new Map()
   const quotaThrottle = createQuotaThrottle()
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
@@ -5637,6 +5638,52 @@ function apply(ctx, featureConfig) {
     }), 'dsh-service backup download route')
   }
 
+  // 「本次更新内容」的共用落库：两个入口（当前运行版本 / 可用新版本）只在「版本号从哪来」上
+  // 不同，抓取、缓存与错误码归一完全共用。缓存键带版本——同一 kind 的两个版本各占一槽，
+  // 否则「点开当前版本文案」与「点开新版文案」会互相驱逐，每切一次都重打一次 GitHub。
+  const releaseNotesResult = async (kind, target, now) => {
+    if (parseSemver(target) === null) return { ok: false, error: 'invalid-release-target' }
+    const key = `${kind}@${target}`
+    const cached = releaseNotesCache.get(key)
+    if (cached !== undefined && now - cached.checkedAt < cached.ttl) {
+      return cached.ok
+        ? { ok: true, value: Object.assign({}, cached.value, { cached: true }) }
+        : { ok: false, error: cached.error, cached: true }
+    }
+    try {
+      const value = await fetchReleaseNotes(kind, target)
+      // 已发布 tag 的正文不可变：成功结果长 TTL；失败短 TTL，避免上游抖动时反复打 GitHub。
+      releaseNotesCache.set(key, { ok: true, value, checkedAt: now, ttl: 60 * 60 * 1000 })
+      return { ok: true, value }
+    } catch (error) {
+      const code = error?.message === 'release-not-found' ? 'release-not-found' : 'release-unavailable'
+      // `release-not-found` 是上游发布时序，不是故障：DSH 先发 npm、release 稍后补
+      // （实测最长 95 分钟，期间 check-update 已报「有新版本」而正文必然 404）。
+      // 这种「随时可能变好」的结果**不缓存**，否则用户刚点开看到待定态、Release 随即上线，
+      // 他还要再等一个 TTL 才看得到正文。真故障（网络/限额）保留 60s 负缓存，防反复打上游。
+      if (code === 'release-not-found') releaseNotesCache.delete(key)
+      else releaseNotesCache.set(key, { ok: false, error: code, checkedAt: now, ttl: 60 * 1000 })
+      return { ok: false, error: code }
+    }
+  }
+  // 可用新版本的宿主侧解析：先用 check-update 的 10 分钟缓存（同一份「是否有新版本」事实），
+  // 缓存冷时直接读 npm dist-tags 取最新版——比整轮双包 check-update 便宜，也保证刚看到
+  // 「有新版本」就能点开对应的正文。任一环节失败或没有更新的版本（客户端状态可能已过期）
+  // 都回落到当前版本：正文照样读得到，不因一次 registry 抖动弹空错。
+  const releaseNotesLatestTarget = async (kind, packageName, now) => {
+    const installed = kind === 'plugin' ? await installedPluginVersionOrNull(dshHome) : null
+    const baseline = parseSemver(installed) !== null ? installed : (kind === 'dsh' ? dshVersion : pluginVersion)
+    const cachedLatest = updateCache?.ok === true && now - updateCache.checkedAt < updateCache.ttl
+      ? updateCache.value?.[kind]?.latest
+      : null
+    let latest = parseSemver(cachedLatest) !== null ? cachedLatest : null
+    if (latest === null) {
+      try { latest = (await fetchPublishedVersions(packageName)).latest } catch (_) { latest = null }
+    }
+    if (latest === null || parseSemver(baseline) === null || compareSemver(latest, baseline) <= 0) return baseline
+    return latest
+  }
+
   // DSH 的 Connection RPC channel 只能是单层绝对路径；子功能统一登记在内部注册表。
   // 核心域端点：与 commands / webServer / 移动端压缩装配耦合最深，留在本文件。
   // 功能域端点在各 *-routes.js 模块，依赖显式注入；mergeRouteTables 拒绝重复键。
@@ -5692,35 +5739,30 @@ function apply(ctx, featureConfig) {
     // 载荷只有 kind 一个**闭集**字段：版本号一律宿主侧解析（插件取磁盘已装、DSH 取运行版本），
     // 浏览器既不送 URL 也不送版本串——安全教义「零输入拼接」不因本端点放宽。
     'release-notes': { handle: async (payload, rpcEndpoint) => {
-      const now = Date.now()
       const kind = payload?.kind
       if (kind !== 'dsh' && kind !== 'plugin') return { ok: false, error: 'unknown-kind' }
       // 插件优先取磁盘已装版本（与 check-update 的 upToDate 同基准：升级落地未重启时
       // 用户看的就是新版正文）；DSH 无磁盘视图，取运行版本。
       const installed = kind === 'plugin' ? await installedPluginVersionOrNull(dshHome) : null
       const target = parseSemver(installed) !== null ? installed : (kind === 'dsh' ? dshVersion : pluginVersion)
-      if (parseSemver(target) === null) return { ok: false, error: 'invalid-release-target' }
-      const cached = releaseNotesCache.get(kind)
-      if (cached !== undefined && cached.version === target && now - cached.checkedAt < cached.ttl) {
-        return cached.ok
-          ? { ok: true, value: Object.assign({}, cached.value, { cached: true }) }
-          : { ok: false, error: cached.error, cached: true }
-      }
-      try {
-        const value = await fetchReleaseNotes(kind, target)
-        // 已发布 tag 的正文不可变：成功结果长 TTL；失败短 TTL，避免上游抖动时反复打 GitHub。
-        releaseNotesCache.set(kind, { ok: true, value, version: target, checkedAt: now, ttl: 60 * 60 * 1000 })
-        return { ok: true, value }
-      } catch (error) {
-        const code = error?.message === 'release-not-found' ? 'release-not-found' : 'release-unavailable'
-        // `release-not-found` 是上游发布时序，不是故障：DSH 先发 npm、release 稍后补
-        // （实测最长 95 分钟，期间 check-update 已报「有新版本」而正文必然 404）。
-        // 这种「随时可能变好」的结果**不缓存**，否则用户刚点开看到待定态、Release 随即上线，
-        // 他还要再等一个 TTL 才看得到正文。真故障（网络/限额）保留 60s 负缓存，防反复打上游。
-        if (code === 'release-not-found') releaseNotesCache.delete(kind)
-        else releaseNotesCache.set(kind, { ok: false, error: code, version: target, checkedAt: now, ttl: 60 * 1000 })
-        return { ok: false, error: code }
-      }
+      return releaseNotesResult(kind, target, Date.now())
+
+    } },
+    // 「有新版本」时点状态文本展开的正文（版本卡行内展开）：展示的是**可升级到的那个新版本**
+    // 的 release 信息，而不是当前运行版本的。与 `release-notes` 同一条抓取/缓存链路，差别只在
+    // 「版本号从哪来」：这里必须先把该 kind 的**可用新版本**在宿主侧解析出来，浏览器依旧只送
+    // 闭集 kind——载荷不放宽到版本串，安全教义「零输入拼接」在这一路上同样成立。
+    // 两层兜底：先用 check-update 的 10 分钟缓存；缓存冷（或落在其 TTL 之外）时直接读 npm
+    // registry 的 dist-tags 取最新版，比整轮 check-update 双包查询更便宜，也保证「有新版本」
+    // 之后点开一定有目标版本。
+    'release-notes-latest': { handle: async (payload, rpcEndpoint) => {
+      const kind = payload?.kind
+      if (kind !== 'dsh' && kind !== 'plugin') return { ok: false, error: 'unknown-kind' }
+      const now = Date.now()
+      const packageName = kind === 'dsh' ? DSH_PACKAGE : PLUGIN_PACKAGE
+      const target = await releaseNotesLatestTarget(kind, packageName, now)
+      if (target === null) return { ok: false, error: 'no-newer-version' }
+      return releaseNotesResult(kind, target, now)
 
     } },
     'upgrade': { audit: true, handle: async (payload, rpcEndpoint) => {

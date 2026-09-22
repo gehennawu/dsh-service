@@ -227,28 +227,6 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
         return dispose
       }, 'dsh-service process identity')
 
-      // 正式/预览/Alpha 通道行：版本号后跟 npmjs（版本页）与 npmmirror（镜像版本页）两个文字链接。
-      // 版本串嵌进 URL 前过安全字符集校验，不过校验的标签降级为纯文本。供版本卡行内展开使用。
-      const NPM_DSH_PACKAGE = '@deepseek-ai/dsh'
-      const packageVersionHref = (base, version) => {
-        if (typeof version !== 'string' || version.length === 0 || !/^[0-9A-Za-z.+_-]+$/.test(version)) return null
-        return `${base}${version}`
-      }
-      const siteLabelLink = (kind, label, href) => {
-        const testid = `version-dsh-channel-${kind}-${label}`
-        if (!href) return React.createElement('span', { 'data-testid': testid, style: { marginLeft: '10px' } }, label)
-        return React.createElement('a', { 'data-testid': testid, href, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)', textDecoration: 'underline', marginLeft: '10px' } }, label)
-      }
-      const channelLine = (translate, kind, version) => React.createElement('div', { style: { whiteSpace: 'nowrap', lineHeight: 1.7 } },
-        kind === 'latest' ? translate('update.channelStable') : kind === 'next' ? translate('update.channelPreview') : translate('update.channelAlpha'),
-        ' ', React.createElement('span', { 'data-testid': `version-dsh-channel-${kind}`, style: { marginLeft: '4px' } }, version || '—'),
-        siteLabelLink(kind, 'npmjs', packageVersionHref(`https://www.npmjs.com/package/${NPM_DSH_PACKAGE}/v/`, version)),
-        siteLabelLink(kind, 'npmmirror', packageVersionHref(`https://www.npmmirror.com/package/${NPM_DSH_PACKAGE}/home?version=`, version)))
-      const channelLines = (translate, tags) => React.createElement('div', { style: { margin: '4px 0', fontSize: '12px', lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' } },
-        channelLine(translate, 'latest', tags && tags.latest),
-        channelLine(translate, 'next', tags && tags.next),
-         ...(tags && Object.prototype.hasOwnProperty.call(tags, 'alpha') ? [channelLine(translate, 'alpha', tags.alpha)] : []))
-
       const parseSemver = (value) => {
         if (typeof value !== 'string') return null
         const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
@@ -426,5 +404,5 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
   const isUpgradeInFlight = () => upgradeInFlight
   const setUpgradeInFlight = (value) => { upgradeInFlight = value }
   const getRuntimeEnvState = () => runtimeEnvState
-  return { RestartOverlay, RestartSection, channelLines, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState }
+  return { RestartOverlay, RestartSection, compareSemver, fetchVersionSnapshot, refreshVersionSnapshot, startRecovery, useInstalledVersion, useRestartFlow, useRuntimeEnv, isUpgradeInFlight, setUpgradeInFlight, getRuntimeEnvState }
 }

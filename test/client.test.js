@@ -2386,7 +2386,7 @@ test('configuration page aggregates features and notifications without subpage m
 
 test('settings mount automatically shows separate DSH and plugin update states with release links', async () => {
   let updateCalls = 0
-  const renderer = createRenderer(async (channel, endpoint) => {
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance' } }
     if (endpoint === 'health') return { ok: false, error: 'not relevant' }
@@ -2398,6 +2398,12 @@ test('settings mount automatically shows separate DSH and plugin update states w
         dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: '0.2.0', alpha: '0.3.0-alpha.1' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
         plugin: { current: '0.9.0', latest: '0.9.0', tags: { latest: '0.9.0', next: '0.9.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
       } }
+    }
+    // 「有新版本」时点状态文本：读的是**可升级到的那一版**的 release 正文（release-notes-latest），
+    // 不再是当前/最新版本对比 + npmjs / npmmirror 链接的旧弹层。载荷仍只有闭集 kind。
+    if (endpoint === 'release-notes-latest') {
+      assert.deepEqual(payload, { kind: 'dsh' })
+      return { ok: true, value: { version: '0.2.0', tag: 'dsh-v0.2.0', title: 'dsh-v0.2.0', notes: '- 新增热力日历', truncated: false, notesLimit: 20000, publishedAt: '2026-09-21T07:28:11Z', prerelease: false } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { initiallyUnmounted: ['settings.section'] })
@@ -2420,27 +2426,64 @@ test('settings mount automatically shows separate DSH and plugin update states w
   // 不再出现任何 DSH 适配区间文案，也不再有常驻声明节点。
   assert.doesNotMatch(text, /适配 DSH|0\.1\.1-rc\.2 ~ /, 'the standing adaptation notice is gone')
   assert.equal(renderer.hasTest('version-dsh-support-bound'), false, 'no support-bound node remains')
-  assert.match(text, /dsh-service 0\.9\.0\s*已是最新版本/, 'the version row is just version + status')
+  assert.match(text, /dsh-service 0\.9\.0\s*本次更新内容\s*已是最新版本/, 'the row is version + notes entry + status')
 
-  // 「有新版本：…」整行可点击（小三角在前），点击行内下拉展开
+  // 「本次更新内容」入口挂在**当前版本号之后**：与状态侧分开，
+  // 读作「这一版改了什么」的注脚——两行都有，且都在版本号所在的 identity 列里。
+  for (const id of ['plugin', 'dsh']) {
+    const entry = renderer.findNode((node) => node.props?.['data-testid'] === `version-${id}-notes-toggle`)
+    const versionLink = renderer.findNode((node) => node.props?.['data-testid'] === `version-${id}-link`)
+    assert.ok(entry.parent, 'the notes entry must live in a parent node')
+    assert.equal(entry.parent, versionLink.parent, 'the notes entry follows the version number in the same column')
+    assert.ok(entry.parent.children.indexOf(entry.node) > entry.parent.children.indexOf(versionLink.node),
+      'the notes entry is rendered after the current version number')
+  }
+
+  // 「有新版本：…」可点击（小三角在前），点击行内展开**新版** release 正文
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /当前版本：0\.1\.0-rc\.7.*最新版本：0\.2\.0.*正式版 0\.1\.0-rc\.7.*预览版 0\.2\.0.*Alpha 版 0\.3\.0-alpha\.1/)
+  assert.match(renderer.text('settings.section'), /新增热力日历/)
+  assert.match(renderer.text('settings.section'), /版本 0\.2\.0/, 'the new-version body names the version it describes')
+  assert.match(renderer.text('settings.section'), /发布于 2026-09-21/)
+  assert.equal(renderer.hasTest('version-dsh-notes-latest-body'), true)
+  assert.equal(renderer.hasTest('version-channel-details'), false, 'the npm channel popup is gone')
+  assert.doesNotMatch(renderer.text('settings.section'), /npmjs|npmmirror/)
   assert.doesNotMatch(renderer.text('shell.overlay'), /正式版|预览版/, 'no overlay popup involved')
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
-  assert.equal(renderer.findByTestId('version-dsh-channel-next-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.2.0')
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.1.0-rc.7')
-  assert.equal(renderer.findByTestId('version-dsh-channel-next-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.2.0')
-  assert.equal(renderer.findByTestId('version-dsh-channel-alpha').children[0], '0.3.0-alpha.1')
-   assert.equal(renderer.findByTestId('version-dsh-channel-alpha-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.3.0-alpha.1')
-   assert.equal(renderer.findByTestId('version-dsh-channel-alpha-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.3.0-alpha.1')
-   assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 9, 'three channel lines with number + npmjs + npmmirror each')
 
   // 再点状态文本收起，行内信息消失
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
-  assert.doesNotMatch(renderer.text('settings.section'), /正式版|预览版/)
+  assert.equal(renderer.hasTest('version-dsh-notes'), false)
   assert.doesNotMatch(renderer.text('sidebar.footer.action'), /DSH 有更新/, 'sidebar update badge removed')
+})
+
+test('the plugin row also expands the new-version release notes from its status text', async () => {
+  // 插件行此前状态文本不可点（旧弹层只服务 DSH 行）；本轮两行行为一致：插件行有新版本时
+  // 同样点状态文本读新版正文，走的是 plugin kind 的 release-notes-latest。
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'x' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'check-update') return { ok: true, value: {
+      dsh: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+      plugin: { current: '0.9.0', latest: '0.10.0', upToDate: false, status: 'available', url: 'https://github.com/gehennawu/dsh-service/releases' },
+    } }
+    if (endpoint === 'release-notes-latest') {
+      assert.deepEqual(payload, { kind: 'plugin' })
+      return { ok: true, value: { version: '0.10.0', tag: 'v0.10.0', notes: '- 插件新版正文', truncated: false, notesLimit: 20000 } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  assert.match(renderer.text('settings.section'), /dsh-service.*有新版本.*0\.10\.0/)
+  await renderer.findButton('有新版本：0.10.0').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-plugin-notes-latest-body'), true)
+  assert.match(renderer.text('settings.section'), /插件新版正文/)
+  // 显示槽唯一：插件行展开时 DSH 行没有面板。
+  assert.equal(renderer.hasTest('version-dsh-notes'), false)
 })
 
 test('version card expands the release notes inline and renders them without an iframe', async () => {
@@ -2493,7 +2536,7 @@ test('version card expands the release notes inline and renders them without an 
   assert.match(renderer.text('settings.section'), /发布于 2026-09-21/)
   assert.doesNotMatch(renderer.text('settings.section'), /预发布/)
   // 正文渲染进官方 MarkdownText 替身（非 iframe、非 <a> 跳转）。
-  const body = renderer.findByTestId('version-plugin-notes-body')
+  const body = renderer.findByTestId('version-plugin-notes-current-body')
   assert.equal(body.children[0].props['data-testid'], 'md-markdown')
   assert.equal(body.children[0].children[0], notes)
   assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['aria-expanded'], 'true')
@@ -2536,7 +2579,7 @@ test('release notes panel covers the DSH row, the empty body, truncation, the pe
   // DSH 行也有入口：没有正文时给「这一版没有填写更新说明」，不崩、不留空白卡。
   await renderer.findByTestId('version-dsh-notes-toggle').props.onClick()
   await renderer.flush()
-  assert.equal(renderer.hasTest('version-dsh-notes-empty'), true)
+  assert.equal(renderer.hasTest('version-dsh-notes-current-empty'), true)
   assert.match(renderer.text('settings.section'), /这一版没有填写更新说明/)
   assert.match(renderer.text('settings.section'), /预发布/)
   // 展开另一行会接管显示槽：同一时刻只有一份正文面板。
@@ -2565,23 +2608,23 @@ test('release notes panel covers the DSH row, the empty body, truncation, the pe
   await notFound.load()
   await notFound.findByTestId('version-plugin-notes-toggle').props.onClick()
   await notFound.flush()
-  const pending = notFound.findByTestId('version-plugin-notes-pending')
-  assert.equal(notFound.hasTest('version-plugin-notes-error'), false, 'a missing release is not an error state')
+  const pending = notFound.findByTestId('version-plugin-notes-current-pending')
+  assert.equal(notFound.hasTest('version-plugin-notes-current-error'), false, 'a missing release is not an error state')
   assert.equal(pending.props.role, undefined, 'pending must not announce itself as an alert')
   const pendingText = notFound.text('settings.section')
   assert.match(pendingText, /发布说明还没上线/)
   assert.doesNotMatch(pendingText, /release-not-found/, 'the raw code never reaches the UI')
   // 待定态的按钮标签是「重试」而不是「收起」——内容还没拿到，收起没有意义。
-  assert.equal(notFound.findByTestId('version-plugin-notes-retry').children[0], '重试')
+  assert.equal(notFound.findByTestId('version-plugin-notes-current-retry').children[0], '重试')
   assert.equal(notFoundCalls, 1)
 
   // release 上线后点「重试」：同一挂载内直接拿到正文（不需要收起再展开、不需要刷新页面）。
   releaseAppeared = true
-  await notFound.findByTestId('version-plugin-notes-retry').props.onClick()
+  await notFound.findByTestId('version-plugin-notes-current-retry').props.onClick()
   await notFound.flush()
   assert.equal(notFoundCalls, 2)
-  assert.equal(notFound.hasTest('version-plugin-notes-pending'), false, 'the pending state clears once the release exists')
-  assert.equal(notFound.hasTest('version-plugin-notes-body'), true)
+  assert.equal(notFound.hasTest('version-plugin-notes-current-pending'), false, 'the pending state clears once the release exists')
+  assert.equal(notFound.hasTest('version-plugin-notes-current-body'), true)
   assert.match(notFound.text('settings.section'), /release 补上了/)
 
   const failed = createRenderer(async (channel, endpoint) => {
@@ -2593,7 +2636,7 @@ test('release notes panel covers the DSH row, the empty body, truncation, the pe
   await failed.load()
   await failed.findByTestId('version-plugin-notes-toggle').props.onClick()
   await failed.flush()
-  assert.equal(failed.hasTest('version-plugin-notes-error'), true)
+  assert.equal(failed.hasTest('version-plugin-notes-current-error'), true)
   assert.match(failed.text('settings.section'), /读取更新内容失败，请稍后重试/)
 })
 
@@ -2608,7 +2651,7 @@ test('release notes fall back to pre-wrapped plain text when the shell has no ma
   await renderer.load()
   await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
   await renderer.flush()
-  const body = renderer.findByTestId('version-plugin-notes-body')
+  const body = renderer.findByTestId('version-plugin-notes-current-body')
   assert.equal(body.children[0].props.style.whiteSpace, 'pre-wrap')
   assert.match(renderer.text('settings.section'), /纯文本回落/)
 })
@@ -2705,7 +2748,7 @@ test('a release notes response landing after the panel was dismissed stays colla
     await renderer.load()
     const opening = renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
     await renderer.flush()
-    assert.equal(renderer.hasTest('version-plugin-notes-loading'), true, 'the panel is open while the request flies')
+    assert.equal(renderer.hasTest('version-plugin-notes-current-loading'), true, 'the panel is open while the request flies')
 
     for (const handler of docListeners.get('pointerdown') || []) handler({ target: { closest: () => null } })
     await renderer.flush()
@@ -2721,7 +2764,7 @@ test('a release notes response landing after the panel was dismissed stays colla
     await renderer.findByTestId('version-plugin-notes-toggle').props.onClick()
     await renderer.flush()
     assert.equal(notesCalls, 1, 'the in-flight response is still cached after the dismissal')
-    assert.equal(renderer.hasTest('version-plugin-notes-body'), true)
+    assert.equal(renderer.hasTest('version-plugin-notes-current-body'), true)
   } finally {
     delete globalThis.document
   }
@@ -2750,6 +2793,38 @@ test('release notes entry withdraws itself when the running host predates the en
   assert.equal(renderer.hasTest('version-plugin-notes-toggle'), false, 'the entry withdraws itself')
   assert.equal(renderer.hasTest('version-dsh-notes-toggle'), false, 'both rows withdraw together')
   assert.doesNotMatch(renderer.text('settings.section'), /unknown-endpoint/)
+})
+
+test('a host that predates release-notes-latest only downgrades the new-version entry, not the current-version one', async () => {
+  // 浏览器半刷新即换、宿主半要重启才换：升级落地未重启的窗口里，宿主已有 release-notes
+  // （v1.9.5 起）但没有新的 release-notes-latest。此时当前版入口必须照常可用，
+  // 只有「有新版本」的状态文本退回不可点的纯文本——两个能力事实分开记的必要性。
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '1.9.5', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: {
+      dsh: { current: '0.1.0-rc.7', latest: '0.2.0', upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+      plugin: { current: '1.9.5', latest: '1.9.5', upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
+    } }
+    if (endpoint === 'release-notes') {
+      assert.deepEqual(payload, { kind: 'dsh' })
+      return { ok: true, value: { version: '0.1.0-rc.7', tag: 'dsh-v0.1.0-rc.7', notes: '当前版正文', truncated: false } }
+    }
+    if (endpoint === 'release-notes-latest') return rpcError('unknown-endpoint')
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  // 新端点尚未被探测到之前，状态文本仍可点；点一次拿到 unknown-endpoint 后即退回纯文本。
+  await renderer.findButton('有新版本：0.2.0').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-dsh-notes'), false, 'no error card for an unsupported host')
+  assert.equal(renderer.hasTest('version-dsh-notes-latest-toggle'), false, 'the entry withdraws itself')
+  assert.doesNotMatch(renderer.text('settings.section'), /unknown-endpoint/)
+  // 当前版入口完全不受影响：点开照常读到正文。
+  await renderer.findByTestId('version-dsh-notes-toggle').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('version-dsh-notes-current-body'), true)
+  assert.match(renderer.text('settings.section'), /当前版正文/)
 })
 
 test('version card carries no DSH adaptation notice on any running version, two rows on narrow containers', async () => {
@@ -2811,33 +2886,36 @@ test('version card carries no DSH adaptation notice on any running version, two 
   }
 })
 
-test('channel version strings outside the safe charset render plain text without npm links', async () => {
-  const renderer = createRenderer(async (channel, endpoint) => {
+test('the new-version release body keeps untrusted upstream text inert and never renders a channel link', async () => {
+  // 旧「查看详情」弹层整条移除（2026-09-22）：当前/最新版本对比与 npmjs / npmmirror 链接不再有
+  // 任何渲染路径。这条用例改为钉住替代物——新版正文按不可信文本渲染（MarkdownText 拒原始 HTML），
+  // 且界面上不出现任何 npm 链接、不因上游正文里的字符拼出 URL。
+  const notes = '<h3 id="cn">旧标签</h3>\n- 正文里的 <script>alert(1)</script> 不应成为标记'
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     if (endpoint === 'check-update') return {
       ok: true,
       value: {
-        dsh: { current: '0.1.0-rc.7', latest: '0.2.0', tags: { latest: '0.1.0-rc.7', next: 'bad/version' }, upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
-        plugin: { current: '0.9.0', latest: '0.9.0', tags: { latest: '0.9.0', next: '0.9.0' }, upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
+        dsh: { current: '0.1.0-rc.7', latest: 'bad/version', upToDate: false, url: 'https://github.com/deepseek-ai/DeepSeek-Harness/releases' },
+        plugin: { current: '0.9.0', latest: '0.9.0', upToDate: true, url: 'https://github.com/gehennawu/dsh-service/releases' },
       },
+    }
+    if (endpoint === 'release-notes-latest') {
+      assert.deepEqual(payload, { kind: 'dsh' }, 'only the closed kind field is sent, never a version string')
+      return { ok: true, value: { version: 'bad/version', tag: 'dsh-vbad/version', notes, truncated: false, notesLimit: 20000 } }
     }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
 
   await renderer.load()
   assert.doesNotMatch(renderer.text('settings.section'), /正式版|预览版/)
-  await renderer.findButton('有新版本：0.2.0').props.onClick()
+  await renderer.findButton('有新版本：bad/version').props.onClick()
   await renderer.flush()
-  const next = renderer.findByTestId('version-dsh-channel-next')
-  assert.equal(next.props.href, undefined)
-  const nextNpm = renderer.findByTestId('version-dsh-channel-next-npmjs')
-  assert.equal(nextNpm.props.href, undefined, 'unsafe version renders the npmjs label as plain text')
-  const nextMirror = renderer.findByTestId('version-dsh-channel-next-npmmirror')
-  assert.equal(nextMirror.props.href, undefined, 'unsafe version renders the npmmirror label as plain text')
-  assert.match(renderer.text('settings.section'), /bad\/version/)
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmjs').props.href, 'https://www.npmjs.com/package/@deepseek-ai/dsh/v/0.1.0-rc.7')
-  assert.equal(renderer.findByTestId('version-dsh-channel-latest-npmmirror').props.href, 'https://www.npmmirror.com/package/@deepseek-ai/dsh/home?version=0.1.0-rc.7')
+  assert.match(renderer.text('settings.section'), /正文里的/)
+  // 上游正文原样交给渲染器（客户端不做 HTML 解析），且渲染树里没有 channel 链接残留。
+  assert.equal(renderer.findAllByTestIdPrefix('version-dsh-channel-').length, 0, 'the npm channel links are gone with the old popup')
+  assert.doesNotMatch(renderer.text('settings.section'), /npmjs|npmmirror/)
 })
 
 test('opening health diagnostics runs once and reuses its short-lived result until explicitly refreshed', async () => {
