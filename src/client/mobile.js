@@ -340,11 +340,11 @@ html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-turn-tail] > :l
 /* 回到底部按钮簇（官方 *_toBottom 词干后缀，rc.2 Md3f7G_ → 0.1.2-alpha.2 EvIC1a_，
    自有上箭头 data-dshsvc-user-jump）：
    移动端右侧还有约一行留白（scroll 的 --dsh-composer-side-clearance 侧清理），
-   纯位移右移贴边（transform 只动绘制不动布局，sticky 定位不受影响）。
-   :not([class*="Slot"]) 排除命名含 Slot 的 sticky 槽层，只移按钮本体。
+   官方按钮纯位移右移贴边（transform 只动绘制不动布局，sticky 定位不受影响）。
+   :not([class*="Slot"]) 排除命名含 Slot 的 sticky 槽层，只移官方按钮本体。自有上箭头的
+   right 已由 JS 按官方按钮实测右缘计算，再做同一平移会重复右移（实测偏差 28px）。
    方向：正 translateX 向右；位移量 = 侧清理 +16（scroll 右 padding）再留 4px 缓冲。 */
-html[data-dshsvc-mobile] [class*="_toBottom"]:not([class*="Slot"]),
-html[data-dshsvc-mobile] [data-dshsvc-user-jump] {
+html[data-dshsvc-mobile] [class*="_toBottom"]:not([class*="Slot"]):not([data-dshsvc-user-jump]) {
   transform: translateX(calc(var(--dsh-composer-side-clearance, 16px) + 16px - 4px)) !important;
 }
 /* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */

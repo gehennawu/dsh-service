@@ -9148,6 +9148,10 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
+    // 自有上箭头 right 已由 JS 按官方按钮实测右缘计算：只移动官方回底按钮，
+    // 不得再把自有箭头纳入同一 translateX，否则两者最终右缘会差一个平移量。
+    assert.match(styleTag.textContent, /\[class\*="_toBottom"\]:not\(\[class\*="Slot"\]\):not\(\[data-dshsvc-user-jump\]\) \{[^}]*translateX/s)
+    assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-user-jump\]\s*\{[^}]*translateX/s)
     // 真机反馈：消息尾部元信息行用「回合尾节点稳定属性 data-turn-tail + 末位子项」
     // 结构定位（0.1.2-alpha.2 起官方把聊天视图迁进 dsh-client-ui-chat，
     // data-time-hover-root 已删除），不依赖会随 DSH 构建漂移的 CSS-module 哈希类名。
