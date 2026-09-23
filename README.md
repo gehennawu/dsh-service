@@ -355,7 +355,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 适配口径**：已适配 DSH `0.1.7-alpha.2`——会话格式 V4（V3 日志首读时由官方迁移为 `session.v4.jsonl.zstd` 代际文件，旧 `session.v3.jsonl.zstd` 按格式目录策略保留；详情视图自动归档系统事件）、`SettingsForms` 配置面（插件配置改由 Profile 的 `cordis.patch.yml` 承载，热更新走 `loader/volatile-update`；旧的 `settings.register` 在 0.1.5/0.1.6 上仍是权威来源，装在同一宿主上两者互不串台）、会话格式 V3 既有适配全部保留（`system/message` 入史、sessionPersistence handle 化、官方右栏、turn-process 对象化）、移动端底行触发钮双哈希兼容、子代理回合尾模型行 list 槽位自适应兼容、`plugins.bundle.config` 槽位注入、会话详情打开接入 `uiWorkspace` 降级链路。旧版 DSH（`>=0.1.1-rc.2`）保持兼容。支持区间在本版扩展到 `0.1.7-alpha.2`；alpha.2 上的静态结构审查未发现新的代码适配需求，但 CSS 哈希词干与若干真机 UI 行为尚未实测，详见本版发布说明。设置面、persistence/布局 seam 均按运行时能力探测走双形态，旧宿主上针对新结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后写入的会话日志无法被旧版 DSH 读取，**备份不可跨版本降级恢复**。插件市场按 `package.json` 的 `engines.dsh` 区间判定兼容性（该字段是唯一的支持口径声明）。
+**DSH 适配口径**：已适配 DSH `0.1.7-rc.1`——会话格式 V4（V3 日志首读时由官方迁移为 `session.v4.jsonl.zstd` 代际文件，旧 `session.v3.jsonl.zstd` 按格式目录策略保留；详情视图自动归档系统事件）、`SettingsForms` 配置面（插件配置改由 Profile 的 `cordis.patch.yml` 承载，热更新走 `loader/volatile-update`；旧的 `settings.register` 在 0.1.5/0.1.6 上仍是权威来源，装在同一宿主上两者互不串台）、会话格式 V3 既有适配全部保留（`system/message` 入史、sessionPersistence handle 化、官方右栏、turn-process 对象化）、移动端底行触发钮双哈希兼容、子代理回合尾模型行 list 槽位自适应兼容、`plugins.bundle.config` 槽位注入、会话详情打开接入 `uiWorkspace` 降级链路。旧版 DSH（`>=0.1.1-rc.2`）保持兼容。支持区间扩展到 `0.1.7-rc.1`；rc.1 上的静态结构审查未发现新的代码适配需求，且 rc.1 新增的插件版本兼容门禁只读取 `peerDependencies`（本插件无该声明，不受门禁约束），但 CSS 哈希词干与若干真机 UI 行为尚未实测，详见发布说明。设置面、persistence/布局 seam 均按运行时能力探测走双形态，旧宿主上针对新结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后写入的会话日志无法被旧版 DSH 读取，**备份不可跨版本降级恢复**。插件市场按 `package.json` 的 `engines.dsh` 区间判定兼容性（该字段是唯一的支持口径声明）。
 
 ## 🔒 安全设计
 
