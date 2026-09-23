@@ -3987,6 +3987,17 @@ function updateUnifiedConfigSection(dshHome, section, value) {
 // 额度态「不可服务」判定（子代理回退候选过滤用）：lastError 命中配置/凭据/上游 4xx 码集，
 // 或任一显示窗口 percent≥100（已用尽）。无数据 / 刷新中 / 瞬态错误视为可用——fail-open，
 // 不因额度数据缺席或一次网络抖动误伤正常渠道。
+function isRetryableSubagentRouteFailure(failure, signal) {
+  if (signal?.aborted === true || failure?.code === 'ABORTED' || (typeof failure?.code === 'string' && /CANCEL|STOP|INTERRUPT/i.test(failure.code))) return false
+  const code = typeof failure?.code === 'string' ? failure.code : ''
+  if (['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'QUOTA'].includes(code)) return true
+  // DSH adapters normalize provider failures without a Harness-owned code to UNKNOWN;
+  // only retry those when status independently confirms a transient upstream failure.
+  if (code !== 'UNKNOWN') return false
+  const status = failure?.status
+  return status === 408 || status === 429 || (Number.isInteger(status) && status >= 500 && status <= 599)
+}
+
 function quotaProviderUnusable(view) {
   if (view === undefined || view === null) return false
   if (view.refreshing === true) return false
@@ -4006,11 +4017,11 @@ function quotaProviderUnusable(view) {
 // - custom → 候选序 = [配置路由, ...回退]；follow → [父会话最新路由, ...回退]；inherit → 无候选；
 // - 取第一个「llm 注册表可路由 且 额度态可用」的候选注入；全不可用 → undefined（回落原生继承，
 //   不让派生失败）。options.note 用于宿主侧记录跳过原因（main 日志调试用）。
-function resolveSubagentInjection(request, config, options = {}) {
+function subagentRouteCandidates(request, config, options = {}) {
   const agentOptions = request?.agentOptions
   const explicitProvider = typeof agentOptions?.provider === 'string' && agentOptions.provider !== ''
   const explicitModel = typeof agentOptions?.model === 'string' && agentOptions.model !== ''
-  if (explicitProvider || explicitModel) return undefined
+  if (explicitProvider || explicitModel) return []
   const candidates = []
   if (config?.mode === 'follow') {
     let header
@@ -4038,7 +4049,11 @@ function resolveSubagentInjection(request, config, options = {}) {
       candidates.push({ provider, model, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) })
     }
   }
-  for (const candidate of candidates) {
+  return candidates
+}
+
+function resolveSubagentInjection(request, config, options = {}) {
+  for (const candidate of subagentRouteCandidates(request, config, options)) {
     if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider)) {
       options.note?.(`${candidate.provider}/${candidate.model} skipped (not routable)`)
       continue
@@ -5249,7 +5264,8 @@ function apply(ctx, featureConfig) {
     //   供客户端对话页「子代理累计行」读取（subagent-dispatches 端点）。
     const pendingDispatchStorage = new AsyncLocalStorage()
     const managedEfforts = new WeakMap()
-    const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && managedEfforts.has(agent)
+    const managedRoutes = new WeakMap()
+    const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && (managedEfforts.has(agent) || managedRoutes.has(agent))
     // 运行时等级复审缓存：`${provider}\u0000${model}` → Promise<Set<supportedIds> | null>。
     // null 表示无法判定（resolveModelInfo 缺席/失败/中止），按 fail-open 放行保持原行为；
     // 只有「证实不支持」才丢弃。Promise 共享以合并并发派生的重复查询；结果仅在 fiber 存续期内有效。
@@ -5281,12 +5297,18 @@ function apply(ctx, featureConfig) {
     const applyInjection = (request) => {
       // 功能关闭：零记录（完全静默，与原生行为一致）——记录是 subagentRoute 功能的一部分。
       if (!featureEnabled('subagentRoute')) return { request, dispatch: undefined }
-      const injected = resolveSubagentInjection(request, subagentRouteRef.current, {
+      const routeOptions = {
         isRoutable,
         readParentHeader,
         isQuotaHealthy,
         note: (message) => ctx.logger?.info?.(`dsh-service: subagent route ${message}`),
-      })
+      }
+      const injected = resolveSubagentInjection(request, subagentRouteRef.current, routeOptions)
+      const routeCandidates = injected === undefined ? [] : subagentRouteCandidates(request, subagentRouteRef.current, routeOptions)
+        .filter((candidate) => isRoutable(candidate.provider) && isQuotaHealthy(candidate.provider) !== false)
+        .filter((candidate, index, candidates) => candidates.findIndex((item) => item.provider === candidate.provider && item.model === candidate.model) === index)
+      const injectedIndex = routeCandidates.findIndex((candidate) => candidate.provider === injected?.provider && candidate.model === injected?.model)
+      const eligibleRoutes = injectedIndex < 0 ? [] : routeCandidates.slice(injectedIndex)
       // 显式路由（本插件不干预的派生，如官方 subagent-model-selection 开启时 LLM 主动选的模型）
       // 也带进派发记录：source='explicit'，显示时不误标「继承」；显式携带的思考等级一并记录，
       // 否则累计行会漏掉 (effort)。
@@ -5305,7 +5327,7 @@ function apply(ctx, featureConfig) {
       }
       const decorated = { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...agentPatch } }
       const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
-      return { request: decorated, dispatch: { parent: request?.parent, provider: injected.provider, model: injected.model, ...(effort !== undefined ? { reasoningEffort: effort } : {}) } }
+      return { request: decorated, dispatch: { parent: request?.parent, provider: injected.provider, model: injected.model, ...(effort !== undefined ? { reasoningEffort: effort } : {}), routeCandidates: eligibleRoutes } }
     }
     const runWithDispatch = (dispatch, work) => {
       if (dispatch === undefined) return work()
@@ -5352,11 +5374,22 @@ function apply(ctx, featureConfig) {
       }
       const effort = dispatch?.reasoningEffort
       if (typeof effort === 'string' && effort !== '' && agent !== null && typeof agent === 'object') managedEfforts.set(agent, effort)
+      if (Array.isArray(dispatch?.routeCandidates) && dispatch.routeCandidates.length > 1 && agent !== null && typeof agent === 'object') {
+        managedRoutes.set(agent, { candidates: dispatch.routeCandidates, index: 0 })
+      }
     }) : null
     const disposeRequest = typeof ctx.on === 'function' ? ctx.on('agent/request', async (payload, next) => {
       const proposal = await next()
       const agent = payload?.agent
       if (!isSubagentManaged(agent)) return proposal
+      const routeState = managedRoutes.get(agent)
+      if (routeState !== undefined && routeState.index > 0 && proposal !== null && typeof proposal === 'object') {
+        const route = routeState.candidates[routeState.index]
+        if (route !== undefined) {
+          const { reasoningEffort: _failedRouteEffort, ...withoutFailedRouteEffort } = proposal
+          return { ...withoutFailedRouteEffort, provider: route.provider, model: route.model, ...(route.reasoningEffort !== undefined ? { reasoningEffort: route.reasoningEffort } : {}) }
+        }
+      }
       const effort = managedEfforts.get(agent)
       managedEfforts.delete(agent)
       if (!featureEnabled('subagentRoute')) return proposal
@@ -5372,12 +5405,27 @@ function apply(ctx, featureConfig) {
       }
       return { ...proposal, reasoningEffort: effort }
     }) : null
+    const disposeRequestError = typeof ctx.on === 'function' ? ctx.on('agent/request-error', ({ agent, failure, provider, signal }, next) => {
+      if (!featureEnabled('subagentRoute')) return next()
+      const routeState = agent !== null && typeof agent === 'object' ? managedRoutes.get(agent) : undefined
+      if (signal?.aborted === true || routeState === undefined || !isRetryableSubagentRouteFailure(failure, signal)) return next()
+      if (routeState.index + 1 >= routeState.candidates.length) {
+        ctx.logger?.info?.(`dsh-service: subagent route exhausted after ${failure?.code ?? failure?.status ?? 'model error'} at ${provider ?? 'unknown provider'}`)
+        return next()
+      }
+      const failed = routeState.candidates[routeState.index]
+      routeState.index += 1
+      const selected = routeState.candidates[routeState.index]
+      ctx.logger?.info?.(`dsh-service: subagent route fallback (${failure?.code ?? failure?.status ?? 'model error'}) ${failed.provider}/${failed.model} -> ${selected.provider}/${selected.model}`)
+      return { kind: 'retry' }
+    }, { prepend: true }) : null
     subagentSeamRef.current = true
     scope.effect(() => () => {
       subagents.start = originalStart
       subagents.startContinuable = originalStartContinuable
       if (typeof disposeCreated === 'function') disposeCreated()
       if (typeof disposeRequest === 'function') disposeRequest()
+      if (typeof disposeRequestError === 'function') disposeRequestError()
       effortSupportCache.clear()
       subagentSeamRef.current = false
     }, 'dsh-service subagent route seam teardown')

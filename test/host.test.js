@@ -340,7 +340,7 @@ function createHost(overrides = {}) {
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, emit: (event, ...args) => ctx.emit(event, ...args), dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
     // 新版（settingsKind: 'forms'）热更新替身：就地改 Config 引用值再发 loader/volatile-update，
     // 与真机 Entry._commitVolatile 的事件形态一致（监听器只关心「变了」，值从引用读）。
     pushVolatileConfig: async (patch) => {
@@ -6959,6 +6959,83 @@ test('subagent-route seam：包装 start/startContinuable 注入未显式路由�
   const disposedSnapshot = await host.handler('subagent-route', {})
   assert.equal(disposedSnapshot.ok, true)
   assert.equal(disposedSnapshot.value.available, false)
+})
+
+test('subagent-route runtime fallback：retryable model errors rotate, while cancellation and client errors do not', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-runtime-429-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']], ['last', 'Last', ['m3']], ['final', 'Final', ['m4']]])
+  let host
+  const { registry, calls, createdAgents } = fakeSubagents((agent) => host.emit('agent/created', { agent }))
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  await host.handler('subagent-route-save', {
+    mode: 'custom', provider: 'primary', model: 'm1',
+    fallbacks: [{ provider: 'fallback', model: 'm2' }, { provider: 'last', model: 'm3' }, { provider: 'final', model: 'm4' }],
+  })
+  const parent = { session: { requestHeader: () => undefined } }
+  await registry.start('spawn', { label: 'runtime fallback', parent })
+  const agent = createdAgents[0]
+  const firstRequest = await host.fire('agent/request', { agent }, async () => ({ ...calls[0].request.agentOptions }))
+  assert.deepEqual(firstRequest, { provider: 'primary', model: 'm1' })
+  const clientErrorAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'INVALID_ARGS', status: 400, message: 'invalid request' },
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'normal-retry' }))
+  assert.deepEqual(clientErrorAction, { kind: 'normal-retry' }, 'non-retryable request errors are left to the host policy')
+  const missingAdapterAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'NO_ADAPTER', message: 'no adapter registered' },
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'normal-retry' }))
+  assert.deepEqual(missingAdapterAction, { kind: 'normal-retry' }, 'configuration errors do not rotate routes')
+  const contextOverflowAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'context exceeded' },
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'normal-retry' }))
+  assert.deepEqual(contextOverflowAction, { kind: 'normal-retry' }, 'changing providers does not fix an oversized prompt')
+  const action = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'RATE_LIMIT', status: 429, message: 'rate limited' },
+    signal: new AbortController().signal,
+  }, async () => undefined)
+  assert.deepEqual(action, { kind: 'retry' }, '429 failures rotate to the next configured candidate')
+  const firstFallbackRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+  assert.deepEqual(firstFallbackRequest, { provider: 'fallback', model: 'm2' })
+  const transientAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'fallback',
+    failure: { code: 'SERVER', status: 500, message: 'server error' },
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'normal-retry' }))
+  assert.deepEqual(transientAction, { kind: 'retry' }, 'retryable model failures rotate instead of retrying an exhausted provider')
+  const secondFallbackRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1', reasoningEffort: 'xhigh' }))
+  assert.deepEqual(secondFallbackRequest, { provider: 'last', model: 'm3' })
+  const genericTransientAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'last',
+    failure: { code: 'SERVER', status: 502, message: 'adapter request failed' },
+    signal: new AbortController().signal,
+  }, async () => ({ kind: 'normal-retry' }))
+  assert.deepEqual(genericTransientAction, { kind: 'retry' }, 'transient failures rotate through configured routes')
+  const retriedRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1', reasoningEffort: 'xhigh' }))
+  assert.deepEqual(retriedRequest, { provider: 'final', model: 'm4' }, 'fallback switches model and clears reasoning effort inherited from the failed candidate')
+  const abortController = new AbortController()
+  abortController.abort(new Error('stopped by parent'))
+  const stoppedAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'last',
+    failure: { code: 'ABORTED', status: 499, message: 'aborted' },
+    signal: abortController.signal,
+  }, async () => undefined)
+  assert.equal(stoppedAction, undefined, 'manual or parent cancellation never requests a model retry')
+  const exhaustedAction = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'final',
+    failure: { code: 'SERVER', status: 500, message: 'still unavailable' },
+    signal: new AbortController().signal,
+  }, async () => undefined)
+  assert.equal(exhaustedAction, undefined, 'the configured candidates are attempted at most once')
+  const exhaustedRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+  assert.deepEqual(exhaustedRequest, { provider: 'final', model: 'm4' }, 'exhaustion cannot rotate back to a previously failed candidate')
+  host.dispose()
 })
 
 test('subagent-route-save：unknown-mode 与功能门；切换模式保留自定义路由草稿并跨重启持久化', async (t) => {
