@@ -6964,13 +6964,13 @@ test('subagent-route seam：包装 start/startContinuable 注入未显式路由�
 test('subagent-route runtime fallback：retryable model errors rotate, while cancellation and client errors do not', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-runtime-429-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']], ['last', 'Last', ['m3']], ['final', 'Final', ['m4']]])
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']], ['last', 'Last', ['m3']], ['final', 'Final', ['m4']], ['timeout', 'Timeout', ['m5']], ['transport', 'Transport', ['m6']], ['empty', 'Empty', ['m7']], ['quota', 'Quota', ['m8']]])
   let host
   const { registry, calls, createdAgents } = fakeSubagents((agent) => host.emit('agent/created', { agent }))
   host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
   await host.handler('subagent-route-save', {
     mode: 'custom', provider: 'primary', model: 'm1',
-    fallbacks: [{ provider: 'fallback', model: 'm2' }, { provider: 'last', model: 'm3' }, { provider: 'final', model: 'm4' }],
+    fallbacks: [{ provider: 'fallback', model: 'm2' }, { provider: 'last', model: 'm3' }, { provider: 'final', model: 'm4' }, { provider: 'timeout', model: 'm5' }, { provider: 'transport', model: 'm6' }, { provider: 'empty', model: 'm7' }, { provider: 'quota', model: 'm8' }],
   })
   const parent = { session: { requestHeader: () => undefined } }
   await registry.start('spawn', { label: 'runtime fallback', parent })
@@ -7003,6 +7003,10 @@ test('subagent-route runtime fallback：retryable model errors rotate, while can
   assert.deepEqual(action, { kind: 'retry' }, '429 failures rotate to the next configured candidate')
   const firstFallbackRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
   assert.deepEqual(firstFallbackRequest, { provider: 'fallback', model: 'm2' })
+  await host.updateFeatureSettings({ subagentRoute: false })
+  const requestWhileDisabled = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+  assert.deepEqual(requestWhileDisabled, { provider: 'primary', model: 'm1' }, 'disabling subagent routing stops an in-flight fallback override')
+  await host.updateFeatureSettings({ subagentRoute: true })
   const transientAction = await host.fire('agent/request-error', {
     agent, turn: 1, step: 1, provider: 'fallback',
     failure: { code: 'SERVER', status: 500, message: 'server error' },
@@ -7019,6 +7023,22 @@ test('subagent-route runtime fallback：retryable model errors rotate, while can
   assert.deepEqual(genericTransientAction, { kind: 'retry' }, 'transient failures rotate through configured routes')
   const retriedRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1', reasoningEffort: 'xhigh' }))
   assert.deepEqual(retriedRequest, { provider: 'final', model: 'm4' }, 'fallback switches model and clears reasoning effort inherited from the failed candidate')
+  const additionalRetryableFailures = [
+    ['TIMEOUT', 'final', 'timeout', 'm5'],
+    ['TRANSPORT', 'timeout', 'transport', 'm6'],
+    ['EMPTY_RESPONSE', 'transport', 'empty', 'm7'],
+    ['QUOTA', 'empty', 'quota', 'm8'],
+  ]
+  for (const [code, failedProvider, provider, model] of additionalRetryableFailures) {
+    const action = await host.fire('agent/request-error', {
+      agent, turn: 1, step: 1, provider: failedProvider,
+      failure: { code, message: `${code} failure` },
+      signal: new AbortController().signal,
+    }, async () => undefined)
+    assert.deepEqual(action, { kind: 'retry' }, `${code} rotates to a configured fallback`)
+    const request = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+    assert.deepEqual(request, { provider, model }, `${code} selects its next configured route`)
+  }
   const abortController = new AbortController()
   abortController.abort(new Error('stopped by parent'))
   const stoppedAction = await host.fire('agent/request-error', {
@@ -7034,7 +7054,7 @@ test('subagent-route runtime fallback：retryable model errors rotate, while can
   }, async () => undefined)
   assert.equal(exhaustedAction, undefined, 'the configured candidates are attempted at most once')
   const exhaustedRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
-  assert.deepEqual(exhaustedRequest, { provider: 'final', model: 'm4' }, 'exhaustion cannot rotate back to a previously failed candidate')
+  assert.deepEqual(exhaustedRequest, { provider: 'quota', model: 'm8' }, 'exhaustion cannot rotate back to a previously failed candidate')
   host.dispose()
 })
 

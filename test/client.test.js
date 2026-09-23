@@ -2848,7 +2848,7 @@ test('version card carries no DSH adaptation notice on any running version, two 
     visibilityState: 'visible',
   }
   try {
-    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.2.0', 'unknown']
+    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.1.7-alpha.2', '0.1.7-alpha.3', '0.2.0', 'unknown']
     for (const current of versions) {
       const renderer = createRenderer(async (channel, endpoint) => {
         assert.equal(channel, '/dsh-service')

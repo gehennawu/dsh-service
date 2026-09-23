@@ -5382,6 +5382,9 @@ function apply(ctx, featureConfig) {
       const proposal = await next()
       const agent = payload?.agent
       if (!isSubagentManaged(agent)) return proposal
+      const effort = managedEfforts.get(agent)
+      managedEfforts.delete(agent)
+      if (!featureEnabled('subagentRoute')) return proposal
       const routeState = managedRoutes.get(agent)
       if (routeState !== undefined && routeState.index > 0 && proposal !== null && typeof proposal === 'object') {
         const route = routeState.candidates[routeState.index]
@@ -5390,9 +5393,6 @@ function apply(ctx, featureConfig) {
           return { ...withoutFailedRouteEffort, provider: route.provider, model: route.model, ...(route.reasoningEffort !== undefined ? { reasoningEffort: route.reasoningEffort } : {}) }
         }
       }
-      const effort = managedEfforts.get(agent)
-      managedEfforts.delete(agent)
-      if (!featureEnabled('subagentRoute')) return proposal
       if (proposal === null || typeof proposal !== 'object') return proposal
       if (!(typeof effort === 'string' && effort !== '') || proposal.reasoningEffort !== undefined) return proposal
       const targetProvider = typeof proposal.provider === 'string' ? proposal.provider : ''
