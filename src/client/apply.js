@@ -5985,7 +5985,7 @@
               }))
         // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单扫描启用插件，命中才显示行
         // （字体说明见 plugin-compat.js 的 COMPAT_BREAKS；未扫成的插件单独提示原因）。
-        // 四档分级：真引用破坏（可能不兼容，warning）→ 退役接口（蓝色提示，info）→ 仅声明残留（代码未引用、官方 loader 静默
+        // 四档分级：真引用破坏（可能不兼容，warning）→ 退役接口引用（蓝色提示，info）→ 仅声明残留（代码未引用、官方 loader 静默
         // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。
         // 展示契约：**一个插件一行**——同一插件可能同时落在多档（如既注册退役槽位又留了声明残留），
         // 各档不再各占一行、不再重复插件名；行的圆点与徽标取该插件最重的一档，行内按严重度列出各档命中。
@@ -6064,6 +6064,10 @@
                             const hasReason = translate(reasonKey) !== reasonKey
                             const hasImpact = translate(impactKey) !== impactKey
                             const hasAdvice = translate(adviceKey) !== adviceKey
+                            // 详情卡片配色跟档位走：只有 broken 档且已生效才用警示黄——info 档
+                            // （退役接口引用/仅声明残留）即使「当前版本已生效」也保持信息蓝，
+                            // 与行圆点、分档标签同一套视觉语义（2026-09-23 settings-scope 降档）。
+                            const toneWarning = finding.kind === 'broken' && active
 
                             return React.createElement('div', {
                               key: `${row.key}-${finding.kind}-detail-${dIdx}`,
@@ -6072,8 +6076,8 @@
                                 marginTop: '5px',
                                 padding: '6px 10px',
                                 borderRadius: '6px',
-                                background: active ? 'rgba(230, 162, 60, 0.05)' : 'rgba(64, 158, 255, 0.05)',
-                                border: `1px solid ${active ? 'rgba(230, 162, 60, 0.25)' : 'rgba(64, 158, 255, 0.25)'}`,
+                                background: toneWarning ? 'rgba(230, 162, 60, 0.05)' : 'rgba(64, 158, 255, 0.05)',
+                                border: `1px solid ${toneWarning ? 'rgba(230, 162, 60, 0.25)' : 'rgba(64, 158, 255, 0.25)'}`,
                                 fontSize: '11px',
                                 lineHeight: 1.6,
                               },
@@ -6084,7 +6088,7 @@
                                     fontWeight: 650,
                                     padding: '1px 5px',
                                     borderRadius: '3px',
-                                    background: active ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
+                                    background: toneWarning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
                                     color: '#fff',
                                     fontSize: '10px',
                                   }
@@ -6102,7 +6106,7 @@
                                 }, `DSH ≥ ${since}`) : null,
                                 React.createElement('span', {
                                   style: {
-                                    color: active ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
+                                    color: toneWarning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
                                     fontSize: '10px',
                                     fontWeight: 600,
                                   }

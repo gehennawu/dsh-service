@@ -111,8 +111,10 @@ export function compareSemver(left, right) {
  * kind: 破坏类型（package-removed / slot-retired / method-removed / hash-migrated / event-removed / attribute-removed）。
  *
  * `severity: 'info'`（可选，默认 warning）把该条降为提示档：命中的插件仍逐条列出，但走
- * 蓝色提示行、不把检查项拉成 warning（也就不进概览可行动项）。只用于「旧标识仍被注册但
- * 插件照常运行、对使用者无功能损失」的退役接口——如为旧宿主保留的退役槽位注册。
+ * 蓝色提示行、不把检查项拉成 warning（也就不进概览可行动项）。适用于两类：旧标识仍被
+ * 注册但插件照常运行的退役接口（如为旧宿主保留的退役槽位注册）；标识确已移除、但多数
+ * 引用形态只是静默退化而插件照常运行，文本扫描又分不清形态轻重的（如 settingsScope 的
+ * 回调形态引用——声明式 inject 才会挂起，见该条目注释）。
  */
 export const COMPAT_BREAKS = Object.freeze([
   {
@@ -173,8 +175,8 @@ export const COMPAT_BREAKS = Object.freeze([
   },
   {
     // 0.1.6-alpha.2 退役设置页槽位：第三方注册它则配置卡片在新插件页不再渲染。
-    // selfExempt：本插件为双版本兼容在自身保留该槽位注册（老宿主仍需），自证扫描豁免其命中；
-    // 第三方插件命中仍逐条报告（研究 §10：dsh-v0.1.6-alpha.2-plugin-impact.md）。
+    // 不标 selfExempt：本插件自身也注册该槽位（老宿主仍需），且这条蓝色提示行正是给使用者
+    // 的解释——对自己的命中照常列出（研究 §10：dsh-v0.1.6-alpha.2-plugin-impact.md）。
     // severity info：退役槽位只是配置入口搬迁——注入不生效、插件本体照常运行，既非代码错误
     // 也非挂载风险，故走蓝色提示行且不把检查项拉成 warning（与「仅声明残留」同档）。
     id: 'settings-plugin-item',
@@ -182,7 +184,6 @@ export const COMPAT_BREAKS = Object.freeze([
     match: 'settings.plugin.item',
     since: '0.1.6-alpha.2',
     kind: 'slot-retired',
-    selfExempt: true,
     severity: 'info',
   },
   {
@@ -199,19 +200,23 @@ export const COMPAT_BREAKS = Object.freeze([
   },
   {
     // 0.1.7-alpha.1 移除客户端设置服务 settingsScope，官方配置面改由 configForms 承载
-    // （研究 §2：dsh-v0.1.7-alpha.1-plugin-impact.md）：静态 inject 或直接绑定它的客户端半
-    // 在新版宿主上整个客户端激活挂起，面板不可用（P0，不只是「开关不可保存」）。
+    // （研究 §2：dsh-v0.1.7-alpha.1-plugin-impact.md）。实测修订（2026-09-23，dshmarket
+    // 1.57.0 真机实证）：引用形态决定实际影响——声明式静态 inject / 无守卫的
+    // `ctx.settingsScope.*` 直读会让客户端激活挂起（本插件适配前的形态，P0 结论仍成立于
+    // 这两种形态）；`ctx.inject(['settingsScope'], cb)` 回调形态只是回调不再执行，插件本体
+    // 照常激活（dshmarket 的市场主界面注册在回调之外，面板照常可用）。文本扫描分不清这些
+    // 形态，按较轻形态整体降为提示档（severity info）：命中照常逐条蓝色列出，不再把检查项
+    // 拉成 warning；「DSH ≥ 0.1.7-alpha.1」徽标与文案仍引导作者按建议迁移。
     // kind 用新值 service-removed：整只客户端服务被移除，不是单个方法或槽位。
-    // selfExempt（警示档运行时豁免，见 collectPluginCompat）：本插件设置门面按能力探测动态
-    // 接入两个服务（createFeatureSettings → configForms / settingsScope / 内存兜底），老宿主
-    // 仍需旧面；探测形态 `ctx.get('settingsScope')` 与硬依赖在文本扫描上不可区分，豁免仅对
-    // 本插件自身生效，第三方命中照常上报。
+    // selfExempt：本插件设置门面是能力探测（`ctx.get('settingsScope')`，非依赖），对自己的
+    // 命中在两档都剔除（探测代码删除时应同步删豁免，而不是让豁免遮住真命中）。
     id: 'settings-scope',
     layer: 'code',
     match: 'settingsScope',
     since: '0.1.7-alpha.1',
     kind: 'service-removed',
     selfExempt: true,
+    severity: 'info',
   },
   {
     // 0.1.7-alpha.1 宿主 settings 服务重构为 SettingsForms，移除旧 register（研究 §2.2 S2）：
@@ -249,13 +254,14 @@ const SELF_PACKAGE = '@gehennawu/dsh-service'
 /**
  * 警示档 selfExempt 条目（settings-scope / settings-register / settings-get）：本插件自身的
  * 能力探测与守卫调用是刻意保留的旧面接入，不是破坏面命中，collectPluginCompat 扫到
- * SELF_PACKAGE 自己时从 hits（可能不兼容档）剔除，避免诊断页把本插件标成「可能不兼容」、
- * 检查项常挂 warning。提示档 selfExempt（settings-plugin-item，severity info）不豁免——
- * 本插件自己的蓝色提示行正是给使用者的解释（2026-09-19 真机验证口径）。SCAN_CACHE 缓存
- * 原始扫描结果，豁免在收集层做，纯函数 scanPluginCompatibility 保持无状态。
+ * SELF_PACKAGE 自己时从 hits（可能不兼容档）与 softHits（提示档，settings-scope 现为 info）
+ * 两档都剔除，避免诊断页把自己列成不兼容或「引用已退役接口」、检查项常挂 warning。
+ * settings-plugin-item 无 selfExempt——本插件自己的蓝色提示行正是给使用者的解释
+ * （2026-09-19 真机验证口径）。SCAN_CACHE 缓存原始扫描结果，豁免在收集层做，
+ * 纯函数 scanPluginCompatibility 保持无状态。
  */
 const SELF_EXEMPT_HITS = new Set(
-  COMPAT_BREAKS.filter((b) => b.selfExempt === true && b.severity !== 'info').map((b) => b.id),
+  COMPAT_BREAKS.filter((b) => b.selfExempt === true).map((b) => b.id),
 )
 
 const MANIFEST_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
@@ -571,10 +577,12 @@ export async function collectPluginCompat(ctx, options = {}) {
     if (result.unknown !== null) {
       unknown.push({ moduleName, reason: result.unknown })
     } else {
-      // 警示档自证豁免只作用于本插件自己（见 SELF_EXEMPT_HITS 注释）；第三方同名命中不受影响。
-      const hits = moduleName === SELF_PACKAGE ? result.hits.filter((id) => !SELF_EXEMPT_HITS.has(id)) : result.hits
+      // 警示档 selfExempt 条目对本插件自己两档都不列（见 SELF_EXEMPT_HITS 注释）；第三方同名命中不受影响。
+      const isSelf = moduleName === SELF_PACKAGE
+      const hits = isSelf ? result.hits.filter((id) => !SELF_EXEMPT_HITS.has(id)) : result.hits
+      const softHits = isSelf ? result.softHits.filter((id) => !SELF_EXEMPT_HITS.has(id)) : result.softHits
       if (hits.length > 0) issues.push({ moduleName, breaks: hits })
-      if (result.softHits.length > 0) soft.push({ moduleName, breaks: result.softHits })
+      if (softHits.length > 0) soft.push({ moduleName, breaks: softHits })
       if (result.declaredOnly.length > 0) declaredOnly.push({ moduleName, breaks: result.declaredOnly })
     }
   }

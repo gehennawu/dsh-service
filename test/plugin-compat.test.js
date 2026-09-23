@@ -108,8 +108,9 @@ test('scanCodeHits flags 0.1.6-alpha.2 slot retirement and session-open removal 
   // 已知局限：可选用链 `sessions?.open` 不含 `sessions.open` 串，扫描不到——研究 §10 建议
   // 的 match 即直接调用形态，需在词典与知识条目注明
   assert.deepEqual([...scanCodeHits('ctx.sessions?.open(detail.sessionId)', codeBreaks)], [])
-  // 本插件自身的双版本注册形态命中 settings-plugin-item：由 selfExempt 豁免（见自证用例）
-  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-plugin-item').selfExempt, true)
+  // 本插件自身的双版本注册形态命中 settings-plugin-item：不标 selfExempt——自己的蓝色
+  // 提示行保留给使用者（见自证用例）；sessions-open-method 是真破坏，无任何豁免。
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-plugin-item').selfExempt, undefined)
   assert.equal(COMPAT_BREAKS.find((b) => b.id === 'sessions-open-method').selfExempt, undefined)
 })
 
@@ -126,8 +127,11 @@ test('scanCodeHits flags 0.1.7-alpha.1 settings seams with documented limits', (
   assert.deepEqual([...scanCodeHits('the removed config read method settings.get (legacy API dropped)', codeBreaks)], [])
   // 已知局限：`settings?.register` 可选链守卫不含该串扫不到——守卫本身是正确形态，漏报可接受
   assert.deepEqual([...scanCodeHits("typeof settings?.register === 'function'", codeBreaks)], [])
-  // 三条 0.1.7 条目均 selfExempt：本插件自身保留能力探测/守卫接入（运行时豁免见收集用例）
+  // 三条 0.1.7 条目均 selfExempt：本插件自身保留能力探测/守卫接入（运行时豁免见收集用例）；
+  // settings-scope 另为 severity info（dshmarket 实证回调形态不挂激活，扫描分不清形态按
+  // 较轻档上报），命中归 soft 分档而非「可能不兼容」。
   assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-scope').selfExempt, true)
+  assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-scope').severity, 'info')
   assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-register').selfExempt, true)
   assert.equal(COMPAT_BREAKS.find((b) => b.id === 'settings-get').selfExempt, true)
   // settings.get 词形通用：本地 Map 同形调用会误报，这是已知取舍（文案引导人工复核）
@@ -150,14 +154,16 @@ test('manifestCallRefs only matches real require/import calls, not stringified e
 test('self-proof: scanning this plugin own manifest and built entries yields zero hits', async () => {
   // 自证回归（v1.3 词典自指误报修复）：构建产物里若再出现裸旧标识（词典文案、代码引用），
   // 本测试立即变红——兼容性扫描绝不能把自己报告成不兼容。
-  // 0.1.6-alpha.2 修订：`settings-plugin-item` 标记 selfExempt——本插件为双版本兼容在自身
-  // 保留该退役槽位注册（老宿主仍需），豁免其命中；其余破坏面仍强制零命中，且豁免条目
-  // 对第三方插件的扫描照常生效。
+  // 0.1.6-alpha.2 修订：`settings-plugin-item`（severity info）不豁免——本插件为双版本兼容
+  // 在自身保留该退役槽位注册（老宿主仍需），自己的蓝色提示行正是给使用者的解释。
+  // 0.1.7 修订：三条设置接缝 selfExempt（探测/守卫不是依赖），其中 settings-scope 降为
+  // severity info 后豁免必须覆盖两档（运行时层见收集用例）。
   const { readFileSync } = await import('node:fs')
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const manifestBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'manifest')
   const codeBreaks = COMPAT_BREAKS.filter((b) => b.layer === 'code')
   const exemptIds = new Set(COMPAT_BREAKS.filter((b) => b.selfExempt === true).map((b) => b.id))
+  const softIds = new Set(COMPAT_BREAKS.filter((b) => b.severity === 'info').map((b) => b.id))
   assert.deepEqual([...collectManifestHits(pkg, manifestBreaks)], [])
   const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   const host = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
@@ -165,26 +171,30 @@ test('self-proof: scanning this plugin own manifest and built entries yields zer
   // 自证明必须显式纳入，否则拆出的 handler 逃过退役接口扫描。
   const ROUTE_MODULES = ['skill-routes.js', 'session-routes.js', 'quota-routes.js', 'subagent-routes.js', 'backup-routes.js']
   const routeTexts = ROUTE_MODULES.map((f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'))
-  const scanNonExempt = (text) => [...scanCodeHits(text, codeBreaks)].filter((id) => !exemptIds.has(id))
-  assert.deepEqual(scanNonExempt(client), [], 'client.js must not reference changed interfaces outside dual-version exemptions')
-  assert.deepEqual(scanNonExempt(host), [], 'index.js must not reference changed interfaces outside dual-version exemptions')
+  // 非 selfExempt 的警示档命中必须为零（info 档命中单独断言，见下）。
+  const scanUnexpected = (text) => [...scanCodeHits(text, codeBreaks)].filter((id) => !exemptIds.has(id) && !softIds.has(id))
+  assert.deepEqual(scanUnexpected(client), [], 'client.js must not reference changed interfaces outside known exemptions')
+  assert.deepEqual(scanUnexpected(host), [], 'index.js must not reference changed interfaces outside known exemptions')
   for (let i = 0; i < ROUTE_MODULES.length; i += 1) {
-    assert.deepEqual(scanNonExempt(routeTexts[i]), [], `${ROUTE_MODULES[i]} must not reference changed interfaces`)
+    assert.deepEqual(scanUnexpected(routeTexts[i]), [], `${ROUTE_MODULES[i]} must not reference changed interfaces`)
   }
-  // 豁免命中必须确实存在且只来自双版本兼容代码：客户端半是设置门面的旧面探测（settings-scope）
-  // 与退役槽位注册（settings-plugin-item）；宿主半是旧协议守卫分支（settings-register）与旧
-  // 读取分支（settings-get）。探测/守卫代码删除时应同步删豁免，而不是让豁免遮住真命中。
+  // 豁免命中必须确实存在且只来自双版本兼容代码：客户端半是设置门面的旧面探测（settings-scope，
+  // 现归 info 档、两档都豁免）；宿主半是旧协议守卫分支（settings-register）与旧读取分支
+  // （settings-get）。探测/守卫代码删除时应同步删豁免，而不是让豁免遮住真命中。
   const clientExemptHits = [...scanCodeHits(client, codeBreaks)].filter((id) => exemptIds.has(id)).sort()
-  assert.deepEqual(clientExemptHits, ['settings-plugin-item', 'settings-scope'], 'client self-hits must stay tied to the dual-version settings facade and retired slot registration')
+  assert.deepEqual(clientExemptHits, ['settings-scope'], 'client self-hits must stay tied to the dual-version settings facade probing')
   const hostExemptHits = [...scanCodeHits(host, codeBreaks)].filter((id) => exemptIds.has(id)).sort()
   assert.deepEqual(hostExemptHits, ['settings-get', 'settings-register'], 'host self-hits must stay tied to the guarded legacy-protocol branches')
+  // info 档自命中：只有刻意保留的退役槽位注册（自己的蓝色提示行），settings-scope 探测不得出现在这一档。
+  const clientSoftHits = [...scanCodeHits(client, codeBreaks)].filter((id) => softIds.has(id) && !exemptIds.has(id)).sort()
+  assert.deepEqual(clientSoftHits, ['settings-plugin-item'], 'the only surfaced info-tier self hit is the deliberate retired-slot registration')
 })
 
-test('collectPluginCompat drops warning-tier selfExempt hits for this plugin only', async () => {
+test('collectPluginCompat drops selfExempt hits for this plugin in both tiers, third parties still report', async () => {
   // 运行时豁免：本插件自身的双版本探测/守卫调用（settingsScope / settings.register /
-  // settings.get）不能把兼容性检查拉成 warning；第三方插件同形代码必须照常逐条上报。
-  // 提示档 selfExempt（settings-plugin-item）不在豁免之列：本插件自己的蓝色提示行是给
-  // 使用者的解释（2026-09-19 真机口径），保持原样。
+  // settings.get）不能把兼容性检查拉成 warning，也不能以「引用已退役接口」的蓝色提示行出现
+  // （settings-scope 降为 info 档后豁免覆盖两档）；第三方插件同形代码必须照常逐条上报，
+  // 其中 settingsScope 命中归 soft（蓝色提示），settings.register/get 仍归 issues（黄色警示）。
   const dir = await mkdtemp(join(tmpdir(), 'plugin-compat-self-'))
   try {
     const hostCode = "ctx.settings.register('ns', schema, {}); settings.get('k')"
@@ -199,7 +209,7 @@ test('collectPluginCompat drops warning-tier selfExempt hits for this plugin onl
 
     await mkdir(join(dir, 'node_modules', 'third-party'), { recursive: true })
     await writeFile(join(dir, 'node_modules', 'third-party', 'package.json'), JSON.stringify({ name: 'third-party', main: './index.js' }))
-    await writeFile(join(dir, 'node_modules', 'third-party', 'index.js'), hostCode)
+    await writeFile(join(dir, 'node_modules', 'third-party', 'index.js'), `${hostCode}; ctx.inject(['settingsScope'], () => {})`)
 
     const requireFn = (specifier) => join(dir, 'node_modules', specifier)
     const loader = {
@@ -212,8 +222,11 @@ test('collectPluginCompat drops warning-tier selfExempt hits for this plugin onl
     const report = await collectPluginCompat(createFakeCtx(loader), { requireFn, noCache: true })
     assert.equal(report.available, true)
     const selfIssue = report.issues.find((issue) => issue.moduleName === '@gehennawu/dsh-service')
-    assert.equal(selfIssue, undefined, 'warning-tier selfExempt hits must not surface for this plugin')
+    assert.equal(selfIssue, undefined, 'selfExempt hits must not surface for this plugin')
+    const selfSoft = report.soft.find((item) => item.moduleName === '@gehennawu/dsh-service')
+    assert.equal(selfSoft, undefined, 'info-tier selfExempt hits (settingsScope probing) must not surface either')
     assert.deepEqual(report.issues, [{ moduleName: 'third-party', breaks: ['settings-register', 'settings-get'] }], 'identical third-party code is still reported item by item')
+    assert.deepEqual(report.soft, [{ moduleName: 'third-party', breaks: ['settings-scope'] }], 'third-party settingsScope references land in the info tier')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

@@ -3280,7 +3280,7 @@ test('plugin compatibility merges different findings of the same plugin into a s
         pluginCompat: {
           scanned: 4,
           issues: [{ moduleName: 'dshmarket', breaks: ['chat-hash'] }],
-          soft: [{ moduleName: 'dshmarket', breaks: ['settings-plugin-item'] }],
+          soft: [{ moduleName: 'dshmarket', breaks: ['settings-plugin-item', 'settings-scope'] }],
           declaredOnly: [{ moduleName: 'dshmarket', breaks: ['client-runtime'] }],
           unknown: [],
         },
@@ -3300,23 +3300,74 @@ test('plugin compatibility merges different findings of the same plugin into a s
   // 分档标签独立成行排在插件名下方：颜色随档位（可能不兼容=警示黄，其余=信息蓝）
   assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').children[0], '可能不兼容')
   assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').props.style.color, 'var(--dsh-svc-warning)')
-  assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').children[0], '为兼容旧版保留')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').children[0], '引用已退役接口')
   assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').props.style.color, 'var(--dsh-svc-info)')
   assert.equal(renderer.findByTestId('plugin-compat-kind-0-2').children[0], '声明残留')
   assert.equal(renderer.findByTestId('plugin-compat-kind-0-2').props.style.color, 'var(--dsh-svc-info)')
-  // 正文段落跟在自己标签下方：三档各一段
+  // 正文段落跟在自己标签下方：三档各一段（soft 档两条命中并排一段）
   assert.equal(renderer.findAllByTestIdPrefix('plugin-compat-line-0-').length, 3)
   assert.match(renderer.findByTestId('plugin-compat-line-0-0').children[0], /引用已迁移的聊天界面旧样式前缀/)
   assert.match(renderer.findByTestId('plugin-compat-line-0-1').children[0], /为兼容老版本宿主保留了已退役的设置页槽位/)
+  assert.match(renderer.findByTestId('plugin-compat-line-0-1').children[0], /引用了已移除的客户端设置服务 settingsScope/)
   assert.match(renderer.findByTestId('plugin-compat-line-0-2').children[0], /声明了已移除的接口但代码未引用/)
   // 结构化版本变化与迁移说明卡片
   assert.notEqual(renderer.findByTestId('plugin-compat-detail-0-0-0'), undefined)
   assert.notEqual(renderer.findByTestId('plugin-compat-detail-0-1-0'), undefined)
+  assert.notEqual(renderer.findByTestId('plugin-compat-detail-0-1-1'), undefined)
   const detail00 = renderer.text('settings.section')
   assert.match(detail00, /DSH ≥ 0.1.2-alpha.2/)
   assert.match(detail00, /DSH ≥ 0.1.6-alpha.2/)
   assert.match(detail00, /变更背景/)
   assert.match(detail00, /适配建议/)
+})
+
+test('active retired-interface references stay info blue while active real breaks stay warning', async () => {
+  // settings-scope 降档（2026-09-23）：回调形态引用不挂激活（dshmarket 实证），提示档即使
+  // 「当前版本已生效」也保持信息蓝——详情卡片配色跟档位走，只有 broken+已生效才是警示黄。
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.7-alpha.1', instanceId: 'instance' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return {
+      ok: true,
+      value: {
+        status: 'warning',
+        checkedAt: Date.now(),
+        checks: [{ id: 'plugin-compat', status: 'warning', detail: '1:1:0:0:1' }],
+        pluginCompat: {
+          scanned: 1,
+          issues: [{ moduleName: 'dshmarket', breaks: ['chat-hash'] }],
+          soft: [{ moduleName: 'dshmarket', breaks: ['settings-scope'] }],
+          declaredOnly: [],
+          unknown: [],
+        },
+      },
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  // 检查行摘要：broken 与 soft 分段各自计数
+  assert.match(text, /插件兼容性1 个插件可能不兼容，1 个插件引用了已退役接口/)
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-0').children[0], '可能不兼容')
+  assert.equal(renderer.findByTestId('plugin-compat-kind-0-1').children[0], '引用已退役接口')
+  // broken + 已生效 → 警示黄卡片与徽标
+  const brokenDetail = renderer.findByTestId('plugin-compat-detail-0-0-0')
+  assert.equal(brokenDetail.props.style.background, 'rgba(230, 162, 60, 0.05)')
+  assert.match(text, /当前版本已生效/)
+  // soft + 已生效 → 恒信息蓝卡片，且文案是修订后的准确口径（不再断言「面板整体不可用」）
+  const softDetail = renderer.findByTestId('plugin-compat-detail-0-1-0')
+  assert.equal(softDetail.props.style.background, 'rgba(64, 158, 255, 0.05)')
+  assert.match(text, /文本扫描分不清接入形态/)
+  assert.match(text, /插件本体照常运行/)
+  assert.doesNotMatch(text, /面板整体不可用/)
 })
 
 test('plugin compatibility check shows a clean summary and no list when nothing references changed interfaces', async () => {
