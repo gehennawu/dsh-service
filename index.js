@@ -123,7 +123,25 @@ const MAX_BACKUP_TRANSFER_BYTES = 256 * 1024 * 1024
 const MAX_BACKUP_COMPRESSED_BYTES = 512 * 1024 * 1024
 const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 const backupIdSecret = randomBytes(32)
-const BACKUP_NAME = /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/
+// 归档命名：`dsh-backup-<UTC 时间戳>[-dsh<备份时的 DSH 版本>].tar.gz`。版本段是可选的，
+// 老版本插件所出的归档（无版本段）与「版本号读不出来」两种情形共用同一条无版本写法，
+// 因此正则必须同时接受两形——否则旧归档会从列表里消失、导入也会被当成非法文件名。
+// 版本段 = 至少含一个数字的 semver 形串（`0.1.7-rc.1` 一类），长度封顶 64、首字符为
+// 字母或数字：既避免 `..` 之类的路径把戏，也把「读不出运行版本」的哨兵值 `unknown`
+// 挡在门外——少了「必须含数字」这一条，未解析出 DSH 包的宿主会写出 `-dshunknown`。
+const BACKUP_VERSION_RE = /^(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z.-]{0,63}$/
+// BACKUP_NAME 的版本捕获组必须与 BACKUP_VERSION_RE 同源：两处各写一遍，迟早出现
+// 「写得出的名字解析不回来」。由 .source 派生，单一事实源。
+const BACKUP_VERSION_PATTERN = BACKUP_VERSION_RE.source.slice(1, -1)
+// 版本段后必须紧跟扩展名：`(?=...)` 里的「必须含数字」同理不能丢。
+const BACKUP_NAME = new RegExp(`^dsh-backup-\\d{8}-\\d{6}(?:-dsh(${BACKUP_VERSION_PATTERN}))?\\.tar\\.gz$`)
+// 归档内元数据：唯一权威的「备份时」事实。文件名里的版本段是它的廉价镜像，供列表
+// 零成本展示（列表只 stat 文件，绝不为了显示版本号去解压每个归档）。
+// 路径常量与备份完整性侧（backup-integrity.js 的 META_PATH）必须逐字一致，否则
+// 「自己写的归档自己不认」——两边各有测试钉住同一串。
+const BACKUP_META_DIR = 'meta'
+const BACKUP_META_FILE = 'backup.json'
+const BACKUP_META_VERSION = 1
 const USAGE_INDEX_VERSION = 7
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 // 桶口径已对齐（= 当前折叠口径）的最低索引版本：口径在 v5 定稿，v5/v6 的折叠函数与当前
@@ -528,6 +546,40 @@ function formatBackupTimestamp(date) {
   return `${date.getUTCFullYear()}${digits(date.getUTCMonth() + 1)}${digits(date.getUTCDate())}-${digits(date.getUTCHours())}${digits(date.getUTCMinutes())}${digits(date.getUTCSeconds())}`
 }
 
+// 文件名里的版本段：只有通过字符集校验的版本号才写进文件名，读不出来（'unknown'、空串、
+// 老宿主未安装包）时静默省略——宁可没有这段，也不要让一个非法字符把备份文件名变成垃圾。
+function backupNameVersionSuffix(version) {
+  return typeof version === 'string' && BACKUP_VERSION_RE.test(version) ? `-dsh${version}` : ''
+}
+
+// 归档内元数据（`meta/backup.json`）：恢复预检据此显示「这份备份出在哪个 DSH 版本」，
+// 与文件名里的版本段互为印证。内容全部来自宿主常量与运行版本，浏览器不参与任何字段。
+function backupMetadataPayload(version, createdAt) {
+  return Buffer.from(`${JSON.stringify({
+    version: BACKUP_META_VERSION,
+    dshVersion: typeof version === 'string' ? version : '',
+    pluginVersion: typeof pluginVersion === 'string' ? pluginVersion : '',
+    createdAt: createdAt instanceof Date ? createdAt.toISOString() : new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8')
+}
+
+// 从归档名解析版本段（列表展示用，零 I/O）。只有 Host 自己签发的名字会走到这里，
+// 但正则本身也保证不会把任意文本当版本号回给浏览器。
+function backupVersionFromName(name) {
+  const match = BACKUP_NAME.exec(name)
+  return match === null || match[1] === undefined ? null : match[1]
+}
+
+// 归档创建时刻：从文件名的时间戳段反解，保证「文件名说的时间」与「元数据说的时间」
+// 永远是同一个瞬间（各自取一次 `new Date()` 会在跨秒时打架）。
+function backupCreatedAtFromName(name) {
+  const match = /^dsh-backup-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(name)
+  if (match === null) return new Date().toISOString()
+  const [, year, month, day, hour, minute, second] = match
+  const parsed = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`)
+  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString()
+}
+
 function backupId(name) {
   return createHmac('sha256', backupIdSecret).update(name).digest('base64url')
 }
@@ -547,7 +599,9 @@ async function backupItemForId(dshHome, id) {
   const snapshot = await listBackups(dshHome)
   const item = snapshot.items.find((candidate) => candidate.id === id)
   if (item === undefined) return undefined
-  return { ...item, path: join(dshHome, 'backups', basename(item.name)), mtimeMs: Date.parse(item.createdAt) }
+  // nameVersion 随 source 下传完整性检查：归档内查不到 meta/backup.json 时（旧插件所出），
+  // 报告退回文件名里的版本段，界面上仍有「这份备份出在哪个 DSH 版本」可看。
+  return { ...item, nameVersion: backupVersionFromName(item.name), path: join(dshHome, 'backups', basename(item.name)), mtimeMs: Date.parse(item.createdAt) }
 }
 
 async function listBackups(dshHome) {
@@ -558,11 +612,15 @@ async function listBackups(dshHome) {
   for (const entry of entries) {
     if (!entry.isFile() || !BACKUP_NAME.test(entry.name)) continue
     const info = await stat(join(backupDir, entry.name))
+    const nameVersion = backupVersionFromName(entry.name)
     items.push({
       id: backupId(entry.name),
       name: entry.name,
       sizeBytes: info.size,
       createdAt: info.mtime.toISOString(),
+      // 旧归档（无版本段）与老版本插件所出归档回 null：客户端据此退回中性文案，
+      // 不编造版本、也不显示「未知版本」这种噪声。
+      dshVersion: nameVersion,
     })
   }
   items.sort((a, b) => b.name.localeCompare(a.name))
@@ -967,6 +1025,10 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
     // 每个 profile 的常驻常规文件：0.1.7-alpha.1 起 `cordis.patch.yml` 是 Profile 的用户配置层
     // （bundle 之上、settings 的真正落点），只带 package.json 会「备份成功但配置全丢」。
     const profileNames = ['package.json', 'cordis.patch.yml']
+    // 备份时版本信息（归档 `meta/backup.json`）先落定载荷：它要计入总量口径，
+    // 才不至于让复制阶段出现「已复制 > 总量」的假象。
+    const metaPayload = backupMetadataPayload(dshVersion, backupCreatedAtFromName(name))
+    const metaBytes = metaPayload.length
     let configBytes = 0
     for (const file of configNames) configBytes += await sumBackupTree(join(dshHome, file))
     let profilesBytes = 0
@@ -997,7 +1059,7 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
         try { const info = await lstat(entry.path); if (info.isFile()) sessionsBytes += info.size } catch (_) {}
       }
     } else if (await pathExists(sessionsSource)) sessionsBytes = await sumBackupTree(sessionsSource)
-    const totalBytes = sessionsBytes + configBytes + profilesBytes
+    const totalBytes = sessionsBytes + configBytes + profilesBytes + metaBytes
     let copiedBytes = 0
     // 快照形状恒定：任何阶段都带全部字段，客户端轮询无需按阶段判形。
     const report = (phase, archiveBytes) => onProgress({ phase, copiedBytes, totalBytes, archiveBytes })
@@ -1056,6 +1118,12 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
     }
 
     await assertSafeBackupTree(workspace)
+    // 备份时版本信息：写进归档 `meta/backup.json`，与文件名里的版本段互为印证。
+    // 放在暂存树与打包之间——先写后打，tar 的条目集合天然包含它；字节计入复制阶段
+    // （`copiedBytes` 是「已复制」而非「已从源读取」的诚实口径，进度条不会超 100%）。
+    await mkdir(join(workspace, BACKUP_META_DIR), { recursive: true, mode: 0o700 })
+    await writeFile(join(workspace, BACKUP_META_DIR, BACKUP_META_FILE), metaPayload, { mode: 0o600 })
+    onCopied(metaPayload.length)
     onProgress({ phase: 'archive', copiedBytes, totalBytes, archiveBytes: 0 })
     // 打包阶段采样临时归档体积（500ms best-effort）：tar 结束即停；停标后完成的采样不再上报，避免阶段回跳。
     let sampling = false
@@ -1073,7 +1141,7 @@ async function createBackupAttempt(ctx, dshHome, backupDir, name, validateArchiv
           } catch (_) {}
         }
       })()
-      const volatileSource = await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles'])
+      const volatileSource = await runTar(ctx, workspace, ['-czf', temporary, 'sessions', 'config', 'profiles', 'meta'])
       // 退出码 1 只说明 tar 认为某个文件在读取期间变化过，不能据此判定归档好坏：
       // 拿归档回头核对暂存树，逐条目全等才继续，任何差异都判为不完整并拒绝发布。
       if (volatileSource) {
@@ -1144,6 +1212,9 @@ async function exportBackup(dshHome, downloadTokens, id) {
   return { name: item.name, url: `/dsh-backup-download?token=${token}` }
 }
 
+// 备份归档的文件名在创建时即固定为「时间戳 + 备份时的 DSH 版本」，导入侧只做文件名
+// 白名单校验（版本段可选，见 BACKUP_NAME）：导入是「把用户手里的归档原样放回 backups 目录」，
+// 版本事实以归档内的 meta/backup.json 为准，不改名、不重写。
 async function importBackup(dshHome, name, encoded, validatePath) {
   if (typeof name !== 'string' || !BACKUP_NAME.test(name) || typeof encoded !== 'string' || encoded.length === 0) return undefined
   if (encoded.length > Math.ceil(MAX_BACKUP_TRANSFER_BYTES / 3) * 4 + 8 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return undefined
@@ -5988,7 +6059,7 @@ function apply(ctx, featureConfig) {
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
-    createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, setBackupProgress, withBackupLock, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
+    createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
   ])
 
   const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })

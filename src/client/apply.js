@@ -6291,6 +6291,9 @@
                 React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' } },
                   React.createElement('div', null,
                     React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
+                    // 备份时的 DSH 版本：宿主随每条记录下发 dshVersion，老归档给 null，
+                    // 此时完全不渲染这一节，不给用户看「未知」这种噪声。
+                    item.dshVersion ? React.createElement('div', { 'data-testid': `backup-row-version-${item.id}`, style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, translate('backup.row.version', { version: item.dshVersion })) : null,
                     React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`)),
                   React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
                     backupDeleteId === item.id || backupRestoreId === item.id
@@ -6326,6 +6329,12 @@
                                 // 归档格式标签：v1（旧版所出、不含 Profile 补丁层）与 v2 在恢复语义上
                                 // 不同——旧归档不覆盖现有 patch，界面必须讲清楚，避免误判「恢复了但没生效」。
                                 React.createElement('p', { 'data-testid': 'backup-archive-format', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.format', { format: translate(backupRestoreReport.archiveFormat === 'v2' ? 'backup.format.v2' : 'backup.format.v1') })),
+                                // 备份时的 DSH 版本：恢复是不可逆动作，确认前必须知道这份快照出自哪个版本
+                                // （跨版本降级恢复读不动新格式会话）。元数据缺席（旧插件所出归档）时退回
+                                // 文件名里的版本段；两处都没有就不渲染这一行，而不是显示「未知版本」。
+                                (backupRestoreReport.dshVersion ?? backupRestorePlan?.reportSummary?.dshVersion)
+                                  ? React.createElement('p', { 'data-testid': 'backup-source-version', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.sourceVersion', { version: backupRestoreReport.dshVersion ?? backupRestorePlan.reportSummary.dshVersion }))
+                                  : null,
                                 backupRestoreReport.validForRestore !== true
                                   ? React.createElement('ul', { style: Object.assign({}, hint, { margin: '6px 0 0', paddingLeft: '18px', color: 'var(--dsh-svc-danger)' }) }, (backupRestoreReport.issues || []).map((issue, index) => React.createElement('li', { key: index }, mapBackupRestoreError(issue.code))))
                                   : null)

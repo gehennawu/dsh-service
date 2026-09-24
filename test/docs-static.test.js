@@ -84,6 +84,15 @@ test('backup integrity and restore preflight are documented in both languages an
   assert.equal(packageJson.files.includes('backup-integrity.js'), true)
 })
 
+test('the backup-time DSH version is documented in both languages', () => {
+  const zh = section(read('README.md'), '### 备份管理')
+  const en = section(read('README.en.md'), '### Backup management')
+  assert.match(zh, /dsh-backup-YYYYMMDD-HHmmss-dsh/s)
+  assert.match(zh, /meta\/backup\.json/)
+  assert.match(en, /dsh-backup-YYYYMMDD-HHmmss-dsh/s)
+  assert.match(en, /meta\/backup\.json/)
+})
+
 test('session deletion documentation is archived-only in both languages and the roadmap', () => {
   const zh = section(read('README.md'), '### 会话管理')
   const en = section(read('README.en.md'), '### Session manager')

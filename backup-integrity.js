@@ -10,6 +10,15 @@ const CONFIG_FILES = Object.freeze(['settings.yaml', 'cordis.patch.yml', 'AGENTS
 // `cordis.patch.yml` 是 0.1.7-alpha.1 起的 Profile 用户配置层：漏掉它会出现「备份成功、
 // 恢复后个性化配置全丢」。package.json 承载 bundle 启停清单，两者必须成对。
 const PROFILE_FILES = Object.freeze(['package.json', 'cordis.patch.yml'])
+// 归档内元数据（备份时的 DSH/插件版本）：唯一一个「读后即丢弃、绝不落盘覆盖」的分区。
+// 它必须出现在白名单里，否则 0.1.7 起新插件所出的归档会被判 `backup-entry-unexpected`
+// 而全部不可恢复——这是最容易踩的反向兼容坑。
+const META_PATH = 'meta/backup.json'
+const MAX_META_BYTES = 4096
+// 版本串的合法口径与宿主侧备份命名（index.js 的 BACKUP_VERSION_RE）逐字同源：
+// semver 形、长度封顶、且**必须含数字**——少了最后一条，未解析出 DSH 包的宿主
+// 写下的哨兵值 `unknown` 会被当成真版本显示出来。
+const META_VERSION_RE = /^(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z.-]{0,63}$/
 const PLAN_TTL_MS = 5 * 60 * 1000
 const MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
 const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
@@ -98,17 +107,40 @@ function emptySections() {
   }
 }
 
+// 归档元数据的解析口径：**纯展示信息，绝不参与完整性裁决**。缺条目、坏 JSON、版本串
+// 非法或超限一律回 null（预检显示「未记录」），不让一份附加信息把可恢复的归档判成损坏。
+function parseBackupMetadata(data) {
+  if (data.length === 0 || data.length > MAX_META_BYTES) return null
+  let parsed
+  try { parsed = JSON.parse(data.toString('utf8')) } catch (_) { return null }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const version = typeof parsed.dshVersion === 'string' && META_VERSION_RE.test(parsed.dshVersion) ? parsed.dshVersion : null
+  const createdAt = typeof parsed.createdAt === 'string' && !Number.isNaN(Date.parse(parsed.createdAt)) ? parsed.createdAt : null
+  return { dshVersion: version, createdAt }
+}
+
 function validateEntry(path, type, data, state) {
   const sections = state.sections
   const parts = path.split('/')
   const root = parts[0]
-  if (!['sessions', 'config', 'profiles'].includes(root)) throw domainError('backup-entry-unexpected')
+  if (!['sessions', 'config', 'profiles', 'meta'].includes(root)) throw domainError('backup-entry-unexpected')
   if (parts.length === 1 && type !== 'directory') throw domainError('backup-entry-type')
 
   if (root === 'sessions') {
     state.present.add('sessions')
     if (type === 'file') { sections.sessions.files += 1; sections.sessions.bytes += data.length }
     else sections.sessions.dirs += 1
+    return
+  }
+
+  // meta 分区只容忍 `meta/` 目录本身与唯一一个 `meta/backup.json`：出现别的条目（别名、
+  // 子目录、重复）即拒，免得这层「读后即弃」的例外变成绕过条目白名单的后门。
+  if (root === 'meta') {
+    if (path === 'meta' && type === 'directory') return
+    if (path !== META_PATH || type !== 'file') throw domainError('backup-entry-unexpected')
+    state.metaSeen = (state.metaSeen ?? 0) + 1
+    if (state.metaSeen > 1) throw domainError('backup-entry-duplicate')
+    state.metadata = parseBackupMetadata(data)
     return
   }
 
@@ -229,7 +261,10 @@ function parseTar(expanded, options = {}) {
   // 归档格式标签：v1 = 不含 Profile 补丁（0.1.7-alpha.1 之前的插件所出）；v2 = 含补丁层。
   // 恢复旧归档时据此给出「未包含项」提示而不判损坏。
   const archiveFormat = state.sections.profiles.patchFiles.length > 0 ? 'v2' : 'v1'
-  return { entries, sections: state.sections, logicalBytes, entryCount: entries.length, archiveFormat }
+  // 备份时版本信息：`metadata` 为 null 表示该归档未记录（旧插件所出，或元数据非法）。
+  // 文件名里的版本段由调用方（index.js 的 backupVersionFromName）解析后随 source 带入，
+  // 两层信息在报告里并列，客户端优先信元数据。
+  return { entries, sections: state.sections, logicalBytes, entryCount: entries.length, archiveFormat, metadata: state.metadata ?? null }
 }
 
 async function inspectArchive(source, options = {}) {
@@ -242,6 +277,10 @@ async function inspectArchive(source, options = {}) {
     status: 'error',
     archive: { entryCount: 0, compressedBytes: source.sizeBytes, logicalBytes: 0 },
     archiveFormat: 'v1',
+    // 文件名里的版本段（老归档为 null）与归档内记录的版本（缺 meta 为 null）分开报，
+    // 界面优先显示后者；前者是廉价但可能与内容不符的镜像。
+    nameVersion: typeof source.nameVersion === 'string' ? source.nameVersion : null,
+    metadata: null,
     sections: emptySections(),
     issues: [],
     issueCount: 0,
@@ -271,6 +310,9 @@ async function inspectArchive(source, options = {}) {
         status: 'ok',
         archive: { entryCount: parsed.entryCount, compressedBytes: compressed.length, logicalBytes: parsed.logicalBytes },
         archiveFormat: parsed.archiveFormat,
+        // 元数据非法/缺席时退回文件名里的版本段，保证「只要有一处记了版本」就看得见。
+        metadata: parsed.metadata ?? null,
+        dshVersion: parsed.metadata?.dshVersion ?? (typeof source.nameVersion === 'string' ? source.nameVersion : null),
         sections: parsed.sections,
       },
       parsed,
@@ -551,7 +593,7 @@ export function createBackupIntegrity(options) {
       expiresAt: preparedAt + PLAN_TTL_MS,
       staging,
       sourcePath: source.path,
-      source: { id: source.id, name: source.name, sizeBytes: source.sizeBytes, sha256: inspected.report.source.sha256 },
+      source: { id: source.id, name: source.name, sizeBytes: source.sizeBytes, sha256: inspected.report.source.sha256, dshVersion: inspected.report.dshVersion ?? null },
       sourceFingerprint: inspected.report.source.sha256,
       targetFingerprint: targetState.fingerprint,
       profileNames,
@@ -564,6 +606,10 @@ export function createBackupIntegrity(options) {
         profiles: profileNames.length,
         profilePatches: patchProfileNames.length,
         archiveFormat: inspected.report.archiveFormat,
+        // 备份时的 DSH 版本随计划下发：恢复是不可逆动作，确认前必须让用户看清
+        // 「这份快照来自哪个版本」——降级恢复读不动新格式会话，写清楚才不至于误点。
+        dshVersion: inspected.report.dshVersion ?? null,
+        metadata: inspected.report.metadata ?? null,
       },
       targets: {
         sessions: { action: 'replace', currentBytes: targetState.bytes, newBytes: inspected.report.sections.sessions.bytes },

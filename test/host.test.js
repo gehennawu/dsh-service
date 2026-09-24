@@ -103,6 +103,24 @@ function backupArchiveWithProfilePatch(overrides = {}) {
   return tarArchive(overrides.entries ?? entries)
 }
 
+// v3 归档（本版起）：在 v2 之上携带 `meta/backup.json`（备份时的 DSH/插件版本）。
+// 它不是恢复目标，只供恢复预检展示「这份快照出自哪个版本」。
+function backupArchiveWithMeta(version = '0.1.7-rc.1', overrides = {}) {
+  const entries = [
+    { name: 'sessions/', type: '5' },
+    { name: 'sessions/workspace/', type: '5' },
+    { name: 'sessions/workspace/session-1.jsonl', data: '{"type":"restored"}\n' },
+    { name: 'config/', type: '5' },
+    { name: 'config/settings.yaml', data: 'theme: restored\n' },
+    { name: 'profiles/', type: '5' },
+    { name: 'profiles/web/', type: '5' },
+    { name: 'profiles/web/package.json', data: '{"name":"web-profile","restored":true}\n' },
+    { name: 'meta/', type: '5' },
+    { name: 'meta/backup.json', data: `${JSON.stringify({ version: 1, dshVersion: version, pluginVersion: '1.9.8', createdAt: '2026-09-24T03:00:00.000Z' })}\n` },
+  ]
+  return tarArchive(overrides.entries ?? entries)
+}
+
 function localSubprocess() {
   return {
     resolveExecutable: async (command) => command,
@@ -1222,8 +1240,10 @@ test('backup progress RPC exposes phase snapshots during creation and goes idle 
   }
   assert.equal(snapshot.active, true, JSON.stringify(snapshot))
   assert.equal(snapshot.phase, 'archive')
-  assert.equal(snapshot.totalBytes, sessionBytes)
-  assert.equal(snapshot.copiedBytes, sessionBytes)
+  // 总量口径 = 会话整树 + 三份配置 + 各 profile 清单 + 归档元数据（meta），
+  // 复制结束时 copiedBytes 必须已经补上 meta 的字节，不得出现「已复制 > 总量」。
+  assert.equal(snapshot.totalBytes, snapshot.copiedBytes)
+  assert.ok(snapshot.totalBytes > sessionBytes, 'meta bytes are counted into the copy phase总byte口径')
   assert.equal(snapshot.archiveBytes, 0)
 
   releaseTar()
@@ -1274,11 +1294,12 @@ test('backup creation stages sessions through the persistence raw-artifact seam 
   })
   const artifact = join(extractDir, 'sessions', 'project-a', 'enc-id-1', 'session.jsonl.zstd')
   const bytes = await readFile(artifact)
-  // 首帧必须恰好是一行 header（后端 assertZstdHeaderFrame 约束）；多帧拼接解出首帧。
-  assert.equal(zstdDecompressSync(bytes).toString('utf8'), header, 'first frame is exactly the header line')
-  // 事件帧必须存在：文件大于仅 header 帧，且去掉首帧后的余量能解出事件原文。
+  // 首帧必须恰好是一行 header（后端 assertZstdHeaderFrame 约束）；分帧压缩保证首帧独立。
   const compressAsync = promisify(zstdCompress)
   const headerAlone = await compressAsync(header, { params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 } })
+  assert.equal(zstdDecompressSync(bytes.subarray(0, headerAlone.length)).toString('utf8'), header, 'first frame is exactly the header line')
+  // 事件帧必须存在：文件大于仅 header 帧，且去掉首帧后的余量能解出事件原文。
+  assert.equal(zstdDecompressSync(bytes.subarray(headerAlone.length)).toString('utf8'), events, 'event frame carries the event payload')
   assert.ok(bytes.length > headerAlone.length + 8, 'event frame is attached')
   assert.equal((await handler('backup-inspect', { id: created.value.item.id })).value.validForRestore, true)
   assert.deepEqual((await readdir(join(dshHome, 'backups'))).filter((name) => name.startsWith('.staging-')), [])
@@ -1305,7 +1326,11 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
 
   const created = await handler('backup-create', {})
   assert.equal(created.ok, true)
-  assert.match(created.value.item.name, /^dsh-backup-\d{8}-\d{6}\.tar\.gz$/)
+  // 文件名带备份时的 DSH 版本段。本测试环境里 `installedDshVersion` 既可能是真实版本，
+  // 也可能是包解析失败时的哨兵 `unknown`（后者必须被**省略**，不能写成 `-dshunknown`）。
+  const expectedVersionSuffix = /^(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z.-]{0,63}$/.test(installedDshVersion) ? `-dsh${installedDshVersion}` : ''
+  assert.match(created.value.item.name, new RegExp(`^dsh-backup-\\d{8}-\\d{6}${expectedVersionSuffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tar\\.gz$`))
+  assert.doesNotMatch(created.value.item.name, /dshunknown/)
 
   const archivePath = join(dshHome, 'backups', created.value.item.name)
   const archiveEntries = await new Promise((resolve, reject) => {
@@ -1322,6 +1347,8 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.ok(archiveEntries.includes('config/cordis.patch.yml'))
   assert.ok(archiveEntries.includes('config/dsh-service-config.json'))
   assert.ok(archiveEntries.includes('profiles/web/package.json'))
+  // 备份时版本信息随归档落地（唯一的「备份时」权威记录）。
+  assert.ok(archiveEntries.includes('meta/backup.json'))
   assert.equal(archiveEntries.some((entry) => entry.includes('node_modules')), false)
   assert.equal(archiveEntries.some((entry) => entry.includes('credentials')), false)
 
@@ -1329,6 +1356,8 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.equal(listed.ok, true)
   assert.equal(listed.value.items.length, 1)
   assert.equal(listed.value.items[0].id, created.value.item.id)
+  // 列表零解压地给出文件名里的版本段；无版本段的老归档为 null。
+  assert.equal(listed.value.items[0].dshVersion, expectedVersionSuffix === '' ? null : installedDshVersion)
   assert.equal(listed.value.totalBytes, listed.value.items[0].sizeBytes)
   assert.ok(listed.value.totalBytes > 0)
 
@@ -1518,6 +1547,140 @@ test('backup archives carry each profile cordis.patch.yml and report the archive
   assert.deepEqual(plan.value.targets.profiles.patches, ['web'])
   assert.ok(plan.value.consequences.includes('profile-patches-replaced'))
   assert.equal(plan.value.reportSummary.profilePatches, 1)
+})
+
+test('archives record the DSH version at backup time and restore preflight surfaces it', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-meta-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'sessions', 'workspace'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web'), { recursive: true })
+  await writeFile(join(dshHome, 'sessions', 'workspace', 'session.jsonl'), '{"type":"test"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"web-profile"}\n')
+
+  const { handler } = createHost({ services: { subprocess: localSubprocess() }, env: { DSH_HOME: dshHome } })
+  const created = await handler('backup-create', {})
+  assert.equal(created.ok, true, JSON.stringify(created))
+
+  // 归档内元数据是「备份时」版本的权威记录。
+  const extractDir = join(dshHome, 'extracted')
+  await mkdir(extractDir, { recursive: true })
+  await new Promise((resolve, reject) => {
+    const child = spawn('tar', ['-xzf', join(dshHome, 'backups', created.value.item.name), '-C', extractDir])
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr)))
+  })
+  const meta = JSON.parse(await readFile(join(extractDir, 'meta', 'backup.json'), 'utf8'))
+  assert.equal(meta.version, 1)
+  assert.equal(meta.dshVersion, installedDshVersion === 'unknown' ? '' : installedDshVersion)
+  assert.equal(meta.pluginVersion, pluginVersion)
+  assert.equal(Number.isNaN(Date.parse(meta.createdAt)), false)
+  // 元数据里的时间必须与文件名时间戳同源（各自取一次 now 会跨秒打架）。
+  const nameStamp = /^dsh-backup-(\d{8})-(\d{6})/.exec(created.value.item.name)
+  assert.equal(meta.createdAt.startsWith(`${nameStamp[1].slice(0, 4)}-${nameStamp[1].slice(4, 6)}-${nameStamp[1].slice(6, 8)}T${nameStamp[2].slice(0, 2)}:${nameStamp[2].slice(2, 4)}:${nameStamp[2].slice(4, 6)}`), true)
+
+  const inspected = await handler('backup-inspect', { id: created.value.item.id })
+  assert.equal(inspected.value.validForRestore, true, JSON.stringify(inspected))
+  assert.equal(inspected.value.metadata?.dshVersion ?? '', meta.dshVersion)
+  assert.equal(inspected.value.dshVersion ?? '', meta.dshVersion)
+  // 元数据分区不参与恢复：不会变成任何目标的恢复项。
+  const plan = await handler('backup-restore-prepare', { id: created.value.item.id })
+  assert.equal(plan.ok, true, JSON.stringify(plan))
+  assert.equal(plan.value.reportSummary.dshVersion ?? '', meta.dshVersion)
+  assert.deepEqual(plan.value.targets.profiles.upsert, ['web'])
+  assert.equal(JSON.stringify(plan.value.targets).includes('meta'), false)
+})
+
+test('an imported archive keeps its versioned filename and preflight falls back to it when meta is absent', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-import-version-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  const { handler } = createHost({ env: { DSH_HOME: dshHome, DSH_SERVICE_RUNTIME_ENV: 'manual' } })
+
+  // 带版本段的文件名（本版插件的产物）与不带版本段的老名字都必须被接受；
+  // 老归档连 meta 分区都没有（validBackupArchive = v1 形态）。
+  const versioned = await handler('backup-import', { name: 'dsh-backup-20260819-120000-dsh0.1.7-rc.1.tar.gz', data: backupArchiveWithMeta('0.1.7-rc.1').toString('base64') })
+  assert.equal(versioned.ok, true, JSON.stringify(versioned))
+  const legacy = await handler('backup-import', { name: 'dsh-backup-20260819-130000-dsh0.1.6-alpha.3.tar.gz', data: validBackupArchive().toString('base64') })
+  assert.equal(legacy.ok, true, JSON.stringify(legacy))
+
+  // 文件名里的版本段与内容元数据各说各话时，以归档内记录为准（名字只是廉价镜像）。
+  const id = (await handler('backup-list', {})).value.items.find((item) => item.name === 'dsh-backup-20260819-120000-dsh0.1.7-rc.1.tar.gz').id
+  const inspected = await handler('backup-inspect', { id })
+  assert.equal(inspected.value.dshVersion, '0.1.7-rc.1')
+  assert.equal(inspected.value.metadata?.dshVersion, '0.1.7-rc.1')
+
+  // 老归档（无 meta 分区）仍可恢复，预检退回文件名里的版本段。
+  const legacyId = (await handler('backup-list', {})).value.items.find((item) => item.name === 'dsh-backup-20260819-130000-dsh0.1.6-alpha.3.tar.gz').id
+  const legacyInspect = await handler('backup-inspect', { id: legacyId })
+  assert.equal(legacyInspect.value.validForRestore, true, JSON.stringify(legacyInspect))
+  assert.equal(legacyInspect.value.metadata, null)
+  assert.equal(legacyInspect.value.dshVersion, '0.1.6-alpha.3')
+  const plan = await handler('backup-restore-prepare', { id: legacyId })
+  assert.equal(plan.ok, true, JSON.stringify(plan))
+  assert.equal(plan.value.reportSummary.dshVersion, '0.1.6-alpha.3')
+  assert.equal(plan.value.reportSummary.metadata, null)
+  assert.equal((await handler('backup-restore-commit', { planId: plan.value.planId })).ok, true)
+  // meta 分区不得落进 DSH_HOME：它是只读信息，不是恢复目标。
+  assert.equal(await readFile(join(dshHome, 'meta', 'backup.json'), 'utf8').then(() => true).catch(() => false), false)
+})
+
+test('a backup filename with a malformed version segment stays rejected', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-name-guard-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  for (const name of [
+    'dsh-backup-20260819-120000-dsh.tar.gz',
+    'dsh-backup-20260819-120000-dshunknown.tar.gz',
+    'dsh-backup-20260819-120000-dshrc.tar.gz',
+    'dsh-backup-20260819-120000-dsh0.1.7/../x.tar.gz',
+    'dsh-backup-20260819-120000-dsh0.1.7 x.tar.gz',
+    `dsh-backup-20260819-120000-dsh${'a'.repeat(65)}.tar.gz`,
+    `dsh-backup-20260819-120000-dsh${'1'.repeat(65)}.tar.gz`,
+  ]) {
+    const imported = await handler('backup-import', { name, data: backupArchiveWithMeta().toString('base64') })
+    assert.deepEqual(imported, { ok: false, error: 'invalid-backup' }, name)
+  }
+  assert.deepEqual((await handler('backup-list', {})).value.items, [])
+})
+
+test('meta entries outside the single metadata file stay rejected', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-meta-guard-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  let index = 0
+  for (const [label, extra] of [
+    ['nested', [{ name: 'meta/', type: '5' }, { name: 'meta/nested/backup.json', data: '{}' }]],
+    ['alias', [{ name: 'meta/', type: '5' }, { name: 'meta/backup.yaml', data: 'dshVersion: 1' }]],
+    ['duplicate', [{ name: 'meta/', type: '5' }, { name: 'meta/backup.json', data: '{"dshVersion":"0.1.7"}' }, { name: 'meta/backup.json', data: '{"dshVersion":"0.1.6"}' }]],
+  ]) {
+    const imported = await handler('backup-import', { name: `dsh-backup-20260819-15000${index++}.tar.gz`, data: backupArchiveWithMeta('0.1.7', { entries: [
+      { name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' }, ...extra,
+    ] }).toString('base64') })
+    assert.deepEqual(imported, { ok: false, error: 'backup-archive-invalid' }, label)
+  }
+  assert.deepEqual((await handler('backup-list', {})).value.items, [])
+})
+
+test('a corrupt metadata payload degrades the version display without blocking restore', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-meta-lenient-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  const { handler } = createHost({ env: { DSH_HOME: dshHome, DSH_SERVICE_RUNTIME_ENV: 'manual' } })
+  const imported = await handler('backup-import', { name: 'dsh-backup-20260819-120000-dsh0.1.7-rc.1.tar.gz', data: backupArchiveWithMeta('0.1.7', { entries: [
+    { name: 'sessions/', type: '5' }, { name: 'config/', type: '5' }, { name: 'profiles/', type: '5' },
+    { name: 'meta/', type: '5' }, { name: 'meta/backup.json', data: 'not json at all' },
+  ] }).toString('base64') })
+  assert.equal(imported.ok, true, JSON.stringify(imported))
+  const id = imported.value.items[0].id
+  const inspected = await handler('backup-inspect', { id })
+  // 元数据是纯展示信息：坏 JSON 不得把可恢复的归档判成损坏，只是显示退回文件名版本段。
+  assert.equal(inspected.value.validForRestore, true, JSON.stringify(inspected))
+  assert.equal(inspected.value.metadata, null)
+  assert.equal(inspected.value.dshVersion, '0.1.7-rc.1')
 })
 
 test('restoring a v2 archive writes the profile patch back, and an old v1 archive leaves it untouched', async (t) => {

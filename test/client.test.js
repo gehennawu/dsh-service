@@ -3475,9 +3475,10 @@ test('backup panel creates, lists, and requires a second click before deleting a
   }
   const second = {
     id: 'signed-backup-2',
-    name: 'dsh-backup-20250819-130000.tar.gz',
+    name: 'dsh-backup-20250819-130000-dsh0.1.7-rc.1.tar.gz',
     sizeBytes: 2048,
     createdAt: '2025-08-19T13:00:00.000Z',
+    dshVersion: '0.1.7-rc.1',
   }
   const renderer = createRenderer(async (channel, endpoint, payload) => {
     assert.equal(channel, '/dsh-service')
@@ -3502,11 +3503,15 @@ test('backup panel creates, lists, and requires a second click before deleting a
   assert.match(renderer.text('settings.section'), /备份管理/)
   assert.match(renderer.text('settings.section'), /总体积：1\.5 KB/)
   assert.match(renderer.text('settings.section'), /dsh-backup-20250819-120000\.tar\.gz/)
+  // 无版本段的老归档：行内不出现版本行（不给用户看「未知版本」噪声）。
+  assert.equal(renderer.hasTest('backup-row-version-signed-backup-1'), false)
   assert.doesNotMatch(renderer.text('settings.section'), /展开备份记录/)
 
   await renderer.findButton('创建备份').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-130000\.tar\.gz/)
+  assert.match(renderer.text('settings.section'), /dsh-backup-20250819-130000-dsh0\.1\.7-rc\.1\.tar\.gz/)
+  // 带版本段的新归档：行内直接显示备份时的 DSH 版本。
+  assert.match(renderer.findByTestId('backup-row-version-signed-backup-2').children.join(''), /备份时 DSH 版本：0\.1\.7-rc\.1/)
   assert.match(renderer.text('settings.section'), /总体积：3\.5 KB/)
 
   await renderer.findButton('删除').props.onClick()
@@ -3621,6 +3626,7 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
     status: 'ok',
     archive: { entryCount: 12, logicalBytes: 4096 },
     archiveFormat: 'v2',
+    dshVersion: '0.1.7-rc.1',
     sections: { sessions: { files: 3, dirs: 2, bytes: 2048 }, config: { files: [{ name: 'settings.yaml' }] }, profiles: { count: 1, patchFiles: [{ name: 'web' }] } },
     issues: [],
   }
@@ -3660,6 +3666,8 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
   // 归档格式标签 + Profile 补丁层恢复行：v2 归档必须明说会恢复 cordis.patch.yml。
   assert.match(renderer.findByTestId('backup-archive-format').children.join(''), /v2（含 Profile 补丁层）/)
   assert.match(renderer.findByTestId('backup-plan-profile-patches').children.join(''), /恢复 1 个 profile 的 cordis\.patch\.yml/)
+  // 备份时的 DSH 版本：恢复前展示（报告优先，计划兜底）。
+  assert.match(renderer.findByTestId('backup-source-version').children.join(''), /备份时 DSH 版本：0\.1\.7-rc\.1/)
 
   await renderer.findButton('确认恢复').props.onClick()
   await renderer.flush()
@@ -3689,6 +3697,29 @@ test('backup restore explains that a v1 archive carries no profile patch layer',
   // 缺字段按 v1 展示（不是空白，也不是 v2）；计划里明说 patch 不会被覆盖或删除。
   assert.match(renderer.findByTestId('backup-archive-format').children.join(''), /v1（不含 Profile 补丁层）/)
   assert.match(renderer.findByTestId('backup-plan-profile-patches').children.join(''), /现有配置保持不变，不会被覆盖或删除/)
+  // 两次都没有版本信息：整行不渲染，也不显示「未知版本」。
+  assert.equal(renderer.hasTest('backup-source-version'), false)
+})
+
+test('backup restore falls back to the plan report summary for the backup-time DSH version', async () => {
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    // 报告里没有 dshVersion（老宿主所出），只有预检计划摘要带着版本——界面必须用计划兜底。
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: true, archive: { entryCount: 3, logicalBytes: 10 }, sections: { sessions: { files: 1 }, config: { files: [] }, profiles: { count: 1, patchFiles: [] } }, issues: [] } }
+    if (endpoint === 'backup-restore-prepare') return { ok: true, value: { planId: 'legacy-plan', expiresAt: Date.now() + 300000, reportSummary: { dshVersion: '0.1.6-alpha.3' }, targets: { config: { replace: [], remove: [] }, profiles: { upsert: ['web'], patches: [] } }, consequences: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('backup-source-version').children.join(''), /备份时 DSH 版本：0\.1\.6-alpha\.3/)
 })
 
 test('backup restore blocks confirmation for an invalid integrity report', async () => {

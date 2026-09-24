@@ -13,8 +13,10 @@ export function createBackupRoutes({
   clearBackupProgress,
   downloadTokens,
   dshHome,
+  dshVersion,
   setBackupProgress,
   withBackupLock,
+  backupNameVersionSuffix,
   createBackup,
   deleteBackup,
   exportBackup,
@@ -40,7 +42,9 @@ export function createBackupRoutes({
     'backup-create': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         return { ok: true, value: await withBackupLock(() => {
-          const name = `dsh-backup-${formatBackupTimestamp(new Date())}.tar.gz`
+          // 文件名带备份时的 DSH 版本（`-dsh<version>`）：版本号来自宿主进程而非浏览器，
+          // 并且只接受通过字符集校验的值——读不出运行版本时省略该段，回落到老命名式。
+          const name = `dsh-backup-${formatBackupTimestamp(new Date())}${backupNameVersionSuffix(dshVersion)}.tar.gz`
           const withValidator = async (source, task) => {
             const validator = createBackupIntegrity({ dshHome, resolveBackup: async () => source })
             try { return await task(validator) } finally { await validator.dispose() }
