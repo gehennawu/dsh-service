@@ -73,14 +73,43 @@
           '[data-dshsvc-root] .dshsvc-tab{padding:9px 13px;min-height:36px;box-sizing:border-box;font-size:13px;white-space:nowrap;flex:none}',
           '[data-dshsvc-root] .dshsvc-tab svg{flex:none}',
           '}',
+          // 两行共享一套列（label / 版本号 / 「本次更新内容」/ 状态）：原先每行各自
+          // space-between，label 宽窄不同（dsh-service 比 DSH 宽）就把版本号与入口按钮推成
+          // 两行各自的位置——两行的入口按钮右缘对不齐。共享列后，两行的版本号与入口按钮
+          // 天然同列，且与版本号长度无关：列宽取两行里最宽的那个版本号，长版本号只把整列
+          // 一起推宽，不会让某一行错位。
+          // 版本号右对齐（`justify-self:end`）：列宽按最长版本号取，短版本号（1.9.8 对
+          // 0.1.7-rc.1）若左对齐会在它和入口按钮之间留出一段随长度变化的空隙。右对齐把
+          // 这段余量挪到版本号**前面**（label 与版本号之间），版本号与入口按钮之间就只剩
+          // 固定的列间距——两行的这段间距因此完全一致，且入口按钮位置不受影响（列宽与
+          // 列间距都没变，按钮列不动）。
+          // subgrid 是承重件：`display:contents` 让 identity 的三个子项直接落进行共享列，
+          // 不新增包装层（DOM 结构不变，外点判定与结构断言照旧）。老引擎整块跳过，
+          // 退回原有的 flex + space-between 行为（功能可用，仅不额外对齐）。
+          '@supports (grid-template-columns:subgrid){',
+          '[data-dshsvc-root] .dshsvc-version-surface{display:grid !important;grid-template-columns:max-content max-content max-content minmax(0,1fr);column-gap:16px}',
+          '[data-dshsvc-root] .dshsvc-version-surface>*{grid-column:1/-1}',
+          '[data-dshsvc-root] .dshsvc-version-row{display:grid !important;grid-template-columns:subgrid;justify-content:normal !important;align-items:center}',
+          '[data-dshsvc-root] .dshsvc-version-identity{display:contents !important}',
+          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;justify-self:end}',
+          '[data-dshsvc-root] .dshsvc-version-status{grid-column:4;justify-self:end}',
+          '}',
           // 版本卡自身作为查询容器：窄设置面板与手机都按可用宽度排版，不依赖移动手势开关。
-          // 窄容器两行：版本号跟 label 连排一块（identity 转 block 走行内文本流）/ 状态行（status）。
+          // 窄容器两行：label+版本号+入口连排一块（identity 自己撑满整行）/ 状态行（status）。
           '[data-dshsvc-root] [data-testid="version-card"]{container-type:inline-size;container-name:dshsvc-version}',
           '@container dshsvc-version (max-width:480px){',
-          '[data-dshsvc-root] .dshsvc-version-row{gap:6px !important;padding:12px 2px !important}',
-          '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;display:block}',
-          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere}',
-          '[data-dshsvc-root] .dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}',
+          // 窄卡放不下四列共享网格，必须逐条撤回上面 @supports 的 grid/contents——
+          // subgrid 失去父网格会退化成单列堆叠，两行契约（identity 整行 + status 整行）就没了。
+          '[data-dshsvc-root] .dshsvc-version-surface{display:block !important}',
+          '[data-dshsvc-root] .dshsvc-version-row{display:flex !important;justify-content:space-between !important;gap:6px !important;padding:12px 2px !important}',
+          // identity 保持 flex（勿改回 block）：block 下行内子项之间的 gap 失效，
+          // label / 版本号 / 入口按钮会贴在一起（手机实拍「1.9.8」紧贴「本次更新内容」）。
+          // flex + gap:8px 让三者之间恒有间隔；版本号仍可换行（min-width:0 + anywhere），
+          // 入口按钮 flex:none 不被压扁，放不下时整体折到下一行。
+          '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;display:flex !important;flex-wrap:wrap;align-items:center;gap:8px}',
+          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere;min-width:0;justify-self:auto !important}',
+          '[data-dshsvc-root] .dshsvc-version-identity>button{flex:none}',
+          '[data-dshsvc-root] .dshsvc-version-status{grid-column:auto !important;justify-self:stretch !important;flex-basis:100%;justify-content:flex-start !important}',
           '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。
           '@keyframes dshsv-locate-flash{0%,100%{background-color:rgba(198,128,0,0.10)}30%,70%{background-color:rgba(198,128,0,0.45)}}.dshsv-locate-flash{animation:dshsv-locate-flash 2s ease}',
@@ -6357,6 +6386,8 @@
                 chevronIcon(notesOpen),
                 React.createElement('span', null, statusText))
             : React.createElement('div', { style: { color: statusColor, fontWeight: 600 } }, statusText)
+          // 行内只有三件 inline 级内容落列：label、版本号、入口按钮；status 占第四列靠右。
+          // 行内样式的 flex 布局是 @supports 缺席时的回落面，共享列由上面的 CSS 覆盖。
           return React.createElement('div', { key: id, className: 'dshsvc-version-row', style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px 16px', padding: '10px 2px', borderTop: topBorder ? '1px solid var(--dsw-alias-border-l1)' : 0 } },
             React.createElement('div', { className: 'dshsvc-version-identity', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 } },
               React.createElement('span', { style: { fontSize: '13px', fontWeight: 650, whiteSpace: 'nowrap' } }, `${label} `),
@@ -6439,7 +6470,7 @@
         // 版本卡只放版本与升级：运行环境信息在健康诊断检查项与重启确认提示中呈现（用户复核口径）。
         const versionBlock = React.createElement('div', { key: 'version-card', 'data-testid': 'version-card', style: card },
           React.createElement('div', { key: 'title', style: sectionTitle }, translate('version.title')),
-          React.createElement('div', { style: displaySurface },
+          React.createElement('div', { className: 'dshsvc-version-surface', style: displaySurface },
             versionRow('plugin', 'dsh-service', pluginVersion, pluginState, pluginAction, 'plugin', false),
             releaseNotesPanel('plugin'),
             versionRow('dsh', 'DSH', version, dshUpdate, null, 'dsh', true),

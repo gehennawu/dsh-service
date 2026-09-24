@@ -2439,6 +2439,14 @@ test('settings mount automatically shows separate DSH and plugin update states w
       'the notes entry is rendered after the current version number')
   }
 
+  // 两行共享一套列：displaySurface 带 .dshsvc-version-surface，两行都落在它里面、共用
+  // identity 包装（display:contents，label/版本号/入口直接进列）。结构不变是外点判定
+  // （closest('[data-testid="version-card"]')）与上面两条结构断言的前提，这里钉住它。
+  const surface = renderer.findNode((node) => node.props?.className === 'dshsvc-version-surface')
+  assert.ok(surface, 'the version card body carries the shared-column surface class')
+  assert.equal(surface.node.children.filter((child) => child?.props?.className === 'dshsvc-version-row').length, 2,
+    'both version rows live in the shared-column surface')
+
   // 「有新版本：…」可点击（小三角在前），点击行内展开**新版** release 正文
   await renderer.findButton('有新版本：0.2.0').props.onClick()
   await renderer.flush()
@@ -2869,15 +2877,40 @@ test('version card carries no DSH adaptation notice on any running version, two 
       assert.equal(renderer.findByTestId('version-plugin-notes-toggle').props['data-testid'], 'version-plugin-notes-toggle')
     }
 
-    // 窄容器（≤480px）两行契约由容器查询负责：identity 整行（label+版本号走行内文本流）+ status 整行；
+    // 两行共享列（宽容器）：surface 建 4 列网格、row 用 subgrid 落进去、identity 走
+    // display:contents 让 label/版本号/入口直接进列、版本号右对齐（余量留在它**前面**，
+    // 使版本号与入口按钮的间距固定）、status 归第 4 列靠右。这套规则是「两行入口按钮
+    // 左右缘齐平、且与版本号长度无关」的承重件，任一条缺失都会退回旧的 space-between
+    // 错位行为，故逐条钉住。
+    // 窄容器（≤480px）转而由容器查询负责：两行契约（identity 整行 + status 整行）要求
+    // 逐条撤回上面的 grid/contents——subgrid 失去父网格会退化成单列堆叠，不撤就没了两行。
     // 声明已删，对应的 .dshsvc-version-note 规则必须一并消失（不留死规则）。
     const css = injectedStyles.join('')
+    const supportsStart = css.indexOf('@supports (grid-template-columns:subgrid){')
+    assert.ok(supportsStart >= 0, 'the shared-column grid layer is declared behind @supports')
+    for (const [rule, label] of [
+      ['.dshsvc-version-surface{display:grid !important;grid-template-columns:max-content max-content max-content minmax(0,1fr);column-gap:16px}', 'the surface declares the four shared columns'],
+      ['.dshsvc-version-row{display:grid !important;grid-template-columns:subgrid;justify-content:normal !important;align-items:center}', 'each row subgrids into the shared columns'],
+      ['.dshsvc-version-identity{display:contents !important}', 'identity dissolves so its children land in the shared columns'],
+      ['code{margin-left:0 !important;justify-self:end}', 'the version number is right-aligned so the gap before the entry stays fixed'],
+      ['.dshsvc-version-status{grid-column:4;justify-self:end}', 'status is pinned to the last column and right-aligned'],
+    ]) {
+      const at = css.indexOf(rule, supportsStart)
+      assert.ok(at > supportsStart, label)
+    }
     const narrowStart = css.indexOf('@container dshsvc-version (max-width:480px){')
     assert.ok(narrowStart >= 0, 'narrow container query present')
-    const identityRuleStart = css.indexOf('.dshsvc-version-identity{flex-basis:100%;display:block}', narrowStart)
-    const statusRuleStart = css.indexOf('.dshsvc-version-status{flex-basis:100%;justify-content:flex-start !important}', narrowStart)
-    assert.ok(identityRuleStart > narrowStart, 'identity takes the full first row on narrow containers')
-    assert.ok(statusRuleStart > narrowStart, 'status takes the second row on narrow containers')
+    assert.ok(narrowStart > supportsStart, 'the narrow overrides come after the shared-column layer')
+    for (const [rule, label] of [
+      ['.dshsvc-version-surface{display:block !important}', 'the narrow card drops the shared grid'],
+      ['.dshsvc-version-row{display:flex !important;justify-content:space-between !important;gap:6px !important;padding:12px 2px !important}', 'the narrow row returns to flex'],
+      ['.dshsvc-version-identity{flex-basis:100%;display:flex !important;flex-wrap:wrap;align-items:center;gap:8px}', 'identity takes the full first row and keeps gaps between its items on narrow containers'],
+      ['justify-self:auto !important', 'the narrow row resets the wide right-alignment on the version number'],
+      ['.dshsvc-version-status{grid-column:auto !important;justify-self:stretch !important;flex-basis:100%;justify-content:flex-start !important}', 'status takes the second row on narrow containers'],
+    ]) {
+      const at = css.indexOf(rule, narrowStart)
+      assert.ok(at > narrowStart, label)
+    }
     assert.equal(css.indexOf('.dshsvc-version-note', narrowStart), -1,
       'the removed notice must not leave a dead CSS rule behind')
   } finally {
