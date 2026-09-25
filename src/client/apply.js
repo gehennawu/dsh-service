@@ -104,11 +104,18 @@
           '[data-dshsvc-root] .dshsvc-version-row{display:flex !important;justify-content:space-between !important;gap:6px !important;padding:12px 2px !important}',
           // identity 保持 flex（勿改回 block）：block 下行内子项之间的 gap 失效，
           // label / 版本号 / 入口按钮会贴在一起（手机实拍「1.9.8」紧贴「本次更新内容」）。
-          // flex + gap:8px 让三者之间恒有间隔；版本号仍可换行（min-width:0 + anywhere），
-          // 入口按钮 flex:none 不被压扁，放不下时整体折到下一行。
+          // flex + gap:8px 让三者之间恒有间隔；入口按钮 flex:none 不被压扁，放不下时
+          // 整体折到下一行（版本号本身保持 nowrap，不被拆行）。
           '[data-dshsvc-root] .dshsvc-version-identity{flex-basis:100%;display:flex !important;flex-wrap:wrap;align-items:center;gap:8px}',
-          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere;min-width:0;justify-self:auto !important}',
-          '[data-dshsvc-root] .dshsvc-version-identity>button{flex:none}',
+          // 窄容器同样要「两行同列」——只是用 flex 而非 subgrid 兑现：版本号 flex:1 吃掉
+          // 本行剩余空间（余量落在 label 与版本号之间，与宽容器一致），文本右对齐使它紧贴
+          // 入口按钮（间距恒为 gap:8px）；入口按钮 flex:none 后自然贴住行右缘，两行的
+          // 行宽相同 → 两行的版本号右缘与入口按钮左右缘各自对齐。宽度不足需要折行时，
+          // 版本号 min-width:0 先收缩、再整体折行，按钮的 margin-left:auto 保证它单独
+          // 占一行时仍靠右（折行的行之间也对齐）。只给版本号与按钮加规则，label 维持
+          // flex:none 靠左。
+          '[data-dshsvc-root] .dshsvc-version-identity>a,[data-dshsvc-root] .dshsvc-version-identity>code{margin-left:0 !important;white-space:normal !important;overflow-wrap:anywhere;min-width:0;justify-self:auto !important;flex:1 1 auto;text-align:right}',
+          '[data-dshsvc-root] .dshsvc-version-identity>button{flex:none;margin-left:auto}',
           '[data-dshsvc-root] .dshsvc-version-status{grid-column:auto !important;justify-self:stretch !important;flex-basis:100%;justify-content:flex-start !important}',
           '}',
           // 搜索命中定位闪烁（jumpScrollToHit）。

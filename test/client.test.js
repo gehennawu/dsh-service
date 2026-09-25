@@ -2906,6 +2906,12 @@ test('version card carries no DSH adaptation notice on any running version, two 
       ['.dshsvc-version-row{display:flex !important;justify-content:space-between !important;gap:6px !important;padding:12px 2px !important}', 'the narrow row returns to flex'],
       ['.dshsvc-version-identity{flex-basis:100%;display:flex !important;flex-wrap:wrap;align-items:center;gap:8px}', 'identity takes the full first row and keeps gaps between its items on narrow containers'],
       ['justify-self:auto !important', 'the narrow row resets the wide right-alignment on the version number'],
+      // 窄容器同样两行同列：版本号 flex:1 吃掉行内余量并把文本右对齐（余量落在 label 与
+      // 版本号之间，版本号与入口按钮之间只剩 gap），入口按钮 margin-left:auto 靠右——
+      // 两行行宽相同，于是两行的版本号右缘与入口按钮左右缘各自齐平。这是移动端实拍里
+      // 缺失的那条对齐，逐条钉住。
+      ['flex:1 1 auto;text-align:right}', 'the narrow version number absorbs the row slack and right-aligns so both rows line up'],
+      ['.dshsvc-version-identity>button{flex:none;margin-left:auto}', 'the narrow notes entry keeps its size and stays flush right'],
       ['.dshsvc-version-status{grid-column:auto !important;justify-self:stretch !important;flex-basis:100%;justify-content:flex-start !important}', 'status takes the second row on narrow containers'],
     ]) {
       const at = css.indexOf(rule, narrowStart)
