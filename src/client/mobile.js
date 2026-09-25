@@ -433,6 +433,20 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      标题长短变化时芯片位置稳定不飘。 */
   html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }
 }
+/* 模式芯片（创造/默认等预设名）恢复可见 —— 官方 0.1.7-rc.1 起的窄屏隐藏语义
+   与移动端「模式=会话身份」的定稿冲突（todo-82 方案二：模式芯片留标题行）。
+   取证（0.1.7-rc.2 真机 + npm 产物逐版对照）：
+   · 隐藏来源是官方 dsh-client-ui-agent-preset 的 AgentPresetLabel.module.css
+     ".SVAs4q_label{display:none}"，容器是官方 dsh-client-ui-conversation
+     ".wSkVaW_titleRow{container-type:inline-size}"；0.1.7-alpha.2 及以前两处都不存在。
+   · 判定宽度是 titleRow（非视口）：本插件移动端下 titleRow = 视口 − 66px，
+     540 阈值 ⇒ 606px 视口起才显示，320~606 全档（所有手机）均被隐藏。
+   · 覆盖只在 "html[data-dshsvc-mobile]" 内生效（≥1024 引擎拆卸后官方语义逐字不变）；
+     与官方规则同为 (0,1,0) 特异性，靠 !important 取胜。
+   恢复后余量实测：390px+ 标题完整不裁（198px），仅 320/360/375 档标题按省略号
+   收缩（分别 -70/-30/-15px），文档零横向溢出、titleRow 溢出恒为官方 corner 钮
+   固有的 16px —— 与恢复前逐字相同。 */
+html[data-dshsvc-mobile] [class*="SVAs4q_label"] { display: inline-flex !important; }
 /* Agent Team 弹窗右锚：修复移动端面板右侧超出视口。
    面板 = 官方 @deepseek-ai/dsh-experimental-client-ui-agent-team 的 TeamAction，
    注册在 conversation.session.header.actions（与任务/子代理芯片同槽）。它自己的

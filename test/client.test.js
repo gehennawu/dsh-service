@@ -9186,6 +9186,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(parkingGroup[0], /\[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*max-width: calc\(100vw - 122px\) !important/s)
     // 方案二：headerActions（预设芯片所在）必须保持官方在流，不得整体泊动
     assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] \{[^}]*position: absolute/, 'headerActions must stay in-flow so the preset chip remains in the title row')
+    // 模式芯片恢复可见：官方 0.1.7-rc.1 起 AgentPresetLabel 自带
+    // `@container (width<=540px){.SVAs4q_label{display:none}}`（容器=titleRow，
+    // 移动端下 ≈ 视口 606px），把「创造模式」在全部手机宽度隐藏。覆盖必须无条件
+    // 在场（不进 560 媒体查询，607px 视口也要生效）且限移动端作用域（≥1024 引擎
+    // 拆卸后官方语义逐字不变）。
+    assert.match(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="SVAs4q_label"\] \{ display: inline-flex !important; \}/)
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="QsffPG_root"\] \{ position: absolute/, 'ungated parking rule would also hit 561~1023px windows')
     // Agent Team 弹窗右锚（2026-09-20）：官方 TeamAction 面板自带 left:0，
     // 挂在头部右侧的 header.actions 槽上会整体右移越屏。三条断言锁死修法：
