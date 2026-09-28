@@ -7,7 +7,7 @@
     "build:client": "node scripts/build-client.mjs",
     "check:client": "node scripts/check-client-source.mjs",
     "pretest": "npm run build:client",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "prepack": "npm run build:client"
   },
   "main": "./index.js",
