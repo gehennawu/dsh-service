@@ -9286,7 +9286,17 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.notEqual(styleTag, undefined)
     // 真机反馈两处：抽屉钮钉左上角（头部预留位），设置标签条横滑
     assert.match(styleTag.textContent, /data-dshsvc-fab\]:hover/)
-    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding: 10px 20px 0 46px/)
+    // 抽屉钮让位只写 padding-left（选择器按几何泛化到中心列任意页面头部）；
+    // 会话头部自己的四边内边距另立一条（引擎标记属性 + 官方类哈希兜底）。
+    // 旧写法把让位与会话头部的完整 padding 混在一条里，连带改写官方其它页面
+    // 头部自己的内边距（插件面板页 padding-top 28→10、右 0→20，头行可用宽度
+    // 再少 20px，真机 412px 简介与「添加插件」双双折行）。
+    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding-left: 46px !important; \}/)
+    assert.doesNotMatch(styleTag.textContent, /nth-child\(2\) header \{ padding: 10px/, 'the FAB clearance rule must not rewrite other pages’ header padding')
+    assert.match(
+      styleTag.textContent,
+      /header\[class\*="wSkVaW_header"\],\s*html\[data-dshsvc-mobile\] \[data-dshsvc-frame\] > :nth-child\(2\) header\[data-dshsvc-chat-header\] \{ padding: 10px 20px 0 46px !important; \}/,
+    )
     // 顶栏移动端适配（2026-09-19）：右内边距 28→20、utilities 左距 20→4、
     // titleCluster 列距 10→6、计数组列距 10→4 且 flex:none 不可挤压
     // （:not(:has(switcherTrigger)) 守卫 lineage 切换器根），标题吃掉全部富余
@@ -9342,6 +9352,15 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 覆盖到整个移动端，面板才不会落到页面流底部。泊位组里只应出现已有的
     // header chip parking 规则，不应出现 data-team-action。
     assert.doesNotMatch(parkingGroup[0], /data-team-action/, 'Agent Team panel rule must not be trapped inside the 560px parking gate')
+    // 官方插件面板页（dsh-client-ui-plugin-manager 的 main 面板）头行移动端适配：
+    // 官方 pageHead 是不换行的单行 flex，移动端中心列扣掉抽屉钮让位 46px 后，
+    // 视口 ≲404px 简介与「添加插件」互相挤压（简介两行孤字、按钮文案折行溢出胶囊）。
+    // 修法：允许换行 + 工具栏固有宽度并右对齐 + 按钮文案 nowrap。
+    assert.match(styleTag.textContent, /\[data-plugin-panel\] > \[data-window-drag\] \{ flex-wrap: wrap !important; \}/)
+    assert.match(styleTag.textContent, /\[data-plugin-panel\] > \[data-window-drag\] > :first-child \{ min-width: 0 !important; \}/)
+    assert.match(styleTag.textContent, /\[data-plugin-panel\] > \[data-window-drag\] > \[class\*="X_2TxG_toolbar"\] \{[^}]*margin-left: auto !important/s)
+    assert.match(styleTag.textContent, /\[data-plugin-panel\] > \[data-window-drag\] > \[class\*="X_2TxG_toolbar"\] \{[^}]*flex: none !important/s)
+    assert.match(styleTag.textContent, /\[data-plugin-panel\] \[class\*="X_2TxG_addButton"\] \{ white-space: nowrap !important; \}/)
     // 真机反馈第二轮根因：左右列 absolute 后退出 grid 流，三列必须显式钉位防中列掉进 0px 轨
     assert.match(styleTag.textContent, /\[data-dshsvc-sidebar\] \{ grid-column: 1 !important; grid-row: 1 !important; \}/)
     assert.match(styleTag.textContent, /\[data-dshsvc-center\] \{ grid-column: 2 !important; grid-row: 1 !important; \}/)

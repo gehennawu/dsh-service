@@ -347,10 +347,41 @@ html[data-dshsvc-mobile] [data-chat-flow-kind="turn-tail"] [data-turn-tail] > :l
 html[data-dshsvc-mobile] [class*="_toBottom"]:not([class*="Slot"]):not([data-dshsvc-user-jump]) {
   transform: translateX(calc(var(--dsh-composer-side-clearance, 16px) + 16px - 4px)) !important;
 }
-/* 左上角抽屉钮：悬停/按压用外壳交互底色；会话头部预留按钮位防遮面包屑 */
+/* 左上角抽屉钮：悬停/按压用外壳交互底色 */
 html[data-dshsvc-mobile] [data-dshsvc-fab]:hover,
 html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-interactive-bg-hover) !important; }
-html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding: 10px 20px 0 46px !important; }
+/* 抽屉钮让位内边距：FAB 是 fixed 覆盖件，中心列里**每一屏**的头行都要给它让位，
+   所以选择器按几何泛化（任意 header）；但让位**只写 padding-left** ——
+   旧写法把整条 padding 按会话头部的几何一起写死（10px 20px 0 46px），连带改写
+   了官方其它页面头部自己的内边距：官方插件面板页头部（PluginManagerPage
+   .X_2TxG_pageHead）官方只有 padding-top:28px，被改成 10px/20px 后头行可用宽度
+   再少 20px，412px 视口实测简介与「添加插件」双双折行（详见下方插件面板页组）。 */
+html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding-left: 46px !important; }
+/* 会话头部自己的移动端内边距（官方 10px 28px 0 [10px] 的收紧版：右 28→20）
+   只作用于会话头部本体：引擎标记属性优先，官方类哈希兜底覆盖未打标的空头部
+   （wSkVaW_ 取自 dsh-client-ui-conversation，0.1.5-rc.2 与 0.2.0-rc.1 两代同名同值，
+   升级需复核）。其余页面头部保持官方纵向与右侧内边距不变。 */
+html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header[class*="wSkVaW_header"],
+html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header[data-dshsvc-chat-header] { padding: 10px 20px 0 46px !important; }
+/* 官方插件面板页（dsh-client-ui-plugin-manager 的 main 面板，页面根
+   section[data-plugin-panel]，头行 = 直接子 header[data-window-drag]）移动端适配。
+   官方 pageHead 是**不换行**的单行 flex：左「标题+简介」、右「刷新+添加插件」，
+   两块固有宽度 ≈ 154 + 16 + 140；移动端中心列还要扣掉抽屉钮让位的 46px 与页面
+   自身的左右各 24px。视口 ≲404px 起两块互相挤压（真机 412px 实测：简介折两行、
+   末字孤行；「添加插件」被压到 90px 后按钮内文案折两行、溢出 32px 高的胶囊）。
+   修法：头行允许换行 + 工具栏保持固有宽度并右对齐 —— 放得下仍是一行，放不下
+   工具栏整体落到第二行右缘，标题/简介/按钮文案各自单行，不再互相借宽度；
+   按钮文案 nowrap 是第二道保险（任何容器宽度下都不许在胶囊内折行）。
+   data-plugin-panel / data-window-drag 为官方稳定钩子；类哈希 X_2TxG_ 取自
+   dsh-client-ui-plugin-manager PluginManagerPage.module.css（0.2.0-rc.1），
+   升级需复核（与 uV2eYG_ 等同规）。 */
+html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] { flex-wrap: wrap !important; }
+html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] > :first-child { min-width: 0 !important; }
+html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] > [class*="X_2TxG_toolbar"] {
+  margin-left: auto !important;
+  flex: none !important;
+}
+html[data-dshsvc-mobile] [data-plugin-panel] [class*="X_2TxG_addButton"] { white-space: nowrap !important; }
 /* 会话顶栏移动端适配：
    titleRow 里 标题crumb / 「N 个子代理」计数芯片 / 预设芯片（创造模式）互相挤压——
    官方 crumbs 自带 overflow:hidden，放不下的尾部被**硬裁**：计数芯片拦腰截断
