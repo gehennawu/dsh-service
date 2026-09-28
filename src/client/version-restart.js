@@ -50,13 +50,14 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
         return snapshot
       }
       // 宿主字段按形状校验后才入库：manualStartLikely 必须 boolean、supervisorKind 缺省或 string，
-      // 形状不对按「旧宿主无该字段」降级，绝不让坏值悄悄关掉确认门。
+      // 形状不对按「旧宿主无该字段」降级，绝不让坏值悄悄关掉确认门。electronShell 是桌面端
+      // （DSH Desktop）标记：只在严格等于 true 时成立，其余一律按非桌面端处理（旧宿主无该字段）。
       const applyVersionRuntimeEnv = (value) => {
         const env = value ? value.runtimeEnv : undefined
         if (env === null || typeof env !== 'object') return
         if (typeof env.manualStartLikely !== 'boolean') return
         if (env.supervisorKind !== undefined && env.supervisorKind !== null && typeof env.supervisorKind !== 'string') return
-        setRuntimeEnvState({ platform: typeof env.platform === 'string' ? env.platform : '', supervisorKind: env.supervisorKind === undefined || env.supervisorKind === null ? null : env.supervisorKind, manualStartLikely: env.manualStartLikely })
+        setRuntimeEnvState({ platform: typeof env.platform === 'string' ? env.platform : '', supervisorKind: env.supervisorKind === undefined || env.supervisorKind === null ? null : env.supervisorKind, manualStartLikely: env.manualStartLikely, electronShell: env.electronShell === true })
       }
       // 磁盘已安装版本（与 runtimeEnv 同随 version RPC 返回）：运行中的 pluginVersion 要等进程
       // 重启才变，磁盘版本升级落地即变——两者不一致 = 「已装好、待重启生效」。null = 旧宿主
@@ -157,6 +158,12 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
             throw new Error(t('error.restart'))
           }
           const previousInstanceId = res && res.value ? res.value.instanceId : undefined
+          // 桌面端（与终端手动启动同理）：宿主不退出 ⇒ 不会出现新实例。启动恢复轮询只会白等
+          // 60 秒再报超时，故直接进「已发出」终态，由卡片示桌面端/手动重启指引。
+          if (res && res.value && res.value.requiresManualRestart === true) {
+            setRestartFlow({ ...restartFlow, stage: 2, busy: false, error: null })
+            return
+          }
           if (typeof previousInstanceId !== 'string' || previousInstanceId.length === 0) {
             throw new Error(t('error.instance'))
           }
@@ -327,12 +334,14 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
         const displaySurface = svcSurfaceStyle()
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
 
-        // 重启后提示：手动启动环境不会自动拉起，等待文案换成手动指引。
+        // 重启后提示：桌面端（宿主由应用托管）与手动启动环境都不会自动拉起，等待文案换成
+        // 各自的指引；托管环境仍示「服务恢复后自动刷新」。
+        const desktopManaged = runtimeEnv !== null && runtimeEnv.electronShell === true
         if (flow.stage === 2) {
           return React.createElement('div', { 'data-testid': 'restart-card', style: card },
             React.createElement('div', { style: sectionTitle }, translate('restart.title')),
             React.createElement('p', { style: { margin: 0, fontSize: '13px' } }, translate('restart.sent')),
-            React.createElement('p', { style: hint }, translate(runtimeEnv !== null && runtimeEnv.manualStartLikely === true ? 'restart.sentManualHint' : 'restart.sentHint')))
+            React.createElement('p', { style: hint }, translate(desktopManaged ? 'restart.sentDesktopHint' : runtimeEnv !== null && runtimeEnv.manualStartLikely === true ? 'restart.sentManualHint' : 'restart.sentHint')))
         }
 
         const activityLabels = {
@@ -341,10 +350,12 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
           terminal: translate('activity.terminal'),
         }
         const activityItems = flow.activity && Array.isArray(flow.activity.items) ? flow.activity.items : []
-        // 疑似终端手动启动：确认前就把「退出后无人拉起」讲清楚，两段式确认的后果清单。
-        const manualWarn = runtimeEnv !== null && runtimeEnv.manualStartLikely === true
-          ? React.createElement('p', { 'data-testid': 'restart-manual-warn', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0 0' }) }, translate('restart.manualWarn'))
-          : null
+        // 桌面端 / 疑似终端手动启动：确认前就把「退出后无人拉起」讲清楚（两段式确认的后果清单）。
+        const manualWarn = desktopManaged
+          ? React.createElement('p', { 'data-testid': 'restart-desktop-warn', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0 0' }) }, translate('restart.desktopWarn'))
+          : runtimeEnv !== null && runtimeEnv.manualStartLikely === true
+            ? React.createElement('p', { 'data-testid': 'restart-manual-warn', style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '6px 0 0' }) }, translate('restart.manualWarn'))
+            : null
         const activityWarning = flow.stage === 3
           ? React.createElement('div', { style: { marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(211,51,51,0.1)', border: '1px solid rgba(211,51,51,0.35)' } },
               React.createElement('p', { style: { margin: '0 0 8px', color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', fontWeight: 600 } },

@@ -3777,6 +3777,35 @@ test('backup restore manual result shows restart instructions without starting r
   assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [], 'recovery polling did not start')
 })
 
+test('desktop backup restore asks for a desktop app restart instead of the terminal instructions', async () => {
+  const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  let versionCalls = 0
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') { versionCalls += 1; return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true } } } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: true, archive: { entryCount: 3, logicalBytes: 10 }, sections: { sessions: { files: 1 }, config: { files: [] }, profiles: { count: 0 } }, issues: [] } }
+    if (endpoint === 'backup-restore-prepare') return { ok: true, value: { planId: 'desktop-plan', expiresAt: Date.now() + 300000, targets: { config: { replace: [], remove: [] }, profiles: { upsert: [] } } } }
+    if (endpoint === 'backup-restore-commit') return { ok: true, value: { restart: { scheduled: false, requiresManualRestart: true, previousInstanceId: 'old-instance' } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('确认恢复').props.onClick()
+  await renderer.flush()
+  // 桌面端：宿主不 exit(42)，指引必须说「重启应用」而不是「在终端按 Ctrl+C」。
+  assert.match(renderer.text('settings.section'), /恢复完成，需要重启桌面应用/)
+  assert.match(renderer.text('settings.section'), /请在桌面端退出应用后重新打开/)
+  assert.doesNotMatch(renderer.text('settings.section'), /Ctrl\+C/)
+  assert.equal(versionCalls, 1)
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [], 'recovery polling did not start')
+})
+
 test('service panel lists active work and requires an explicit force restart', async () => {
   const calls = []
   const activity = {
@@ -4484,6 +4513,64 @@ test('manual-launch environment confirms before upgrade and shows hand-restart g
   assert.match(renderer.text('settings.section'), /服务不会自动拉起/)
 })
 
+// 桌面端（DSH Desktop，Electron）：宿主由应用托管，升级必须走应用自带的插件管理页，
+// 重启也不会自己回来（宿主端点不 exit(42)，返回 requiresManualRestart）。
+test('desktop runtime env greys the one-click upgrade and points at the desktop plugin manager', async () => {
+  let upgradeCalls = 0
+  const renderer = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true } },
+    endpoints: {
+      upgrade: () => {
+        upgradeCalls += 1
+        return { ok: false, error: 'desktop-managed-upgrade' }
+      },
+    },
+  }))
+
+  await renderer.load()
+  const button = renderer.findButton('升级插件')
+  assert.equal(button.props.disabled, true, '桌面端升级按钮必须置灰，而不是让用户点了才吃错误码')
+  assert.equal(renderer.hasTest('upgrade-desktop-note'), true)
+  assert.match(renderer.text('settings.section'), /请在桌面端的插件管理页更新本插件/)
+
+  // 绕过禁用态强行触发（旧客户端 / 竞态）：宿主短路码仍映射到同一句指引，不是裸错误码。
+  await button.props.onClick()
+  await renderer.flush()
+  assert.equal(upgradeCalls, 1)
+  assert.match(renderer.text('settings.section'), /命令行升级在桌面端不可用/)
+  assert.doesNotMatch(renderer.text('settings.section'), /desktop-managed-upgrade/)
+})
+
+test('desktop restart guides to the desktop app and starts no recovery polling', async () => {
+  let webRestarts = 0
+  const renderer = createRenderer(stubPanelRpc({
+    version: { runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true } },
+    endpoints: {
+      web: () => {
+        webRestarts += 1
+        return { ok: true, value: { instanceId: 'old-instance', requiresManualRestart: true } }
+      },
+    },
+  }))
+
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('重启').props.onClick()
+  await renderer.flush()
+  // 确认前就把后果讲清楚（两段式确认的后果清单）：桌面端确认后既不会退出也不会自动重启。
+  renderer.findByTestId('restart-desktop-warn')
+  assert.equal(renderer.hasTest('restart-manual-warn'), false, '桌面端不是「疑似终端手动启动」')
+  assert.match(renderer.text('settings.section'), /请从应用托盘\/菜单退出后重新打开应用/)
+  await renderer.findButton('重启 dsh web').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('确认重启').props.onClick()
+  await renderer.flush()
+  assert.equal(webRestarts, 1)
+  assert.match(renderer.text('settings.section'), /请在桌面端退出应用后重新打开/)
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, '桌面端不会有新实例，不启动恢复轮询')
+})
+
 // 已装好待重启（installedVersion 领先运行版本）是宿主事实而不是点击残留：重挂载/刷新页面后
 // 依然收起升级按钮并改示「已安装 X，重启后生效」（用户报「以为没升级成功」，2026-09-12）。
 const installedAheadRpc = ({ installed = '1.5.2', running = '1.5.1', manual = true } = {}) => async (channel, endpoint) => {
@@ -4906,6 +4993,32 @@ test('an unknown runtime environment renders as informational without warning ma
   assert.match(renderer.text('settings.section'), /DSH_SERVICE_RUNTIME_ENV=managed/)
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
   assert.equal(renderer.hasTest('tab-dot-health'), false)
+})
+
+test('a desktop runtime-env check reports the Electron shell as managed, not unknown', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', pluginVersion: '0.9.0', instanceId: 'old-instance', runtimeEnv: { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true } } }
+    if (endpoint === 'check-update') return { ok: false, error: 'unavailable' }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, platform: 'win32', arch: 'x64', nodeVersion: 'v22.14.0', liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'runtime-env', status: 'ok', detail: 'desktop' },
+      { id: 'node-version', status: 'ok', detail: 'v22.14.0:22' },
+    ] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+  // 桌面端是明确的 ok 事实：既不落 unknown 的含糊提示，也不误报成手动启动。
+  assert.match(renderer.text('settings.section'), /运行环境.*由桌面端托管（Electron）/)
+  assert.doesNotMatch(renderer.text('settings.section'), /未检测到进程管理器/)
+  assert.doesNotMatch(renderer.text('settings.section'), /疑似终端手动启动/)
+  assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
 })
 
 // ── v0.19 额度查询 ──────────────────────────────────────────────────────────────

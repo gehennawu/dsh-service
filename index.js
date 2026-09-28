@@ -3039,9 +3039,11 @@ async function repairPermissions(ctx, dshHome, plans, planId) {
 
 // 运行环境检查（v0.17）：managed/declared → ok；疑似手动启动 → warning 但带 advisory 标记
 //（黄色行内提示，不参与 overall 聚合、不点亮标签 ⚠ 与顶部提醒——用户复核口径）；unknown →
-// info。detail 是客户端映射词典的令牌。
+// info。detail 是客户端映射词典的令牌。桌面端（Electron）由应用自身托管重启，是明确的 ok
+// 事实，不再落 unknown 的含糊提示，且优先于 manual 判定。
 function runtimeEnvCheck(runtimeEnv) {
   if (runtimeEnv === undefined || runtimeEnv === null) return null
+  if (runtimeEnv.electronShell === true) return { id: 'runtime-env', status: 'ok', detail: 'desktop' }
   if (runtimeEnv.manualStartLikely === true) return { id: 'runtime-env', status: 'warning', detail: 'manual', advisory: true }
   if (runtimeEnv.supervisorKind === 'declared') return { id: 'runtime-env', status: 'ok', detail: 'declared' }
   if (typeof runtimeEnv.supervisorKind === 'string' && runtimeEnv.supervisorKind.length > 0) {
@@ -3256,7 +3258,9 @@ function collectActiveWork(ctx) {
 //   manualStartLikely=true —— 无管理器且 stdin/stdout 双 TTY（终端直启特征），升级后宿主
 //                            不自动退出，客户端改示手动重启指引；
 //   其余 —— unknown（输出重定向、NSSM/WinSW 等包装器），维持现状不折腾。
-// 探测不到的包装器可用 DSH_SERVICE_RUNTIME_ENV=managed|manual 由用户显式声明。
+// 探测不到的包装器可用 DSH_SERVICE_RUNTIME_ENV=managed|manual|desktop 由用户显式声明。
+// 第四态 electronShell=true 是正交的平台事实（DSH 桌面端），三态取值不变：桌面端既没有
+// supervisor 标记、stdio 也非 TTY，本会落 unknown，靠这一位才能改走桌面端重启引导。
 const RUNTIME_SUPERVISOR_ENV = [
   ['pm2', ['pm_id', 'PM2_HOME', 'pm_uptime']],
   ['systemd', ['INVOCATION_ID', 'JOURNAL_STREAM', 'NOTIFY_SOCKET']],
@@ -3264,9 +3268,21 @@ const RUNTIME_SUPERVISOR_ENV = [
   ['kubernetes', ['KUBERNETES_SERVICE_HOST']],
 ]
 
+// 桌面端（DSH Desktop）判据：桌面端的 Host 是 Electron 以 RunAsNode 承载的子进程，该进程里
+// `process.versions.electron` 有值（2026-09-28 Windows 真机实测：electron 44.0.0 / node 24.18.1，
+// 同进程 ELECTRON_RUN_AS_NODE=1，stdin/stdout 均非 TTY）。只认版本号字段：它是进程自身的运行时
+// 事实，不像 env 那样会随父进程继承给普通子进程，也不会对 iframe/嵌入帧误判（`'dshDesktop' in
+// globalThis` 在嵌入帧里同样成立，不能当判据）。非 Electron 的桌面封装可显式声明
+// DSH_SERVICE_RUNTIME_ENV=desktop。
+function isElectronRuntime(versions) {
+  return versions !== null && typeof versions === 'object'
+    && typeof versions.electron === 'string' && versions.electron.length > 0
+}
+
 function detectRuntimeEnv(options = {}) {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
+  const versions = options.versions ?? process.versions
   const stdinIsTTY = options.stdinIsTTY ?? (process.stdin ? process.stdin.isTTY === true : false)
   const stdoutIsTTY = options.stdoutIsTTY ?? (process.stdout ? process.stdout.isTTY === true : false)
   // 默认探测器只在未被注入时执行；win32 直接短路（/.dockerenv 与 /proc 不存在），单测全部显式传原语。
@@ -3274,25 +3290,39 @@ function detectRuntimeEnv(options = {}) {
   const cgroupText = options.cgroupText ?? (platform === 'win32' ? '' : (() => { try { return readFileSync('/proc/1/cgroup', 'utf8') } catch (_) { return '' } })())
 
   const forced = typeof env.DSH_SERVICE_RUNTIME_ENV === 'string' ? env.DSH_SERVICE_RUNTIME_ENV.trim().toLowerCase() : ''
-  if (forced === 'manual') return { platform, supervisorKind: null, manualStartLikely: true }
-  if (forced === 'managed') return { platform, supervisorKind: 'declared', manualStartLikely: false }
+  const electronShell = forced === 'desktop' || isElectronRuntime(versions)
+  // 桌面端标记只在成立时出现在返回对象里：其余平台的原返回逐字不变，既有三态用例与下游
+  // deepEqual 断言不受影响。判据只喂给「重启 / 升级 / 诊断」的用户可见行为，不作安全门槛。
+  const shell = (result) => (electronShell ? { ...result, electronShell: true } : result)
+
+  if (forced === 'manual') return shell({ platform, supervisorKind: null, manualStartLikely: true })
+  if (forced === 'managed') return shell({ platform, supervisorKind: 'declared', manualStartLikely: false })
+  // 显式声明桌面端：不再往下看 supervisor 标记与 TTY（桌面端那些信号都不代表会被拉起）。
+  if (forced === 'desktop') return shell({ platform, supervisorKind: null, manualStartLikely: false })
 
   for (const [kind, keys] of RUNTIME_SUPERVISOR_ENV) {
     if (keys.some((key) => env[key] !== undefined && env[key] !== '')) {
-      return { platform, supervisorKind: kind, manualStartLikely: false }
+      return shell({ platform, supervisorKind: kind, manualStartLikely: false })
     }
   }
   // /.dockerenv 与 /proc 只在 POSIX 内核上存在；win32 原生进程不做这两个探测。
   if (platform !== 'win32') {
-    if (dockerEnvExists === true) return { platform, supervisorKind: 'docker', manualStartLikely: false }
-    if (/docker/i.test(cgroupText)) return { platform, supervisorKind: 'docker', manualStartLikely: false }
-    if (/containerd|kubepods|lxc|podman/i.test(cgroupText)) return { platform, supervisorKind: 'container', manualStartLikely: false }
+    if (dockerEnvExists === true) return shell({ platform, supervisorKind: 'docker', manualStartLikely: false })
+    if (/docker/i.test(cgroupText)) return shell({ platform, supervisorKind: 'docker', manualStartLikely: false })
+    if (/containerd|kubepods|lxc|podman/i.test(cgroupText)) return shell({ platform, supervisorKind: 'container', manualStartLikely: false })
   }
-  if (stdinIsTTY === true && stdoutIsTTY === true) return { platform, supervisorKind: null, manualStartLikely: true }
-  return { platform, supervisorKind: null, manualStartLikely: false }
+  if (stdinIsTTY === true && stdoutIsTTY === true) return shell({ platform, supervisorKind: null, manualStartLikely: true })
+  return shell({ platform, supervisorKind: null, manualStartLikely: false })
 }
 
-function scheduleRestart(ctx) {
+// 桌面端不退出：壳把 Host 的任何非 0 退出判为崩溃，写 crash report 并弹原生「启动失败」对话框
+// （退出 / 重启 / 禁用第三方插件），没有自动重拉，且官方没有任何可编程重启 RPC。因此桌面端一律
+// 不 exit(42)，把「已是最新状态、需要重启」这一事实交给调用方转述（客户端改示桌面端重启指引）。
+// 返回值：scheduled=false + desktopManaged=true 时调用方不得再启动恢复轮询（不会出现新实例）。
+function scheduleRestart(ctx, runtimeEnv) {
+  if (runtimeEnv !== undefined && runtimeEnv !== null && runtimeEnv.electronShell === true) {
+    return { scheduled: false, desktopManaged: true }
+  }
   const doExit = () => {
     try {
       // 退出码 42 交给 Docker/systemd/pm2 的重启策略处理。
@@ -3302,8 +3332,9 @@ function scheduleRestart(ctx) {
     }
   }
   const timer = ctx.get('timer')
-  if (timer !== undefined) return timer.timeout(doExit, 500)
-  return doExit()
+  if (timer !== undefined) timer.timeout(doExit, 500)
+  else doExit()
+  return { scheduled: true, desktopManaged: false }
 }
 
 // ─── 技能管理（v0.22）：扫描 / frontmatter 手术 / AI 补全 ─────────────────────
@@ -5209,7 +5240,7 @@ function apply(ctx, featureConfig) {
     isEnabled: () => featureEnabled('backupMaintenance'),
     runtimeEnv,
     previousInstanceId: instanceId,
-    scheduleRestart: () => scheduleRestart(ctx),
+    scheduleRestart: () => scheduleRestart(ctx, runtimeEnv),
   })
   // 会话管理（v0.35）：删除两段式计划（planId → {id, path, bytes}），TTL 过期自动驱逐。
   const sessionDeletePlans = new Map()
@@ -5701,7 +5732,11 @@ function apply(ctx, featureConfig) {
         if (invocation.rawInput.trim() !== '') return { kind: 'error', text: '/restart does not accept arguments.' }
         const activity = collectActiveWork(ctx)
         if (activity.hasActive) return { kind: 'error', text: `Restart refused: ${activity.items.length} active item(s) detected. Use the Service Control restart tab to review them.` }
-        scheduleRestart(ctx)
+        // 桌面端不退出（见 scheduleRestart）：命令反馈必须说清「要重启的是应用」，否则用户
+        // 会以为宿主进程会自己回来。
+        if (scheduleRestart(ctx, runtimeEnv).desktopManaged) {
+          return { kind: 'success', text: 'DSH Desktop manages this process: quit and reopen the app to restart it.' }
+        }
         return { kind: 'success', text: 'Restart scheduled. The DSH Web process will exit in 0.5 seconds.' }
       },
     }), 'dsh-service restart command')
@@ -5885,6 +5920,11 @@ function apply(ctx, featureConfig) {
 
     } },
     'upgrade': { audit: true, handle: async (payload, rpcEndpoint) => {
+      // 桌面端短路（先于任何 subprocess）：桌面端升级动作要 spawn `dsh plugin --profile desktop add`，
+      // 而 bundled runtime 的 bin 不进 Host PATH，且官方明确 CLI 不能启动/改写 profiles/desktop
+      // （该 profile 由 Electron 独占）⇒ 必然失败。官方通道是桌面端自带的插件管理页，直接告诉
+      // 用户走那条路，不产生任何 subprocess 调用。
+      if (runtimeEnv.electronShell === true) return rpcFailure(new Error('desktop-managed-upgrade'))
       try {
         const value = await upgradePlugin(ctx, dshHome, runtimeEnv)
         // 升级落地即作废更新缓存：下一次 check-update 要按新的磁盘版本重算「是否有新版本」，
@@ -5967,12 +6007,15 @@ function apply(ctx, featureConfig) {
         return { ok: false, error: 'active-work', value: activity }
       }
 
-      scheduleRestart(ctx)
+      const restart = scheduleRestart(ctx, runtimeEnv)
       return {
         ok: true,
         value: {
           // 只下发客户端真正消费的实例 id；重启反馈文案由客户端词典渲染（双语约束）。
           instanceId,
+          // 桌面端不退出（见 scheduleRestart）：显式告知客户端「不会有新实例」，客户端据此
+          // 改示桌面端重启指引、不启动恢复轮询（与升级落地那条 requiresManualRestart 同语义）。
+          ...(restart.desktopManaged ? { requiresManualRestart: true } : {}),
         },
       }
 

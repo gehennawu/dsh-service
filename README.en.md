@@ -318,7 +318,7 @@ Open DSH Web Settings and select **Service Control**.
 
 The plugin only sends an exit signal; it does not start the process again. Without a process manager, restart stops DSH Web.
 
-The plugin passively detects a process manager (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the launch as manual — flagged in Health diagnostics and switching one-click upgrade to keep running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers such as NSSM/WinSW; declare `DSH_SERVICE_RUNTIME_ENV=managed|manual` explicitly.
+The plugin passively detects a process manager (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the launch as manual — flagged in Health diagnostics and switching one-click upgrade to keep running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers such as NSSM/WinSW; declare `DSH_SERVICE_RUNTIME_ENV=managed|manual|desktop` explicitly.
 
 ### Docker Compose
 
@@ -350,11 +350,15 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | Linux + Docker Compose | Supported | Supported with a restart policy | Verified |
 | Linux + systemd / pm2 | Expected to work | Managed externally | Not separately tested |
 | macOS / Windows + pm2 or similar | Not blocked by the code | Managed externally | Not tested |
+| DSH Desktop (Windows, Electron) | Supported | Owned by the desktop app | Verified (real host, 2026-09-28) |
+| DSH Desktop (macOS / Linux, Electron) | Not blocked by the code | Owned by the desktop app | Not verified |
 | Direct `dsh web` execution | Supported | Not supported | Expected behavior |
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
 **DSH compatibility statement**: adapted to DSH `0.1.7-rc.2` — session format V4 (V3 logs are migrated by the official layer into a `session.v4.jsonl.zstd` generation file on first read, with the old `session.v3.jsonl.zstd` retained per the format catalog's policy; the detail view automatically archives system events), the `SettingsForms` configuration surface (plugin config now lives in the Profile's `cordis.patch.yml` with hot updates over `loader/volatile-update`, while the legacy `settings.register` remains authoritative on 0.1.5/0.1.6 so the two never cross-contaminate on a shared host), and all existing V3 adaptation (the `system/message` history, the handle-based sessionPersistence, the official right sidebar, the object-shaped turn-process), plus dual-hash compatibility for mobile bottom-row triggers, subagent turn-tail list-slot adaptive compatibility, `plugins.bundle.config` slot injection, and session-detail open fallback through `uiWorkspace`. Older DSH releases (`>=0.1.1-rc.2`) remain supported. The declared range now extends through `0.1.7-rc.2`; source-level and artifact-level reviews of rc.2 (346 commits) found no new breakage, and CSS hash stems have zero drift across artifact grep; the plugin-version compatibility gate introduced in rc.1 reads only `peerDependencies` (this plugin declares none, so the gate does not apply); real-host mounting on DSH `0.1.7-rc.2` is operational. The settings surface and the persistence/layout seams all run in dual shapes detected from runtime capabilities, and adaptation items that target newer structures are naturally inert on older hosts (cosmetic only, no functional loss). Note: sessions written after upgrading cannot be read by older DSH releases — **backups do not restore across a version downgrade**. The plugin marketplace judges compatibility from the `engines.dsh` range in `package.json`, which is the single declaration of the supported range.
+
+**DSH Desktop (Electron) statement**: the desktop app reuses the same Web frontend and the same client plugin graph (`platform: web`), so the plugin loads as usual and almost everything works unchanged; only "restart" and "one-click upgrade" differ in meaning. The host is owned by the desktop app, so **restart never calls `process.exit(42)`** there (the shell treats any non-zero exit as a host crash, shows a native failure dialog and does not relaunch it; there is no official programmatic restart RPC) — the Restart button, the `/restart` command and the post-restore restart all guide the user to quit and reopen the desktop app instead; **one-click upgrade is greyed out on the desktop** and points at the app's own plugin manager (the bundled CLI cannot boot or mutate `profiles/desktop`, so the upgrade endpoint short-circuits with `desktop-managed-upgrade` and spawns nothing); the Health diagnostics "Runtime environment" row reads "Managed by DSH Desktop (Electron)". The signal is `process.versions.electron` inside the host process (measured on the real Windows desktop build: `44.0.0`, with `ELECTRON_RUN_AS_NODE=1` and non-TTY stdio); non-Electron desktop wrappers can declare `DSH_SERVICE_RUNTIME_ENV=desktop`. Task notifications **do work on the desktop app** (the permission is granted and a real system notification has been observed); the only boundary is that **clicking a notification cannot bring the window back** (closing the window hides it and `dshDesktop` exposes no window API — use the tray). macOS / Linux desktop builds are not verified.
 
 ## 🔒 Security design
 
@@ -379,6 +383,12 @@ The plugin only sends an exit signal; a process manager brings it back (see "Aut
 <summary><strong>What is the yellow "no restart assurance" caution in Health?</strong></summary>
 
 It is the "likely manual terminal launch" detection — no process manager found. If it is actually managed by NSSM/WinSW or output redirection, declare `DSH_SERVICE_RUNTIME_ENV=managed` to clear it.
+</details>
+
+<details>
+<summary><strong>Why do task notifications not appear on DSH Desktop?</strong></summary>
+
+Check two things first: (1) the **master notification switch** under "Configuration → Notifications" must actually be on — it defaults to off and only turns on after you click "Enable notifications" and the system grants permission (if you only see the "Enable notifications" button, permission has not been granted yet); (2) the session must really go from running to finished, and it must not be a subagent session. System notifications themselves do work on the desktop app: Windows "Settings → System → Notifications" registers an `electron.app.DeepSeek Harness` entry, and a real "task complete" toast has been observed on the actual machine. The only known boundary is that **clicking the notification does not bring the window back** — closing the window hides it and the current desktop bridge exposes no window API; use the system tray instead.
 </details>
 
 <details>

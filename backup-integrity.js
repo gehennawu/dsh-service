@@ -705,7 +705,9 @@ export function createBackupIntegrity(options) {
       throw domainError('restore-failed')
     }
 
-    const manual = runtimeEnv?.manualStartLikely === true
+    // 桌面端（electronShell）与终端手动启动同理：没有东西会把 Host 拉起来，恢复完成后不调度
+    // exit(42)（桌面端退出会被壳判为崩溃并弹原生恢复对话框），改由客户端示「重启应用」指引。
+    const manual = runtimeEnv?.manualStartLikely === true || runtimeEnv?.electronShell === true
     if (!manual) scheduleRestart()
     return {
       restoredFrom: plan.source.name,

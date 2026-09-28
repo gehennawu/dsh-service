@@ -3428,9 +3428,88 @@ test('runtime env check maps each environment to ok, advisory warning, or a non-
   assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: 'declared', manualStartLikely: false }), { id: 'runtime-env', status: 'ok', detail: 'declared' })
   // unknown → info：维持现状本是默认路径，不算警告，不点亮标签 ⚠。
   assert.deepEqual(runtimeEnvCheck({ platform: 'linux', supervisorKind: null, manualStartLikely: false }), { id: 'runtime-env', status: 'info', detail: 'unknown' })
+  // 桌面端（Electron）是明确的 ok 事实，不再落 unknown；且优先于 manual（桌面端不会被谁拉起，
+  // 但那是「应用托管」而不是「疑似终端手动启动」，两者文案与语义不同）。
+  assert.deepEqual(runtimeEnvCheck({ platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true }), { id: 'runtime-env', status: 'ok', detail: 'desktop' })
+  assert.deepEqual(runtimeEnvCheck({ platform: 'win32', supervisorKind: null, manualStartLikely: true, electronShell: true }), { id: 'runtime-env', status: 'ok', detail: 'desktop' })
   // 宿主未提供运行环境（老版本/异常）→ 不产生该检查项。
   assert.equal(runtimeEnvCheck(undefined), null)
   assert.equal(runtimeEnvCheck(null), null)
+})
+
+// ---- DSH 桌面端（Electron）判据（2026-09-28 Windows 真机实测）----
+
+test('runtime env recognises the Electron desktop shell without touching the legacy tri-state', () => {
+  // 判据来源：Windows 桌面端真机实测——Host 是 Electron 以 RunAsNode 承载的子进程，进程内
+  // process.versions.electron === '44.0.0'（node 24.18.1），ELECTRON_RUN_AS_NODE=1，
+  // stdin/stdout 均非 TTY（所以旧探测只会落 unknown）。
+  const base = { env: {}, platform: 'win32', stdinIsTTY: false, stdoutIsTTY: false, dockerEnvExists: false, cgroupText: '' }
+  const electron = { electron: '44.0.0', node: '24.18.1' }
+
+  // 桌面端：三态取值与旧平台同形（无管理器、非手动），只多一个 electronShell 位。
+  assert.deepEqual(detectRuntimeEnv({ ...base, versions: electron }), { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true })
+  // 判据只看版本号字段，不看 platform（Linux 桌面端未在验证范围，但判据同形）。
+  assert.deepEqual(detectRuntimeEnv({ ...base, platform: 'linux', versions: electron }), { platform: 'linux', supervisorKind: null, manualStartLikely: false, electronShell: true })
+  // 与三态正交：继承来的 supervisor 标记照旧被识别，优先级交给消费方（重启/升级/诊断先看桌面端位）。
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { NOTIFY_SOCKET: '/run/systemd/notify' }, versions: electron }), { platform: 'win32', supervisorKind: 'systemd', manualStartLikely: false, electronShell: true })
+  // TTY 特征同样不改变桌面端位（桌面端 stdio 不是 TTY，这里只证明两个判定互不干扰）。
+  assert.deepEqual(detectRuntimeEnv({ ...base, versions: electron, stdinIsTTY: true, stdoutIsTTY: true }), { platform: 'win32', supervisorKind: null, manualStartLikely: true, electronShell: true })
+
+  // 非 Electron / 字段形状不对：字段完全不出现——旧平台的返回对象逐字不变，既有 deepEqual 断言不受影响。
+  for (const versions of [{ node: '24.18.1' }, { electron: '' }, { electron: 44 }, { electron: null }, null, undefined]) {
+    assert.equal('electronShell' in detectRuntimeEnv({ ...base, versions }), false, `electronShell must stay absent for ${JSON.stringify(versions)}`)
+  }
+
+  // 显式声明口（非 Electron 的桌面封装）：与 manual/managed 同一条通路，压过后续探测。
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { DSH_SERVICE_RUNTIME_ENV: 'desktop' } }), { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true })
+  assert.deepEqual(detectRuntimeEnv({ ...base, env: { DSH_SERVICE_RUNTIME_ENV: 'desktop', pm_id: '1' } }), { platform: 'win32', supervisorKind: null, manualStartLikely: false, electronShell: true })
+})
+
+test('desktop host never exits on restart and refuses the CLI upgrade path', async (t) => {
+  const home = await makeHome(t, 'dsh-service-desktop-')
+  await scaffoldProfile(home, { spec: '^0.13.0', installedVersion: pluginVersion, workspace: true })
+  const { service: subprocess, spawned } = upgradeSubprocess({ dshHome: home })
+  const { handler, scheduled, registeredCommands } = createHost({
+    commands: true,
+    env: { DSH_HOME: home, DSH_SERVICE_RUNTIME_ENV: 'desktop' },
+    services: {
+      subprocess,
+      sessionPersistence: { listSnapshots: async () => [] },
+      workspaceRegistry: { list: () => [] },
+      agents: { list: () => [] },
+      jobs: { list: () => [] },
+      terminals: { list: () => [] },
+    },
+  })
+
+  const version = await handler('version', {})
+  assert.equal(version.ok, true)
+  assert.equal(version.value.runtimeEnv.electronShell, true)
+  assert.equal(version.value.runtimeEnv.manualStartLikely, false)
+
+  // 重启：不调度 exit(42)（桌面壳会把它判成 Host 崩溃），并显式告知客户端「不会有新实例」。
+  const restart = await handler('web', {})
+  assert.equal(restart.ok, true)
+  assert.equal(restart.value.requiresManualRestart, true)
+  assert.equal(typeof restart.value.instanceId, 'string')
+  assert.deepEqual(scheduled, [], 'desktop host must not schedule process.exit(42)')
+
+  // /restart 命令同一条判据：不退出，反馈改说「重启应用」。
+  const command = await registeredCommands[0].handler({ rawInput: '' })
+  assert.equal(command.kind, 'success')
+  assert.match(command.text, /DSH Desktop/)
+  assert.deepEqual(scheduled, [], 'the desktop /restart command must not schedule an exit either')
+
+  // 一键升级：端点短路，绝不 spawn dsh CLI（CLI 在桌面端不能启动/改写 profiles/desktop）。
+  const upgrade = await handler('upgrade', {})
+  assert.equal(upgrade.ok, false)
+  assert.equal(upgrade.error, 'desktop-managed-upgrade')
+  assert.deepEqual(spawned, [], 'desktop upgrade must not spawn the dsh CLI')
+
+  // 诊断：运行环境行是明确的桌面端事实。
+  const diagnostics = await handler('diagnostics', {})
+  assert.equal(diagnostics.ok, true)
+  assert.deepEqual(diagnostics.value.checks.find((check) => check.id === 'runtime-env'), { id: 'runtime-env', status: 'ok', detail: 'desktop' })
 })
 
 // ── v0.18 远端额度 ──────────────────────────────────────────────────────────────

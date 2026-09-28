@@ -5259,6 +5259,8 @@
           'adding-to-root': 'update.failAddingToRoot',
           'not-a-workspace': 'update.failNotWorkspace',
           'ignored-builds': 'update.failIgnoredBuilds',
+          // 桌面端升级端点直接短路（不 spawn CLI）：客户端按钮本已置灰，这里是兜底文案。
+          'desktop-managed-upgrade': 'update.desktopManagedUpgrade',
         }
         const upgradePlugin = async () => {
           if (isUpgradeInFlight()) return
@@ -5596,6 +5598,8 @@
           if (check.id === 'tar' && check.status === 'ok') return translate('health.detail.tar.ok')
           if (check.id === 'permissions') return translate(check.status === 'ok' ? 'health.detail.permissions.ok' : 'health.detail.permissions.warning', { count: detail || '0' })
           if (check.id === 'runtime-env') {
+            // 桌面端（Electron）是独立的 ok 事实，令牌先于 managed 的 kind 分支判定。
+            if (detail === 'desktop') return translate('health.detail.runtime-env.desktop')
             if (detail === 'manual') return translate('health.detail.runtime-env.manual')
             if (detail === 'declared') return translate('health.detail.runtime-env.declared')
             if (detail === 'unknown') return translate('health.detail.runtime-env.unknown')
@@ -6280,8 +6284,8 @@
             : null,
           React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
           backupManualRestart ? React.createElement('div', { 'data-testid': 'backup-manual-restart', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
-            React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('backup.manualRestartTitle')),
-            React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate('backup.manualRestartBody'))) : null,
+            React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartTitleDesktop' : 'backup.manualRestartTitle')),
+            React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartBodyDesktop' : 'backup.manualRestartBody'))) : null,
           backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
           backups.items.length === 0
             ? React.createElement('p', { style: hint }, translate('backup.empty'))
@@ -6426,13 +6430,20 @@
         const pluginState = pluginRestartPending && installedVersion !== null
           ? Object.assign({}, updateInfo?.plugin, { current: installedVersion, restartPending: true })
           : updateInfo?.plugin
+        // 桌面端（DSH Desktop）：插件由应用自己安装，命令行升级在桌面端不可用 ⇒ 按钮保持可见
+        // 但置灰并给出同一指引，而不是让用户点下去才吃一个错误码（宿主端点另有短路兜底）。
+        const desktopManaged = runtimeEnv !== null && runtimeEnv.electronShell === true
         // 确认后果或已装好待重启期间收起升级按钮，避免重复触发或撞 no-newer-version 守卫。
         const pluginAction = pluginUpdate && !pluginRestartPending && !upgradeManualConfirm
-          ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }), disabled: upgradeBusy, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
+          ? React.createElement('button', { style: Object.assign({}, neutral, { minHeight: '24px', padding: '2px 8px', fontSize: '11px' }, desktopManaged ? { opacity: 0.5, cursor: 'default' } : {}), disabled: upgradeBusy || desktopManaged, title: desktopManaged ? translate('update.desktopManagedUpgrade') : undefined, onClick: upgradePlugin }, translate(upgradeBusy ? 'update.upgrading' : 'update.upgrade'))
+          : null
+        // 桌面端升级指引：只在「有可升级版本」或「已装好待重启」时出现，无新版本时不占版面。
+        const desktopUpgradeNote = desktopManaged && (pluginUpdate || pluginRestartPending)
+          ? React.createElement('p', { 'data-testid': 'upgrade-desktop-note', style: Object.assign({}, hint, { margin: '6px 0 0' }) }, translate('update.desktopManagedUpgrade'))
           : null
         // 手动重启指引：本次点击刚装好，或（事实层面）已装好待重启且当前是手动启动环境。
-        // 托管环境由恢复轮询接管，不重复提示。
-        const manualRestartHint = upgradeManualPending || (installedAhead && runtimeEnv !== null && runtimeEnv.manualStartLikely === true)
+        // 托管环境由恢复轮询接管，不重复提示；桌面端与手动启动同理（宿主不退出、不会有新实例）。
+        const manualRestartHint = upgradeManualPending || (installedAhead && runtimeEnv !== null && (runtimeEnv.manualStartLikely === true || desktopManaged))
         // 「本次更新内容」正文：折叠面板挂在触发它的那一行下方（`notesState.kind` 决定归属），
         // 正文按不可信文本渲染——能复用官方 MarkdownText 就用（与官方聊天观感一致、
         // 默认拒原始 HTML/危险链接），官方 seed 缺席的老外壳回落 pre-wrap 纯文本。
@@ -6501,9 +6512,10 @@
               : null,
             manualRestartHint
               ? React.createElement('div', { 'data-testid': 'upgrade-manual-pending', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsh-svc-raised-bg)' } },
-                  React.createElement('p', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '13px', fontWeight: 650 } }, translate('update.manualRestartTitle')),
-                  React.createElement('p', { style: Object.assign({}, hint, { margin: 0 }) }, translate('update.manualRestartBody')))
+                  React.createElement('p', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '13px', fontWeight: 650 } }, translate(desktopManaged ? 'update.manualRestartTitleDesktop' : 'update.manualRestartTitle')),
+                  React.createElement('p', { style: Object.assign({}, hint, { margin: 0 }) }, translate(desktopManaged ? 'update.manualRestartBodyDesktop' : 'update.manualRestartBody')))
               : null,
+            desktopUpgradeNote,
             upgradeError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '4px 0 0' }) }, upgradeError) : null))
 
         // 重启区块复用共享组件（「重启」标签还承载设置页左列入口的显示开关；左侧入口默认关闭）

@@ -17,6 +17,8 @@ cpa_mgmt_key.txt
 AGENTS.md
 TODO.md
 KNOWLEDGE.md
+# 桌面端适配文档快照的清单（MANIFEST.md 与 docs/research、docs/planning 下那批材料同属本机资产）
+MANIFEST.md
 
 # Local investigation material — 调研文档与本机事实缓存，视为本机资产，不进版本库
 # （host-facts.md 内容同样来自翻源码调研；AGENTS.md 路由表与 plugin-compat.js 对它们的引用
@@ -40,4 +42,18 @@ docs/planning/
 
 # 老宿主兼容测试资产（npm 包与解压产物）——持久保留在工作区，不进版本库
 test/fixtures/
+
+# 本机逐次生成的调查/验证脚本——瞬态产物，只有本机成立，不进版本库。
+# 注意：这些文件是取证资产，必须保留在工作区，**不得删除**（见 AGENTS.md
+# 「测试与老版本兼容资产」：scripts/probe-*.mjs 用于老宿主 DOM/CSS 取证比对）。
+scripts/probe-*.mjs
+scripts/verify-*.mjs
+
+# 一次性脚本与临时页面（前缀不足以成族，或族内已有入库文件，故逐条列出）
+scripts/diagnose-issue-2.mjs
+scripts/diagnose-issue-2-delete.mjs
+scripts/measure-icon-ink.mjs
+scripts/repro-nav-visibility.mjs
+scripts/reset-nav-order.mjs
+service-icon-options.html
 

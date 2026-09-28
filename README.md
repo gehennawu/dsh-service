@@ -320,7 +320,7 @@ dsh web
 
 插件只发送退出信号，不负责拉起进程；没有进程管理器时重启会直接停止 DSH Web。
 
-插件以被动信号（环境变量、`/.dockerenv`、`/proc/1/cgroup`、终端 TTY）判断进程管理器：检测到 Docker/systemd/pm2/supervisord/Kubernetes 时照常自动重启；都没有且 stdin/stdout 为交互终端时视为「疑似手动启动」——健康诊断黄色标注、一键升级改为保持运行并提示手动重启。启发式无法覆盖输出重定向、NSSM/WinSW 等场景，可用 `DSH_SERVICE_RUNTIME_ENV=managed|manual` 显式声明。
+插件以被动信号（环境变量、`/.dockerenv`、`/proc/1/cgroup`、终端 TTY）判断进程管理器：检测到 Docker/systemd/pm2/supervisord/Kubernetes 时照常自动重启；都没有且 stdin/stdout 为交互终端时视为「疑似手动启动」——健康诊断黄色标注、一键升级改为保持运行并提示手动重启。启发式无法覆盖输出重定向、NSSM/WinSW 等场景，可用 `DSH_SERVICE_RUNTIME_ENV=managed|manual|desktop` 显式声明。
 
 ### Docker Compose
 
@@ -352,11 +352,15 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | Linux + Docker Compose | 支持 | 配置 restart policy 后支持 | 已验证 |
 | Linux + systemd / pm2 | 预期支持 | 由进程管理器负责 | 未单独验证 |
 | macOS / Windows + pm2 等 | 代码未限制 | 由进程管理器负责 | 未验证 |
+| DSH Desktop（Windows，Electron） | 支持 | 由桌面应用负责 | 已验证（2026-09-28 真机） |
+| DSH Desktop（macOS / Linux，Electron） | 代码未限制 | 由桌面应用负责 | 未验证 |
 | 直接运行 `dsh web` | 支持 | 不支持 | 预期行为 |
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
 **DSH 适配口径**：已适配 DSH `0.1.7-rc.2`——会话格式 V4（V3 日志首读时由官方迁移为 `session.v4.jsonl.zstd` 代际文件，旧 `session.v3.jsonl.zstd` 按格式目录策略保留；详情视图自动归档系统事件）、`SettingsForms` 配置面（插件配置改由 Profile 的 `cordis.patch.yml` 承载，热更新走 `loader/volatile-update`；旧的 `settings.register` 在 0.1.5/0.1.6 上仍是权威来源，装在同一宿主上两者互不串台）、会话格式 V3 既有适配全部保留（`system/message` 入史、sessionPersistence handle 化、官方右栏、turn-process 对象化）、移动端底行触发钮双哈希兼容、子代理回合尾模型行 list 槽位自适应兼容、`plugins.bundle.config` 槽位注入、会话详情打开接入 `uiWorkspace` 降级链路。旧版 DSH（`>=0.1.1-rc.2`）保持兼容。支持区间扩展到 `0.1.7-rc.2`；rc.2 源码级与产物级审查（346 commits）未发现新增破坏面，CSS 哈希词干经产物 grep 定案零漂移；rc.1 起新增的插件版本兼容门禁只读取 `peerDependencies`（本插件无该声明，不受门禁约束），并已在 DSH `0.1.7-rc.2` 真机挂载运行。设置面、persistence/布局 seam 均按运行时能力探测走双形态，旧宿主上针对新结构的适配项天然不生效（纯展示，无功能损失）。注意：升级后写入的会话日志无法被旧版 DSH 读取，**备份不可跨版本降级恢复**。插件市场按 `package.json` 的 `engines.dsh` 区间判定兼容性（该字段是唯一的支持口径声明）。
+
+**DSH 桌面端（DSH Desktop / Electron）口径**：桌面端复用同一份 Web 前端与同一张客户端插件图（`platform: web`），插件照常加载，绝大多数功能原样可用；语义不同的只有「重启」与「一键升级」。宿主由桌面应用托管，**重启一律不再 `process.exit(42)`**（桌面壳把任何非 0 退出判为 Host 崩溃，会弹原生「启动失败」对话框且不会自动重拉，官方也没有可编程重启 RPC）——「重启」按钮、对话里的 `/restart` 与备份恢复后的重启统一改为提示「请在桌面端退出应用后重新打开」；**一键升级在桌面端置灰**并指向应用自带的插件管理页（桌面端 CLI 不能启动/改写 `profiles/desktop`，升级端点直接短路返回 `desktop-managed-upgrade`，不产生任何 subprocess）；健康诊断的「运行环境」行显示「由桌面端托管（Electron）」。判据是宿主进程内的 `process.versions.electron`（Windows 桌面版真机实测 `44.0.0`，同进程 `ELECTRON_RUN_AS_NODE=1`、stdin/stdout 均非 TTY）；非 Electron 的桌面封装可用 `DSH_SERVICE_RUNTIME_ENV=desktop` 显式声明。任务通知在桌面端**可用**（权限 granted，真机已收到系统通知）；唯一的边界是**点击通知唤不回窗口**（桌面端关窗=隐藏窗口，`dshDesktop` 无窗口 API，请用托盘唤回）。macOS / Linux 桌面端未验证。
 
 ## 🔒 安全设计
 
@@ -381,6 +385,12 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 <summary><strong>健康诊断里的黄色「重启无保障」警告是什么？</strong></summary>
 
 这是「疑似终端手动启动」的检测结果，说明当前没有检测到进程管理器。若实际由 NSSM/WinSW 或输出重定向等场景托管，可用 `DSH_SERVICE_RUNTIME_ENV=managed` 显式声明消除。
+</details>
+
+<details>
+<summary><strong>桌面端（DSH Desktop）收不到任务通知？</strong></summary>
+
+先确认两件事：① 「配置 → 通知」里的**通知总开关**必须真正打开——它默认关闭，只有点过「开启通知」且系统授予权限后才会置为开启（若只看到「开启通知」按钮，说明权限还没授予）；② 会话必须真的从「运行中」变为结束，且不是子代理会话。系统通知在桌面端本身是可用的：Windows「设置 → 系统 → 通知」里会为应用建立一条 `electron.app.DeepSeek Harness` 记录（真机实测会弹出「任务完成」通知）。唯一已知边界是**点击通知不会把窗口唤回**——桌面端关窗=隐藏窗口，当前桌面桥面没有窗口显示 API，请用系统托盘唤回窗口。
 </details>
 
 <details>
