@@ -300,6 +300,20 @@ Key contracts:
 
 ## ⚡ Installation
 
+### Option 1: DSH plugin manager (graphical, recommended)
+
+1. Open the **Plugins** page in the left sidebar.
+2. Click the **+ Add plugin** button in the top-right corner.
+3. In the dialog, enter `@gehennawu/dsh-service` in the **Package name** field and leave the source at the default **official npm registry**.
+4. Click **Install** and wait for the official layer to add the package to the current profile (the dialog reports progress and the result).
+5. The plugin then appears under **Installed**. The host half takes effect after the DSH process restarts; the client half applies on a page refresh.
+   - On Web: use this plugin's **Service Control → Restart**, or send `/restart` in a conversation;
+   - On DSH Desktop: quit the app and open it again (the desktop app owns the host process, so this plugin never exits it on its own).
+
+> Tip: the plugin manager's Install button uses the official npm registry and the official installation path — no command line and no manual profile edits.
+
+### Option 2: Command line
+
 | Method | Command |
 | --- | --- |
 | npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service` |
