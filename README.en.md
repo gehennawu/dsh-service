@@ -304,13 +304,17 @@ Key contracts:
 
 1. Open the **Plugins** page in the left sidebar.
 2. Click the **+ Add plugin** button in the top-right corner.
-3. In the dialog, enter `@gehennawu/dsh-service` in the **Package name** field and leave the source at the default **official npm registry**.
-4. Click **Install** and wait for the official layer to add the package to the current profile (the dialog reports progress and the result).
-5. The plugin then appears under **Installed**. The host half takes effect after the DSH process restarts; the client half applies on a page refresh.
+3. In the dialog, fill in **one of the three** source forms (the same field accepts all three, and the hint below it follows what you type):
+   - **npm package name (recommended)**: `@gehennawu/dsh-service`;
+   - **GitHub repository URL**: `https://github.com/gehennawu/dsh-service` (public repository, no token needed; the shorthand `github:gehennawu/dsh-service` works too);
+   - **Local plugin directory**: an absolute path on this machine, e.g. `/path/to/dsh-service` (for your own or pre-downloaded plugins).
+4. Pick the **install source** for your network: the default **official npm registry**, or the **China mainland mirror** if fetching from npm is restricted there (it affects package-name installs only; GitHub URLs and local directories are unaffected).
+5. Click **Install** and wait for the official layer to add the package to the current profile (the dialog reports progress and the result).
+6. The plugin then appears under **Installed**. The host half takes effect after the DSH process restarts; the client half applies on a page refresh.
    - On Web: use this plugin's **Service Control → Restart**, or send `/restart` in a conversation;
    - On DSH Desktop: quit the app and open it again (the desktop app owns the host process, so this plugin never exits it on its own).
 
-> Tip: the plugin manager's Install button uses the official npm registry and the official installation path — no command line and no manual profile edits.
+> Tip: all three forms go through the official installation path — no manual profile edits; entering a GitHub URL in the dialog is equivalent to the `github:` prefix on the command line.
 
 ### Option 2: Command line
 
@@ -319,6 +323,8 @@ Key contracts:
 | npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | Local development | `dsh plugin --profile web add link:/path/to/dsh-service` |
+
+The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above.
 
 Restart DSH Web after installing or updating:
 

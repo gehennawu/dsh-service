@@ -306,13 +306,17 @@ flowchart TB
 
 1. 打开左侧边栏的「**插件**」页。
 2. 点右上角的「**+ 添加插件**」按钮。
-3. 在弹出的对话框里，把 `@gehennawu/dsh-service` 填进「**包名**」输入框；「**安装源**」保持默认的「npm 官方源」。
-4. 点「**安装**」，等待官方把包装进当前 profile（对话框底部会给出进度与结果）。
-5. 装好后本插件出现在「**已安装**」分组里。宿主半要等 DSH 进程重启才生效，客户端半刷新页面即生效。
+3. 在弹窗里按来源**三选一**填写（同一个输入框接受三种形式，底部提示会随填写内容变化）：
+   - **npm 包名（推荐）**：`@gehennawu/dsh-service`；
+   - **GitHub 仓库地址**：`https://github.com/gehennawu/dsh-service`（公开仓库，无需令牌；`github:gehennawu/dsh-service` 简写同样可用）；
+   - **本地插件目录**：本机上的绝对路径，例如 `/path/to/dsh-service`（自研或已下载的插件）。
+4. 「**安装源**」按网络情况选择：默认「**npm 官方源**」；国内网络拉取受限时可选「**中国大陆镜像源**」（影响走包名安装时的拉取源，GitHub 地址与本地目录不受其影响）。
+5. 点「**安装**」，等待官方把包装进当前 profile（弹窗底部会给出进度与结果）。
+6. 装好后本插件出现在「**已安装**」分组里。宿主半要等 DSH 进程重启才生效，客户端半刷新页面即生效。
    - 在 Web 上：用本插件的「**服务控制 → 重启**」，或在对话里发 `/restart`；
    - 在 DSH Desktop 上：请退出应用后重新打开（桌面端由应用自身托管进程，本插件不会自行退出）。
 
-> 提示：插件管理页的「安装」按钮走官方 npm 源与官方安装链路，无需命令行、无需手动改 profile 文件。
+> 提示：三种形式都走官方安装链路，无需手动改 profile 文件；图形界面填 GitHub 地址与命令行 `github:` 前缀等价。
 
 ### 方式二：命令行
 
@@ -321,6 +325,8 @@ flowchart TB
 | npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | 本地开发 | `dsh plugin --profile web add link:/path/to/dsh-service` |
+
+命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。
 
 安装或更新后重启 DSH Web：
 
