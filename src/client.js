@@ -24,6 +24,33 @@ window.__ModuleLoader__.load({
     const MODEL_ICON_SIZE_VAR = '--dshsvc-model-icon-size'
     const MODEL_ICON_BASE_PX = 15
     const MODEL_ICON_VIEWBOX = '0 0 24 24'
+    // ── 触发钮锚点（修复 DSH 桌面端图标全灭）────────────────────────────
+    // 官方 ModelSelect 的 CSS Module 类名哈希**随构建漂移**，且桌面端与发行包不是同一套：
+    // npm 0.1.7-rc.2 / 0.2.0-rc.1 = `_7KE1Ra_`、DSH 桌面端 0.2.0-rc.1 = `u91W7W_`、
+    // 桌面端 0.2.0-rc.2 = `wq12jW_`——三次构建三个命名空间（桌面端那套 95 个前缀与发行包
+    // 无一相同，内联的构建路径一个在 D:\develop、一个在 /home/runner/work）。写死哈希在
+    // 桌面端一条都命中不到 → 图标**静默**失效：不报错、功能开关看着还是开的（真机现场）。
+    // 故绘制规则只认**自有属性**：由引擎运行期按官方稳定锚点找到触发钮本体并打标，
+    // 样式表里不再出现官方类名哈希。
+    const MODEL_ICON_TRIGGER_ATTR = 'data-dshsvc-model-icon-trigger'
+    // 触发钮的三级官方锚点（取证：0.1.5-rc.2 与 0.2.0-rc.2 桌面端产物）：
+    //   ① slot 宿主 —— 官方 SlotOutlet 渲染 `<div data-slot={slotKey} style="display:contents">`
+    //      （0.1.5-rc.2 自己的 CSS 就在指认 `[data-slot=conversation.session]`；0.2.0-rc.2
+    //      桌面端 renderer 源码逐字是 `"data-slot": slotKey`）。该座 kind:single、官方
+    //      ModelSelect 独占，其中第一个 button 就是触发钮。
+    //   ② 触发钮自身的 `aria-haspopup="menu"` —— 桌面端 0.2.0-rc.2 实测恒在、不带条件。
+    //   ③ 老发行包的旧类名哈希（npm 0.1.7-rc.2 / 0.2.0-rc.1；0.1.5-rc.2 产物里连这个哈希
+    //      都没有，故它只是兜底、不是主路径）。
+    const MODEL_SLOT_KEY = 'conversation.input.model'
+    const MODEL_TRIGGER_ARIA_SELECTOR = 'button[aria-haspopup="menu"]'
+    const MODEL_TRIGGER_LEGACY_SELECTOR = 'button[class*="_7KE1Ra_trigger"]'
+    // 官方图标让位变量：官方样式是 `.triggerIcon{display:var(--dsh-composer-model-icon-display,none)}`
+    // （桌面端 0.2.0-rc.2 产物逐字如此；slot 契约自 0.2.0-rc.1 起就写明这一对变量）。
+    // 我方图标画到钮上之后把该变量在钮上压成 none，官方那枚通用图标自然让位，窄态不必
+    // 再用类名哈希去隐藏。老宿主没有这条规则，那两条旧隐藏规则保留兜底——那边
+    // mobile.css 用 `[class*="_7KE1Ra_triggerIcon"]{display:block!important}` 参与竞争，
+    // 只有同为 !important 的规则才压得住，写变量在那里不管用。
+    const MODEL_ICON_OFFICIAL_VAR = '--dsh-composer-model-icon-display'
     // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的同一枚图标 ──
     // 官方 ModelSelect 的二级列表按 provider 分组，分组标题在 ≤0.2.0-rc.1 为 `_7KE1Ra_groupTitle`，
     // 在 ≥0.2.0-rc.2 重构为 MenuGroup（`[data-menu-group-heading]`），
@@ -40,6 +67,16 @@ window.__ModuleLoader__.load({
     // 分组标题只有一行、字号 12px（官方 line-height 18px）；图标取同一量级，
     // 由样式表统一尺寸与对齐，JS 侧只负责插节点。
     const MENU_GROUP_ICON_PX = 13
+    // 分组标题的官方锚点：≥0.2.0-rc.2 的分组由官方 MenuGroup primitive 渲染——
+    // `<section role="group" aria-labelledby data-menu-group><div data-menu-group-heading>渠道名`，
+    // 该数据属性跨构建稳定（桌面端 0.2.0-rc.2 产物逐字如此，桌面端与发行包共用同一份
+    // primitive）；≤0.2.0-rc.1 只有旧类名哈希。
+    // **必须限定在模型菜单根之内**：MenuGroup 是官方通用 primitive，插件管理页、输入触发器
+    // 等多处菜单都在用它，全局裸查会把厂家图标画到无关菜单的分组标题上。菜单根由触发钮的
+    // `aria-controls` 指向的 portal 节点（官方 MenuSurface id）定位——该链路是 ARIA 语义，
+    // 与类名哈希无关。
+    const MENU_GROUP_TITLE_SELECTOR = '[data-menu-group-heading]'
+    const MENU_GROUP_TITLE_LEGACY_SELECTOR = '[class*="_7KE1Ra_groupTitle"]'
 
     /** 把一张图标规格化成 data-URI（mask 用纯黑填充即可，mask 只看 alpha）。 */
     const modelIconDataUri = (spec, useMask) => {
@@ -216,12 +253,14 @@ window.__ModuleLoader__.load({
     /** 图标 CSS：宽态加在 label 前，窄态替换官方 svg。整组以属性为门，未命中渠道零规则。 */
     const MODEL_ICON_CSS = `
 /* 宽态：模型名前加厂家图标（::before 是触发钮 flex 行的首个子项）。
-   官方 triggerIcon 在宽态本就 display:none，故宽态不会与官方图标重复。 */
-/* 必须限定 button：[class*="_7KE1Ra_trigger"] 是子串匹配，会同时命中
-   _7KE1Ra_triggerLabel / _7KE1Ra_triggerEffort —— 首版真机就是这样在模型名和
-   推理等级上各多画了一枚图标（三枚并排）。限定标签既修命中面，又把特异性
-   提到 (0,3,2)，顺带稳赢 mobile.css 的 (0,2,1)。 */
-html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigger"]::before {
+   官方 triggerIcon 在宽态本就 display:none（走 --dsh-composer-model-icon-display
+   的默认值），故宽态不会与官方图标重复。
+   选择器只认**自有属性**：触发钮由引擎运行期按官方稳定锚点找到并打标（见
+   MODEL_ICON_TRIGGER_ATTR 的说明——官方类名哈希随构建漂移，桌面端与发行包不是
+   同一套，写死即在桌面端全灭）。当年限定 button 是为了绕开子串匹配把
+   triggerLabel / triggerEffort 也命中（首版真机三枚并排）；改认自有属性后命中面
+   由打标那一步保证，与类名无关。 */
+html [${MODEL_ICON_TRIGGER_ATTR}][${MODEL_ICON_ATTR}]::before {
   content: '' !important;
   flex: none !important;
   display: block !important;
@@ -239,9 +278,9 @@ html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigge
   mask: var(${MODEL_ICON_VAR}) center/contain no-repeat !important;
 }
 /* 彩色档：原样上品牌色（去掉 mask，改用 background-image）。
-   选择器必须同样带上 [${MODEL_ICON_ATTR}] 保持特异性 (0,3,2) 与上方单色规则平齐，
-   以保证 !important 级联下后定义的 mask:none / transparent 胜出。 */
-html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1Ra_trigger"]::before {
+   选择器与上方单色规则同为「触发钮属性 + 一个档位属性」两个属性门，特异性相同，
+   靠**定义顺序**保证 !important 级联下后定义的 mask:none / transparent 胜出。 */
+html [${MODEL_ICON_TRIGGER_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"]::before {
   background-color: transparent !important;
   -webkit-mask: none !important;
   mask: none !important;
@@ -262,7 +301,12 @@ html [${MODEL_ICON_SEAT_ATTR}="color"][${MODEL_ICON_ATTR}] button[class*="_7KE1R
    平局由顺序裁决，官方图标就会赢回来（真机实测：窄态出现两枚图标）。
    多带一个自身属性把特异性提到 (0,3,1)，即与插入顺序解耦，不依赖谁先挂。
    刻意不引用移动端作用域属性：本规则与移动端适配开关无关（关掉移动端适配、
-   窄窗口下官方同样会收成图标），也避免与移动端引擎的挂载断言互相牵连。 */
+   窄窗口下官方同样会收成图标），也避免与移动端引擎的挂载断言互相牵连。
+   **下面两条只是老宿主兜底**：选择器里的类名哈希在 DSH 桌面端一个都命中不到（那边是
+   另一套命名空间），桌面端走的是「引擎把 --dsh-composer-model-icon-display 在触发钮上
+   压成 none」——官方 triggerIcon 的 display 读的就是这个变量，而桌面端 mobile.css 的
+   哈希规则同样不命中，没有 !important 竞争者，故变量足以解决。在命中哈希的老发行包上，
+   mobile.css 的 display:block!important 会参与竞争，只有这两条 !important 压得住。 */
 @media (max-width: 480px) {
   html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
 }

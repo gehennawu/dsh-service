@@ -13715,20 +13715,22 @@ test('model provider icons: CSS gates narrow-mode replacement and stays inert fo
   const icons = renderer.moduleExports().modelProviderIcons
   const css = icons.css
 
-  // 宽态：模型名前加图标（触发钮 flex 行的首个子项），且以自有属性为门。
-  // **必须限定 button**：[class*="_7KE1Ra_trigger"] 是子串匹配，会同时命中
-  // _7KE1Ra_triggerLabel / _7KE1Ra_triggerEffort —— 首版真机就是这样在模型名和
-  // 推理等级上各多画了一枚（三枚并排）。回归锁死这条。
+  // 宽态：模型名前加图标（触发钮 flex 行的首个子项），且**只认自有属性**为门。
+  // 这是桌面端修复的核心：官方类名哈希随构建漂移（npm 0.2.0-rc.1 = `_7KE1Ra_`、
+  // 桌面端 0.2.0-rc.1 = `u91W7W_`、桌面端 0.2.0-rc.2 = `wq12jW_`，三套互不相同），
+  // 只要绘制选择器里出现官方哈希，桌面端就一条都命中不到 → 图标静默失效（不报错、
+  // 开关看着还是开的）。故绘制规则只允许认 triggerAttr（引擎按官方稳定锚点运行期打标）。
   assert.ok(
-    css.includes(`[${icons.seatAttr}][${icons.attr}] button[class*="_7KE1Ra_trigger"]::before`),
-    'wide mode prepends an icon via ::before on the trigger button only',
+    css.includes(`[${icons.triggerAttr}][${icons.attr}]::before`),
+    'wide mode prepends an icon via ::before on the engine-marked trigger button',
   )
-  // 子串裸匹配不允许再出现：任何给 trigger 画 ::before 的规则都必须带 button 限定。
+  // 绘制规则里不得再出现官方类名哈希：凡是给触发器画 ::before 的规则逐条断言不含哈希形态。
   for (const line of css.split('\n')) {
-    if (!line.includes('_7KE1Ra_trigger"]::before')) continue
-    assert.ok(
-      /button\[class\*="_7KE1Ra_trigger"\]/.test(line),
-      'icon ::before rules must target the trigger button, not the label/effort substrings: ' + line.trim(),
+    if (!line.includes('::before') || !line.includes('{')) continue
+    assert.equal(
+      line.includes('_7KE1Ra_') || line.includes('class*='),
+      false,
+      'no drawing rule may key on the official class hash (desktop builds use another namespace): ' + line.trim(),
     )
   }
   assert.match(css, /content: '' !important/, 'pseudo element needs content to render')
@@ -13866,7 +13868,7 @@ test('model provider icons: DOM engine applies the mapped icon, clears it for un
     assert.equal(attrs.get('data-dshsvc-model-icon'), 'openrouter', 'mapped provider writes the slug attribute')
     assert.equal(attrs.get('data-dshsvc-model-icon-seat'), 'mono')
     assert.ok(styleProps.get('--dshsvc-model-icon')?.startsWith('url("data:image/svg+xml,'), 'mono path writes a mask-ready data-URI')
-    assert.ok(injectedStyles.some((text) => text.includes('_7KE1Ra_trigger')), 'icon stylesheet is injected')
+    assert.ok(injectedStyles.some((text) => text.includes('data-dshsvc-model-icon-trigger')), 'icon stylesheet is injected')
 
     // 切到未适配渠道：属性和变量必须摘干净，官方默认图标完全照旧。
     // （cpa 无映射；command-goat 现已配上 Command Code 手绘标，不再适合当反例。）
@@ -13895,6 +13897,117 @@ test('model provider icons: DOM engine applies the mapped icon, clears it for un
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: locates the composer trigger by official anchors instead of the drifting class hash', async () => {
+  // 真机缺陷（DSH 桌面端）：官方 ModelSelect 的 CSS Module 类名哈希随构建漂移——npm 0.2.0-rc.1
+  // 是 `_7KE1Ra_`、桌面端 0.2.0-rc.1 是 `u91W7W_`、桌面端 0.2.0-rc.2 是 `wq12jW_`（桌面端那套
+  // 95 个前缀与发行包无一相同）。旧实现把绘制规则写死在 `button[class*="_7KE1Ra_trigger"]` 上，
+  // 桌面端一条都命中不到 → 图标静默失效（不报错、开关看着还是开的）。修法：引擎按官方稳定锚点
+  // 运行期定位触发钮并打自**有属性**，绘制规则只认自有属性。
+  // 本用例逐个锚点断言「三条路各自都能定位触发钮」，且第一档故意用桌面端真实哈希类名
+  // （wq12jW_trigger）：结论必须与类名无关，换哪套哈希都一样。
+  const flavors = [
+    { name: 'slot host (desktop, hash wq12jW_)', className: 'wq12jW_trigger', slot: true, legacy: false, aria: false },
+    { name: 'legacy hash (npm 0.2.0-rc.1)', className: '_7KE1Ra_trigger', slot: false, legacy: true, aria: false },
+    { name: 'aria-haspopup (unknown hash)', className: 'zzUnknown_trigger', slot: false, legacy: false, aria: true },
+  ]
+  for (const flavor of flavors) {
+    const triggerAttrs = new Map()
+    const triggerVars = new Map()
+    const trigger = {
+      setAttribute(n, v) { triggerAttrs.set(n, v) },
+      removeAttribute(n) { triggerAttrs.delete(n) },
+      hasAttribute(n) { return triggerAttrs.has(n) },
+      getAttribute(n) { return triggerAttrs.has(n) ? triggerAttrs.get(n) : null },
+      style: { setProperty(n, v) { triggerVars.set(n, v) }, removeProperty(n) { triggerVars.delete(n) } },
+      querySelector: () => null,
+    }
+    const seatAttrs = new Map()
+    const seatVars = new Map()
+    const seat = {
+      setAttribute(n, v) { seatAttrs.set(n, v) },
+      removeAttribute(n) { seatAttrs.delete(n) },
+      hasAttribute(n) { return seatAttrs.has(n) },
+      getAttribute(n) { return seatAttrs.has(n) ? seatAttrs.get(n) : null },
+      style: { setProperty(n, v) { seatVars.set(n, v) }, removeProperty(n) { seatVars.delete(n) } },
+      querySelector(sel) {
+        if (flavor.slot && sel.includes('data-slot="conversation.input.model"')) return trigger
+        if (flavor.legacy && sel.includes('_7KE1Ra_trigger')) return trigger
+        if (flavor.aria && sel.includes('aria-haspopup')) return trigger
+        return null
+      },
+    }
+    const observerCallbacks = []
+    class FakeMutationObserver {
+      constructor(cb) { this.cb = cb }
+      observe() { observerCallbacks.push(this.cb) }
+      disconnect() {}
+    }
+    globalThis.MutationObserver = FakeMutationObserver
+    globalThis.document = {
+      body: {},
+      documentElement: {},
+      head: { appendChild() {} },
+      createElement() { return { dataset: {}, remove() {} } },
+      // 座外一律拿不到触发钮：真机里 slot 宿主就在座内，本用例只验座内这条路。
+      querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+      querySelectorAll: (sel) => {
+        if (sel.includes('data-dshsvc-model-icon-trigger')) return triggerAttrs.has('data-dshsvc-model-icon-trigger') ? [trigger] : []
+        if (sel.includes('model-icon-seat') && seatAttrs.has('data-dshsvc-model-icon-seat')) return [seat]
+        return []
+      },
+      contains: () => true,
+      addEventListener() {},
+      removeEventListener() {},
+      visibilityState: 'visible',
+    }
+
+    let provider = 'openrouter-f'
+    const directoryListeners = new Set()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider } }),
+        subscribe(listener) { directoryListeners.add(listener); return () => directoryListeners.delete(listener) },
+      },
+      load: () => Promise.resolve(),
+    }
+    try {
+      const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+        modelDirectories: { directoryFor: () => directory },
+        featureSettings: { modelProviderIcons: true },
+      })
+      await renderer.load()
+      const icons = renderer.moduleExports().modelProviderIcons
+      renderer.setCurrentSession('session-1')
+      for (const cb of observerCallbacks) cb()
+      await renderer.flush()
+
+      // 触发钮拿到自有属性（绘制规则的门）、就近变量，以及官方图标让位变量。
+      assert.equal(triggerAttrs.get(icons.triggerAttr), 'openrouter', `${flavor.name}: trigger carries our own attribute`)
+      assert.equal(triggerAttrs.get(icons.attr), 'openrouter', `${flavor.name}: trigger carries the slug attribute`)
+      assert.equal(triggerAttrs.get(icons.seatAttr), 'mono', `${flavor.name}: trigger carries the tier attribute`)
+      assert.ok(String(triggerVars.get('--dshsvc-model-icon')).startsWith('url("data:image/svg+xml,'), `${flavor.name}: trigger carries the icon variable`)
+      assert.equal(triggerVars.get(icons.officialIconVar), 'none', `${flavor.name}: the official trigger icon is told to stand down`)
+
+      // 未适配渠道：触发钮上的痕迹全摘，官方图标（含让位变量）恢复原样。
+      provider = 'cpa'
+      for (const listener of directoryListeners) listener()
+      assert.equal(triggerAttrs.has(icons.triggerAttr), false, `${flavor.name}: unmapped provider clears the trigger attribute`)
+      assert.equal(triggerVars.has(icons.officialIconVar), false, `${flavor.name}: unmapped provider restores the official icon`)
+
+      // 再切回已适配 + 析构对称（triggerAttr 与让位变量都必须摘掉，否则留下残影）。
+      provider = 'openrouter-f'
+      for (const listener of directoryListeners) listener()
+      assert.equal(triggerAttrs.get(icons.triggerAttr), 'openrouter', `${flavor.name}: re-resolves after switching back`)
+      renderer.disposeFactory()
+      assert.equal(triggerAttrs.has(icons.triggerAttr), false, `${flavor.name}: teardown clears the trigger attribute`)
+      assert.equal(triggerVars.has(icons.officialIconVar), false, `${flavor.name}: teardown restores the official icon`)
+    } finally {
+      delete globalThis.document
+      delete globalThis.MutationObserver
+    }
   }
 })
 
@@ -14418,22 +14531,15 @@ test('model provider icons: model menu group titles get the provider mark before
   }
 })
 
-test('model provider icons: supports DSH 0.2.0-rc.2 MenuGroup data-menu-group-heading titles without _7KE1Ra_groupTitle class', async () => {
-  const attrs = new Map()
-  const seat = {
-    setAttribute(n, v) { attrs.set(n, v) },
-    removeAttribute(n) { attrs.delete(n) },
-    hasAttribute(n) { return attrs.has(n) },
-    style: { setProperty() {}, removeProperty() {} },
-  }
-  const observerCallbacks = []
-  class FakeMutationObserver {
-    constructor(cb) { this.cb = cb }
-    observe() { observerCallbacks.push(this.cb) }
-    disconnect() {}
-  }
-  globalThis.MutationObserver = FakeMutationObserver
-
+test('model provider icons: model menu group titles survive official class-hash drift, and other menus stay untouched', async () => {
+  // 桌面端缺陷的另一半：0.2.0-rc.2 起分组标题改用官方 MenuGroup primitive
+  // （`<section role="group" aria-labelledby data-menu-group><div data-menu-group-heading>`），
+  // 而旧实现把查询写成 `[class*="_7KE1Ra_groups"] [data-menu-group-heading]`——那个祖先类名
+  // 哈希在桌面端不命中（桌面端 0.2.0-rc.2 是 `wq12jW_`），于是弹窗里的分组图标在桌面端全灭。
+  // 修法：用**触发钮 aria-controls 指向的菜单根**限定范围（ARIA 语义、与类名哈希无关），
+  // 根内先查稳定数据属性 `[data-menu-group-heading]`、再退旧类名哈希。
+  // 本用例同时锁死范围限定：MenuGroup 是官方通用 primitive，别的菜单（插件管理页、
+  // 输入触发器）也用同一个 data-menu-group-heading——全局裸查会把厂家图标画到无关菜单上。
   const makeNode = (text) => {
     const node = {
       textContent: text,
@@ -14471,33 +14577,64 @@ test('model provider icons: supports DSH 0.2.0-rc.2 MenuGroup data-menu-group-he
     }
     return node
   }
-  const titles = ['DeepSeek', 'cpa', 'openrouter-f'].map((name) => {
-    const n = makeNode(name)
-    n.setAttribute('data-menu-group-heading', '')
-    return n
+
+  const seat = makeNode('')
+  const trigger = makeNode('')
+  // 官方 ModelSelect 的触发钮在菜单打开时才挂 aria-controls（桌面端 0.2.0-rc.2 产物实测：
+  // `"aria-controls": open ? `${id}-menu` : void 0`）。菜单根就是它指向的 portal 节点。
+  trigger.setAttribute('aria-controls', 'model-menu-1')
+  seat.querySelector = (sel) => (sel.includes('aria-haspopup') ? trigger : null)
+
+  const inMenu = ['DeepSeek', 'openrouter-f'].map((name) => {
+    const node = makeNode(name)
+    node.setAttribute('data-menu-group-heading', '')
+    return node
   })
-  const titled = (name) => titles.find((t) => t.textContent === name)
-  let menuClosed = false
+  const titled = (name) => inMenu.find((node) => node.textContent === name)
+  // 无关菜单里的分组标题：同样带 data-menu-group-heading（官方 primitive 通用形态）。
+  const unrelated = makeNode('无关菜单的分组')
+  unrelated.setAttribute('data-menu-group-heading', '')
+  let menuOpen = true
+  const menu = makeNode('')
+  menu.querySelectorAll = (sel) => {
+    if (sel.includes('data-menu-group-heading')) return menuOpen ? inMenu : []
+    if (sel.includes('groupTitle')) return []
+    return []
+  }
+
+  const observerCallbacks = []
+  class FakeMutationObserver {
+    constructor(cb) { this.cb = cb }
+    observe() { observerCallbacks.push(this.cb) }
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
   globalThis.document = {
     body: {},
     documentElement: {},
     head: { appendChild() {} },
     createElement() {
       const icon = makeNode('')
+      // 引擎按自有属性找回自己插入的那一枚（querySelector / querySelectorAll 走 matches）。
       icon.matches = (sel) => sel.includes('data-dshsvc-model-group-icon')
       return icon
     },
+    getElementById: (id) => (id === 'model-menu-1' ? menu : null),
     querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
     querySelectorAll: (sel) => {
-      if (sel.includes('data-menu-group-heading')) return menuClosed ? [] : titles
+      // 故意把**无关菜单**的分组标题也返给全局查询：一旦引擎退化成全局裸查，它就会被误伤。
+      if (sel.includes('data-menu-group-heading')) return [...(menuOpen ? inMenu : []), unrelated]
       if (sel.includes('groupTitle')) return []
-      if (sel.includes('data-dshsvc-model-group-icon')) return titles.flatMap((t) => t.children)
-      if (sel.includes('data-dshsvc-model-group')) return titles.filter((t) => t.hasAttribute('data-dshsvc-model-group'))
-      if (sel.includes('model-icon-seat') && attrs.has('data-dshsvc-model-icon-seat')) return [seat]
+      if (sel.includes('data-dshsvc-model-group-icon')) return [...inMenu, unrelated].flatMap((node) => node.children)
+      if (sel.includes('data-dshsvc-model-group')) return [...inMenu, unrelated].filter((node) => node.hasAttribute('data-dshsvc-model-group'))
+      if (sel.includes('data-dshsvc-model-icon-trigger')) return [trigger]
+      if (sel.includes('model-icon-seat')) return [seat]
       return []
     },
     contains: () => true,
-    addEventListener() {}, removeEventListener() {}, visibilityState: 'visible',
+    addEventListener() {},
+    removeEventListener() {},
+    visibilityState: 'visible',
   }
 
   const directory = {
@@ -14511,22 +14648,30 @@ test('model provider icons: supports DSH 0.2.0-rc.2 MenuGroup data-menu-group-he
     })
     await renderer.load()
     const icons = renderer.moduleExports().modelProviderIcons
+    // 真机里「菜单打开」是一次 DOM 变更 → MutationObserver 回调 → 引擎重算；替身手动补这一步。
     const rerun = async () => {
       for (const cb of observerCallbacks) cb()
       await renderer.flush()
     }
     await rerun()
 
-    const deepseekTitle = titled('DeepSeek')
     const openrouterTitle = titled('openrouter-f')
-
-    assert.equal(openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'openrouter', 'MenuGroup heading prepends the mapped provider mark')
+    assert.equal(
+      openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr),
+      'openrouter',
+      'MenuGroup heading prepends the mapped provider mark',
+    )
     assert.equal(openrouterTitle.getAttribute(icons.menuGroupAttr), 'openrouter')
-    assert.equal(deepseekTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'deepseek')
+    assert.equal(titled('DeepSeek').firstChild?.getAttribute(icons.menuGroupIconAttr), 'deepseek')
+    // 范围限定：模型菜单之外的 MenuGroup 不得被装饰（一个属性、一个节点都不许留）。
+    assert.equal(unrelated.hasAttribute(icons.menuGroupAttr), false, 'a MenuGroup outside the model menu must not be decorated')
+    assert.equal(unrelated.children.length, 0, 'no icon node may be inserted into another menu')
 
-    menuClosed = true
+    // 菜单关闭（官方 portal 卸载）→ 全量摘除：属性与插入的节点都不能留。
+    menuOpen = false
     await rerun()
     assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false)
+    assert.equal(openrouterTitle.children.length, 0)
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

@@ -26,13 +26,19 @@
        * composer 座上。会话切换/模型切换/主题切换都自然跟随（数据属性驱动 CSS）。
        */
       const createModelProviderIcons = ({ ctx, getModelDirectories }) => {
-        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, lastProvider: null, lastSession: undefined, disposed: false, menuOpen: false }
+        const state = { styleTag: null, observer: null, observerCreated: false, unsubscribe: null, unsubscribeSessions: null, unsubscribeQuota: null, seat: null, trigger: null, lastProvider: null, lastSession: undefined, disposed: false, menuOpen: false }
 
         // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的那一枚 ────────────────
         // 官方「模型」二级列表把每个 provider 渲染成
         // `<section role="group"><div class="_7KE1Ra_groupTitle">渠道名</div>…</section>`（≤0.2.0-rc.1）
         // 或 `<section role="group" data-menu-group><div data-menu-group-heading>渠道名</div>…</section>`（≥0.2.0-rc.2 MenuGroup），
-        // 标题里没有任何厂家标识。分组顺序与渠道名**完全等于**目录快照的
+        // 标题里没有任何厂家标识。
+        // **范围限定（桌面端修复的要点之一）**：MenuGroup 是官方通用 primitive，别的菜单
+        // （插件管理页、输入触发器…）也在用同一个 `data-menu-group-heading`，全局裸查会把
+        // 厂家图标画到无关菜单的分组标题上。只认「模型菜单根之内的标题」——菜单根由触发钮
+        // 的 `aria-controls` 指向的 portal 节点（官方 MenuSurface id）定位：ARIA 语义，
+        // 与类名哈希无关。旧类名哈希只在拿不到菜单根时兜底。
+        // 分组顺序与渠道名**完全等于**目录快照的
         // groups[].id/name（宿主侧 buildModelCatalog 直接用 provider.id/name 构造），
         // 所以映射键就用标题文本，配同一套 resolveModelIcon 解析——不引入第二份映射表。
         // 标题文本取不到（空标题 / 结构漂移）就跳过该组，绝不猜。
@@ -98,7 +104,7 @@
           const doc = docOrNull()
           if (doc === null || typeof doc.querySelectorAll !== 'function') return
           let titles = []
-          try { titles = Array.from(doc.querySelectorAll('[class*="_7KE1Ra_groups"] [data-menu-group-heading], [class*="_7KE1Ra_groupTitle"]')) } catch (_) { return }
+          try { titles = collectMenuGroupTitles() } catch (_) { return }
           if (titles.length === 0) {
             // 菜单关闭：规格口径是「菜单关闭也走 clearMenuGroups() 全量摘除」。官方 portal
             // 卸载通常把整棵子树连同我方插入的节点一并带走，但那是官方实现细节；这里检测
@@ -195,13 +201,130 @@
           try { return doc.querySelector('[data-composer-seat]') } catch (_) { return null }
         }
 
-        /** 把 provider 解析结果写到座上；未命中则摘属性（官方默认图标照旧）。 */
+        /**
+         * 找到模型触发钮本体——绘制规则挂在它身上，而不是靠官方类名哈希去样式表里指认。
+         *
+         * 三级锚点逐级兜底（取证见 client.js 里 MODEL_ICON_TRIGGER_ATTR 的说明）：
+         *   ① slot 宿主 `[data-slot="conversation.input.model"]` 里的 button：官方 SlotOutlet
+         *      渲染，0.1.5-rc.2 到 0.2.0-rc.2 桌面端都在；该座 kind:single、官方 ModelSelect
+         *      独占，其中第一个 button 就是触发钮。
+         *   ② 老发行包的旧类名哈希（npm 0.1.7-rc.2 / 0.2.0-rc.1）。
+         *   ③ 座上 `button[aria-haspopup="menu"]`：桌面端 0.2.0-rc.2 实测恒在、不带条件。
+         * ①② 先座内再文档级（座内找不到时才放宽——这两个锚点指向官方独占面，放宽不会认错
+         * 节点）；③ 只在座内找，因为它最泛，文档级找有认错别的下拉钮的风险。
+         * 三级全空返回 null：引擎退化成「只打座标记」（与旧行为一致），绝不猜节点。
+         */
+        const findTrigger = (seat) => {
+          const doc = docOrNull()
+          if (doc === null) return null
+          const scopes = []
+          if (seat !== null && seat !== undefined && typeof seat.querySelector === 'function') scopes.push(seat)
+          if (typeof doc.querySelector === 'function') scopes.push(doc)
+          for (const scope of scopes) {
+            try {
+              const anchored = scope.querySelector(`[data-slot="${MODEL_SLOT_KEY}"] button`)
+              if (anchored !== null && anchored !== undefined) return anchored
+            } catch (_) {}
+          }
+          for (const scope of scopes) {
+            try {
+              const legacy = scope.querySelector(MODEL_TRIGGER_LEGACY_SELECTOR)
+              if (legacy !== null && legacy !== undefined) return legacy
+            } catch (_) {}
+          }
+          if (seat !== null && seat !== undefined && typeof seat.querySelector === 'function') {
+            try {
+              const byAria = seat.querySelector(MODEL_TRIGGER_ARIA_SELECTOR)
+              if (byAria !== null && byAria !== undefined) return byAria
+            } catch (_) {}
+          }
+          return null
+        }
+
+        /**
+         * 把解析结果写到触发钮本体：自有属性（绘制规则的门）+ 就近变量。
+         * 同时把 `--dsh-composer-model-icon-display` 在钮上压成 none —— 官方 triggerIcon
+         * 的 display 读这个变量（桌面端 0.2.0-rc.2 产物逐字是
+         * `.triggerIcon{display:var(--dsh-composer-model-icon-display,none)}`），压掉即让
+         * 那枚通用图标为我方品牌图标让位，窄态不必再靠类名哈希隐藏。老宿主没有这条规则，
+         * 写了也无副作用（那边由样式表里的旧哈希隐藏规则兜底，因为 mobile.css 的
+         * `display:block!important` 只认哈希，压变量在那里压不住 !important）。
+         */
+        const paintTrigger = (trigger, resolved) => {
+          if (trigger === null || trigger === undefined) return
+          const useMask = resolved.spec.c !== 1
+          iconDomSetAttr(trigger, MODEL_ICON_TRIGGER_ATTR, resolved.slug)
+          iconDomSetAttr(trigger, MODEL_ICON_ATTR, resolved.slug)
+          iconDomSetAttr(trigger, MODEL_ICON_SEAT_ATTR, useMask ? 'mono' : 'color')
+          iconDomSetVar(trigger, MODEL_ICON_VAR, modelIconDataUri(resolved.spec, useMask))
+          const optical = typeof resolved.spec.o === 'number' && resolved.spec.o > 0 ? resolved.spec.o : 1
+          if (optical === 1) iconDomRemoveVar(trigger, MODEL_ICON_SIZE_VAR)
+          else iconDomSetVar(trigger, MODEL_ICON_SIZE_VAR, `${(MODEL_ICON_BASE_PX * optical).toFixed(2)}px`)
+          iconDomSetVar(trigger, MODEL_ICON_OFFICIAL_VAR, 'none')
+        }
+
+        /** 摘掉触发钮上的全部我方痕迹（含官方图标让位那条变量，官方图标随即照旧）。 */
+        const clearTrigger = (trigger) => {
+          if (trigger === null || trigger === undefined) return
+          iconDomRemoveAttr(trigger, MODEL_ICON_TRIGGER_ATTR)
+          iconDomRemoveAttr(trigger, MODEL_ICON_ATTR)
+          iconDomRemoveAttr(trigger, MODEL_ICON_SEAT_ATTR)
+          iconDomRemoveVar(trigger, MODEL_ICON_VAR)
+          iconDomRemoveVar(trigger, MODEL_ICON_SIZE_VAR)
+          iconDomRemoveVar(trigger, MODEL_ICON_OFFICIAL_VAR)
+        }
+
+        /** 模型菜单根：触发钮 `aria-controls` 指向的 portal 节点（官方 MenuSurface id）；拿不到返回 null。 */
+        const findMenuRoot = (trigger) => {
+          const doc = docOrNull()
+          if (doc === null || trigger === null || trigger === undefined) return null
+          const menuId = iconDomGetAttr(trigger, 'aria-controls')
+          if (typeof menuId !== 'string' || menuId === '') return null
+          try {
+            return typeof doc.getElementById === 'function' ? doc.getElementById(menuId) : null
+          } catch (_) { return null }
+        }
+
+        /**
+         * 收集「模型菜单里的分组标题」：菜单根内优先（≥0.2.0-rc.2 的 `[data-menu-group-heading]`，
+         * 再退旧类名哈希），菜单根拿不到时回落旧类名哈希的全局扫描（0.1.x 外壳不保证
+         * `aria-controls → getElementById` 这条链可走，那里本来也只有旧哈希一种线索）。
+         * 菜单根内一旦取到标题就不再回落，避免两套路径同时插节点。
+         */
+        const collectMenuGroupTitles = () => {
+          const doc = docOrNull()
+          if (doc === null || typeof doc.querySelectorAll !== 'function') return []
+          const collect = (scope, selector) => {
+            try {
+              return scope !== null && scope !== undefined && typeof scope.querySelectorAll === 'function'
+                ? Array.from(scope.querySelectorAll(selector))
+                : []
+            } catch (_) { return [] }
+          }
+          const root = findMenuRoot(state.trigger)
+          if (root !== null && root !== undefined) {
+            const grouped = collect(root, MENU_GROUP_TITLE_SELECTOR)
+            if (grouped.length > 0) return grouped
+            const legacyInRoot = collect(root, MENU_GROUP_TITLE_LEGACY_SELECTOR)
+            if (legacyInRoot.length > 0) return legacyInRoot
+          }
+          return collect(doc, MENU_GROUP_TITLE_LEGACY_SELECTOR)
+        }
+
+        /** 把 provider 解析结果写到触发钮上（座上也留一份，供老宿主隐藏规则与排障直视）。 */
         const apply = () => {
           if (state.disposed) return
+          const seat = findSeat()
+          // 触发钮每次都要重新定位：会话切换/外壳重建会让官方 React 重挂这个按钮（座本身
+          // 却可能保留），座上属性还在、钮却是新的——只认座属性就会漏画（真机实测）。
+          // 这里先算一次：菜单那半要靠它定位菜单根，而下面的 clear() 会把记忆清掉。
+          if (seat !== null) {
+            const found = findTrigger(seat)
+            if (found !== null) state.trigger = found
+          }
           // 弹窗分组标题与座是两处独立渲染面：座不在（菜单开着而 composer 被替换）时
           // 也不能漏掉分组装饰，故先把菜单这半算完，再走座的分支。
           decorateMenuGroups()
-          const seat = findSeat()
           if (seat === null) { state.seat = null; return }
           state.seat = seat
           // 切会话：directory 是「每会话一个」，必须重挂订阅并清掉旧图标，
@@ -214,16 +337,22 @@
             clear()
             subscribe()
           }
+          const trigger = findTrigger(seat)
+          state.trigger = trigger
           const provider = currentProvider()
-          if (provider === state.lastProvider && iconDomHasAttr(seat, MODEL_ICON_SEAT_ATTR)) return
+          // 幂等：provider 没变且认定过的节点都还带着标记时才跳过。触发钮那一半不能省——
+          // 官方重挂按钮时座属性还在、钮是新的，只认座属性会把新钮漏掉（窄窗实测过）。
+          if (
+            provider === state.lastProvider &&
+            iconDomHasAttr(seat, MODEL_ICON_SEAT_ATTR) &&
+            (trigger === null || iconDomHasAttr(trigger, MODEL_ICON_TRIGGER_ATTR))
+          ) return
           state.lastProvider = provider
           const resolved = provider === null ? null : resolveModelIcon(provider, { forComposer: true })
           if (resolved === null) {
             // 未适配：摘掉属性和变量，官方默认图标完全照旧。
-            iconDomRemoveAttr(seat, MODEL_ICON_ATTR)
-            iconDomRemoveAttr(seat, MODEL_ICON_SEAT_ATTR)
-            iconDomRemoveVar(seat, MODEL_ICON_VAR)
-            iconDomRemoveVar(seat, MODEL_ICON_SIZE_VAR)
+            clearSeat(seat)
+            clearTrigger(trigger)
             return
           }
           const useMask = resolved.spec.c !== 1
@@ -234,6 +363,8 @@
           else iconDomSetVar(seat, MODEL_ICON_SIZE_VAR, `${(MODEL_ICON_BASE_PX * optical).toFixed(2)}px`)
           iconDomSetAttr(seat, MODEL_ICON_ATTR, resolved.slug)
           iconDomSetAttr(seat, MODEL_ICON_SEAT_ATTR, useMask ? 'mono' : 'color')
+          // 绘制落在触发钮本体上：样式表只认自有属性，与官方类名哈希解耦（桌面端因此不再失配）。
+          paintTrigger(trigger, resolved)
         }
 
         const clearSeat = (seat) => {
@@ -244,10 +375,21 @@
         }
 
         const clear = () => {
-          // 两条路都要走：自有查询拿不到时（替身/非常规 DOM）至少清掉我们记着的那颗座，
+          // 三条路都要走：自有查询拿不到时（替身/非常规 DOM）至少清掉我们记着的那两颗，
           // 否则热关会留下残影（首版实测）。
-          if (state.seat !== null) clearSeat(state.seat)
           const doc = docOrNull()
+          // 触发钮先清：它同时也带着座标记，先摘掉才不会被下面那条通用扫描当座处理；
+          // 顺序反了会把 triggerAttr 留在 DOM 上，热关后样式表仍按它画一枚残影。
+          const triggers = []
+          if (doc !== null && typeof doc.querySelectorAll === 'function') {
+            let found = []
+            try { found = Array.from(doc.querySelectorAll(`[${MODEL_ICON_TRIGGER_ATTR}]`)) } catch (_) { found = [] }
+            for (const node of found) triggers.push(node)
+          }
+          if (state.trigger !== null) triggers.push(state.trigger)
+          for (const node of triggers) clearTrigger(node)
+          state.trigger = null
+          if (state.seat !== null) clearSeat(state.seat)
           if (doc !== null && typeof doc.querySelectorAll === 'function') {
             let nodes = []
             try { nodes = Array.from(doc.querySelectorAll(`[${MODEL_ICON_SEAT_ATTR}]`)) } catch (_) { nodes = [] }
@@ -409,6 +551,7 @@
           state.lastSession = undefined
           state.lastProvider = null
           state.seat = null
+          state.trigger = null
           state.menuOpen = false
         }
 

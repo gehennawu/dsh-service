@@ -7768,6 +7768,16 @@
       dataUri: modelIconDataUri,
       attr: MODEL_ICON_ATTR,
       seatAttr: MODEL_ICON_SEAT_ATTR,
+      // 触发钮锚点（桌面端修复）：绘制规则只认自有属性，由引擎按官方稳定锚点运行期打标。
+      // officialIconVar 是官方那枚通用图标让位用的变量；slotKey 是 slot 宿主锚点。
+      triggerAttr: MODEL_ICON_TRIGGER_ATTR,
+      officialIconVar: MODEL_ICON_OFFICIAL_VAR,
+      slotKey: MODEL_SLOT_KEY,
+      ariaTriggerSelector: MODEL_TRIGGER_ARIA_SELECTOR,
+      triggerLegacySelector: MODEL_TRIGGER_LEGACY_SELECTOR,
+      // 分组标题锚点：≥0.2.0-rc.2 的稳定数据属性 + ≤0.2.0-rc.1 的旧类名哈希兜底。
+      groupTitleSelector: MENU_GROUP_TITLE_SELECTOR,
+      groupTitleLegacySelector: MENU_GROUP_TITLE_LEGACY_SELECTOR,
       sizeVar: MODEL_ICON_SIZE_VAR,
       basePx: MODEL_ICON_BASE_PX,
       // 模型选择弹窗分组标题（厂家/渠道商）前的同一枚图标：门属性 + 节点属性 + 基准尺寸。
