@@ -2856,7 +2856,7 @@ test('version card carries no DSH adaptation notice on any running version, two 
     visibilityState: 'visible',
   }
   try {
-    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.1.7-alpha.2', '0.1.7-alpha.3', '0.1.7-rc.1', '0.1.7-rc.2', '0.1.7-rc.3', '0.2.0-rc.1', '0.2.0', 'unknown']
+    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.1.7-alpha.2', '0.1.7-alpha.3', '0.1.7-rc.1', '0.1.7-rc.2', '0.1.7-rc.3', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0', 'unknown']
     for (const current of versions) {
       const renderer = createRenderer(async (channel, endpoint) => {
         assert.equal(channel, '/dsh-service')
@@ -14412,6 +14412,121 @@ test('model provider icons: model menu group titles get the provider mark before
     renderer.disposeFactory()
     assert.equal(openrouterTitle.children.length, 0, 'teardown removes inserted menu icons')
     assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false, 'teardown removes the title gate attribute')
+  } finally {
+    delete globalThis.document
+    delete globalThis.MutationObserver
+  }
+})
+
+test('model provider icons: supports DSH 0.2.0-rc.2 MenuGroup data-menu-group-heading titles without _7KE1Ra_groupTitle class', async () => {
+  const attrs = new Map()
+  const seat = {
+    setAttribute(n, v) { attrs.set(n, v) },
+    removeAttribute(n) { attrs.delete(n) },
+    hasAttribute(n) { return attrs.has(n) },
+    style: { setProperty() {}, removeProperty() {} },
+  }
+  const observerCallbacks = []
+  class FakeMutationObserver {
+    constructor(cb) { this.cb = cb }
+    observe() { observerCallbacks.push(this.cb) }
+    disconnect() {}
+  }
+  globalThis.MutationObserver = FakeMutationObserver
+
+  const makeNode = (text) => {
+    const node = {
+      textContent: text,
+      firstChild: null,
+      children: [],
+      parent: null,
+      dataset: {},
+      attributes: new Map(),
+      style: {
+        props: new Map(),
+        setProperty(n, v) { this.props.set(n, v) },
+        removeProperty(n) { this.props.delete(n) },
+      },
+      setAttribute(n, v) { this.attributes.set(n, v) },
+      removeAttribute(n) { this.attributes.delete(n) },
+      hasAttribute(n) { return this.attributes.has(n) },
+      getAttribute(n) { return this.attributes.has(n) ? this.attributes.get(n) : null },
+      matches() { return false },
+      insertBefore(child, before) {
+        const at = before === null || before === undefined ? this.children.length : this.children.indexOf(before)
+        this.children.splice(at < 0 ? this.children.length : at, 0, child)
+        child.parent = this
+        this.firstChild = this.children[0] ?? null
+        return child
+      },
+      querySelector(sel) { return this.children.find((child) => child.matches(sel)) ?? null },
+      querySelectorAll(sel) { return this.children.filter((child) => child.matches(sel)) },
+      remove() {
+        if (this.parent !== null) {
+          this.parent.children = this.parent.children.filter((child) => child !== this)
+          this.parent.firstChild = this.parent.children[0] ?? null
+          this.parent = null
+        }
+      },
+    }
+    return node
+  }
+  const titles = ['DeepSeek', 'cpa', 'openrouter-f'].map((name) => {
+    const n = makeNode(name)
+    n.setAttribute('data-menu-group-heading', '')
+    return n
+  })
+  const titled = (name) => titles.find((t) => t.textContent === name)
+  let menuClosed = false
+  globalThis.document = {
+    body: {},
+    documentElement: {},
+    head: { appendChild() {} },
+    createElement() {
+      const icon = makeNode('')
+      icon.matches = (sel) => sel.includes('data-dshsvc-model-group-icon')
+      return icon
+    },
+    querySelector: (sel) => (sel === '[data-composer-seat]' ? seat : null),
+    querySelectorAll: (sel) => {
+      if (sel.includes('data-menu-group-heading')) return menuClosed ? [] : titles
+      if (sel.includes('groupTitle')) return []
+      if (sel.includes('data-dshsvc-model-group-icon')) return titles.flatMap((t) => t.children)
+      if (sel.includes('data-dshsvc-model-group')) return titles.filter((t) => t.hasAttribute('data-dshsvc-model-group'))
+      if (sel.includes('model-icon-seat') && attrs.has('data-dshsvc-model-icon-seat')) return [seat]
+      return []
+    },
+    contains: () => true,
+    addEventListener() {}, removeEventListener() {}, visibilityState: 'visible',
+  }
+
+  const directory = {
+    store: { getSnapshot: () => ({ current: { provider: 'openrouter-f' } }), subscribe: () => () => {} },
+    load: () => Promise.resolve(),
+  }
+  try {
+    const renderer = createRenderer(async () => { throw new Error('no rpc expected') }, {
+      modelDirectories: { directoryFor: () => directory },
+      featureSettings: { modelProviderIcons: true },
+    })
+    await renderer.load()
+    const icons = renderer.moduleExports().modelProviderIcons
+    const rerun = async () => {
+      for (const cb of observerCallbacks) cb()
+      await renderer.flush()
+    }
+    await rerun()
+
+    const deepseekTitle = titled('DeepSeek')
+    const openrouterTitle = titled('openrouter-f')
+
+    assert.equal(openrouterTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'openrouter', 'MenuGroup heading prepends the mapped provider mark')
+    assert.equal(openrouterTitle.getAttribute(icons.menuGroupAttr), 'openrouter')
+    assert.equal(deepseekTitle.firstChild?.getAttribute(icons.menuGroupIconAttr), 'deepseek')
+
+    menuClosed = true
+    await rerun()
+    assert.equal(openrouterTitle.hasAttribute(icons.menuGroupAttr), false)
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

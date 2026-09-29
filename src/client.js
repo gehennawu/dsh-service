@@ -25,7 +25,8 @@ window.__ModuleLoader__.load({
     const MODEL_ICON_BASE_PX = 15
     const MODEL_ICON_VIEWBOX = '0 0 24 24'
     // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的同一枚图标 ──
-    // 官方 ModelSelect 的二级列表按 provider 分组，分组标题（`_7KE1Ra_groupTitle`）
+    // 官方 ModelSelect 的二级列表按 provider 分组，分组标题在 ≤0.2.0-rc.1 为 `_7KE1Ra_groupTitle`，
+    // 在 ≥0.2.0-rc.2 重构为 MenuGroup（`[data-menu-group-heading]`），
     // 只渲染 group.name 一个文本节点，没有任何厂家标识。这里用同一套数据与渲染路径
     // 在其前画一枚图标：与 composer 座不同，菜单是**运行期才出现**的 DOM（官方在
     // 打开菜单时才 portal 一个 `<section role="group">` 列表），且每个分组是**不同**

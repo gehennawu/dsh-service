@@ -30,7 +30,8 @@
 
         // ── 模型选择弹窗「分组标题（厂家/渠道商）」前的那一枚 ────────────────
         // 官方「模型」二级列表把每个 provider 渲染成
-        // `<section role="group"><div class="_7KE1Ra_groupTitle">渠道名</div>…</section>`，
+        // `<section role="group"><div class="_7KE1Ra_groupTitle">渠道名</div>…</section>`（≤0.2.0-rc.1）
+        // 或 `<section role="group" data-menu-group><div data-menu-group-heading>渠道名</div>…</section>`（≥0.2.0-rc.2 MenuGroup），
         // 标题里没有任何厂家标识。分组顺序与渠道名**完全等于**目录快照的
         // groups[].id/name（宿主侧 buildModelCatalog 直接用 provider.id/name 构造），
         // 所以映射键就用标题文本，配同一套 resolveModelIcon 解析——不引入第二份映射表。
@@ -97,7 +98,7 @@
           const doc = docOrNull()
           if (doc === null || typeof doc.querySelectorAll !== 'function') return
           let titles = []
-          try { titles = Array.from(doc.querySelectorAll(`[class*="_7KE1Ra_groupTitle"]`)) } catch (_) { return }
+          try { titles = Array.from(doc.querySelectorAll('[class*="_7KE1Ra_groups"] [data-menu-group-heading], [class*="_7KE1Ra_groupTitle"]')) } catch (_) { return }
           if (titles.length === 0) {
             // 菜单关闭：规格口径是「菜单关闭也走 clearMenuGroups() 全量摘除」。官方 portal
             // 卸载通常把整棵子树连同我方插入的节点一并带走，但那是官方实现细节；这里检测
