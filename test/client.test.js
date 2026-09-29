@@ -13916,12 +13916,24 @@ test('model provider icons: locates the composer trigger by official anchors ins
   for (const flavor of flavors) {
     const triggerAttrs = new Map()
     const triggerVars = new Map()
+    // 官方触发钮的 aria-label 来自官方词典（zh/en），是兜底锚点唯一的正信号。
+    const triggerStatic = { 'aria-label': '选择模型，当前 DeepSeek V4.1 Flash · High' }
     const trigger = {
       setAttribute(n, v) { triggerAttrs.set(n, v) },
       removeAttribute(n) { triggerAttrs.delete(n) },
       hasAttribute(n) { return triggerAttrs.has(n) },
-      getAttribute(n) { return triggerAttrs.has(n) ? triggerAttrs.get(n) : null },
+      getAttribute(n) { return triggerAttrs.has(n) ? triggerAttrs.get(n) : (triggerStatic[n] ?? null) },
       style: { setProperty(n, v) { triggerVars.set(n, v) }, removeProperty(n) { triggerVars.delete(n) } },
+      querySelector: () => null,
+    }
+    // 干扰项（真机同款）：同一个座里的「选择工作区」钮也是 aria-haspopup=menu，且 DOM 顺序在前。
+    const decoyAttrs = new Map([['aria-label', '选择工作区']])
+    const decoy = {
+      setAttribute(n, v) { decoyAttrs.set(n, v) },
+      removeAttribute(n) { decoyAttrs.delete(n) },
+      hasAttribute(n) { return decoyAttrs.has(n) },
+      getAttribute(n) { return decoyAttrs.has(n) ? decoyAttrs.get(n) : null },
+      style: { setProperty() {}, removeProperty() {} },
       querySelector: () => null,
     }
     const seatAttrs = new Map()
@@ -13935,8 +13947,12 @@ test('model provider icons: locates the composer trigger by official anchors ins
       querySelector(sel) {
         if (flavor.slot && sel.includes('data-slot="conversation.input.model"')) return trigger
         if (flavor.legacy && sel.includes('_7KE1Ra_trigger')) return trigger
-        if (flavor.aria && sel.includes('aria-haspopup')) return trigger
         return null
+      },
+      querySelectorAll(sel) {
+        // ③ 兜底锚点走这里：干扰项排在前，引擎必须靠官方「模型」文案跳过它。
+        if (flavor.aria && sel.includes('aria-haspopup')) return [decoy, trigger]
+        return []
       },
     }
     const observerCallbacks = []
@@ -13985,6 +14001,8 @@ test('model provider icons: locates the composer trigger by official anchors ins
       await renderer.flush()
 
       // 触发钮拿到自有属性（绘制规则的门）、就近变量，以及官方图标让位变量。
+      // 兜底锚点必须跳过同座内的「选择工作区」钮（真机同款干扰项，DOM 顺序还在模型钮之前）。
+      assert.equal(decoyAttrs.has(icons.triggerAttr), false, `${flavor.name}: a non-model aria-haspopup button must never be marked`)
       assert.equal(triggerAttrs.get(icons.triggerAttr), 'openrouter', `${flavor.name}: trigger carries our own attribute`)
       assert.equal(triggerAttrs.get(icons.attr), 'openrouter', `${flavor.name}: trigger carries the slug attribute`)
       assert.equal(triggerAttrs.get(icons.seatAttr), 'mono', `${flavor.name}: trigger carries the tier attribute`)
@@ -14583,7 +14601,10 @@ test('model provider icons: model menu group titles survive official class-hash 
   // 官方 ModelSelect 的触发钮在菜单打开时才挂 aria-controls（桌面端 0.2.0-rc.2 产物实测：
   // `"aria-controls": open ? `${id}-menu` : void 0`）。菜单根就是它指向的 portal 节点。
   trigger.setAttribute('aria-controls', 'model-menu-1')
-  seat.querySelector = (sel) => (sel.includes('aria-haspopup') ? trigger : null)
+  // 兜底锚点③要求 aria-label/title 提到模型：真机实测同一个座里「选择工作区」钮也是
+  // aria-haspopup=menu，且 DOM 顺序在前，所以单靠 aria-haspopup 不足以指认模型钮。
+  trigger.setAttribute('aria-label', '选择模型，当前 DeepSeek V4.1 Flash')
+  seat.querySelectorAll = (sel) => (sel.includes('aria-haspopup') ? [trigger] : [])
 
   const inMenu = ['DeepSeek', 'openrouter-f'].map((name) => {
     const node = makeNode(name)

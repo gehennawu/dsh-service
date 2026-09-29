@@ -209,9 +209,11 @@
          *      渲染，0.1.5-rc.2 到 0.2.0-rc.2 桌面端都在；该座 kind:single、官方 ModelSelect
          *      独占，其中第一个 button 就是触发钮。
          *   ② 老发行包的旧类名哈希（npm 0.1.7-rc.2 / 0.2.0-rc.1）。
-         *   ③ 座上 `button[aria-haspopup="menu"]`：桌面端 0.2.0-rc.2 实测恒在、不带条件。
+         *   ③ 座上带 `aria-haspopup="menu"` 且 `aria-label`/`title` 提到模型（官方词典 zh/en：
+         *      「选择模型…」/「Select model…」）的按钮。
          * ①② 先座内再文档级（座内找不到时才放宽——这两个锚点指向官方独占面，放宽不会认错
-         * 节点）；③ 只在座内找，因为它最泛，文档级找有认错别的下拉钮的风险。
+         * 节点）；③ 只在座内找，且必须命中模型文案：真机实测座内「选择工作区」钮同样带
+         * `aria-haspopup="menu"` 且 DOM 顺序在前，盲取第一个会画到工作区选择器上。
          * 三级全空返回 null：引擎退化成「只打座标记」（与旧行为一致），绝不猜节点。
          */
         const findTrigger = (seat) => {
@@ -232,10 +234,17 @@
               if (legacy !== null && legacy !== undefined) return legacy
             } catch (_) {}
           }
-          if (seat !== null && seat !== undefined && typeof seat.querySelector === 'function') {
+          if (seat !== null && seat !== undefined && typeof seat.querySelectorAll === 'function') {
+            // ③ 兜底：**不接受「随便哪个 aria-haspopup=menu」**。真机实测同一个 composer 座内
+            // 「选择工作区」钮（`Hqq-bq_workspace`）同样带 `aria-haspopup="menu"`，而且 DOM 顺序
+            // 排在模型钮**之前**——盲取第一个会把厂家图标画到工作区选择器上。官方触发钮的
+            // `aria-label`/`title` 来自官方词典（zh「选择模型…」/ en「Select model…」），
+            // 用它做正信号；取不到就返回 null（宁可不画，也不画错节点）。
             try {
-              const byAria = seat.querySelector(MODEL_TRIGGER_ARIA_SELECTOR)
-              if (byAria !== null && byAria !== undefined) return byAria
+              for (const candidate of Array.from(seat.querySelectorAll(MODEL_TRIGGER_ARIA_SELECTOR))) {
+                const label = `${iconDomGetAttr(candidate, 'aria-label') ?? ''} ${iconDomGetAttr(candidate, 'title') ?? ''}`
+                if (/模型|Model/i.test(label)) return candidate
+              }
             } catch (_) {}
           }
           return null
