@@ -9201,8 +9201,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="nArs4W_toggleButton"\] \{[^}]*z-index: 45 !important/s)
     // 模型选择按钮自适应：官方 DSH（≥0.1.7/0.2.0）已改为 observeControlRow 动态测宽
     // （放得下显示名称，放不下才打 data-model-compact 收成图标），不再由 <=480px 强制覆盖隐藏。
+    // 放宽 45cqw 硬限宽，紧凑态下思考程度依然常驻显示。
     assert.doesNotMatch(styleTag.textContent, /\[class\*="_7KE1Ra_triggerLabel"\],\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerEffort"\] \{ display: none !important; \}/)
     assert.doesNotMatch(styleTag.textContent, /@media \(max-width: 480px\) \{\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\] \{ display: block !important; \}/)
+    assert.match(styleTag.textContent, /\[class\*="_7KE1Ra_trigger"\] \{[^}]*max-width: none !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\]\[data-model-compact\] \[class\*="_7KE1Ra_triggerEffort"\] \{[^}]*display: inline-block !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\]\[data-model-compact\] \[class\*="_7KE1Ra_triggerEffort"\] \{[^}]*flex-shrink: 0 !important/s)
     // 死规则审计（2026-09-15）：0.1.5-rc.2 外壳已无含 toolbar/inputTriggers 的类名
     // （活页面命中 0），两条泛化空转规则清理；"composer" 仍命中（composerSeat）保留。
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="toolbar" i\]/)

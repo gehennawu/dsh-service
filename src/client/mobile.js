@@ -182,10 +182,21 @@ html[data-dshsvc-mobile] [class*="uV2eYG_standardControls"] { gap: 6px !importan
 html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"],
 html[data-dshsvc-mobile] [class*="JObwrW_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }
-/* 模型选择按钮自适应形态：官方 DSH（≥0.1.7/0.2.0）已改由 observeControlRow 动态
-   测量底行空间——空间充裕时显示模型名称与推理等级，空间不足时底行打上 data-model-compact
-   自动收缩为图标态。此处不再以 <=480px 媒体查询强制隐藏名称，交由官方测宽自适应决定；
-   厂家图标在展开态（模型名前）和收缩态（作为按钮主图标）均保持显示。 */
+/* 模型选择按钮自适应形态（移动端零截断 + 思考程度常驻）：
+   1. 放宽官方 45cqw 硬限宽（max-width: none），使 observeControlRow 能按真实无截断全宽测算；
+   2. 空间充裕时完整展示「厂家图标 + 模型全名 + 思考程度」（零截断）；
+   3. 空间不足时（小屏手机、长模型名或被其他插件占用工具栏），模型全名自动收缩，
+      但思考程度（如 High / Low）在紧凑态下依然保持显示（[厂家图标] High ▾），
+      无思考程度的模型则收成 45px 纯图标钮，全程单行不折行、不截断文字。 */
+html[data-dshsvc-mobile] [class*="_7KE1Ra_trigger"] {
+  max-width: none !important;
+}
+html[data-dshsvc-mobile] [class*="uV2eYG_row"][data-model-compact] [class*="_7KE1Ra_triggerEffort"] {
+  display: inline-block !important;
+  flex-shrink: 0 !important;
+  color: var(--dsw-alias-label-caption) !important;
+  font-size: 12px !important;
+}
 /* 工作区侧板（fixed z25 层内的 nArs4W_panel z40）开屏后会盖住它自己的外部
    开关钮（tab bar 行 nArs4W_toggleButton）——手机上抽屉一开就再没有任何
    可点的关闭入口（真机反馈「关不上」本体）。把开关钮提到面板之上，
