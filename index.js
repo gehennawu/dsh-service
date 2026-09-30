@@ -3148,10 +3148,10 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
       const indexed = index.sessions !== null && typeof index.sessions === 'object' ? Object.keys(index.sessions).length : 0
       const updatedAt = Number.isFinite(Number(index.updatedAt)) ? Number(index.updatedAt) : 0
       // updatedAt=0 = 从未建立索引（用户还没打开过模型统计页）：不是故障，报 info。
-      // 失败会话是「部分成功」语义（沿用 usage 页同款口径）：warning 而非 error——统计仍可用，
-      // 只是少算了这些会话，不点亮诊断标签 ⚠ 的 error 档。
+      // 失败会话是「部分成功」语义：报 info 提示而非 warning——统计仍可用，
+      // 只是少算了这些会话，不拉高 overall 为 warning，不点亮诊断标签 ⚠，不进概览可行动项。
       if (updatedAt === 0) add('usage-index', 'info', 'never')
-      else add('usage-index', failed > 0 ? 'warning' : 'ok', `${failed}:${indexed}:${updatedAt}`)
+      else add('usage-index', failed > 0 ? 'info' : 'ok', `${failed}:${indexed}:${updatedAt}`)
     }
   }
 

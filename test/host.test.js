@@ -2175,10 +2175,10 @@ test('diagnostics appends a usage-index check reporting indexed sessions, freshn
   const result = await handler('diagnostics', {})
   assert.equal(result.ok, true)
   // detail 三段 failed:indexed:updatedAt，追加在既有检查项之后（前五项顺序契约不动）。
-  assert.deepEqual(result.value.checks.find((item) => item.id === 'usage-index'), { id: 'usage-index', status: 'warning', detail: `1:2:${now}` })
+  assert.deepEqual(result.value.checks.find((item) => item.id === 'usage-index'), { id: 'usage-index', status: 'info', detail: `1:2:${now}` })
   assert.equal(result.value.checks[0].id, 'session-storage')
-  // 失败会话是「部分成功」语义（沿用 usage 页口径）：warning 而非 error，不把 overall 拉成 error。
-  assert.notEqual(result.value.status, 'error')
+  // 失败会话是「部分成功」语义：info 提示而非 warning，整体 status 保持 ok。
+  assert.equal(result.value.status, 'ok')
 })
 
 test('diagnostics reports a healthy usage index as ok and a never-built index as info', async (t) => {

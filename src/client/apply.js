@@ -5584,7 +5584,7 @@
             const [failed = '0', indexed = '0', updatedAt = '0'] = detail.split(':')
             const at = Number(updatedAt)
             const params = { failed, indexed, updated: at > 0 ? `${formatShortDate(at)} ${formatClockTime(at)}` : '—' }
-            return translate(Number(failed) > 0 ? 'health.detail.usage-index.warning' : 'health.detail.usage-index.ok', params)
+            return translate(Number(failed) > 0 ? (check.status === 'warning' ? 'health.detail.usage-index.warning' : 'health.detail.usage-index.info') : 'health.detail.usage-index.ok', params)
           }
           if (check.id === 'session-storage' && check.status === 'ok') return translate('health.detail.session-storage.ok', { count: detail })
           if (check.id === 'workspace-registry' && check.status === 'ok') return translate('health.detail.workspace-registry.ok', { count: detail })

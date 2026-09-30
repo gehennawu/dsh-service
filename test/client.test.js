@@ -4821,7 +4821,7 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
   assert.equal(renderer.hasTest('tab-dot-health'), false)
 })
 
-test('a failing usage index shows a readable diagnostics row and enters overview attention items', async () => {
+test('a failing usage index shows a readable diagnostics row as info and does not enter overview attention items', async () => {
   const updatedAt = Date.UTC(2026, 0, 2, 3, 4)
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
@@ -4831,8 +4831,8 @@ test('a failing usage index shows a readable diagnostics row and enters overview
     if (endpoint === 'backup-list') return { ok: true, value: { items: [{ id: 'b', sizeBytes: 1, createdAt: new Date(updatedAt).toISOString() }], totalBytes: 1 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
-    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'warning', checkedAt: Date.now(), checks: [
-      { id: 'usage-index', status: 'warning', detail: `2:7:${updatedAt}` },
+    if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: Date.now(), checks: [
+      { id: 'usage-index', status: 'info', detail: `2:7:${updatedAt}` },
     ] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { notificationPermission: 'granted' })
@@ -4844,14 +4844,12 @@ test('a failing usage index shows a readable diagnostics row and enters overview
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /使用统计索引.*2 个会话未能索引（统计少算），已索引 7 个，更新于 2026-01-02 03:04/)
   assert.equal(renderer.hasTest('health-check-usage-index'), true)
-  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), false)
 
-  // 回到概览：索引失败是真故障（统计会少算），进可行动项。
+  // 回到概览：索引部分失败是提示（info），不进概览可行动项。
   await renderer.findButton('概览').props.onClick()
   await renderer.flush()
-  assert.equal(renderer.hasTest('overview-actionables'), true)
-  assert.match(renderer.text('settings.section'), /使用统计索引/)
-  assert.match(renderer.text('settings.section'), /2 个会话未能索引/)
+  assert.equal(renderer.hasTest('overview-actionables'), false)
 })
 
 test('a healthy usage index renders as ok and never enters overview attention items', async () => {

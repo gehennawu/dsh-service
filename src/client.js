@@ -920,6 +920,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'health.detail.usage-index.never': '尚未建立统计索引，打开模型统计页后开始只读建立',
       'health.detail.usage-index.unavailable': '统计索引暂不可读',
       'health.detail.usage-index.ok': '已索引 {indexed} 个会话，更新于 {updated}',
+      'health.detail.usage-index.info': '{failed} 个会话未能索引（统计少算），已索引 {indexed} 个，更新于 {updated}',
       'health.detail.usage-index.warning': '{failed} 个会话未能索引（统计少算），已索引 {indexed} 个，更新于 {updated}',
       // 浏览器通知权限：客户端专属检查行（宿主看不到浏览器权限）。仅在通知总开关开启时才有意义。
       'health.check.notification-permission': '通知权限',
@@ -1884,6 +1885,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'health.detail.usage-index.never': 'No usage index yet; open the Model usage page to build it read-only',
       'health.detail.usage-index.unavailable': 'The usage index could not be read',
       'health.detail.usage-index.ok': '{indexed} sessions indexed, updated {updated}',
+      'health.detail.usage-index.info': '{failed} session(s) could not be indexed (usage is undercounted); {indexed} indexed, updated {updated}',
       'health.detail.usage-index.warning': '{failed} session(s) could not be indexed (usage is undercounted); {indexed} indexed, updated {updated}',
       'health.check.notification-permission': 'Notification permission',
       'health.detail.notification-permission.granted': 'The browser is allowed to show system notifications',
