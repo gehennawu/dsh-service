@@ -26,7 +26,6 @@
     "subagent-routes.js",
     "backup-routes.js",
     "plugin-health.js",
-    "plugin-compat.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",

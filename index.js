@@ -20,7 +20,6 @@ import { createSessionsRoutes } from './session-routes.js'
 import { createQuotaRoutes } from './quota-routes.js'
 import { createSubagentRoutes } from './subagent-routes.js'
 import { createBackupRoutes } from './backup-routes.js'
-import { collectPluginCompat, pluginCompatCheckItem } from './plugin-compat.js'
 import { collectPluginHealth, pluginCheckItem, restartPluginEntry } from './plugin-health.js'
 import {
   buildCliproxyAccountPlan as buildCliproxyAccountPlanAdapter,
@@ -3121,19 +3120,6 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
     checks.push(pluginCheck)
   }
 
-  // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单（client-runtime 供应商移除、SQLite
-  // persistence 移除、聊天/统计条 CSS 哈希漂移、data-time-hover-root 删除）扫描启用插件的
-  // 清单与入口代码；loader 缺席降级为 info 检查项、不带扫描结果。退役接口（severity info）
-  // 单列 soft，只提示不拉高 overall。
-  let compatReport
-  try {
-    compatReport = await collectPluginCompat(ctx)
-  } catch (error) {
-    compatReport = { available: false, scanned: 0, issues: [], soft: [], declaredOnly: [], unknown: [] }
-  }
-  if (!compatReport.available) add('plugin-compat', 'info', 'unavailable')
-  else checks.push(pluginCompatCheckItem(compatReport))
-
   // 使用统计索引（工作区实现，未发布）：统计链路自身的健康度。单会话折读失败会让用量静默少算，
   // 此前只在模型统计页的全局警告里可见，诊断清单没有任何一项覆盖它。
   // 功能关闭时宿主根本不刷新索引（usage/usage-refresh 均受 modelUsage 门控），报「失败」
@@ -3164,9 +3150,6 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
     checkedAt: Date.now(),
     checks,
     ...(pluginReport.available ? { pluginIssues: pluginReport.issues } : {}),
-    ...(compatReport.available
-      ? { pluginCompat: { scanned: compatReport.scanned, issues: compatReport.issues, soft: compatReport.soft, declaredOnly: compatReport.declaredOnly, unknown: compatReport.unknown } }
-      : {}),
   }
 }
 

@@ -2,7 +2,7 @@
 // 依赖显式注入（工厂解构名单即本模块完整依赖面）；handler 体与拆分前一致，
 // 例外：可重赋值的 let（subagentRouteConfig/subagentSeamInstalled）以 { current } 箱体注入保活绑定。
 // 注意：客户端半有单产物约束，宿主半无此约束——兄弟 ESM 模块是本仓库既有惯例
-// （quota-adapters.js / backup-integrity.js / plugin-health.js / plugin-compat.js）。
+// （quota-adapters.js / backup-integrity.js / plugin-health.js）。
 
 export function createSubagentRoutes({
   ctx,

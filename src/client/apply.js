@@ -5621,23 +5621,6 @@
             if ((Number(informational) || 0) > 0) segments.push(translate('plugin.issue.info', { count: informational }))
             return segments.join('，')
           }
-          if (check.id === 'plugin-compat') {
-            // detail 五段 scanned:broken:declaredOnly:unknown:soft（宿主 pluginCompatCheckItem；尾部追加以兼容旧版）。
-            if (detail === 'unavailable') return translate('health.detail.plugin-compat.unavailable')
-            const parts = detail.split(':')
-            const scanned = parts[0]
-            const broken = parts[1]
-            const declaredOnly = parts[2]
-            const unknown = parts[3]
-            const soft = parts[4] || '0'
-            if (check.status === 'ok' && (Number(declaredOnly) || 0) === 0 && (Number(soft) || 0) === 0) return translate('health.detail.plugin-compat.ok', { total: scanned })
-            const segments = []
-            if ((Number(broken) || 0) > 0) segments.push(translate('plugin.compat.issue.broken', { count: broken }))
-            if ((Number(soft) || 0) > 0) segments.push(translate('plugin.compat.issue.soft', { count: soft }))
-            if ((Number(declaredOnly) || 0) > 0) segments.push(translate('plugin.compat.issue.declared', { count: declaredOnly }))
-            if ((Number(unknown) || 0) > 0) segments.push(translate('plugin.compat.issue.unknown', { count: unknown }))
-            return segments.join('，')
-          }
           return translate('health.detail.generic', { status: translate(`health.status.${check.status}`) })
         }
         const summaryItems = (totals) => [
@@ -6023,166 +6006,6 @@
                       : null,
                     pluginRestartError ? React.createElement('p', { 'data-testid': 'plugin-restart-error', style: Object.assign({}, hint, { margin: '4px 0 0', color: 'var(--dsw-alias-state-error-primary)' }) }, pluginRestartError) : null))
               }))
-        // v1.3 插件兼容性：对照已核实的 alpha 破坏面清单扫描启用插件，命中才显示行
-        // （字体说明见 plugin-compat.js 的 COMPAT_BREAKS；未扫成的插件单独提示原因）。
-        // 四档分级：真引用破坏（可能不兼容，warning）→ 退役接口引用（蓝色提示，info）→ 仅声明残留（代码未引用、官方 loader 静默
-        // 跳过缺失供应商，info 无害提示）→ 未扫描（info）。
-        // 展示契约：**一个插件一行**——同一插件可能同时落在多档（如既注册退役槽位又留了声明残留），
-        // 各档不再各占一行、不再重复插件名；行的圆点与徽标取该插件最重的一档，行内按严重度列出各档命中。
-        const pluginCompatScan = diagnostics?.pluginCompat !== null && typeof diagnostics?.pluginCompat === 'object' ? diagnostics.pluginCompat : null
-        const pluginCompatIssues = Array.isArray(pluginCompatScan?.issues) ? pluginCompatScan.issues : []
-        const pluginCompatSoft = Array.isArray(pluginCompatScan?.soft) ? pluginCompatScan.soft : []
-        const pluginCompatDeclared = Array.isArray(pluginCompatScan?.declaredOnly) ? pluginCompatScan.declaredOnly : []
-        const pluginCompatUnknown = Array.isArray(pluginCompatScan?.unknown) ? pluginCompatScan.unknown : []
-        // 分档严重度序（小 = 重）。归并序取首次出现的档位，故 broken 插件整体排在退役接口/声明残留之前。
-        const pluginCompatKindOrder = { broken: 0, soft: 1, declared: 2, unknown: 3 }
-        const COMPAT_BREAK_METAS = {
-          'client-runtime': { since: '0.1.2-alpha.2', kind: 'package-removed' },
-          'sqlite-persistence': { since: '0.1.2-alpha.3', kind: 'package-removed' },
-          'code-runtime': { since: '0.1.6-alpha.1', kind: 'package-removed' },
-          'e2b-runtime': { since: '0.1.6-alpha.1', kind: 'package-removed' },
-          'session-start-event': { since: '0.1.6-alpha.1', kind: 'event-removed' },
-          'chat-hash': { since: '0.1.2-alpha.2', kind: 'hash-migrated' },
-          'stats-hash': { since: '0.1.2-alpha.2', kind: 'hash-migrated' },
-          'time-hover-root': { since: '0.1.2-alpha.2', kind: 'attribute-removed' },
-          'settings-plugin-item': { since: '0.1.6-alpha.2', kind: 'slot-retired' },
-          'sessions-open-method': { since: '0.1.6-alpha.2', kind: 'method-removed' },
-          'settings-scope': { since: '0.1.7-alpha.1', kind: 'service-removed' },
-          'settings-register': { since: '0.1.7-alpha.1', kind: 'method-removed' },
-          'settings-get': { since: '0.1.7-alpha.1', kind: 'method-removed' },
-        }
-        const pluginCompatFindings = [
-          ...pluginCompatIssues.map((issue) => ({ kind: 'broken', moduleName: issue.moduleName, breaks: issue.breaks })),
-          ...pluginCompatSoft.map((item) => ({ kind: 'soft', moduleName: item.moduleName, breaks: item.breaks })),
-          ...pluginCompatDeclared.map((item) => ({ kind: 'declared', moduleName: item.moduleName, breaks: item.breaks })),
-          ...pluginCompatUnknown.map((item) => ({ kind: 'unknown', moduleName: item.moduleName, reason: item.reason })),
-        ]
-        const pluginCompatGrouped = new Map()
-        for (const finding of pluginCompatFindings) {
-          const bucket = pluginCompatGrouped.get(finding.moduleName)
-          if (bucket === undefined) pluginCompatGrouped.set(finding.moduleName, [finding])
-          else bucket.push(finding)
-        }
-        const pluginCompatFindingText = (finding) => finding.kind === 'broken' || finding.kind === 'soft'
-          ? finding.breaks.map((id) => translate('plugin.compat.break.' + id)).join('；')
-          : finding.kind === 'declared'
-            ? translate('plugin.compat.declared')
-            : translate(`plugin.compat.unknown.${finding.reason}`)
-        const pluginCompatRows = [...pluginCompatGrouped].map(([moduleName, findings], index) => {
-          const sorted = [...findings].sort((a, b) => pluginCompatKindOrder[a.kind] - pluginCompatKindOrder[b.kind])
-          return { key: `${sorted[0].kind}-${index}`, moduleName, findings: sorted }
-        })
-        const pluginCompatBlock = pluginCompatScan === null || pluginCompatRows.length === 0
-          ? null
-          : React.createElement('div', { 'data-testid': 'plugin-compat-list', style: { marginTop: '6px', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
-              pluginCompatRows.map((row, index) => {
-                const warning = row.findings[0].kind === 'broken'
-                const rowColor = warning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)'
-                return React.createElement('div', { key: row.key, 'data-testid': `plugin-compat-row-${index}`, style: { display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '8px 2px', borderTop: index === 0 ? 0 : '1px solid var(--dsh-svc-border)' } },
-                  // 圆点与插件名第一行光学居中：名称行高钉 17px；代码字体的字面盒中心比行盒中心
-                  // 实测低 2.5px（探针 getBoundingClientRect 实证），故上边距取 (17-7)/2 + 2.5 = 7.5px。
-                  React.createElement('span', { 'aria-hidden': 'true', style: { flex: 'none', width: '7px', height: '7px', ...fullRound('50%'), marginTop: '7.5px', background: rowColor } }),
-                  React.createElement('div', { style: { minWidth: 0, flex: 1 } },
-                    React.createElement('span', { style: { fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: '12px', fontWeight: 600, lineHeight: '17px', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, row.moduleName),
-                    // 分档标签独立成行排在插件名下方（颜色随档位：可能不兼容=警示黄，其余=信息蓝），
-                    // 正文段落跟在自己标签的下面——标签管「属于哪一档」，正文管「具体是什么」，不挤同一行。
-                    row.findings.flatMap((finding, findingIndex) => {
-                      const detailBlocks = Array.isArray(finding.breaks) && finding.breaks.length > 0
-                        ? finding.breaks.map((breakId, dIdx) => {
-                            const meta = COMPAT_BREAK_METAS[breakId]
-                            const since = meta?.since
-                            const kind = meta?.kind
-                            const active = since && version ? compareSemver(version, since) >= 0 : true
-                            const catKey = 'plugin.compat.category.' + kind
-                            const catLabel = translate(catKey) !== catKey ? translate(catKey) : kind
-                            const badgeLabel = active
-                              ? translate('plugin.compat.badge.active')
-                              : translate('plugin.compat.badge.future', { since: since || '' })
-                            const reasonKey = 'plugin.compat.reason.' + breakId
-                            const impactKey = 'plugin.compat.impact.' + breakId
-                            const adviceKey = 'plugin.compat.advice.' + breakId
-                            const hasReason = translate(reasonKey) !== reasonKey
-                            const hasImpact = translate(impactKey) !== impactKey
-                            const hasAdvice = translate(adviceKey) !== adviceKey
-                            // 详情卡片配色跟档位走：只有 broken 档且已生效才用警示黄——info 档
-                            // （退役接口引用/仅声明残留）即使「当前版本已生效」也保持信息蓝，
-                            // 与行圆点、分档标签同一套视觉语义（2026-09-23 settings-scope 降档）。
-                            const toneWarning = finding.kind === 'broken' && active
-
-                            return React.createElement('div', {
-                              key: `${row.key}-${finding.kind}-detail-${dIdx}`,
-                              'data-testid': `plugin-compat-detail-${index}-${findingIndex}-${dIdx}`,
-                              style: {
-                                marginTop: '5px',
-                                padding: '6px 10px',
-                                borderRadius: '6px',
-                                background: toneWarning ? 'rgba(230, 162, 60, 0.05)' : 'rgba(64, 158, 255, 0.05)',
-                                border: `1px solid ${toneWarning ? 'rgba(230, 162, 60, 0.25)' : 'rgba(64, 158, 255, 0.25)'}`,
-                                fontSize: '11px',
-                                lineHeight: 1.6,
-                              },
-                            },
-                              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' } },
-                                catLabel ? React.createElement('span', {
-                                  style: {
-                                    fontWeight: 650,
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    background: toneWarning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
-                                    color: '#fff',
-                                    fontSize: '10px',
-                                  }
-                                }, catLabel) : null,
-                                since ? React.createElement('span', {
-                                  style: {
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    background: 'var(--dsh-svc-border)',
-                                    color: 'var(--dsw-alias-label-primary)',
-                                    fontSize: '10px',
-                                    fontFamily: 'var(--ds-font-family-code, monospace)',
-                                    fontWeight: 600,
-                                  }
-                                }, `DSH ≥ ${since}`) : null,
-                                React.createElement('span', {
-                                  style: {
-                                    color: toneWarning ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)',
-                                    fontSize: '10px',
-                                    fontWeight: 600,
-                                  }
-                                }, badgeLabel),
-                              ),
-                              hasReason ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.reason') + '：'),
-                                translate(reasonKey),
-                              ) : null,
-                              hasImpact ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.impact') + '：'),
-                                translate(impactKey),
-                              ) : null,
-                              hasAdvice ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
-                                React.createElement('strong', { style: { color: 'var(--dsw-alias-label-primary)', marginRight: '4px' } }, translate('plugin.compat.meta.advice') + '：'),
-                                translate(adviceKey),
-                              ) : null,
-                            )
-                          })
-                        : []
-
-                      return [
-                        React.createElement('div', {
-                          key: `${row.key}-${finding.kind}-kind`,
-                          'data-testid': `plugin-compat-kind-${index}-${findingIndex}`,
-                          style: { fontSize: '11px', fontWeight: 650, marginTop: findingIndex === 0 ? '3px' : '7px', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-info)' },
-                        }, translate('plugin.compat.kind.' + finding.kind)),
-                        React.createElement('div', {
-                          key: `${row.key}-${finding.kind}-text`,
-                          'data-testid': `plugin-compat-line-${index}-${findingIndex}`,
-                          style: { fontSize: '11px', marginTop: '1px', lineHeight: 1.6, overflowWrap: 'anywhere', color: finding.kind === 'broken' ? 'var(--dsh-svc-warning)' : 'var(--dsh-svc-text-muted)' },
-                        }, pluginCompatFindingText(finding)),
-                        ...detailBlocks,
-                      ]
-                    })))
-              }))
         const permissionAbnormal = permissions && permissions.supported === true
           ? permissions.items.filter((item) => item.writable === false).length
           : 0
@@ -6235,7 +6058,6 @@
           // v0.39 省空间：页头标题即「健康诊断」，去掉内容区重复区块标题。
           healthSummaryBlock,
           pluginIssueBlock,
-          pluginCompatBlock,
           permissionBlock)
 
         // v0.45 进度显示：一根连续不清零的总进度条，按阶段加权映射——

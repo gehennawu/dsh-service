@@ -115,17 +115,13 @@ test('plugin health checks are documented in both languages and shipped', () => 
   assert.match(zh, /插件健康检查/)
   assert.match(zh, /重新加载/)
   assert.match(zh, /已释放或未知状态/)
-  assert.match(zh, /兼容性/)
   assert.match(en, /plugin health/i)
   assert.match(en, /reload/i)
   assert.match(en, /disposed or unknown/i)
-  assert.match(en, /compatib/i)
   if (roadmap !== null) {
     assert.match(roadmap, /plugin-restart/)
-    assert.match(roadmap, /plugin-compat/)
   }
   assert.equal(packageJson.files.includes('plugin-health.js'), true)
-  assert.equal(packageJson.files.includes('plugin-compat.js'), true)
 })
 
 // 图标目录页是生成物（scripts/model-icons-catalog.mjs），与 src/model-icons.generated.js

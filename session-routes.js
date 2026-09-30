@@ -1,7 +1,7 @@
 // 会话管理（sessions）的 RPC 端点：从 apply 的端点表按功能域拆出。
 // 依赖显式注入（工厂解构名单即本模块完整依赖面）；handler 体与拆分前逐字一致。
 // 注意：客户端半有单产物约束，宿主半无此约束——兄弟 ESM 模块是本仓库既有惯例
-// （quota-adapters.js / backup-integrity.js / plugin-health.js / plugin-compat.js）。
+// （quota-adapters.js / backup-integrity.js / plugin-health.js）。
 
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
