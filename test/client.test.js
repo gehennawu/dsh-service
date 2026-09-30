@@ -9207,6 +9207,8 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="_7KE1Ra_trigger"\] \{[^}]*max-width: none !important/s)
     assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\]\[data-model-compact\] \[class\*="_7KE1Ra_triggerEffort"\] \{[^}]*display: inline-block !important/s)
     assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\]\[data-model-compact\] \[class\*="_7KE1Ra_triggerEffort"\] \{[^}]*flex-shrink: 0 !important/s)
+    // 移动端模型选择菜单：隐藏搜索框防键盘强行弹起遮挡
+    assert.match(styleTag.textContent, /\[class\*="_7KE1Ra_searchRow"\][^}]*display: none !important/s)
     // 死规则审计（2026-09-15）：0.1.5-rc.2 外壳已无含 toolbar/inputTriggers 的类名
     // （活页面命中 0），两条泛化空转规则清理；"composer" 仍命中（composerSeat）保留。
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="toolbar" i\]/)
