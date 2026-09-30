@@ -558,10 +558,23 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
   transform: translateY(-100%) !important;
   margin-top: calc(0px - var(--dshsvc-header-h, 76px)) !important;
 }
+/* 左上角侧栏抽屉图标（FAB）在进入对话框隐藏全屏模式（沉浸态）时同步向上滑出淡出，
+   参照右上角右侧栏抽屉按钮随顶栏上滑隐藏的体验，保持全屏阅读区域整洁。 */
+html[data-dshsvc-mobile] [data-dshsvc-fab] {
+  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease),
+    opacity var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+}
+html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
+  transform: translateY(calc(0px - var(--dshsvc-header-h, 76px) - env(safe-area-inset-top, 0px))) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
 @media (prefers-reduced-motion: reduce) {
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-composer-seat],
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header],
-  html[data-dshsvc-mobile] [data-dshsvc-chat-header] { transition: none !important; }
+  html[data-dshsvc-mobile] [data-dshsvc-chat-header],
+  html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab],
+  html[data-dshsvc-mobile] [data-dshsvc-fab] { transition: none !important; }
 }
 `
 

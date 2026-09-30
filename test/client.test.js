@@ -9841,7 +9841,11 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*pointer-events: none !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*translateY/s)
     assert.match(styleTag.textContent, /margin-top: calc\(0px - var\(--dshsvc-header-h, 76px\)\)/s)
-    assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{\s*html\[data-dshsvc-mobile\]\[data-dshsvc-immersive\]/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*opacity: 0 !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*pointer-events: none !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*transform: translateY\(calc\(0px - var\(--dshsvc-header-h, 76px\)/s)
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-dshsvc-fab\] \{[^}]*transition: transform/s)
+    assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{\s*html\[data-dshsvc-mobile\]\[data-dshsvc-immersive\] [^}]*\[data-dshsvc-fab\]/s)
 
     // 用户点名移除常驻把手：body 下不得再挂 data-dshsvc-handle，样式表里也不得残留
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-handle')), false, 'resident handle must no longer mount')
