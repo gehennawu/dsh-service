@@ -163,16 +163,14 @@ html[data-dshsvc-mobile] [data-testid^="usage-summary-"] > span:last-child {
 html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab] {
   display: none !important;
 }
-/* composer 底行单行紧凑：外壳原生 flex-wrap:wrap 在窄屏把图标/模型名折成两行。
-   收紧间距 + 禁换行 + 最宽触发钮限宽省略。类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自
-   dsh-client-ui-conversation composer（rc.2，0.1.6-alpha.1 漂移至 JObwrW_ 并存），升级需复核。 */
+/* composer 底行单行紧凑：收紧间距与左右内边距，换出可用宽度。
+   类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自 dsh-client-ui-conversation composer
+   （rc.2，0.1.6-alpha.1 漂移至 JObwrW_ 并存），升级需复核。 */
 html[data-dshsvc-mobile] [class*="uV2eYG_row"] {
-  flex-wrap: nowrap !important;
   column-gap: 4px !important;
   padding-left: 10px !important;
   padding-right: 10px !important;
 }
-html[data-dshsvc-mobile] [class*="uV2eYG_row"] > * { min-width: 0 !important; }
 html[data-dshsvc-mobile] [class*="uV2eYG_tools"],
 html[data-dshsvc-mobile] [class*="uV2eYG_modes"],
 html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-width: 0 !important; }
@@ -184,21 +182,10 @@ html[data-dshsvc-mobile] [class*="uV2eYG_standardControls"] { gap: 6px !importan
 html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"],
 html[data-dshsvc-mobile] [class*="JObwrW_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }
-/* 模型选择按钮收成图标（用户点名，2026-09-15）：官方 ModelSelect 只在容器
-   ≤360px 时把 triggerLabel/triggerEffort 换成 triggerIcon，而查询容器正是上面
-   这条底行——本插件移动端把中列拉满、收回官方 56px sidebar rail，428~440px
-   机型的行内容盒达 368~378px，官方规则永不触发，手机上常显模型名。这里显式
-   按官方窄容器形态收成图标（唯一被藏起来的是「名称」这一处视觉信息：官方
-   trigger 自带含模型名的 aria-label，读屏照旧）。
-   媒体查询门是必需的：移动端适配覆盖 ≤1023px，481px 以上行内足够宽，官方
-   语义本就是「放得下就显示名称」；480 = 官方等效临界视口（360 + 56 rail +
-   32 clearance + 16 row padding ≈ 464~474）的安全上界。类哈希 _7KE1Ra_ 取自
-   dsh-client-ui-model-selection ModelSelect.module.css（rc.2），升级需复核。 */
-@media (max-width: 480px) {
-  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerIcon"] { display: block !important; }
-  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerLabel"],
-  html[data-dshsvc-mobile] [class*="_7KE1Ra_triggerEffort"] { display: none !important; }
-}
+/* 模型选择按钮自适应形态：官方 DSH（≥0.1.7/0.2.0）已改由 observeControlRow 动态
+   测量底行空间——空间充裕时显示模型名称与推理等级，空间不足时底行打上 data-model-compact
+   自动收缩为图标态。此处不再以 <=480px 媒体查询强制隐藏名称，交由官方测宽自适应决定；
+   厂家图标在展开态（模型名前）和收缩态（作为按钮主图标）均保持显示。 */
 /* 工作区侧板（fixed z25 层内的 nArs4W_panel z40）开屏后会盖住它自己的外部
    开关钮（tab bar 行 nArs4W_toggleButton）——手机上抽屉一开就再没有任何
    可点的关闭入口（真机反馈「关不上」本体）。把开关钮提到面板之上，

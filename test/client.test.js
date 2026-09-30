@@ -9192,21 +9192,17 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
-    assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: wrap/s)
+    // composer 底行收紧间距与左右内边距，移除 flex-wrap: nowrap 强制以兼容官方 observeControlRow 测宽
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*padding-left: 10px !important/s)
+    assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: nowrap/s)
     assert.match(styleTag.textContent, /\[class\*="Sh0Q9G_trigger"\],\s*html\[data-dshsvc-mobile\] \[class\*="JObwrW_trigger"\] \{ max-width: 38vw !important; \}/)
     // 真机第八轮：设置关闭钮圆形底衬随钮置顶；工作区侧板开关浮在面板上方。
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*border-radius: 999px !important/s)
     assert.match(styleTag.textContent, /\[class\*="nArs4W_toggleButton"\] \{[^}]*z-index: 45 !important/s)
-    // 用户点名（2026-09-15）：模型选择按钮在手机上收成图标。官方只在容器 ≤360px
-    // 收起，而插件移动端收回官方 56px sidebar rail 把行内容盒顶到 368~378px
-    // （430/440 机型），官方规则永不触发 —— 显式按官方窄容器形态覆盖，
-    // 且整组必须被 ≤480px 媒体查询包裹（481~1023px 的窄窗口/平板保持显示名称）。
-    const modelSelectGroup = styleTag.textContent.match(
-      /@media \(max-width: 480px\) \{\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\] \{ display: block !important; \}[\s\S]*?\n\}/,
-    )
-    assert.notEqual(modelSelectGroup, null, 'model-select icon collapse must be gated by the 480px media query')
-    assert.match(modelSelectGroup[0], /\[class\*="_7KE1Ra_triggerLabel"\],\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerEffort"\] \{ display: none !important; \}/)
-    assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\]/, 'ungated model-select rule would also hit 481~1023px windows')
+    // 模型选择按钮自适应：官方 DSH（≥0.1.7/0.2.0）已改为 observeControlRow 动态测宽
+    // （放得下显示名称，放不下才打 data-model-compact 收成图标），不再由 <=480px 强制覆盖隐藏。
+    assert.doesNotMatch(styleTag.textContent, /\[class\*="_7KE1Ra_triggerLabel"\],\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerEffort"\] \{ display: none !important; \}/)
+    assert.doesNotMatch(styleTag.textContent, /@media \(max-width: 480px\) \{\s*html\[data-dshsvc-mobile\] \[class\*="_7KE1Ra_triggerIcon"\] \{ display: block !important; \}/)
     // 死规则审计（2026-09-15）：0.1.5-rc.2 外壳已无含 toolbar/inputTriggers 的类名
     // （活页面命中 0），两条泛化空转规则清理；"composer" 仍命中（composerSeat）保留。
     assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[class\*="toolbar" i\]/)
@@ -13533,8 +13529,9 @@ test('model provider icons: CSS gates narrow-mode replacement and stays inert fo
   // 窄态替换：官方通用图标必须让位，两条门（≤480px 与官方容器查询）都要在。
   assert.match(css, /@media \(max-width: 480px\)/, 'mobile breakpoint gate present')
   assert.match(css, /@container \(width<=360px\)/, 'official narrow-container gate mirrored')
+  assert.match(css, /\[data-model-compact\]/, 'data-model-compact gate present')
   const iconHideRules = css.match(/\[class\*="_7KE1Ra_triggerIcon"\] \{ display: none !important; \}/g) || []
-  assert.equal(iconHideRules.length, 2, 'official icon must be hidden in both narrow-mode gates')
+  assert.equal(iconHideRules.length, 3, 'official icon must be hidden in narrow-mode gates')
   // 特异性必须高于 mobile.css 那条 display:block!important（同为 (0,2,1) 时靠顺序会输，
   // 真机实测窄态因此出现两枚图标）——隐藏规则得同时带两个自有属性 → (0,3,1)。
   for (const line of css.split('\n')) {

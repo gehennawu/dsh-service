@@ -313,6 +313,7 @@ html [${MODEL_ICON_TRIGGER_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"]::before {
 @container (width<=360px) {
   html [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
 }
+html [data-model-compact] [${MODEL_ICON_SEAT_ATTR}][${MODEL_ICON_ATTR}] [class*="_7KE1Ra_triggerIcon"] { display: none !important; }
 /* 模型选择弹窗：分组标题（厂家/渠道商）**前**的同一枚图标。
    与座上那枚同一套渲染路径（mono 走 mask+currentColor、彩色走 background-image），
    但挂载机制不同：菜单是运行期才 portal 出来的 DOM、每组是**不同**的 provider，
