@@ -6329,14 +6329,14 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   assert.equal(renderer.findByTestId('quota-reset-input-date').props.type, 'datetime-local')
   assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '')
   assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '')
-  renderer.findByTestId('quota-reset-input-date').props.onChange({ target: { value: '2026-09-30T08:00' } })
+  renderer.findByTestId('quota-reset-input-date').props.onChange({ target: { value: '2099-06-30T08:00' } })
   await renderer.flush()
   renderer.findByTestId('quota-reset-input-name').props.onChange({ target: { value: '周额度重置卡' } })
   await renderer.flush()
   renderer.findByTestId('quota-reset-card-save').props.onClick()
   await renderer.flush()
   // 载荷免次数；成功后表单清空但保持打开，方便连续追加。
-  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2026-09-30T08:00:00.000Z', label: '周额度重置卡', timezoneOffsetMinutes: 0, timeZone: 'UTC' }])
+  assert.deepEqual(cardCalls, [{ provider: 'zai-coding-cn', expiresAt: '2099-06-30T08:00:00.000Z', label: '周额度重置卡', timezoneOffsetMinutes: 0, timeZone: 'UTC' }])
   assert.ok(renderer.hasTest('quota-reset-editor-zai-coding-cn'))
   assert.equal(renderer.findByTestId('quota-reset-input-date').props.value, '')
   assert.equal(renderer.findByTestId('quota-reset-input-name').props.value, '')
@@ -6353,7 +6353,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const secondLineTexts = renderer.findByTestId('quota-reset-card-zai-coding-cn-rc-1').children.filter((child) => child != null)
   assert.equal(secondLineTexts[0].type, 'svg')
   assert.equal(String(secondLineTexts[1].children[0].children), '重置卡 · 周额度重置卡')
-  assert.equal(String(secondLineTexts[1].children[1].children), '2026-09-30 08:00 到期')
+  assert.equal(String(secondLineTexts[1].children[1].children), '2099-06-30 08:00 到期')
 
   // 取消关闭表单。
   renderer.findByTestId('quota-reset-cancel').props.onClick()
