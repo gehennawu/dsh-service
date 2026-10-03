@@ -3,7 +3,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
-import { constants as fsConstants, existsSync, readFileSync } from 'node:fs'
+import { constants as fsConstants, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { access, chmod, cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -284,17 +284,59 @@ const FETCH_TIMEOUT_OVERRIDE = '--config.fetchTimeout=600000'
 // 当前正在运行的插件源码目录：定位「本插件由哪个 profile 挂载」时与磁盘副本做 realpath 匹配。
 const loadedPluginDir = dirname(fileURLToPath(import.meta.url))
 
-// 读取当前 dsh 版本。DSH 包由宿主安装，不作为插件依赖打包进来。
-let dshVersion = 'unknown'
+// 运行中宿主版本的探测。DSH 包由宿主安装，不作为插件依赖打包进来，插件只能自己找。
+// 候选按「离真正在跑的进程有多近」排序（2026-10-03 修复：旧实现只有后两条，
+// 非全局前缀安装——npx / `npm i --prefix` / 隔离 profile——会静默读到机器上另一份安装）：
+//   ① 当前进程入口 `process.argv[1]`（先 realpath 穿透 `.bin` 软链）逐级向上找
+//      `name === '@deepseek-ai/dsh'` 的 package.json —— 这是真正在跑的那份；
+//   ② 从插件自身路径 require（历史行为，profile 与宿主同树时命中）；
+//   ③ 镜像/容器里的历史全局路径（兼容既有部署）。
+// 任一候选的版本串都要过 BACKUP_VERSION_RE（含数字、长度封顶）才采纳，否则继续回落；
+// 全部失败返回 'unknown'，绝不让坏值进版本卡、更新判定与备份文件名。
+const LEGACY_GLOBAL_DSH_MANIFEST = '/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json'
+
+function readDshVersion(options = {}) {
+  const readText = options.readFileSync ?? readFileSync
+  const resolveReal = options.realpathSync ?? realpathSync
+  const loadManifest = options.requireManifest ?? ((path) => require(path))
+  const argv1 = options.argv1 ?? process.argv[1]
+  const accepted = (value) => (typeof value === 'string' && BACKUP_VERSION_RE.test(value) ? value : null)
+  const entryManifestVersion = (path) => {
+    try {
+      const manifest = JSON.parse(readText(path, 'utf8'))
+      if (manifest === null || typeof manifest !== 'object' || manifest.name !== DSH_PACKAGE) return null
+      return accepted(manifest.version)
+    } catch (_) {
+      return null
+    }
+  }
+  if (typeof argv1 === 'string' && argv1 !== '') {
+    let entry = argv1
+    try { entry = resolveReal(argv1) } catch (_) {}
+    // 目录链深度设上限：拿不到 realpath 或入口在异常位置时不至于无限上溯。
+    let directory = dirname(entry)
+    for (let depth = 0; depth < 12; depth += 1) {
+      const version = entryManifestVersion(join(directory, 'package.json'))
+      if (version !== null) return version
+      const parent = dirname(directory)
+      if (parent === directory) break
+      directory = parent
+    }
+  }
+  try {
+    const version = accepted(loadManifest(`${DSH_PACKAGE}/package.json`)?.version)
+    if (version !== null) return version
+  } catch (_) {}
+  try {
+    const version = accepted(loadManifest(LEGACY_GLOBAL_DSH_MANIFEST)?.version)
+    if (version !== null) return version
+  } catch (_) {}
+  return 'unknown'
+}
+
+let dshVersion = readDshVersion()
 let pluginVersion = 'unknown'
 try { pluginVersion = require('./package.json').version } catch (_) {}
-try {
-  dshVersion = require(`${DSH_PACKAGE}/package.json`).version
-} catch (_) {
-  try {
-    dshVersion = require('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json').version
-  } catch (__) {}
-}
 
 // Node 最低要求只读 package.json engines 一处（与版本号同源），启动时解析一次。
 let requiredNodeMajor = 22
@@ -6168,6 +6210,7 @@ export {
   quotaEndpointFor,
   quotaErrorCode,
   quotaProviderUnusable,
+  readDshVersion,
   readLlmProviders,
   readLlmProvidersFromDescribe,
   normalizeLlmProviderEntries,
@@ -6263,6 +6306,7 @@ export default {
   quotaEndpointFor,
   quotaErrorCode,
   quotaProviderUnusable,
+  readDshVersion,
   readLlmProviders,
   readLlmProvidersFromDescribe,
   normalizeLlmProviderEntries,
