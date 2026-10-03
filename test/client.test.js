@@ -2856,7 +2856,7 @@ test('version card carries no DSH adaptation notice on any running version, two 
     visibilityState: 'visible',
   }
   try {
-    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.1.7-alpha.2', '0.1.7-alpha.3', '0.1.7-rc.1', '0.1.7-rc.2', '0.1.7-rc.3', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0', 'unknown']
+    const versions = ['0.1.2-rc.1', '0.1.5-rc.2', '0.1.6-alpha.2', '0.1.6-alpha.3', '0.1.6', '0.1.7-alpha.2', '0.1.7-alpha.3', '0.1.7-rc.1', '0.1.7-rc.2', '0.1.7-rc.3', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0', '0.2.1-alpha.1', '0.2.1-alpha.2', 'unknown']
     for (const current of versions) {
       const renderer = createRenderer(async (channel, endpoint) => {
         assert.equal(channel, '/dsh-service')
@@ -9231,6 +9231,14 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 子项 grow 必须为 0：老宿主（0.1.5-rc.2）这条行是「整行宽 + justify-content:center」，
     // flex-grow 会先吃掉富余宽度，而行内 pill 是 flex-start ⇒ 整组被钉在行左端（「统计是歪的」）。
     assert.doesNotMatch(styleTag.textContent, /\[class\*="bOPqQW_root"\] > \* \{[^}]*flex: 1 1 auto/s)
+    // 0.2.1-alpha.1 适配（双模式并存）：官方把统计行拆成活动/用量两个 dock 条目
+    // （`id:'activity'`/`'usage'`），**行根 `.root` 被删除**（`bOPqQW_root` 产物归零），
+    // 旧的 bOPqQW_root 规则原样保留给老宿主；新宿主里等价于「行内子项」的是条目根
+    // —— 带官方新钩子 `data-composer-stat` 的 anchor（`<span data-composer-stat><span.pill>`）。
+    // 故新增一条同形约束 + 把新锚纳入 ≤375px 字号阶梯；bOPqQW_pill/label/sep 两版同名继续覆盖。
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-composer-stat\] \{[^}]*flex: 0 1 auto !important/s)
+    assert.match(styleTag.textContent, /html\[data-dshsvc-mobile\] \[data-composer-stat\] \{[^}]*min-width: 0 !important/s)
+    assert.match(styleTag.textContent, /@media \(max-width: 375px\) \{[^}]*\[data-composer-stat\][^}]*font-size: 10px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*padding-left: 2px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_pill"\] \{[^}]*font-size: 11px !important/s)
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_label"\] \{[^}]*text-overflow: ellipsis !important/s)

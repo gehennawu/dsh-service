@@ -274,6 +274,17 @@ html[data-dshsvc-mobile] [class*="bOPqQW_root"] {
 /* 子项用 flex:0 1 auto（= flex 初始值）而非 flex:1 1 auto：
    grow 必须为 0，否则老宿主把统计整组推歪（见上方 rc.2 注）。 */
 html[data-dshsvc-mobile] [class*="bOPqQW_root"] > * { flex: 0 1 auto !important; min-width: 0 !important; }
+/* DSH 0.2.1-alpha.1 起官方把这条统计行拆成两个 dock 条目（id 'activity' / 'usage'），
+   行根 .root 被整体删除（bOPqQW_root 在产物中归零，上面两条 bOPqQW_root 规则只在老宿主命中），
+   行级布局改由 dock 承担（uV2eYG_dock 的 gap/padding 规则同上）。
+   新宿主里等价于旧「行内子项」的是条目根：官方新钩子 data-composer-stat 打在
+   bOPqQW_anchor 上（形如 span[data-composer-stat] > span.pill），故补一条同形约束；
+   bOPqQW_pill/label/sep 两级规则两版同名，继续覆盖新宿主。
+   两套选择器并存：老宿主命中旧锚、新宿主命中新锚，互不干扰。 */
+html[data-dshsvc-mobile] [data-composer-stat] {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+}
 html[data-dshsvc-mobile] [class*="bOPqQW_pill"] {
   min-width: 0 !important;
   padding-left: 2px !important;
@@ -317,6 +328,7 @@ html[data-dshsvc-mobile] [data-dsh-service-subagent-models-dock] {
 }
 @media (max-width: 375px) {
   html[data-dshsvc-mobile] [class*="bOPqQW_root"],
+  html[data-dshsvc-mobile] [data-composer-stat],
   html[data-dshsvc-mobile] [class*="bOPqQW_pill"],
   html[data-dshsvc-mobile] [class*="JObwrW_trigger"],
   html[data-dshsvc-mobile] [data-dsh-service-subagent-models-dock] {
