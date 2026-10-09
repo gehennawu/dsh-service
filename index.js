@@ -5369,12 +5369,13 @@ function apply(ctx, featureConfig) {
   const subagentSeamRef = { current: false }
   // 子代理派发记录环（v1.2）：apply 级持有，RPC 端点与 seam 共同读写（seam 写入、端点只读）。
   const dispatchRing = { order: [], byChild: new Map() }
-  // 只包装宿主 subagents 注册表的两个入口（start / startContinuable，spawn/fork/acp 全走这
-  // 两个口）：未显式指定模型的派生按配置注入 agentOptions，其余原样透传。Fiber 销毁还原
-  // 原方法——包装挂在服务实例上，disposer 期间新派生恢复原生行为。
+  // 按宿主能力包装子代理启动入口：新版 startActivation，旧版 start/startContinuable。
+  // 未显式指定模型的派生按配置注入 agentOptions，其余原样透传；Fiber 销毁时还原原方法。
   ctx.inject(['subagents'], (scope) => {
     const subagents = scope.subagents
-    if (subagents === undefined || typeof subagents.start !== 'function' || typeof subagents.startContinuable !== 'function') return
+    const hasActivation = typeof subagents?.startActivation === 'function'
+    const hasLegacyStarts = typeof subagents?.start === 'function' && typeof subagents?.startContinuable === 'function'
+    if (!hasActivation && !hasLegacyStarts) return
     const isRoutable = (provider) => {
       const llm = ctx.get('llm')
       if (llm === undefined || typeof llm.listProviders !== 'function') return false
@@ -5464,15 +5465,24 @@ function apply(ctx, featureConfig) {
       if (dispatch === undefined) return work()
       return pendingDispatchStorage.run(dispatch, work)
     }
+    const originalStartActivation = subagents.startActivation
     const originalStart = subagents.start
     const originalStartContinuable = subagents.startContinuable
-    subagents.start = (name, request) => {
-      const { request: decorated, dispatch } = applyInjection(request)
-      return runWithDispatch(dispatch, () => originalStart.call(subagents, name, decorated))
-    }
-    subagents.startContinuable = (spec) => {
-      const { request: decorated, dispatch } = applyInjection(spec.request)
-      return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
+    if (hasActivation) {
+      subagents.startActivation = (spec) => {
+        const { request: decorated, dispatch } = applyInjection(spec.request)
+        if (dispatch === undefined) return originalStartActivation.call(subagents, spec)
+        return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, { ...spec, request: decorated }))
+      }
+    } else {
+      subagents.start = (name, request) => {
+        const { request: decorated, dispatch } = applyInjection(request)
+        return runWithDispatch(dispatch, () => originalStart.call(subagents, name, decorated))
+      }
+      subagents.startContinuable = (spec) => {
+        const { request: decorated, dispatch } = applyInjection(spec.request)
+        return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
+      }
     }
     // agent/created（0.1.6 起由 announce await ctx.serial 异步串行派发；0.1.5 及之前同步派发在创建栈内）：
     // 记录派发路由 + 绑定等级（仅当确有非空等级）。监听器内部全 try/catch 严格保证绝不抛错，
@@ -5552,8 +5562,11 @@ function apply(ctx, featureConfig) {
     }, { prepend: true }) : null
     subagentSeamRef.current = true
     scope.effect(() => () => {
-      subagents.start = originalStart
-      subagents.startContinuable = originalStartContinuable
+      if (hasActivation) subagents.startActivation = originalStartActivation
+      else {
+        subagents.start = originalStart
+        subagents.startContinuable = originalStartContinuable
+      }
       if (typeof disposeCreated === 'function') disposeCreated()
       if (typeof disposeRequest === 'function') disposeRequest()
       if (typeof disposeRequestError === 'function') disposeRequestError()

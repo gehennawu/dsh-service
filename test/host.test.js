@@ -7153,6 +7153,81 @@ test('subagent-route seam：包装 start/startContinuable 注入未显式路由�
   assert.equal(disposedSnapshot.value.available, false)
 })
 
+test('subagent-route seam：新版 startActivation 注入并记录派发，保留外层参数及旧宿主隔离', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-activation-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['cpa', 'CPA', ['gpt-5.6-sol']], ['fallback', 'Fallback', ['m2']]])
+  llm.setModelInfo('cpa', 'gpt-5.6-sol', { id: 'gpt-5.6-sol', reasoning: { efforts: [{ id: 'high' }] } })
+  let host
+  const calls = []
+  const createdAgents = []
+  const registry = {
+    async startActivation(spec) {
+      calls.push(spec)
+      const agent = { id: `child-${calls.length}`, options: spec.request.agentOptions ?? {}, session: {} }
+      createdAgents.push(agent)
+      await host.fire('agent/created', { agent })
+      return { childId: agent.id, result: Promise.resolve({}), dispose: async () => {} }
+    },
+  }
+  const nativeStart = registry.startActivation
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  const parent = { id: 'parent-activation', session: { id: 'parent-activation', events: [{ data: { turn: 3 } }], requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } }
+  const signal = new AbortController().signal
+  const spec = { provider: 'spawn', label: 'first child', signal, delivery: 'parent', childId: 'reserved-1', request: { parent, prompt: [{ type: 'text', text: 'hello' }], cwd: '/workspace' } }
+  assert.equal((await host.handler('subagent-route', {})).value.available, true)
+  await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'fallback', model: 'm2' }] })
+  const result = await registry.startActivation(spec)
+  assert.equal(result.childId, 'child-1')
+  assert.deepEqual(calls[0], { ...spec, request: { ...spec.request, agentOptions: { provider: 'cpa', model: 'gpt-5.6-sol' } } })
+  assert.equal(calls[0].signal, signal)
+  assert.equal(spec.request.agentOptions, undefined, '原请求不被修改')
+  const records = await host.handler('subagent-dispatches', { parentId: parent.id })
+  assert.equal(records.value.records[0].childId, 'child-1', '异步 agent/created 仍带 ALS 派发上下文')
+  assert.equal(records.value.records[0].source, 'routed')
+  const failure = await host.fire('agent/request-error', { agent: createdAgents[0], provider: 'cpa', failure: { code: 'RATE_LIMIT', status: 429 }, signal }, async () => undefined)
+  assert.deepEqual(failure, { kind: 'retry' }, '新入口的 agent/created 同样绑定候选回退')
+  const fallback = await host.fire('agent/request', { agent: createdAgents[0], signal }, async () => ({ provider: 'cpa', model: 'gpt-5.6-sol' }))
+  assert.deepEqual(fallback, { provider: 'fallback', model: 'm2' })
+  await registry.startActivation({ ...spec, request: { ...spec.request, agentOptions: { provider: 'fallback', model: 'm2', maxTokens: 123 } } })
+  assert.deepEqual(calls[1].request.agentOptions, { provider: 'fallback', model: 'm2', maxTokens: 123 }, '显式路由优先于全局配置')
+  const explicit = await host.handler('subagent-dispatches', { parentId: parent.id })
+  assert.equal(explicit.value.records[0].source, 'explicit')
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high', fallbacks: [{ provider: 'fallback', model: 'm2' }] })
+  await registry.startActivation({ ...spec, request: { ...spec.request } })
+  assert.deepEqual(calls[2].request.agentOptions, { provider: 'cpa', model: 'gpt-5.6-sol' })
+  const effort = await host.fire('agent/request', { agent: createdAgents[2], signal }, async () => ({ provider: 'cpa', model: 'gpt-5.6-sol' }))
+  assert.deepEqual(effort, { provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high' }, '新入口的首次请求补入思考等级')
+  await host.updateFeatureSettings({ subagentRoute: false })
+  await registry.startActivation(spec)
+  assert.equal(calls[3], spec, '功能关闭时透传原始 spec')
+  await host.updateFeatureSettings({ subagentRoute: true })
+  host.dispose()
+  assert.equal(registry.startActivation, nativeStart, 'Fiber 销毁后还原原方法')
+  await registry.startActivation(spec)
+  assert.equal(calls[4], spec)
+  assert.equal((await host.handler('subagent-route', {})).value.available, false)
+})
+
+test('subagent-route seam：混合接口优先包装 startActivation，不重复包装旧入口', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-mixed-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { registry } = fakeSubagents()
+  const legacyStart = registry.start
+  const legacyContinuable = registry.startContinuable
+  const activation = async (spec) => ({ childId: spec.childId ?? 'child', result: Promise.resolve({}), dispose: async () => {} })
+  registry.startActivation = activation
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm: fakeLlm([['cpa', 'CPA', ['m1']]]) }, env: { DSH_HOME: dshHome } })
+  assert.notEqual(registry.startActivation, activation)
+  assert.equal(registry.start, legacyStart)
+  assert.equal(registry.startContinuable, legacyContinuable)
+  assert.equal((await host.handler('subagent-route', {})).value.available, true)
+  host.dispose()
+  assert.equal(registry.startActivation, activation)
+  assert.equal(registry.start, legacyStart)
+  assert.equal(registry.startContinuable, legacyContinuable)
+})
+
 test('subagent-route runtime fallback：retryable model errors rotate, while cancellation and client errors do not', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-runtime-429-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
