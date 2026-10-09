@@ -1258,7 +1258,11 @@ async function exportBackup(dshHome, downloadTokens, id) {
 // 版本事实以归档内的 meta/backup.json 为准，不改名、不重写。
 async function importBackup(dshHome, name, encoded, validatePath) {
   if (typeof name !== 'string' || !BACKUP_NAME.test(name) || typeof encoded !== 'string' || encoded.length === 0) return undefined
-  if (encoded.length > Math.ceil(MAX_BACKUP_TRANSFER_BYTES / 3) * 4 + 8 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return undefined
+  // 只线性扫描字符；对大文件使用重复分组正则会耗尽 V8 正则调用栈。
+  // 长度、填充位置和解码后重新编码的逐字节一致性仍共同约束规范 Base64。
+  if (encoded.length > Math.ceil(MAX_BACKUP_TRANSFER_BYTES / 3) * 4 + 8 || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(encoded)) return undefined
+  const padding = encoded.indexOf('=')
+  if (padding !== -1 && (padding < encoded.length - 2 || !/^[A-Za-z0-9+/]{2,3}={1,2}$/.test(encoded.slice(-4)))) return undefined
   const data = Buffer.from(encoded, 'base64')
   if (data.length === 0 || data.length > MAX_BACKUP_TRANSFER_BYTES || data.toString('base64') !== encoded) return undefined
   const backupDir = join(dshHome, 'backups')

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1375,6 +1376,46 @@ test('backup RPC creates the fixed archive shape, lists totals, rejects forged i
   assert.equal(deleted.ok, true)
   assert.equal(deleted.value.items.length, 1)
   assert.equal(deleted.value.totalBytes, imported.value.items.find((item) => item.name === 'dsh-backup-20250819-120000.tar.gz').sizeBytes)
+})
+
+test('backup-import accepts a large valid archive without overflowing Base64 validation', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-large-import-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  // 6 MiB of incompressible session data produces over 8 MiB of Base64 (the original regex stack limit).
+  const archive = tarArchive([
+    { name: 'sessions/', type: '5' },
+    { name: 'sessions/workspace/', type: '5' },
+    { name: 'sessions/workspace/session-1.jsonl', data: randomBytes(6 * 1024 * 1024) },
+    { name: 'config/', type: '5' },
+    { name: 'profiles/', type: '5' },
+  ])
+  const encoded = archive.toString('base64')
+  assert.ok(encoded.length > 8 * 1024 * 1024)
+  const name = 'dsh-backup-20250819-120000.tar.gz'
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  const imported = await handler('backup-import', { name, data: encoded })
+  assert.equal(imported.ok, true, JSON.stringify(imported.error))
+  assert.deepEqual(await readFile(join(dshHome, 'backups', name)), archive)
+  assert.equal((await handler('backup-inspect', { id: imported.value.items[0].id })).value.validForRestore, true)
+})
+
+test('backup-import rejects noncanonical and misplaced Base64 before writing an archive', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-base64-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  const encoded = validBackupArchive().toString('base64')
+  const malformed = [
+    encoded.slice(0, -1), // not a multiple of four
+    `=${encoded.slice(1)}`, // padding before the last quartet
+    `${encoded.slice(0, -4)}A===`, // three padding characters
+    `${encoded.slice(0, -4)}AA=A`, // padding before data
+    `${encoded.slice(0, -4)}AA==\n`, // extraneous whitespace
+  ]
+  for (const data of malformed) {
+    const imported = await handler('backup-import', { name: 'dsh-backup-20250819-120000.tar.gz', data })
+    assert.deepEqual(imported, { ok: false, error: 'invalid-backup' })
+  }
+  assert.equal((await handler('backup-list', {})).value.items.length, 0)
 })
 
 test('backup integrity preflight inspects, plans, restores once, and rejects replay', async (t) => {
