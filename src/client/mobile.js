@@ -421,36 +421,38 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
 /* 动作芯片泊位 v2（模式回标题行，子代理+任务下标签行
    右锚成对；官方标签行没有第三方挂载点，泊位=自有 CSS absolute 定位）：
-   · 标签行官方 gap 36→20，标签内容尾 ≈126px；
-   · 任务芯片（QsffPG_root，运行中带箭头自然宽 ~151.5px）right:106 —— 右侧 90px
-     让给子代理芯片（带箭头 81.5~87.5px，「1~99 个」，间隔 8.5~2.5px），右锚成
+   · 标签行官方 gap 36→20，标签内容尾按含 SSH 时 ≈172px；
+   · 任务芯片（headerActions 内任务 div:has(> QsffPG_trigger)，alpha.2 无 QsffPG_root 类；运行中带箭头自然宽 ~151.5px）right:110 —— 右侧 94px
+     让给子代理芯片（本次会话实测宽 93.5px，任务与子代理间隔至少 0.5px），右锚成
      「[任务][子代理]」两枚一排（第三方插件将来若也泊到此带，右缘 16px 起排不受影响）；
-     max-width calc(100vw − 240px) 封顶（右距 106 + 标签尾 126 + 8 缓冲），
-     ≤360 档计数文字按省略优雅降级（320 档省 ~71px）、绝不压到对话/轨迹；
+     max-width calc(100vw − 282px) 封顶（右距 110 + 含 SSH 的标签尾约 172），
+     ≤390 档计数文字省略，320 档可用宽仅 38px；
    · 子代理芯片（ZKlsPq_root）right:16 最贴右；泊离标题后分隔符「/」失去对象，隐藏；
-   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留，320~360 档文字省略加深，
-     但开合指示不丢；
-   · 两枚芯片的下拉菜单（锚在各自 root 上 top:100%+5、left:0）改右锚展开并按
-     视口封顶（max-width 100vw−122 = 任务右距 106 + 16 边距），否则贴右泊位时
-     336px 菜单会越出屏幕（390 档实测左越 46px）；
+   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留；
+     320 档任务文字宽 0，但 spinner/箭头可见，完整 aria-label 保留；
+   · 旧宿主两枚芯片的下拉菜单（锚在各自 root 上 top:100%+5、left:0）改右锚展开并按
+     视口封顶（旧版 max-width 100vw−122 沿用既有菜单预算），否则贴右泊位时
+     336px 菜单会越出屏幕（旧宿主 390 档实测左越 46px）；alpha.2 任务菜单 portal
+      至 body 后按触发器位置算 fixed 坐标，不能覆盖其 left/right；
    · 预设芯片（SVAs4q_label）不再泊动——随官方 headerActions 留在标题行
      （「模式=会话身份」与标题同级），第三方动作芯片同样留官方原位不受泊位管辖；
      子代理计数离开 crumbs 后标题吃满整行（390 档 198px）；
    · ≤560 门：561~1023 行宽足够（标题 ≥115px），保持官方在流。blank 空头部
      :not 守卫不泊。类哈希 QsffPG_ 取自 dsh-client-ui-jobs JobListAction.module.css
-     （0.1.6-alpha.2），升级需复核。 */
+     （旧版仍有根类；新版仅有触发按钮）。结构化锚只匹配 headerActions 子树中直属包含任务按钮的 div（alpha.2 中间多一层 data-slot 包装），
+      :has 不支持时回落官方布局；未来版本仍须复核哈希。 */
 @media (max-width: 560px) {
   html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
-  html[data-dshsvc-mobile] [class*="QsffPG_root"],
+  html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]),
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     position: absolute !important;
     bottom: 4px !important;
     z-index: 2;
   }
-  html[data-dshsvc-mobile] [class*="QsffPG_root"] {
-    right: 106px !important;
-    max-width: calc(100vw - 240px) !important;
+  html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]) {
+    right: 110px !important;
+    max-width: calc(100vw - 282px) !important;
   }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     right: 16px !important;
@@ -470,7 +472,7 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     overflow: hidden !important;
     text-overflow: ellipsis !important;
   }
-  html[data-dshsvc-mobile] [class*="QsffPG_menu"],
+  html[data-dshsvc-mobile] [class*="QsffPG_root"] > [class*="QsffPG_menu"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_menu"] {
     left: auto !important;
     right: 0 !important;

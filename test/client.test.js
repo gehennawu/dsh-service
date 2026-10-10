@@ -9095,15 +9095,20 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{ flex: none !important; \}/)
     // 动作芯片泊位 v2（方案二，2026-09-19 用户定稿）：模式回标题行（headerActions
     // 保持官方在流不泊），子代理+任务两枚计数芯片 ≤560 右锚泊入标签行成对
-    // （任务 right:106 让出右侧 90px 给子代理 right:16，间隔 ~8.5px；箭头保留），标签行 gap 36→20，
+    // （任务 right:110 让出右侧 94px 给子代理 right:16，间隔 ≥0.5px；箭头保留），标签行 gap 36→20，
     // 箭头/分隔符隐藏、菜单右锚、计数可省略；>560 保持官方在流
     const parkingGroup = styleTag.textContent.match(
       /@media \(max-width: 560px\) \{\s*html\[data-dshsvc-mobile\] \[data-dshsvc-frame\] > :nth-child\(2\) header:not\(\[class\*="wSkVaW_headerBlank"\]\) \{ position: relative !important; \}[\s\S]*?\n\}/,
     )
     assert.notEqual(parkingGroup, null, 'header chip parking must be gated by the 560px media query')
     assert.match(parkingGroup[0], /\[class\*="wSkVaW_tabs"\] \{ gap: 20px !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] \{[^}]*right: 106px !important/s)
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] \{[^}]*max-width: calc\(100vw - 240px\) !important/s)
+    // alpha.2 真实 DOM 在 headerActions 与任务 div 之间还有 data-slot/display:contents 包装；
+    // 任务 div 自身仍是 button 的直属父节点。不得要求它也是 headerActions 的直属子节点。
+    const jobChip = '[class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"])'
+    assert.ok(parkingGroup[0].includes(`${jobChip} {`), '任务泊位需越过官方 slot 包装并命中旧新版任务 div')
+    assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] > div:has\(> button\[class\*="QsffPG_trigger"\]\)/)
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*right: 110px !important/s)
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*max-width: calc\(100vw - 282px\) !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*right: 16px !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \[class\*="ZKlsPq_separator"\] \{ display: none !important; \}/)
     // 下拉箭头保留（用户点名恢复），仅钉 flex:none 防被压
@@ -9112,8 +9117,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(parkingGroup[0], /\[class\*="QsffPG_count"\] \{[^}]*text-overflow: ellipsis !important/s)
     // 预设芯片右靠贴住更多钮：margin-left:auto 把富余收到标题与动作组之间
     assert.match(parkingGroup[0], /header:not\(\[class\*="wSkVaW_headerBlank"\]\) \[class\*="wSkVaW_headerActions"\] \{ margin-left: auto !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*left: auto !important/s)
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*max-width: calc\(100vw - 122px\) !important/s)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] > \[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*left: auto !important/s)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] > \[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*max-width: calc\(100vw - 122px\) !important/s)
+    assert.doesNotMatch(parkingGroup[0], /\n  html\[data-dshsvc-mobile\] \[class\*="QsffPG_menu"\]/, '新版 portaled menu 不能继承旧版强制右锚')
     // 方案二：headerActions（预设芯片所在）必须保持官方在流，不得整体泊动
     assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] \{[^}]*position: absolute/, 'headerActions must stay in-flow so the preset chip remains in the title row')
     // 模式芯片恢复可见：官方 0.1.7-rc.1 起 AgentPresetLabel 自带
