@@ -23,6 +23,7 @@ export function createBackupRoutes({
   formatBackupTimestamp,
   importBackup,
   listBackups,
+  listLocalProfiles,
   name,
   rpcFailure,
 }) {
@@ -92,7 +93,22 @@ export function createBackupRoutes({
     } },
     'backup-restore-prepare': { feature: 'backupMaintenance', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
-        return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id) }
+        // 可选的 profile 映射：省略即「逐条同名 + 覆盖 manifest」（与既有行为一致）。
+        // 目标名只能是宿主清单里的名字或与源同名，判定都在宿主侧。
+        return { ok: true, value: await backupIntegrity.prepareRestore(payload?.id, payload?.profiles) }
+      } catch (error) {
+        return rpcFailure(error)
+      }
+
+    } },
+    // 目标 profile 清单（P1）：恢复要落到本机哪个 profile 由用户在**宿主给出的清单内**选，
+    // 浏览器只回传名字、不传路径。本机没有 profiles 目录时返回空清单（仍可同名新建）。
+    'backup-target-profiles': { feature: 'backupMaintenance', handle: async (payload, rpcEndpoint) => {
+      try {
+        const profiles = await listLocalProfiles(dshHome)
+        const declared = process.env.DSH_PROFILE
+        const active = typeof declared === 'string' && profiles.some((item) => item.name === declared) ? declared : null
+        return { ok: true, value: { profiles, active } }
       } catch (error) {
         return rpcFailure(error)
       }

@@ -19,6 +19,20 @@ const MAX_META_BYTES = 4096
 // semver 形、长度封顶、且**必须含数字**——少了最后一条，未解析出 DSH 包的宿主
 // 写下的哨兵值 `unknown` 会被当成真版本显示出来。
 const META_VERSION_RE = /^(?=.*[0-9])[0-9A-Za-z][0-9A-Za-z.-]{0,63}$/
+// 来源平台/架构：同样是**纯展示**信息，取值只接受 Node 平台串/架构串的字符集。
+// 它不参与任何裁决，所以宽松解析（非法即 null）。
+const META_PLATFORM_RE = /^[a-z][a-z0-9_-]{0,15}$/
+// 跨平台提示：只读告警，绝不让一份可恢复的归档因为「目标平台会麻烦」被拒。
+const MAX_NOTICES = 8
+// Windows 传统 MAX_PATH（260）留 1 位给结尾 NUL 的保守口径。
+const WINDOWS_PATH_LIMIT = 259
+const CASE_INSENSITIVE_PLATFORMS = Object.freeze(['win32', 'darwin'])
+// 目标 profile 名与备份侧同名规则同口径：单一路径段、长度封顶；`.`/`..` 另判。
+const PROFILE_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/
+const MAX_PROFILE_MAPPINGS = 32
+// Windows 上「文件被占用」的 errno 集合：rename/rm 撞到它们时给可操作错误码。
+// 其他平台同样的 errno 更可能是权限问题，仍走通用 restore-failed。
+const WINDOWS_LOCK_ERROR_CODES = Object.freeze(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'])
 const PLAN_TTL_MS = 5 * 60 * 1000
 const MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
 const MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
@@ -116,7 +130,92 @@ function parseBackupMetadata(data) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const version = typeof parsed.dshVersion === 'string' && META_VERSION_RE.test(parsed.dshVersion) ? parsed.dshVersion : null
   const createdAt = typeof parsed.createdAt === 'string' && !Number.isNaN(Date.parse(parsed.createdAt)) ? parsed.createdAt : null
-  return { dshVersion: version, createdAt }
+  // 来源平台/架构（本版新增字段）：缺失或非法一律 null，界面对「早于本版的归档」不显示来源。
+  const platform = typeof parsed.platform === 'string' && META_PLATFORM_RE.test(parsed.platform) ? parsed.platform : null
+  const arch = typeof parsed.arch === 'string' && META_PLATFORM_RE.test(parsed.arch) ? parsed.arch : null
+  return { dshVersion: version, createdAt, platform, arch }
+}
+
+// 跨设备/跨平台提示（纯函数，便于直接断言）：输入是**目标机上的落盘相对路径**，
+// 输出是稳定 code 的只读提示。三条口径：
+//   ① 来源平台已知且与目标不同 → 提示（信息级）；
+//   ② 目标卷不区分大小写（win32/darwin 默认）时，仅大小写不同的条目会折叠到同一路径；
+//   ③ win32 上超长路径（经典 260 上限）会在写入时才炸，提前算出最长值告知。
+// 任何一条都不改变 validForRestore——恢复能否进行仍只由完整性裁决。
+function collectPlatformNotices(paths, options) {
+  const { platform, dshHome, sourcePlatform = null } = options
+  const notices = []
+  if (typeof sourcePlatform === 'string' && sourcePlatform !== '' && sourcePlatform !== platform) {
+    notices.push({ code: 'source-platform-differs', detail: sourcePlatform })
+  }
+  if (CASE_INSENSITIVE_PLATFORMS.includes(platform)) {
+    const folded = new Map()
+    for (const relative of paths) {
+      const key = relative.toLowerCase()
+      const existing = folded.get(key)
+      if (existing !== undefined && existing !== relative) {
+        notices.push({ code: 'target-case-collision', detail: relative.slice(0, 200) })
+        break
+      }
+      folded.set(key, relative)
+    }
+  }
+  if (platform === 'win32' && typeof dshHome === 'string') {
+    let longest = 0
+    for (const relative of paths) longest = Math.max(longest, dshHome.length + 1 + relative.length)
+    if (longest > WINDOWS_PATH_LIMIT) notices.push({ code: 'target-path-length', detail: String(longest) })
+  }
+  return notices.slice(0, MAX_NOTICES)
+}
+
+// 恢复提交阶段的失败归因：Windows 上 rename/rm 撞到占用类 errno 时给专属码，
+// 让客户端能说「关掉占用方再试」，而不是笼统的 restore-failed。
+function restoreFailureCode(error, platform) {
+  if (platform === 'win32' && WINDOWS_LOCK_ERROR_CODES.includes(error?.code)) return 'restore-files-locked'
+  return 'restore-failed'
+}
+
+function isSafeProfileName(value) {
+  return typeof value === 'string' && PROFILE_NAME_RE.test(value) && value !== '.' && value !== '..'
+}
+
+// 把归档里的 profile 路径按映射改写：`profiles/<source>/<file>` → `profiles/<target>/<file>`。
+// 只认三段式白名单路径（校验阶段已保证），其余路径原样返回。
+function remapProfilePath(path, mapping) {
+  if (mapping === undefined || mapping.size === 0) return path
+  const parts = path.split('/')
+  if (parts.length !== 3 || parts[0] !== 'profiles') return path
+  const target = mapping.get(parts[1])
+  return target === undefined || target === parts[1] ? path : `profiles/${target}/${parts[2]}`
+}
+
+// 请求映射的归一与校验。返回 `{ mapping }` 或 `{ error }`（稳定码，调用方转 domainError）。
+// 省略请求即「逐条同名 + 覆盖 manifest」，与本轮之前的行为逐字一致。
+function normalizeProfileMapping(requested, archived, localProfiles) {
+  const archivedNames = [...new Set(archived)].sort()
+  if (requested === undefined || requested === null) {
+    return { mapping: archivedNames.map((name) => ({ source: name, target: name, manifest: true })) }
+  }
+  if (!Array.isArray(requested) || requested.length > MAX_PROFILE_MAPPINGS) return { error: 'restore-mapping-invalid' }
+  const local = new Set(Array.isArray(localProfiles) ? localProfiles.filter(isSafeProfileName) : [])
+  const archivedSet = new Set(archivedNames)
+  const seenSources = new Set()
+  const seenTargets = new Set()
+  const mapping = []
+  for (const entry of requested) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return { error: 'restore-mapping-invalid' }
+    const source = entry.source
+    const target = entry.target
+    if (!archivedSet.has(source) || !isSafeProfileName(target)) return { error: 'restore-mapping-invalid' }
+    // 目标名只允许宿主清单内的名字，或与源同名（保持「同名新建」的既有语义）。
+    if (target !== source && !local.has(target)) return { error: 'restore-mapping-invalid' }
+    if (entry.manifest !== undefined && typeof entry.manifest !== 'boolean') return { error: 'restore-mapping-invalid' }
+    if (seenSources.has(source) || seenTargets.has(target)) return { error: 'restore-mapping-invalid' }
+    seenSources.add(source)
+    seenTargets.add(target)
+    mapping.push({ source, target, manifest: entry.manifest === undefined ? source === target : entry.manifest })
+  }
+  return { mapping }
 }
 
 function validateEntry(path, type, data, state) {
@@ -248,6 +347,8 @@ function parseTar(expanded, options = {}) {
     validateEntry(path, type, payload, state)
     if (options.collectEntries === true) entries.push({ path, type, data: type === 'file' ? Buffer.from(payload) : undefined })
     else if (options.digestEntries === true) entries.push(type === 'file' ? { path, type, size: headerSize, sha256: createHash('sha256').update(payload).digest('hex') } : { path, type })
+    // 只取路径的轻量模式：跨平台提示要逐条目算目标路径，但不需要 payload。
+    else if (options.collectPaths === true) entries.push({ path, type })
     else entries.push(null)
   }
 
@@ -281,6 +382,10 @@ async function inspectArchive(source, options = {}) {
     // 界面优先显示后者；前者是廉价但可能与内容不符的镜像。
     nameVersion: typeof source.nameVersion === 'string' ? source.nameVersion : null,
     metadata: null,
+    // 形状恒定：坏归档也给 null / 空数组，客户端不必按存在性写防御分支。
+    sourcePlatform: null,
+    sourceArch: null,
+    notices: [],
     sections: emptySections(),
     issues: [],
     issueCount: 0,
@@ -302,7 +407,7 @@ async function inspectArchive(source, options = {}) {
     try { expanded = await gunzipArchive(compressed, { maxOutputLength: MAX_EXPANDED_BYTES }) } catch (error) {
       throw domainError(error?.code === 'ERR_BUFFER_TOO_LARGE' ? 'backup-size-limit' : 'backup-gzip-invalid')
     }
-    const parsed = parseTar(expanded, options)
+    const parsed = parseTar(expanded, { ...options, collectPaths: true })
     return {
       report: {
         ...base,
@@ -313,6 +418,15 @@ async function inspectArchive(source, options = {}) {
         // 元数据非法/缺席时退回文件名里的版本段，保证「只要有一处记了版本」就看得见。
         metadata: parsed.metadata ?? null,
         dshVersion: parsed.metadata?.dshVersion ?? (typeof source.nameVersion === 'string' ? source.nameVersion : null),
+        // 来源平台/架构只做展示与提示；旧归档缺字段即 null。
+        sourcePlatform: parsed.metadata?.platform ?? null,
+        sourceArch: parsed.metadata?.arch ?? null,
+        // 跨平台提示（只读，不影响 validForRestore）。计划阶段会按映射后的目标路径重算。
+        notices: collectPlatformNotices(parsed.entries.map((entry) => entry.path), {
+          platform: options.platform ?? process.platform,
+          dshHome: options.dshHome,
+          sourcePlatform: parsed.metadata?.platform ?? null,
+        }),
         sections: parsed.sections,
       },
       parsed,
@@ -448,6 +562,28 @@ async function pathExists(path) {
   try { await lstat(path); return true } catch (error) { if (error?.code === 'ENOENT') return false; throw error }
 }
 
+// 目标机会话目录的**只读诊断**探测：建临时文件 → 改名 → 删除。失败最可能的原因是
+// 目标平台上有进程占用着会话目录（Windows 上宿主自身/同步盘/杀毒都可能持句柄），
+// 也可能是权限不足；两种情况都值得在确认前告诉用户。sessions/ 不存在时跳过探测
+// ——恢复本来就会新建它，此时「不可写」无从谈起。探测文件在返回前一定清理干净，
+// 否则会污染紧随其后计算的目标指纹。
+async function probeSessionsWritable(dshHome) {
+  const dir = join(dshHome, 'sessions')
+  if (!(await pathExists(dir))) return null
+  const probe = join(dir, `.dsh-service-probe-${randomUUID()}`)
+  const renamed = `${probe}.renamed`
+  try {
+    await writeFile(probe, '', { mode: 0o600 })
+    await rename(probe, renamed)
+    await unlink(renamed)
+    return null
+  } catch (error) {
+    await rm(probe, { force: true }).catch(() => {})
+    await rm(renamed, { force: true }).catch(() => {})
+    return typeof error?.code === 'string' ? error.code : 'probe-failed'
+  }
+}
+
 async function writeJournal(path, value) {
   const temporary = `${path}.${randomUUID()}.tmp`
   try {
@@ -493,6 +629,8 @@ function publicPlan(plan) {
     reportSummary: plan.reportSummary,
     targets: plan.targets,
     consequences: plan.consequences,
+    // 跨平台提示（计划阶段按映射后路径重算）：与报告同名同形，客户端优先用计划里的。
+    notices: plan.notices ?? [],
     previousInstanceId: plan.previousInstanceId,
     runtime: plan.runtime,
   }
@@ -508,6 +646,12 @@ export function createBackupIntegrity(options) {
     previousInstanceId,
     scheduleRestart = () => {},
     now = () => Date.now(),
+    // 目标平台：必须是「恢复实际发生的那台机器」的事实，默认取宿主进程平台。
+    // 只驱动只读提示与错误措辞，绝不参与归档裁决。
+    platform = process.platform,
+    // 目标机可选的 profile 名清单（宿主侧 readdir 结果）；映射的目标必须落在其中
+    // 或与源同名（同名新建是既有语义）。
+    listProfiles = async () => [],
   } = options
   const plans = new Map()
   let recoveryError
@@ -545,14 +689,14 @@ export function createBackupIntegrity(options) {
     await prunePlans()
     const source = await resolveSource(id)
     if (source === undefined) return undefined
-    return (await inspectArchive(source)).report
+    return (await inspectArchive(source, { platform, dshHome })).report
   }
 
   // tar 报「读取期间有变化」时的完整性兜底：解析归档并把它逐条目核对回暂存树。
   // 只有归档是暂存树的完整精确副本时才返回 true；任何缺失、截断或内容差异都判为不可发布。
   async function verifyArchivedTree(source, root) {
     await ensureRecovered()
-    const inspected = await inspectArchive(source, { digestEntries: true })
+    const inspected = await inspectArchive(source, { digestEntries: true, platform, dshHome })
     if (!inspected.report.validForRestore || inspected.parsed === null) {
       const issue = inspected.report.issues?.[0]?.code
       throw domainError(issue || 'backup-archive-invalid')
@@ -561,7 +705,7 @@ export function createBackupIntegrity(options) {
     return true
   }
 
-  async function prepareRestore(id) {
+  async function prepareRestore(id, requestedProfiles) {
     return withLock(async () => {
       await ensureRecovered()
     await prunePlans()
@@ -569,23 +713,57 @@ export function createBackupIntegrity(options) {
     if (activity?.hasActive === true) throw domainError('active-work')
     const source = await resolveSource(id)
     if (source === undefined) throw domainError('unknown-backup')
-    const inspected = await inspectArchive(source, { collectEntries: true })
+    const inspected = await inspectArchive(source, { collectEntries: true, platform, dshHome })
     if (!inspected.report.validForRestore || inspected.parsed === null) throw domainError('backup-archive-invalid')
     // 归档可能带补丁而不带 manifest（外部工具所出）：指纹与恢复操作都按并集处理，
     // 否则「只改了补丁的 profile」在 target 变更检测里是盲区。
-    const profileNames = [...new Set([
+    const archivedNames = [...new Set([
       ...inspected.report.sections.profiles.items.map((item) => item.name),
       ...inspected.report.sections.profiles.patchFiles.map((item) => item.name),
     ])].sort()
-    const patchProfileNames = inspected.report.sections.profiles.patchFiles.map((item) => item.name)
-    const targetState = await fingerprintTargets(dshHome, profileNames)
+    const manifestSources = new Set(inspected.report.sections.profiles.items.map((item) => item.name))
+    const patchSources = new Set(inspected.report.sections.profiles.patchFiles.map((item) => item.name))
+    const localProfiles = await listProfiles().catch(() => [])
+    const normalized = normalizeProfileMapping(requestedProfiles, archivedNames, localProfiles)
+    if (normalized.error !== undefined) throw domainError(normalized.error)
+    // 「恢复什么」最终由归档决定：没带 manifest 的源不会有 manifest 操作，补丁同理。
+    const mapping = normalized.mapping.map((entry) => ({
+      source: entry.source,
+      target: entry.target,
+      manifest: entry.manifest === true && manifestSources.has(entry.source),
+      patch: patchSources.has(entry.source),
+    }))
+    const targetProfiles = [...new Set(mapping.map((entry) => entry.target))]
+    const remap = new Map(mapping.map((entry) => [entry.source, entry.target]))
+    // 同一份备份重复 prepare（用户改映射）时释放上一份计划：staging 是整棵归档树的
+    // 副本，不释放会随每次改选堆积磁盘。
+    for (const [existingId, existing] of [...plans]) {
+      if (existing.state === 'planned' && existing.source.id === source.id) {
+        existing.state = 'expired'
+        plans.delete(existingId)
+        await rm(existing.staging, { recursive: true, force: true })
+      }
+    }
+    const targetState = await fingerprintTargets(dshHome, targetProfiles)
     const planId = randomUUID()
     const staging = join(dshHome, 'backups', `.restore-plan-${planId}`)
     await materialize(inspected.parsed, staging)
+    // 跨平台提示按**映射后**的目标路径重算，再补一条会话目录可写探测（占用/权限）。
+    const notices = collectPlatformNotices(inspected.parsed.entries.map((entry) => remapProfilePath(entry.path, remap)), {
+      platform,
+      dshHome,
+      sourcePlatform: inspected.report.sourcePlatform ?? null,
+    })
+    const probeDetail = await probeSessionsWritable(dshHome)
+    if (probeDetail !== null) notices.push({ code: 'target-sessions-unwritable', detail: probeDetail })
     const preparedAt = now()
     const configPresent = new Set(inspected.report.sections.config.files.map((item) => item.name))
     const configRemove = []
     for (const name of CONFIG_FILES) if (!configPresent.has(name) && await pathExists(join(dshHome, name))) configRemove.push(name)
+    const manifestsReplaced = mapping.filter((entry) => entry.manifest).map((entry) => entry.target)
+    const patchesReplaced = mapping.filter((entry) => entry.patch).map((entry) => entry.target)
+    const crossName = mapping.filter((entry) => entry.source !== entry.target)
+    const manifestSkipped = crossName.filter((entry) => entry.manifest !== true && manifestSources.has(entry.source))
     const plan = {
       state: 'planned',
       planId,
@@ -596,28 +774,39 @@ export function createBackupIntegrity(options) {
       source: { id: source.id, name: source.name, sizeBytes: source.sizeBytes, sha256: inspected.report.source.sha256, dshVersion: inspected.report.dshVersion ?? null },
       sourceFingerprint: inspected.report.source.sha256,
       targetFingerprint: targetState.fingerprint,
-      profileNames,
-      patchProfileNames,
+      mapping,
+      targetProfiles,
+      notices: notices.slice(0, MAX_NOTICES),
       reportSummary: {
         entryCount: inspected.report.archive.entryCount,
         logicalBytes: inspected.report.archive.logicalBytes,
         sessions: inspected.report.sections.sessions,
         configFiles: inspected.report.sections.config.files.length,
-        profiles: profileNames.length,
-        profilePatches: patchProfileNames.length,
+        profiles: archivedNames.length,
+        profilePatches: patchSources.size,
         archiveFormat: inspected.report.archiveFormat,
         // 备份时的 DSH 版本随计划下发：恢复是不可逆动作，确认前必须让用户看清
         // 「这份快照来自哪个版本」——降级恢复读不动新格式会话，写清楚才不至于误点。
         dshVersion: inspected.report.dshVersion ?? null,
+        sourcePlatform: inspected.report.sourcePlatform ?? null,
         metadata: inspected.report.metadata ?? null,
       },
       targets: {
         sessions: { action: 'replace', currentBytes: targetState.bytes, newBytes: inspected.report.sections.sessions.bytes },
         config: { replace: inspected.report.sections.config.files.map((item) => item.name), remove: configRemove, newBytes: inspected.report.sections.config.bytes },
-        profiles: { upsert: profileNames, patches: patchProfileNames, untouched: true, newBytes: inspected.report.sections.profiles.bytes },
+        // mapping 是恢复行为的唯一事实源；upsert/patches 是它的两个投影，供既有界面直接计数。
+        profiles: { mapping, upsert: manifestsReplaced, patches: patchesReplaced, untouched: true, newBytes: inspected.report.sections.profiles.bytes },
       },
       // 旧归档（v1，不含补丁层）恢复时显式告知「哪些文件没带」，不判损坏、不阻断。
-      consequences: ['sessions-replaced', ...(configRemove.length > 0 ? ['config-files-removed'] : []), ...(profileNames.length > 0 ? ['profile-manifests-replaced'] : []), ...(patchProfileNames.length > 0 ? ['profile-patches-replaced'] : ['profile-patches-absent']), 'service-restart-required'],
+      consequences: [
+        'sessions-replaced',
+        ...(configRemove.length > 0 ? ['config-files-removed'] : []),
+        ...(manifestsReplaced.length > 0 ? ['profile-manifests-replaced'] : []),
+        ...(crossName.length > 0 ? ['profile-mapped'] : []),
+        ...(manifestSkipped.length > 0 ? ['profile-manifest-skipped'] : []),
+        ...(patchesReplaced.length > 0 ? ['profile-patches-replaced'] : ['profile-patches-absent']),
+        'service-restart-required',
+      ],
       previousInstanceId,
       runtime: { supervisorKind: runtimeEnv?.supervisorKind ?? null, manualStartLikely: runtimeEnv?.manualStartLikely === true },
     }
@@ -644,12 +833,12 @@ export function createBackupIntegrity(options) {
     if (activity?.hasActive === true) { await rm(plan.staging, { recursive: true, force: true }); throw domainError('active-work') }
     const source = await resolveSource(plan.source.id)
     if (source === undefined) { await rm(plan.staging, { recursive: true, force: true }); throw domainError('restore-source-changed') }
-    const inspected = await inspectArchive(source)
+    const inspected = await inspectArchive(source, { platform, dshHome })
     if (!inspected.report.validForRestore || inspected.report.source.sha256 !== plan.sourceFingerprint) {
       await rm(plan.staging, { recursive: true, force: true })
       throw domainError('restore-source-changed')
     }
-    const targetState = await fingerprintTargets(dshHome, plan.profileNames)
+    const targetState = await fingerprintTargets(dshHome, plan.targetProfiles)
     if (targetState.fingerprint !== plan.targetFingerprint) {
       await rm(plan.staging, { recursive: true, force: true })
       throw domainError('restore-target-changed')
@@ -663,15 +852,17 @@ export function createBackupIntegrity(options) {
     }
     await addOperation(join(dshHome, 'sessions'), join(plan.staging, 'sessions'), 'sessions')
     for (const name of CONFIG_FILES) await addOperation(join(dshHome, name), join(plan.staging, 'config', name), `config/${name}`)
-    for (const name of plan.profileNames) {
-      await addOperation(join(dshHome, 'profiles', name, 'package.json'), join(plan.staging, 'profiles', name, 'package.json'), `profiles/${name}/package.json`)
+    // profile 操作完全由计划的 mapping 派生：源决定读哪份暂存文件，目标决定写到哪里。
+    for (const entry of plan.mapping ?? []) {
+      if (entry.manifest === true) {
+        await addOperation(join(dshHome, 'profiles', entry.target, 'package.json'), join(plan.staging, 'profiles', entry.source, 'package.json'), `profiles/${entry.target}/package.json`)
+      }
       // 补丁层白名单恢复。归档没带（旧版 v1 所出）时**不登记**这一步：登记了就代表
       // 「按快照覆盖」，operation 循环会先把目标侧 patch 挪走、再因 staged 缺席而不回填，
       // 等于用一份对配置毫无意见的旧归档静默删掉用户当前配置。缺席只记入计划报告
       // （consequences: profile-patches-absent），不改成删除。
-      const stagedPatch = join(plan.staging, 'profiles', name, 'cordis.patch.yml')
-      if (await pathExists(stagedPatch)) {
-        await addOperation(join(dshHome, 'profiles', name, 'cordis.patch.yml'), stagedPatch, `profiles/${name}/cordis.patch.yml`)
+      if (entry.patch === true) {
+        await addOperation(join(dshHome, 'profiles', entry.target, 'cordis.patch.yml'), join(plan.staging, 'profiles', entry.source, 'cordis.patch.yml'), `profiles/${entry.target}/cordis.patch.yml`)
       }
     }
     const journalPath = join(dshHome, JOURNAL_FILE)
@@ -702,7 +893,7 @@ export function createBackupIntegrity(options) {
       } catch (_) {
         throw domainError('recovery-required')
       }
-      throw domainError('restore-failed')
+      throw domainError(restoreFailureCode(error, platform))
     }
 
     // 桌面端（electronShell）与终端手动启动同理：没有东西会把 Host 拉起来，恢复完成后不调度
@@ -725,4 +916,4 @@ export function createBackupIntegrity(options) {
   return { inspectBackup, verifyArchivedTree, prepareRestore, commitRestore, dispose }
 }
 
-export { CONFIG_FILES, PLAN_TTL_MS }
+export { CONFIG_FILES, PLAN_TTL_MS, collectPlatformNotices, normalizeProfileMapping, restoreFailureCode }

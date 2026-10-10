@@ -3468,6 +3468,108 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
   assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [1000])
 })
 
+test('backup restore surfaces cross-platform notices and lets the user pick the target profile', async () => {
+  const calls = []
+  const item = { id: 'signed-backup-2', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const report = {
+    validForRestore: true,
+    status: 'ok',
+    archive: { entryCount: 9, logicalBytes: 2048 },
+    archiveFormat: 'v2',
+    dshVersion: '0.2.1-alpha.1',
+    sourcePlatform: 'linux',
+    sections: { sessions: { files: 2, dirs: 1, bytes: 1024 }, config: { files: [] }, profiles: { count: 1, patchFiles: [{ name: 'web' }] } },
+    notices: [{ code: 'source-platform-differs', detail: 'linux' }],
+    issues: [],
+  }
+  const planFor = (target, manifest) => ({
+    planId: `plan-${target}-${manifest}`,
+    expiresAt: Date.now() + 300000,
+    notices: [{ code: 'target-path-length', detail: '300' }],
+    targets: {
+      config: { replace: [], remove: [] },
+      profiles: { mapping: [{ source: 'web', target, manifest, patch: true }], upsert: manifest ? [target] : [], patches: [target] },
+    },
+  })
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.1-alpha.1', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') return { ok: true, value: report }
+    if (endpoint === 'backup-target-profiles') return { ok: true, value: { profiles: [{ name: 'desktop', hasManifest: true, hasPatch: true }, { name: 'web' }], active: 'desktop' } }
+    if (endpoint === 'backup-restore-prepare') {
+      if (payload.profiles === undefined) return { ok: true, value: planFor('web', true) }
+      // 显式映射必须原样送达宿主（浏览器只回传宿主清单内的名字）。
+      const entry = payload.profiles[0]
+      return { ok: true, value: planFor(entry.target, entry.manifest === true) }
+    }
+    if (endpoint === 'backup-restore-commit') return { ok: true, value: { restoredFrom: item.name, restart: { scheduled: false, requiresManualRestart: true } } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+
+  // 跨平台提示按宿主下发的 code 渲染（计划版优先），并附 detail。
+  assert.equal(renderer.findByTestId('backup-restore-notices').children.length, 1)
+  assert.match(renderer.text('settings.section'), /目标路径最长将达 300 个字符/)
+  // 目标 profile 选择器：候选=宿主清单 ∪ 源名，默认停在宿主确认过的映射上。
+  const select = renderer.findByTestId('backup-mapping-target-web')
+  const options = select.children.flat().filter((child) => child?.props?.value !== undefined)
+  assert.deepEqual(options.map((option) => option.props.value), ['desktop', 'web'])
+  assert.equal(select.props.value, 'web')
+  assert.equal(renderer.findByTestId('backup-mapping-manifest-web').props.checked, true)
+
+  // 改成 desktop：重跑 prepare 且带上显式映射；manifest 默认关闭后不再覆盖插件清单。
+  select.props.onChange({ target: { value: 'desktop' } })
+  await renderer.flush()
+  const prepareCalls = calls.filter((call) => call.endpoint === 'backup-restore-prepare')
+  assert.equal(prepareCalls.length, 2)
+  assert.deepEqual(prepareCalls[1].payload, { id: item.id, profiles: [{ source: 'web', target: 'desktop', manifest: true }] })
+  assert.equal(renderer.findByTestId('backup-mapping-target-web').props.value, 'desktop')
+
+  renderer.findByTestId('backup-mapping-manifest-web').props.onChange({ target: { checked: false } })
+  await renderer.flush()
+  const afterManifest = calls.filter((call) => call.endpoint === 'backup-restore-prepare')
+  assert.deepEqual(afterManifest[2].payload, { id: item.id, profiles: [{ source: 'web', target: 'desktop', manifest: false }] })
+
+  // 提交仍然只回传宿主签发的一次性 planId。
+  await renderer.findButton('确认恢复').props.onClick()
+  await renderer.flush()
+  const commit = calls.filter((call) => call.endpoint === 'backup-restore-commit')
+  assert.equal(commit.length, 1)
+  assert.deepEqual(commit[0].payload, { planId: 'plan-desktop-false' })
+})
+
+test('backup restore maps a locked target to actionable guidance', async () => {
+  const item = { id: 'signed-backup-3', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.1-alpha.1', instanceId: 'old-instance' } }
+    if (endpoint === 'health') return { ok: false, error: 'not relevant' }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [item], totalBytes: item.sizeBytes } }
+    if (endpoint === 'backup-inspect') return { ok: true, value: { validForRestore: true, archive: { entryCount: 3, logicalBytes: 10 }, sections: { sessions: { files: 1 }, config: { files: [] }, profiles: { count: 0, patchFiles: [] } }, issues: [] } }
+    if (endpoint === 'backup-restore-prepare') return { ok: true, value: { planId: 'locked-plan', expiresAt: Date.now() + 300000, targets: { config: { replace: [], remove: [] }, profiles: { mapping: [], upsert: [], patches: [] } } } }
+    if (endpoint === 'backup-restore-commit') return { ok: false, error: 'restore-files-locked' }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('备份维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('恢复').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('确认恢复').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /目标文件被占用/)
+})
+
 test('backup restore explains that a v1 archive carries no profile patch layer', async () => {
   const item = { id: 'signed-backup-1', name: 'dsh-backup-20250819-120000.tar.gz', sizeBytes: 1536, createdAt: '2025-08-19T12:00:00.000Z' }
   const renderer = createRenderer(async (channel, endpoint) => {

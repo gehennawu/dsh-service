@@ -606,7 +606,40 @@ function backupMetadataPayload(version, createdAt) {
     dshVersion: typeof version === 'string' ? version : '',
     pluginVersion: typeof pluginVersion === 'string' ? pluginVersion : '',
     createdAt: createdAt instanceof Date ? createdAt.toISOString() : new Date().toISOString(),
+    // 来源平台/架构（v0.47）：跨设备恢复时用来提示「这份快照出自哪个系统」。
+    // 与其它字段一样全部来自宿主常量，浏览器不参与；旧版插件读新归档时忽略这两个键。
+    platform: process.platform,
+    arch: process.arch,
   }, null, 2)}\n`, 'utf8')
+}
+
+// 目标平台的事实来源：执行恢复的那台机器的进程平台。声明式覆盖只服务测试与验证
+// （与 DSH_SERVICE_RUNTIME_ENV 同规），它只能影响只读提示与错误措辞，**不放宽**任何
+// 归档校验——否则「声明成 Linux」就成了把 Windows 非法文件名塞进写入路径的后门。
+function readBackupPlatform() {
+  const declared = process.env.DSH_SERVICE_BACKUP_PLATFORM
+  return typeof declared === 'string' && /^[a-z][a-z0-9_-]{0,15}$/.test(declared) ? declared : process.platform
+}
+
+// 目标机可用于承载恢复内容的 profile 名清单（宿主侧 readdir 事实，浏览器只在该清单内
+// 选名字）。名字口径与备份侧白名单同规：单一路径段、长度封顶。
+async function listLocalProfiles(dshHome) {
+  const root = join(dshHome, 'profiles')
+  let entries
+  try { entries = await readdir(root, { withFileTypes: true }) } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
+  const profiles = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9._-]{1,64}$/.test(entry.name) || entry.name === '.' || entry.name === '..') continue
+    profiles.push({
+      name: entry.name,
+      hasManifest: await pathExists(join(root, entry.name, 'package.json')),
+      hasPatch: await pathExists(join(root, entry.name, 'cordis.patch.yml')),
+    })
+  }
+  return profiles.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // 从归档名解析版本段（列表展示用，零 I/O）。只有 Host 自己签发的名字会走到这里，
@@ -5288,6 +5321,11 @@ function apply(ctx, featureConfig) {
     runtimeEnv,
     previousInstanceId: instanceId,
     scheduleRestart: () => scheduleRestart(ctx, runtimeEnv),
+    // 目标平台与目标 profile 清单都由宿主侧事实提供：恢复发生在哪台机器上，
+    // 就以哪台机器的进程平台与 profiles 目录为准，浏览器不参与判定。
+    platform: readBackupPlatform(),
+    // 工厂只要名字清单（映射校验用）；端点另取带 hasManifest/hasPatch 的完整形态。
+    listProfiles: async () => (await listLocalProfiles(dshHome)).map((profile) => profile.name),
   })
   // 会话管理（v0.35）：删除两段式计划（planId → {id, path, bytes}），TTL 过期自动驱逐。
   const sessionDeletePlans = new Map()
@@ -6164,7 +6202,7 @@ function apply(ctx, featureConfig) {
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
-    createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, name, rpcFailure }),
+    createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, listLocalProfiles, name, rpcFailure }),
   ])
 
   const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })

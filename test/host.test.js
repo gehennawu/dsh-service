@@ -16,6 +16,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module'
 import fsPromises from 'node:fs/promises'
 
 import pluginDefault from '../index.js'
+import { collectPlatformNotices, normalizeProfileMapping, restoreFailureCode } from '../backup-integrity.js'
 import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, titleRevisionKey, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 插件 Config（0.1.7-alpha.1 起的宿主配置面）：schema 契约在下面直接断言。
@@ -107,6 +108,11 @@ function backupArchiveWithProfilePatch(overrides = {}) {
 // v3 归档（本版起）：在 v2 之上携带 `meta/backup.json`（备份时的 DSH/插件版本）。
 // 它不是恢复目标，只供恢复预检展示「这份快照出自哪个版本」。
 function backupArchiveWithMeta(version = '0.1.7-rc.1', overrides = {}) {
+  return backupArchiveWithMetadata({ version: 1, dshVersion: version, pluginVersion: '1.9.8', createdAt: '2026-09-24T03:00:00.000Z' }, overrides)
+}
+
+// 任意元数据载荷的归档（跨平台提示用例要造「来源平台」）。
+function backupArchiveWithMetadata(metadata, overrides = {}) {
   const entries = [
     { name: 'sessions/', type: '5' },
     { name: 'sessions/workspace/', type: '5' },
@@ -117,7 +123,7 @@ function backupArchiveWithMeta(version = '0.1.7-rc.1', overrides = {}) {
     { name: 'profiles/web/', type: '5' },
     { name: 'profiles/web/package.json', data: '{"name":"web-profile","restored":true}\n' },
     { name: 'meta/', type: '5' },
-    { name: 'meta/backup.json', data: `${JSON.stringify({ version: 1, dshVersion: version, pluginVersion: '1.9.8', createdAt: '2026-09-24T03:00:00.000Z' })}\n` },
+    { name: 'meta/backup.json', data: `${JSON.stringify(metadata)}\n` },
   ]
   return tarArchive(overrides.entries ?? entries)
 }
@@ -1617,6 +1623,9 @@ test('archives record the DSH version at backup time and restore preflight surfa
   assert.equal(meta.dshVersion, installedDshVersion === 'unknown' ? '' : installedDshVersion)
   assert.equal(meta.pluginVersion, pluginVersion)
   assert.equal(Number.isNaN(Date.parse(meta.createdAt)), false)
+  // 来源平台/架构：宿主常量写入，供跨设备恢复提示「这份快照出自哪个系统」。
+  assert.equal(meta.platform, process.platform)
+  assert.equal(meta.arch, process.arch)
   // 元数据里的时间必须与文件名时间戳同源（各自取一次 now 会跨秒打架）。
   const nameStamp = /^dsh-backup-(\d{8})-(\d{6})/.exec(created.value.item.name)
   assert.equal(meta.createdAt.startsWith(`${nameStamp[1].slice(0, 4)}-${nameStamp[1].slice(4, 6)}-${nameStamp[1].slice(6, 8)}T${nameStamp[2].slice(0, 2)}:${nameStamp[2].slice(2, 4)}:${nameStamp[2].slice(4, 6)}`), true)
@@ -1631,6 +1640,155 @@ test('archives record the DSH version at backup time and restore preflight surfa
   assert.equal(plan.value.reportSummary.dshVersion ?? '', meta.dshVersion)
   assert.deepEqual(plan.value.targets.profiles.upsert, ['web'])
   assert.equal(JSON.stringify(plan.value.targets).includes('meta'), false)
+})
+
+test('cross-platform notices report source platform, long paths, and case folding without blocking restore', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-notices-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  // 仅大小写不同的两条会话目录：在大小写不敏感的卷上会折叠成同一个目标。
+  const archive = backupArchiveWithMetadata(
+    { version: 1, dshVersion: '0.2.1-alpha.1', pluginVersion: '2.0.6', createdAt: '2026-09-24T03:00:00.000Z', platform: 'darwin', arch: 'arm64' },
+    { entries: [
+      { name: 'sessions/', type: '5' },
+      { name: 'sessions/project-a/', type: '5' },
+      { name: 'sessions/project-a/session.jsonl', data: '{"type":"a"}\n' },
+      { name: 'sessions/Project-A/', type: '5' },
+      { name: 'sessions/Project-A/session.jsonl', data: '{"type":"b"}\n' },
+      { name: 'config/', type: '5' },
+      { name: 'config/settings.yaml', data: 'theme: restored\n' },
+      { name: 'profiles/', type: '5' },
+      { name: 'profiles/web/', type: '5' },
+      { name: 'profiles/web/package.json', data: '{"name":"web-profile"}\n' },
+      { name: 'meta/', type: '5' },
+      { name: 'meta/backup.json', data: `${JSON.stringify({ version: 1, dshVersion: '0.2.1-alpha.1', platform: 'darwin', arch: 'arm64' })}\n` },
+    ] })
+  const name = 'dsh-backup-20250819-120000.tar.gz'
+  await writeFile(join(dshHome, 'backups', name), archive)
+  const { handler } = createHost({ env: { DSH_HOME: dshHome, DSH_SERVICE_BACKUP_PLATFORM: 'win32' } })
+  const id = (await handler('backup-list', {})).value.items[0].id
+  const inspected = await handler('backup-inspect', { id })
+  assert.equal(inspected.ok, true, JSON.stringify(inspected))
+  // 提示是只读信息，绝不改变可恢复性。
+  assert.equal(inspected.value.validForRestore, true)
+  assert.equal(inspected.value.sourcePlatform, 'darwin')
+  assert.equal(inspected.value.sourceArch, 'arm64')
+  const codes = inspected.value.notices.map((notice) => notice.code)
+  assert.ok(codes.includes('source-platform-differs'), JSON.stringify(inspected.value.notices))
+  assert.ok(codes.includes('target-case-collision'), JSON.stringify(inspected.value.notices))
+  // 计划阶段按映射后的路径重算，提示同样随计划下发。
+  const plan = await handler('backup-restore-prepare', { id })
+  assert.ok(plan.value.notices.some((notice) => notice.code === 'target-case-collision'))
+  // 超长路径由纯函数直接断言：真机 tar 才带长名扩展，测试夹具的 100 字节名字段写不出长路径。
+  const longPath = `sessions/${'p'.repeat(230)}/session.jsonl`
+  const longNotice = collectPlatformNotices([longPath], { platform: 'win32', dshHome, sourcePlatform: 'darwin' })
+  assert.ok(longNotice.some((notice) => notice.code === 'target-path-length'), JSON.stringify(longNotice))
+  assert.ok(Number(longNotice.find((notice) => notice.code === 'target-path-length').detail) > 259)
+  assert.deepEqual(collectPlatformNotices([longPath], { platform: 'linux', dshHome }), [])
+})
+
+test('restore preflight flags an unwritable sessions directory as a read-only notice', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-probe-'))
+  t.after(async () => {
+    await chmod(join(dshHome, 'sessions'), 0o700).catch(() => {})
+    await rm(dshHome, { recursive: true, force: true })
+  })
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await mkdir(join(dshHome, 'sessions'), { recursive: true })
+  await writeFile(join(dshHome, 'backups', 'dsh-backup-20250819-120000.tar.gz'), validBackupArchive())
+  const { handler } = createHost({ env: { DSH_HOME: dshHome } })
+  const id = (await handler('backup-list', {})).value.items[0].id
+  await chmod(join(dshHome, 'sessions'), 0o500)
+  const plan = await handler('backup-restore-prepare', { id })
+  assert.equal(plan.ok, true, JSON.stringify(plan))
+  const probe = plan.value.notices.find((notice) => notice.code === 'target-sessions-unwritable')
+  assert.ok(probe, JSON.stringify(plan.value.notices))
+  assert.equal(typeof probe.detail, 'string')
+})
+
+test('backup-target-profiles lists local profiles and restore honours an explicit profile mapping', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-backup-mapping-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await mkdir(join(dshHome, 'backups'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'web'), { recursive: true })
+  await mkdir(join(dshHome, 'profiles', 'desktop'), { recursive: true })
+  await writeFile(join(dshHome, 'profiles', 'web', 'package.json'), '{"name":"local-web"}\n')
+  await writeFile(join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), '- id: local-web\n')
+  await writeFile(join(dshHome, 'profiles', 'desktop', 'package.json'), '{"name":"local-desktop"}\n')
+  await writeFile(join(dshHome, 'profiles', 'desktop', 'cordis.patch.yml'), '- id: local-desktop\n')
+  const name = 'dsh-backup-20250819-120000.tar.gz'
+  await writeFile(join(dshHome, 'backups', name), backupArchiveWithProfilePatch())
+  const { handler } = createHost({ env: { DSH_HOME: dshHome, DSH_PROFILE: 'desktop', DSH_SERVICE_RUNTIME_ENV: 'manual' } })
+
+  const targets = await handler('backup-target-profiles', {})
+  assert.equal(targets.ok, true, JSON.stringify(targets))
+  assert.deepEqual(targets.value.profiles.map((profile) => profile.name), ['desktop', 'web'])
+  // active 取宿主进程的 DSH_PROFILE：测试进程自身也带着 ambient 值，显式覆盖后再断言。
+  const ambientProfile = process.env.DSH_PROFILE
+  process.env.DSH_PROFILE = 'desktop'
+  try {
+    assert.equal((await handler('backup-target-profiles', {})).value.active, 'desktop')
+    process.env.DSH_PROFILE = 'ghost'
+    assert.equal((await handler('backup-target-profiles', {})).value.active, null)
+  } finally {
+    if (ambientProfile === undefined) delete process.env.DSH_PROFILE
+    else process.env.DSH_PROFILE = ambientProfile
+  }
+  assert.equal(targets.value.profiles.find((profile) => profile.name === 'desktop').hasPatch, true)
+
+  const id = (await handler('backup-list', {})).value.items[0].id
+  // 跨名映射默认不覆盖目标 manifest：桌面端的 bundle 清单不能被 web profile 的清单顶掉。
+  const mapped = await handler('backup-restore-prepare', { id, profiles: [{ source: 'web', target: 'desktop' }] })
+  assert.equal(mapped.ok, true, JSON.stringify(mapped))
+  assert.deepEqual(mapped.value.targets.profiles.mapping, [{ source: 'web', target: 'desktop', manifest: false, patch: true }])
+  assert.deepEqual(mapped.value.targets.profiles.upsert, [])
+  assert.deepEqual(mapped.value.targets.profiles.patches, ['desktop'])
+  assert.ok(mapped.value.consequences.includes('profile-mapped'))
+  assert.ok(mapped.value.consequences.includes('profile-manifest-skipped'))
+  const committed = await handler('backup-restore-commit', { planId: mapped.value.planId })
+  assert.equal(committed.ok, true, JSON.stringify(committed))
+  assert.equal(await readFile(join(dshHome, 'profiles', 'desktop', 'cordis.patch.yml'), 'utf8'), '- id: restored\n  config:\n    flag: true\n')
+  assert.equal(await readFile(join(dshHome, 'profiles', 'desktop', 'package.json'), 'utf8'), '{"name":"local-desktop"}\n')
+  assert.equal(await readFile(join(dshHome, 'profiles', 'web', 'package.json'), 'utf8'), '{"name":"local-web"}\n')
+
+  // 显式勾选后才覆盖 manifest。
+  await writeFile(join(dshHome, 'backups', name), backupArchiveWithProfilePatch())
+  const withManifest = await handler('backup-restore-prepare', { id, profiles: [{ source: 'web', target: 'desktop', manifest: true }] })
+  assert.deepEqual(withManifest.value.targets.profiles.upsert, ['desktop'])
+  assert.equal((await handler('backup-restore-commit', { planId: withManifest.value.planId })).ok, true)
+  assert.equal(await readFile(join(dshHome, 'profiles', 'desktop', 'package.json'), 'utf8'), '{"name":"web-profile","restored":true}\n')
+
+  // 目标必须是宿主清单内的名字或与源同名；其余一律拒绝，且不产生计划。
+  for (const mapping of [
+    [{ source: 'web', target: 'ghost' }],
+    [{ source: 'nope', target: 'desktop' }],
+    [{ source: 'web', target: 'desktop' }, { source: 'web', target: 'desktop' }],
+    'not-an-array',
+  ]) {
+    const rejected = await handler('backup-restore-prepare', { id, profiles: mapping })
+    assert.deepEqual(rejected, { ok: false, error: 'restore-mapping-invalid' }, JSON.stringify(mapping))
+  }
+  // 省略映射时保持既有语义：同名 + 覆盖 manifest。
+  const identity = await handler('backup-restore-prepare', { id })
+  assert.deepEqual(identity.value.targets.profiles.mapping, [{ source: 'web', target: 'web', manifest: true, patch: true }])
+})
+
+test('restore failure classification maps Windows lock errnos only on win32', () => {
+  for (const code of ['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']) {
+    assert.equal(restoreFailureCode({ code }, 'win32'), 'restore-files-locked')
+    assert.equal(restoreFailureCode({ code }, 'linux'), 'restore-failed')
+  }
+  assert.equal(restoreFailureCode({ code: 'ENOENT' }, 'win32'), 'restore-failed')
+  assert.equal(restoreFailureCode(new Error('plain'), 'win32'), 'restore-failed')
+  // 映射校验的边界：越界条数、非对象条目、manifest 非布尔一律拒绝。
+  const archived = ['web', 'headless']
+  const local = ['desktop', 'web']
+  assert.equal(normalizeProfileMapping([{ source: 'web', target: 'desktop' }], archived, local).mapping[0].manifest, false)
+  assert.equal(normalizeProfileMapping([{ source: 'web', target: 'web' }], archived, local).mapping[0].manifest, true)
+  assert.equal(normalizeProfileMapping(undefined, archived, local).mapping.length, 2)
+  assert.equal(normalizeProfileMapping(new Array(33).fill({ source: 'web', target: 'web' }), archived, local).error, 'restore-mapping-invalid')
+  assert.equal(normalizeProfileMapping([null], archived, local).error, 'restore-mapping-invalid')
+  assert.equal(normalizeProfileMapping([{ source: 'web', target: 'web', manifest: 'yes' }], archived, local).error, 'restore-mapping-invalid')
 })
 
 test('an imported archive keeps its versioned filename and preflight falls back to it when meta is absent', async (t) => {

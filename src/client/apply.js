@@ -4746,6 +4746,10 @@
         const [backupRestoreId, setBackupRestoreId] = useState(null)
         const [backupRestoreReport, setBackupRestoreReport] = useState(null)
         const [backupRestorePlan, setBackupRestorePlan] = useState(null)
+        // 目标 profile 清单（宿主侧 readdir 结果）与用户当前选择：映射只在宿主给出的
+        // 名字里挑（或与源同名），浏览器不构造路径。
+        const [backupTargetProfiles, setBackupTargetProfiles] = useState(null)
+        const [backupProfileChoice, setBackupProfileChoice] = useState({})
         const [backupManualRestart, setBackupManualRestart] = useState(false)
         const [backupExportBusy, setBackupExportBusy] = useState(false)
         const [backupImportBusy, setBackupImportBusy] = useState(false)
@@ -5177,26 +5181,51 @@
           return translated === key ? translate('backup.restoreError') : translated
         }
 
-        const prepareBackupRestore = async (id) => {
+        const prepareBackupRestore = async (id, profiles) => {
           setBackupBusy(true)
           setBackupError(null)
           setBackupManualRestart(false)
-          setBackupRestoreReport(null)
-          setBackupRestorePlan(null)
-          setBackupRestoreId(id)
+          if (profiles === undefined) {
+            setBackupRestoreReport(null)
+            setBackupRestorePlan(null)
+            setBackupRestoreId(id)
+            setBackupTargetProfiles(null)
+            setBackupProfileChoice({})
+          }
           try {
             const inspected = await rpcCall('backup-inspect', { id })
             if (!inspected || inspected.ok === false) throw Object.assign(new Error('backup inspect failed'), { code: inspected?.error })
-            setBackupRestoreReport(inspected.value)
+            if (profiles === undefined) setBackupRestoreReport(inspected.value)
             if (inspected.value.validForRestore !== true) return
-            const prepared = await rpcCall('backup-restore-prepare', { id })
+            const prepared = await rpcCall('backup-restore-prepare', profiles === undefined ? { id } : { id, profiles })
             if (!prepared || prepared.ok === false) throw Object.assign(new Error('backup prepare failed'), { code: prepared?.error })
             setBackupRestorePlan(prepared.value)
+            // 计划里的 mapping 是宿主确认过的选择：回写本地选择状态，选择器显示的就是
+            // 「即将执行」的那套映射。需要选择器时再取目标清单（宿主侧 readdir 事实，
+            // 浏览器只在清单内选名字，绝不构造路径）。
+            if (profiles === undefined) {
+              const mapping = prepared.value?.targets?.profiles?.mapping ?? []
+              const choice = {}
+              for (const entry of mapping) choice[entry.source] = { target: entry.target, manifest: entry.manifest === true }
+              setBackupProfileChoice(choice)
+              if (mapping.length > 0) {
+                const targets = await rpcCall('backup-target-profiles', {})
+                if (targets && targets.ok !== false) setBackupTargetProfiles(targets.value)
+              }
+            }
           } catch (error) {
             setBackupError(mapBackupRestoreError(error?.code))
           } finally {
             setBackupBusy(false)
           }
+        }
+
+        // 选择器改动：先落本地选择，再把**显式映射**送回宿主重新生成计划（映射校验、
+        // 目标指纹、跨平台提示都在宿主侧重算）。
+        const changeBackupRestoreMapping = (id, next) => {
+          setBackupProfileChoice(next)
+          const entries = Object.keys(next).sort().map((source) => ({ source, target: next[source].target, manifest: next[source].manifest === true }))
+          return prepareBackupRestore(id, entries)
         }
 
         const commitBackupRestore = async () => {
@@ -5228,6 +5257,8 @@
           setBackupRestoreId(null)
           setBackupRestoreReport(null)
           setBackupRestorePlan(null)
+          setBackupTargetProfiles(null)
+          setBackupProfileChoice({})
         }
 
          const importBackup = (event) => {
@@ -6190,6 +6221,42 @@
                                   : null)
                             : null,
                         backupRestorePlan !== null ? React.createElement('div', { style: { marginTop: '8px' } },
+                          // 跨平台提示（只读）：优先用计划里的（按映射后路径重算），没有计划时退回报告版。
+                          (backupRestorePlan.notices?.length || backupRestoreReport?.notices?.length)
+                            ? React.createElement('ul', { 'data-testid': 'backup-restore-notices', style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px', color: 'var(--dsw-alias-state-warn-primary)' }) },
+                                (backupRestorePlan.notices?.length ? backupRestorePlan.notices : backupRestoreReport.notices).map((notice, index) => React.createElement('li', { key: `${notice.code}-${index}`, 'data-notice': notice.code }, translate(`backup.notice.${notice.code}`, { detail: notice.detail || '' }))))
+                            : null,
+                          // profile 映射（P1）：源 profile → 本机目标 profile。目标候选只有
+                          // 「宿主清单」与「与源同名」两种；改动即让宿主按新映射重算计划。
+                          (backupRestorePlan.targets?.profiles?.mapping?.length || 0) > 0
+                            ? React.createElement('div', { 'data-testid': 'backup-restore-mapping', style: { margin: '0 0 8px' } },
+                                React.createElement('div', { style: Object.assign({}, hint, { margin: '0 0 4px' }) }, translate('backup.plan.mappingHint')),
+                                backupRestorePlan.targets.profiles.mapping.map((entry) => {
+                                  const choice = backupProfileChoice[entry.source] ?? { target: entry.target, manifest: entry.manifest === true }
+                                  const candidates = [...new Set([entry.source, ...(backupTargetProfiles?.profiles ?? []).map((profile) => profile.name)])].sort()
+                                  const change = (next) => changeBackupRestoreMapping(backupRestoreId, Object.assign({}, backupProfileChoice, { [entry.source]: next }))
+                                  return React.createElement('div', { key: entry.source, style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '2px 0' } },
+                                    React.createElement('span', { style: { fontFamily: 'monospace', fontSize: '11px' } }, entry.source),
+                                    React.createElement('span', { style: hint }, '→'),
+                                    React.createElement('select', {
+                                      'data-testid': `backup-mapping-target-${entry.source}`,
+                                      'aria-label': translate('backup.plan.mappingHint'),
+                                      value: choice.target,
+                                      disabled: backupBusy,
+                                      onChange: (event) => change({ target: event.target.value, manifest: choice.manifest === true }),
+                                      style: { fontSize: '11px', padding: '2px 4px' },
+                                    }, candidates.map((candidate) => React.createElement('option', { key: candidate, value: candidate }, candidate))),
+                                    React.createElement('label', { style: Object.assign({}, hint, { display: 'inline-flex', alignItems: 'center', gap: '4px' }) },
+                                      React.createElement('input', {
+                                        type: 'checkbox',
+                                        'data-testid': `backup-mapping-manifest-${entry.source}`,
+                                        checked: choice.manifest === true,
+                                        disabled: backupBusy,
+                                        onChange: (event) => change({ target: choice.target, manifest: event.target.checked }),
+                                      }),
+                                      translate('backup.plan.manifest')))
+                                }))
+                            : null,
                           React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
                           React.createElement('ul', { style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px' }) },
                             React.createElement('li', null, translate('backup.plan.sessions')),
