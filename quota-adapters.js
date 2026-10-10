@@ -1110,6 +1110,37 @@ function parseCliproxyUpstream(provider, payload) {
   return normalizeGeminiBuckets(payload?.buckets)
 }
 
+// 管理面 403 的三种语义（上游 `internal/api/handlers/management/handler.go` 原文）：
+//   · `IP banned due to too many failed attempts. Try again in 29m10s` —— fail2ban 封禁（实测 2026-10-10）
+//   · `remote management disabled` / `remote management key not set` —— 管理面没开或没配密钥
+// 三者与「密钥填错」（401 `invalid management key`）完全不同，必须分开归类，否则用户对着一句
+// 状态码猜：填错要给重填入口，封禁/未开启给重填入口是误导。
+const CLIPROXY_BANNED_DETAIL_RE = /IP banned due to too many failed attempts/i
+const CLIPROXY_MGMT_OFF_DETAIL_RE = /remote management (?:disabled|key not set)/i
+
+/** CPA 管理面失败归类：401/403 = 管理密钥被拒（与其余 11 个 kind 同款，行回 unconfigured 就地重填）；
+ *  封禁 → mgmt-banned（专属码，给等待/换出口 IP 的指引）；远程管理未开启 → mgmt-disabled。 */
+function cliproxyManagementFailure(error) {
+  const detail = sanitizeQuotaErrorDetail(error?.detail)
+  if (detail !== undefined && CLIPROXY_BANNED_DETAIL_RE.test(detail)) {
+    const banned = new Error('mgmt-banned')
+    banned.detail = detail
+    return banned
+  }
+  if (detail !== undefined && CLIPROXY_MGMT_OFF_DETAIL_RE.test(detail)) {
+    const disabled = new Error('mgmt-disabled')
+    disabled.detail = detail
+    return disabled
+  }
+  const message = typeof error?.message === 'string' ? error.message : ''
+  if (message === 'http-status:401' || message === 'http-status:403') {
+    const rejected = new Error('credential-rejected')
+    if (detail !== undefined) rejected.detail = detail
+    return rejected
+  }
+  return error
+}
+
 async function fetchCliproxyUsage({ profile, config, credential, signal, requestJson }) {
   if (typeof requestJson !== 'function') throw new Error('transport-unavailable')
   const pinned = Array.isArray(config?.allowedHosts?.[profile.name]) ? config.allowedHosts[profile.name] : []
@@ -1119,8 +1150,9 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
   try {
     filesPayload = await requestJson(`${origin}/v0/management/auth-files`, { authorization: credential, signal })
   } catch (error) {
+    // secret-key 为空时管理路由整体不注册 → 404（既有口径，先于其余归类）。
     if (error?.message === 'http-status:404') throw new Error('mgmt-disabled')
-    throw error
+    throw cliproxyManagementFailure(error)
   }
   const files = Array.isArray(filesPayload?.files) ? filesPayload.files : []
   const accounts = []
@@ -1162,8 +1194,12 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
           body: JSON.stringify({ auth_index: account.authIndex, method: call.method, url: call.url, header: call.header, data: call.data }),
         })
       } catch (error) {
-        const detail = sanitizeQuotaErrorDetail(error?.detail)
-        pushFailure(accountIndex, quotaErrorCode(error), detail !== undefined ? { detail } : {})
+        // 管理面自身失败（密钥被拒 / 封禁 / 管理面未开）：与账号级上游失败（HTTP 200 信封里的
+        // status_code）严格分开。密钥在 api-call 途中失效或撞上封禁时，整行必须给出可行动指引，
+        // 而不是一个 upstream-status 家族码。
+        const failure = cliproxyManagementFailure(error)
+        const detail = sanitizeQuotaErrorDetail(failure?.detail)
+        pushFailure(accountIndex, quotaErrorCode(failure), detail !== undefined ? { detail } : {})
         const fallback = cliproxFallbackWindows(account)
         if (fallback.length > 0) {
           accountResults.set(accountIndex, fallback)

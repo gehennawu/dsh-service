@@ -66,10 +66,12 @@ export function createQuotaRoutes({
           // 漏掉它会把卡片锁死在错误态，用户找不到任何入口（GUI 反馈「失效后无法再次填入」）。
           const credentialClass = view.lastError === 'credential-missing' || view.lastError === 'no-base-url' || view.lastError === 'credentials-unavailable' || view.lastError === 'credential-rejected'
           const providerResetCards = resetCardsByProvider.get(profile.name) ?? []
-          // 凭据填写窗口的数据源：仅对「缺凭据」的未配置行附带候选线索名的配置状态（describe 只回
-          // 配置与否/来源/可写，绝不带值）；凭据服务缺席时省略字段——客户端隐藏窗口退回文案指引。
+          // 凭据窗口的数据源：**已适配行一律附带**候选线索名的配置状态，不再以「未配置」为门槛——
+          // 已保存的凭据（密钥轮换、换账号、填错想改）此前没有任何 GUI 修改入口（用户点名）。
+          // describe 只回配置与否/来源/可写，绝不带值，且是内存查询；凭据服务缺席时省略字段，
+          // 客户端随之隐藏入口、退回文案指引。
           let credentialHints
-          if (credentialClass && !view.refreshing && view.lastError !== 'no-base-url') {
+          {
             const credentials = ctx.get('credentials')
             if (credentials !== undefined && typeof credentials.describe === 'function') {
               const described = []
@@ -103,6 +105,8 @@ export function createQuotaRoutes({
             ...(view.lastErrorEndpoint !== undefined ? { errorEndpoint: view.lastErrorEndpoint } : {}),
             ...(view.lastErrorAccount !== undefined ? { errorAccount: view.lastErrorAccount } : {}),
             nextAllowedAt: view.nextAllowedAt,
+            // 确定性失败后的手动模式：客户端据此把「{time} 后可重试」换成「自动重试已暂停」。
+            ...(view.manualOnly === true ? { manualOnly: true } : {}),
             ...(providerResetCards.length > 0 ? { resetCards: providerResetCards } : {}),
             ...(credentialHints !== undefined ? { credentialHints } : {}),
             // 凭据入口语义由 Adapter policy 下发稳定键，客户端只负责本地化，不再对 kind 重复分支。
@@ -119,8 +123,10 @@ export function createQuotaRoutes({
     } },
     'quota-refresh': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
-        // 手动刷新入口：provider 过白名单且 kind 已适配；清掉节流闸后立即 kick。
-        // 单飞仍生效（在途时本次点击为 no-op）；上游结果经后续 quota 快照带出，不在此等待。
+        // 手动重试/连接入口：provider 过白名单且 kind 已适配；这是「确定性失败转手动模式」之后
+        // 唯一还能打上游的路径（kick 带 manual 标记，跳过手动模式与退避/TTL/间隔三道闸）。
+        // 单飞仍生效（在途时本次点击为 no-op）；只受不可绕过的手动冷却约束；上游结果经后续
+        // quota 快照带出，不在此等待。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         const profile = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
         if (profile === undefined) return { ok: false, error: 'unknown-provider' }
@@ -130,9 +136,9 @@ export function createQuotaRoutes({
         const forced = quotaThrottle.force(providerName)
         if (!forced.ok) {
           if (forced.reason === 'inflight') return { ok: true }
-          return { ok: false, error: forced.reason === 'cooldown' ? 'refresh-cooldown' : 'refresh-backoff', nextAllowedAt: forced.nextAllowedAt }
+          return { ok: false, error: 'refresh-cooldown', nextAllowedAt: forced.nextAllowedAt }
         }
-        kickQuotaRefresh(profile, adapter, config)
+        kickQuotaRefresh(profile, adapter, config, { manual: true })
         return { ok: true }
       } catch (error) {
         return rpcTechnicalFailure(error)

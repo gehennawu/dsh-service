@@ -8299,6 +8299,97 @@ test('clearing a stored credential requires a second confirming click', async ()
   assert.ok(rpcLog.some(([endpoint]) => endpoint === 'quota-refresh'))
 })
 
+test('a configured row keeps the credential entry so the stored secret can be rotated', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  const rpcLog = []
+  const buildProviders = () => [{
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', credentialEntryKey: 'editManagement',
+    refreshing: false, status: 'ok', fetchedAt: Date.now(), windows: [],
+    // 查询成功、凭据已配置：宿主照样下发线索（入口常驻），用户才能轮换密钥或换账号。
+    credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: true, source: 'file', writable: true }],
+  }]
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    rpcLog.push([endpoint, payload])
+    if (endpoint === 'quota') return { ok: true, value: { providers: buildProviders(), serverTime: Date.now() } }
+    if (endpoint === 'quota-credential-set') return { ok: true }
+    if (endpoint === 'quota-refresh') return { ok: true }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  renderer.findByTestId('quota-advanced-toggle-cpa').props.onClick()
+  await renderer.flush()
+  // 已配置行不再隐藏入口：文案换成「修改凭据（已配置）」，进去能覆盖也能清除。
+  assert.equal(renderer.findByTestId('quota-cred-edit-cpa').children.join(''), '修改凭据（已配置）')
+  renderer.findByTestId('quota-cred-edit-cpa').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('quota-cred-clear').children.join(''), '清除已存')
+  const input = renderer.findByTestId('quota-cred-input-value')
+  input.props.onChange({ target: { value: 'rotated-key' } })
+  await renderer.flush()
+  renderer.findByTestId('quota-cred-save').props.onClick()
+  await renderer.flush()
+  const setCall = rpcLog.find(([endpoint]) => endpoint === 'quota-credential-set')
+  assert.deepEqual(setCall[1], { provider: 'cpa', name: 'CPA_MANAGEMENT_KEY', value: 'rotated-key' })
+})
+
+test('manual-only rows pause auto retry, rename the action to a manual reconnect, and localize the cooldown', async () => {
+  const usageFixture = { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] }
+  let refreshCalls = 0
+  const buildProviders = () => [{
+    provider: 'cpa', displayName: 'CPA', adapted: true, kind: 'cliproxy', kindSource: 'config', credentialEntryKey: 'editManagement',
+    refreshing: false, status: 'error', errorCode: 'mgmt-banned',
+    errorDetail: 'IP banned due to too many failed attempts. Try again in 29m10s',
+    // 确定性失败已转手动：宿主不再给自动重试时刻，客户端也不得再承诺「{time} 后可重试」。
+    manualOnly: true, nextAllowedAt: null,
+    credentialHints: [{ name: 'CPA_MANAGEMENT_KEY', configured: true }],
+  }]
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.10.0', latest: '0.10.0', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usageFixture }
+    if (endpoint === 'quota') return { ok: true, value: { providers: buildProviders(), serverTime: Date.now() } }
+    if (endpoint === 'quota-refresh') {
+      refreshCalls += 1
+      if (refreshCalls === 1) return { ok: true } // 手动连接放行
+      return { ok: false, error: 'refresh-cooldown', nextAllowedAt: Date.now() + 4000 } // 冷却拒绝
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text()
+  // 专属错误码本地化 + 上游原话（含剩余时间）+ 「自动重试已暂停」而非「{time} 后可重试」。
+  assert.match(text, /已被 CLIProxyAPI 暂时封禁/)
+  assert.match(text, /IP banned due to too many failed attempts\. Try again in 29m10s/)
+  assert.match(text, /自动重试已暂停，请手动重试/)
+  assert.doesNotMatch(text, /后可重试/)
+  // 刷新按钮在手动模式下语义变成「重试连接」。
+  assert.equal(renderer.findByTestId('quota-refresh-cpa').props.title, '重试连接')
+  renderer.findByTestId('quota-refresh-cpa').props.onClick()
+  await renderer.flush()
+  assert.equal(refreshCalls, 1)
+  // 冷却拒绝 → 本地化文案 + 剩余等待时刻，绝不显示 refresh-cooldown 原始码。
+  renderer.findByTestId('quota-refresh-cpa').props.onClick()
+  await renderer.flush()
+  const banner = renderer.findByTestId('quota-config-error').children.join('')
+  assert.match(banner, /操作过于频繁，请在 \d{2}:\d{2} 后再试/)
+  assert.doesNotMatch(banner, /refresh-cooldown/)
+})
+
 // ─── v0.27 子代理模型路由 ────────────────────────────────────────────────────
 
 function createSubagentRenderer(options = {}) {

@@ -3717,7 +3717,8 @@ test('quota throttle enforces single-flight, TTL, min interval, and capped expon
   assert.equal(intervalDenial.nextAllowedAt, t0 + 15_000)
   assert.equal(tight.attempt('p', t0 + 15_000).ok, true)
 
-  // 失败指数退避：30s 起步 ×2、封顶 60s（此实例配置），成功后清零。
+  // 失败指数退避（瞬时类）：30s 起步 ×2、封顶 60s（此实例配置），成功后清零。
+  // 确定性码（4xx/凭据类/坏载荷）走「手动模式」而非退避，见下一个用例。
   const backoff = createQuotaThrottle({ successTtlMs: 0, minIntervalMs: 0, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
   const b0 = 900_000
   assert.equal(backoff.attempt('a', b0).ok, true)
@@ -3730,14 +3731,74 @@ test('quota throttle enforces single-flight, TTL, min interval, and capped expon
   denial = backoff.attempt('a', b0 + 31_000)
   assert.equal(denial.nextAllowedAt, b0 + 90_000)
   assert.equal(backoff.attempt('a', b0 + 90_000).ok, true)
-  backoff.settle('a', { ok: false, code: 'http-status:403' }, b0 + 90_000)
+  backoff.settle('a', { ok: false, code: 'http-status:503' }, b0 + 90_000)
   denial = backoff.attempt('a', b0 + 91_000)
   assert.equal(denial.nextAllowedAt, b0 + 150_000)
-  assert.equal(backoff.view('a', b0 + 91_000).lastError, 'http-status:403')
+  assert.equal(backoff.view('a', b0 + 91_000).lastError, 'http-status:503')
+  assert.equal(backoff.view('a', b0 + 91_000).manualOnly, false) // 5xx 不锁：上游故障可能自愈
   assert.equal(backoff.attempt('a', b0 + 150_000).ok, true)
   backoff.settle('a', { ok: true, windows: [{ id: 'monthly', percent: 2 }] }, b0 + 150_000)
   assert.equal(backoff.view('a', b0 + 151_000).lastError, undefined)
   assert.deepEqual(backoff.view('a', b0 + 151_000).windows, [{ id: 'monthly', percent: 2 }])
+})
+
+test('quota throttle latches deterministic failures into manual-only and keeps manual retry available', () => {
+  const throttle = createQuotaThrottle({ successTtlMs: 60_000, minIntervalMs: 15_000, manualCooldownMs: 5_000, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
+  const t0 = 700_000
+
+  // 确定性失败（凭据被上游拒绝）→ 手动模式：自动路径一律拒绝，且不再报「下次自动重试时刻」。
+  assert.equal(throttle.attempt('p', t0).ok, true)
+  throttle.settle('p', { ok: false, code: 'credential-rejected', detail: 'Authentication Fails' }, t0)
+  const latched = throttle.attempt('p', t0 + 1)
+  assert.equal(latched.ok, false)
+  assert.equal(latched.reason, 'manual-only')
+  assert.equal(latched.nextAllowedAt, null)
+  const view = throttle.view('p', t0 + 1)
+  assert.equal(view.manualOnly, true)
+  assert.equal(view.nextAllowedAt, null)
+  assert.equal(view.lastError, 'credential-rejected')
+  // 时间流逝不会解锁（严格：只有手动成功才回归自动）。
+  assert.equal(throttle.attempt('p', t0 + 30 * 60_000).reason, 'manual-only')
+
+  // 手动重试：跳过手动模式与退避/TTL/间隔，但受不可绕过的手动冷却约束。
+  assert.equal(throttle.force('p', t0 + 2).ok, true)
+  assert.equal(throttle.attempt('p', t0 + 2, { manual: true }).ok, true)
+  // 手动重试又失败 → 重新锁定（不会因为「刚手动过」就放开自动）。
+  throttle.settle('p', { ok: false, code: 'credential-rejected' }, t0 + 3)
+  assert.equal(throttle.attempt('p', t0 + 4).reason, 'manual-only')
+  assert.equal(throttle.force('p', t0 + 4).reason, 'cooldown')      // 冷却内的第二次点击
+  assert.equal(throttle.force('p', t0 + 4).nextAllowedAt, t0 + 2 + 5_000)
+  // 再过冷却后手动成功 → 解锁并回归自动（TTL 仍按成功时刻计算）。
+  assert.equal(throttle.force('p', t0 + 10_000).ok, true)
+  assert.equal(throttle.attempt('p', t0 + 10_000, { manual: true }).ok, true)
+  throttle.settle('p', { ok: true, windows: [] }, t0 + 10_001)
+  const unlocked = throttle.view('p', t0 + 10_002)
+  assert.equal(unlocked.manualOnly, false)
+  assert.equal(unlocked.nextAllowedAt, t0 + 10_001 + 60_000)
+
+  // 用户写操作（保存凭据 / 改适配）清锁：那本身就是手动动作，且凭据类错误的「手动连接」
+  // 正是保存后立刻重试。
+  assert.equal(throttle.attempt('q', t0).ok, true)
+  throttle.settle('q', { ok: false, code: 'mgmt-banned', detail: 'IP banned due to too many failed attempts' }, t0)
+  assert.equal(throttle.view('q', t0 + 1).manualOnly, true)
+  assert.equal(throttle.resetGates('q').ok, true)
+  assert.equal(throttle.view('q', t0 + 1).manualOnly, false)
+  assert.equal(throttle.attempt('q', t0 + 1).ok, true)
+
+  // 矩阵抽样：4xx / 坏载荷 / 无订阅 / 管理面未启用都锁；瞬时类不锁。
+  const latchedCodes = ['http-status:401', 'upstream-status:403', 'bad-payload:shape', 'no-subscription', 'mgmt-disabled', 'host-not-pinned', 'transport-unavailable', 'no-base-url']
+  for (const [index, code] of latchedCodes.entries()) {
+    const provider = `latched-${index}`
+    throttle.attempt(provider, t0)
+    throttle.settle(provider, { ok: false, code }, t0)
+    assert.equal(throttle.view(provider, t0 + 1).manualOnly, true, `${code} 应转手动`)
+  }
+  for (const [index, code] of ['network', 'network-transient', 'timeout', 'http-status:500', 'upstream-error', 'cancelled'].entries()) {
+    const provider = `transient-${index}`
+    throttle.attempt(provider, t0)
+    throttle.settle(provider, { ok: false, code }, t0)
+    assert.equal(throttle.view(provider, t0 + 1).manualOnly, false, `${code} 不应转手动`)
+  }
 })
 
 test('fetchProviderUsage GETs the given endpoint with Bearer and reports stable error codes', async (t) => {
@@ -4074,16 +4135,18 @@ test('quota RPC reports unconfigured credentials and upstream errors with a retr
   }
   t.after(() => { https.get = originalGet })
 
-  // 凭据缺失：不打上游，状态 unconfigured + 稳定错误码。
+  // 凭据缺失：不打上游，状态 unconfigured + 稳定错误码；确定性失败 → 手动模式
+  // （没有「下次自动重试时刻」可报，客户端据 manualOnly 换文案）。
   const missingCred = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, null))
   await missingCred.handler('quota', {})
   for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
   const missingRow = (await missingCred.handler('quota', {})).value.providers.find((row) => row.provider === 'opencode-go')
   assert.equal(missingRow.status, 'unconfigured')
   assert.equal(missingRow.errorCode, 'credential-missing')
-  assert.equal(typeof missingRow.nextAllowedAt, 'number')
+  assert.equal(missingRow.manualOnly, true)
+  assert.equal(missingRow.nextAllowedAt, null)
 
-  // 上游 503：状态 error，退避给出未来重试时间。
+  // 上游 503（瞬时类）：状态 error，不锁手动模式，退避给出未来自动重试时间。
   upstreamStatus = 503
   const failing = createHost(quotaHostOverrides(dshHome, QUOTA_PROVIDERS, 'k'))
   await failing.handler('quota', {})
@@ -4093,6 +4156,7 @@ test('quota RPC reports unconfigured credentials and upstream errors with a retr
   // 状态码随错误码后缀透出（5xx 也算「具体原因」），上游原话进详情。
   assert.equal(errorRow.errorCode, 'http-status:503')
   assert.equal(errorRow.errorDetail, 'service temporarily unavailable')
+  assert.equal(errorRow.manualOnly, undefined)
   assert.ok(errorRow.nextAllowedAt > Date.now() - 1000)
 })
 
@@ -6088,6 +6152,94 @@ test('cliproxy RPC surfaces mgmt-disabled and host-not-pinned as stable error co
   assert.ok(requests.every((request) => !request.url.includes('moved.example.org'))) // 未钉住的域从未被打
 })
 
+test('cliproxy management key rejection counts as a credential error and keeps the fill-in entry', async (t) => {
+  // 回归：错管理密钥此前归 http-status:401（非凭据类）→ 行落 error 且 credentialHints 整块缺席，
+  // 界面上连一个能改回密钥的入口都没有。与其余 11 个 kind 对齐后，行回 unconfigured 并带线索。
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-badkey-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  const requests = stubHttpsRequest(t, () => ({ status: 401, payload: { error: 'invalid management key' } }))
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { cpa: { displayName: 'CPA', apiKeyEnv: 'CPA_PROXY_KEY', baseURL: 'https://cli.example.org' } } } : undefined) },
+      credentials: {
+        resolve: async () => ({ value: 'wrong-management-key' }),
+        describe: async () => ({ configured: true, source: 'file', writable: true }),
+      },
+    },
+  })
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'management call')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'unconfigured') // 不是锁死的 error 态
+  assert.equal(row.errorCode, 'credential-rejected')
+  assert.equal(row.errorDetail, 'invalid management key') // 上游原话照旧透出
+  assert.equal(row.credentialEntryKey, 'editManagement')
+  assert.deepEqual(row.credentialHints.map((hint) => [hint.name, hint.configured]), [
+    ['CPA_MANAGEMENT_KEY', true],
+    ['CLIPROXY_MANAGEMENT_KEY', true],
+  ])
+  assert.equal(row.manualOnly, true) // 确定性失败：自动重试停摆，只留手动
+  assert.ok(requests.every((request) => request.auth === 'Bearer wrong-management-key'))
+})
+
+test('cliproxy fail2ban ban gets its own error code and stops automatic retries', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-ban-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({
+    version: 1,
+    kinds: { cpa: 'cliproxy' },
+    allowedHosts: { cpa: ['cli.example.org'] },
+  }))
+  const bannedBody = { error: 'IP banned due to too many failed attempts. Try again in 29m10s' }
+  const requests = stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/v0/management/auth-files')) return { status: 403, payload: bannedBody }
+    return {}
+  })
+  const host = createHost({
+    env: { DSH_HOME: dshHome },
+    services: {
+      settings: { get: (ns) => (ns === 'llm-pi-ai' ? { providers: { cpa: { displayName: 'CPA', apiKeyEnv: 'CPA_PROXY_KEY', baseURL: 'https://cli.example.org' } } } : undefined) },
+      credentials: { resolve: async () => ({ value: 'mgmt-secret' }), describe: async () => ({ configured: true, source: 'file', writable: true }) },
+    },
+  })
+  await host.handler('quota', {})
+  await waitFor(() => requests.length >= 1, 'management call')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  const row = (await host.handler('quota', {})).value.providers.find((entry) => entry.provider === 'cpa')
+  assert.equal(row.status, 'error')
+  assert.equal(row.errorCode, 'mgmt-banned') // 专属码：不是「上游返回错误状态 (HTTP 403)」
+  assert.equal(row.errorDetail, 'IP banned due to too many failed attempts. Try again in 29m10s')
+  assert.equal(row.manualOnly, true)
+  assert.equal(row.nextAllowedAt, null)
+
+  // 封禁只影响管理面（真机实测 /v1 推理面不受影响）：不进「额度态不可服务」名单，
+  // 不因为管理面被封就把该渠道从子代理候选里摘掉；而同为 4xx 的其它错误照旧判不可服务。
+  assert.equal(quotaProviderUnusable({ refreshing: false, lastError: row.errorCode, windows: [] }), false)
+  assert.equal(quotaProviderUnusable({ refreshing: false, lastError: 'http-status:403', windows: [] }), true)
+
+  // 封禁期间自动快照不再打上游；手动重试仍放行——这就是「仅可手动连接报错的渠道」。
+  const before = requests.length
+  await host.handler('quota', {})
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(requests.length, before)
+  const refreshed = await host.handler('quota-refresh', { provider: 'cpa' })
+  assert.equal(refreshed.ok, true)
+  await waitFor(() => requests.length >= before + 1, 'manual retry hits upstream')
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve)) // 等本轮落定，否则冷却判定被单飞短路
+  // 紧接着的第二次手动点击命中冷却（冷却码由客户端本地化，不再有 refresh-backoff 分支）。
+  const cooled = await host.handler('quota-refresh', { provider: 'cpa' })
+  assert.equal(cooled.ok, false)
+  assert.equal(cooled.error, 'refresh-cooldown')
+  assert.equal(typeof cooled.nextAllowedAt, 'number')
+})
+
 test('cliproxy RPC names the failing account and upstream reason instead of one family code', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-cpa-reason-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -6145,15 +6297,22 @@ test('quota-config pins the cliproxy domain on save and clears it with the kind'
 })
 
 test('resetGates clears backoff and cooldown so a saved credential retries immediately', async (t) => {
-  // 单元口径：force 保留失败退避（防手动按钮打爆上游），resetGates 只由宿主写入口触发、连硬冷却一起清。
+  // 单元口径：force 只做单飞与手动冷却判定——手动重试不再被失败退避拦住（那正是「填错后
+  // 无法重试」的老毛病）；resetGates 由宿主写入口触发，连手动模式/冷却一起清，随后的自动
+  // 快照即可直接重试（保存凭据后的立即重试走的就是这条路）。
   const throttle = createQuotaThrottle({ successTtlMs: 0, minIntervalMs: 15_000, backoffBaseMs: 30_000, backoffMaxMs: 60_000 })
   const now = 900_000
   assert.equal(throttle.attempt('p', now).ok, true)
   throttle.settle('p', { ok: false, code: 'http-status:401' }, now)
-  assert.equal(throttle.force('p', now + 1).reason, 'backoff')          // 手动刷新仍要等退避
-  assert.equal(throttle.attempt('p', now + 1).reason, 'backoff')
+  assert.equal(throttle.attempt('p', now + 1).reason, 'manual-only')   // 确定性失败：自动停摆
+  assert.equal(throttle.force('p', now + 1).ok, true)                  // 手动不受退避/锁定阻拦
+  assert.equal(throttle.attempt('p', now + 1, { manual: true }).ok, true)
+  throttle.settle('p', { ok: false, code: 'http-status:401' }, now + 2)
+  assert.equal(throttle.force('p', now + 3).reason, 'cooldown')        // 手动有不可绕过的冷却
   throttle.resetGates('p')
-  assert.equal(throttle.attempt('p', now + 2).ok, true)                 // 换凭据后立即放行
+  assert.equal(throttle.view('p', now + 4).manualOnly, false)          // 写操作清锁
+  assert.equal(throttle.force('p', now + 4).ok, true)                  // 连硬冷却一并清
+  assert.equal(throttle.attempt('p', now + 4).ok, true)                // 换凭据后自动快照直接重试
 
   // 单飞在途不抢占，等本轮自然落定。
   assert.equal(throttle.attempt('q', now).ok, true)
@@ -6250,6 +6409,46 @@ test('fetchCliproxyUsage tolerates partial account failures and enforces the cal
   const okWindows = await fetchCliproxyUsage({ profile, config: context, credential, signal: undefined })
   assert.equal(budgetRequests.filter((request) => request.url.endsWith('/api-call')).length <= 12, true)
   assert.equal(okWindows.length <= 32, true)
+})
+
+test('fetchCliproxyUsage separates management-plane failures from account-level upstream failures', async (t) => {
+  // 管理面失败（我们的 key/封禁/管理面没开）与账号级上游失败（HTTP 200 信封里的 status_code）
+  // 是两回事：前者必须给出可行动的错误码，后者仍走 upstream-status。
+  const profile = { name: 'cpa', baseURL: 'https://cli.example.org' }
+  const context = { allowedHosts: { cpa: ['cli.example.org'] } }
+  const credential = 'Bearer mgmt-secret'
+
+  // 管理密钥被拒（401 invalid management key）→ 凭据类，与其余渠道同款。
+  stubHttpsRequest(t, () => ({ status: 401, payload: { error: 'invalid management key' } }))
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'credential-rejected' && error.detail === 'invalid management key')
+
+  // fail2ban 封禁（403）→ 专属码 + 上游原话（含剩余时间），绝不与「密钥错」混为一谈。
+  stubHttpsRequest(t, () => ({ status: 403, payload: { error: 'IP banned due to too many failed attempts. Try again in 29m10s' } }))
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'mgmt-banned'
+    && error.detail === 'IP banned due to too many failed attempts. Try again in 29m10s')
+
+  // 403 的另一语义（上游原文 remote management disabled）：仍归管理面未启用，不给重填密钥的错觉。
+  stubHttpsRequest(t, () => ({ status: 403, payload: { error: 'remote management disabled' } }))
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'mgmt-disabled' && error.detail === 'remote management disabled')
+
+  // api-call 途中管理密钥失效：不再是裸 upstream-status 家族码，而是凭据类（可重填）。
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: { files: [{ auth_index: 'idx-0', provider: 'codex', email: 'u0@example.com' }] } }
+    return { status: 401, payload: { error: 'invalid management key' } }
+  })
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'credential-rejected' && error.account === 'u0@example.com')
+
+  // 账号级上游 401（HTTP 200 信封）不受影响：仍是 upstream-status:401 + 账号 + 原话。
+  stubHttpsRequest(t, (request) => {
+    if (request.url.endsWith('/auth-files')) return { payload: { files: [{ auth_index: 'idx-0', provider: 'codex', email: 'u0@example.com' }] } }
+    return { payload: { status_code: 401, body: '{"error":{"message":"token expired"}}' } }
+  })
+  await assert.rejects(fetchCliproxyUsage({ profile, config: context, credential, signal: undefined }), (error) =>
+    quotaErrorCode(error) === 'upstream-status:401' && error.detail === 'token expired')
 })
 
 test('fetchCliproxyUsage keeps window ids unique when codex windows collide on the same bucket code', async (t) => {
@@ -6511,7 +6710,7 @@ test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps th
       credentials: { resolve: async (name) => {
         resolvedNames.push(name)
         return { value: 'session-cookie-value' }
-      } },
+      }, describe: async () => ({ configured: true, source: 'file', writable: true }) },
     },
   })
   const requests = stubHttpsRequest(t, (request) => {
@@ -6540,7 +6739,10 @@ test('xiaomi-token-plan-cn RPC auto-infers from the CN gateway host and keeps th
   assert.equal(byId.get('total_token').percent, 12)
   assert.equal(byId.get('total_token').used, 1357400000)
   assert.equal(byId.get('compensation_total_token').percent, 5)
-  assert.equal(row.credentialHints, undefined) // 已配置成功的行不带凭据窗口
+  // 凭据入口常驻：已配置成功的行同样带线索（密钥轮换/换账号才有地方改），只是没有错误码。
+  assert.ok(Array.isArray(row.credentialHints))
+  assert.deepEqual(row.credentialHints.map((hint) => [hint.name, hint.configured]), [['XIAOMI_MIMO_CONSOLE_COOKIE', true], ['MIMO_CONSOLE_COOKIE', true]])
+  assert.equal(row.manualOnly, undefined)
 
   // 手动适配不受 baseURL 端点检查拦截（查询平面固定，中转域/空 baseURL 也能凭 Cookie 查额度）。
   const relayHost = createHost(quotaHostOverrides(dshHome, { relay: { baseURL: '' } }, 'sid=abc'))
@@ -6575,8 +6777,8 @@ test('xiaomi token plan card stays fillable after the console cookie is rejected
   assert.equal(row.status, 'unconfigured') // 不是锁死的 error 态——凭据表单入口回来了
   assert.equal(row.errorCode, 'credential-rejected')
   assert.ok(Array.isArray(row.credentialHints) && row.credentialHints.length > 0)
-  // describe 只试 Cookie 线索名，绝不试探 tp- 推理密钥槽位。
-  assert.deepEqual(describedNames, ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'])
+  // describe 只试 Cookie 线索名，绝不试探 tp- 推理密钥槽位（每次快照各 describe 一轮，去重断言）。
+  assert.deepEqual([...new Set(describedNames)], ['XIAOMI_MIMO_CONSOLE_COOKIE', 'MIMO_CONSOLE_COOKIE'])
 })
 
 // ─── StepFun（v0.38）：余额（/v1/accounts）+ Step Plan 订阅（控制台 BFF）────────────────

@@ -670,6 +670,8 @@
        * 宿主下发的渠道事实（多候选链的失败端点 / CPA 的失败账号）与上游原话统一按
        * 「主文案 (HTTP 401 · api.z.ai · 账号 · 上游原话)」拼装，末尾附自动重试时刻。
        * 额度卡与圆环面板共用这一处，渠道之间不再各写一套提示。
+       * `manualOnly`（确定性失败已转手动）：自动重试已停，末尾改报「自动重试已暂停」——
+       * 此时宿主不会到点自动打上游，再显示「{time} 后可重试」就是假承诺。
        */
       function quotaErrorLine(row, translate) {
         const code = typeof row?.errorCode === 'string' ? row.errorCode : ''
@@ -682,9 +684,11 @@
           typeof row?.errorAccount === 'string' && row.errorAccount !== '' ? row.errorAccount : undefined,
           typeof row?.errorDetail === 'string' && row.errorDetail !== '' ? row.errorDetail : undefined,
         ].filter((part) => part !== undefined)
-        const retrySuffix = typeof row?.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
-          ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
-          : ''
+        const retrySuffix = row?.manualOnly === true
+          ? ` · ${translate('quota.manualOnly')}`
+          : typeof row?.nextAllowedAt === 'number' && row.nextAllowedAt > Date.now()
+            ? ` · ${translate('quota.retryAt', { time: formatClockTime(row.nextAllowedAt) })}`
+            : ''
         return `${quotaErrorMessage(family, translate)}${facts.length > 0 ? ` (${facts.join(' · ')})` : ''}${retrySuffix}`
       }
       /** 弹窗/卡片共用的横向进度条。默认已用口径（≥80% 警黄）；remaining 口径数值即剩余%，≤20% 才警黄。 */
@@ -4049,14 +4053,21 @@
             setConfigError(translate('quota.saveFailed', { error: 'network' }))
           }
         }
-        // 手动刷新：宿主清闸后立即 kick（单飞仍生效）；立刻拉一次快照，之后的落定接续
-        // （fetchQuotaSnapshot 的 settle 补拉）统一接管，这里不再自建补拉定时器。
+        // 手动重试/连接：确定性失败转手动模式后，这是唯一还能打上游的入口——宿主对它跳过手动模式
+        // 与退避/TTL/间隔，只保留不可绕过的手动冷却（refresh-cooldown 带 nextAllowedAt）；单飞仍生效。
+        // 落定接续（fetchQuotaSnapshot 的 settle 补拉）统一接管，这里不自建补拉定时器。
         const refreshProvider = async (providerName) => {
           setConfigError('')
           try {
             const res = await rpcCall('quota-refresh', { provider: providerName })
             if (res?.ok !== true) {
-              setConfigError(res?.error === 'unknown-provider' ? translate('quota.unknownProvider') : res?.error === 'not-adapted' ? translate('quota.unadapted') : translate('quota.saveFailed', { error: String(res?.error ?? '') }))
+              const code = String(res?.error ?? '')
+              // 冷却不是失败，是「刚刚已连接」：给本地化文案 + 剩余等待时间，绝不显示原始码。
+              if (code === 'refresh-cooldown' && typeof res?.nextAllowedAt === 'number') {
+                setConfigError(translate('quota.refresh.cooldown', { time: formatClockTime(res.nextAllowedAt) }))
+                return
+              }
+              setConfigError(code === 'unknown-provider' ? translate('quota.unknownProvider') : code === 'not-adapted' ? translate('quota.unadapted') : translate('quota.saveFailed', { error: code }))
               return
             }
             await fetchQuotaSnapshot({ scope: 'all' })
@@ -4579,8 +4590,8 @@
                         React.createElement('button', {
                           type: 'button',
                           'data-testid': `quota-refresh-${row.provider}`,
-                          'aria-label': translate('quota.refresh'),
-                          title: translate('quota.refresh'),
+                          'aria-label': row.manualOnly === true ? translate('quota.refresh.manual') : translate('quota.refresh'),
+                          title: row.manualOnly === true ? translate('quota.refresh.manual') : translate('quota.refresh'),
                           disabled: row.refreshing === true,
                           onClick: () => refreshProvider(row.provider),
                           style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '2px', border: 'none', background: 'transparent', color: row.refreshing === true ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-secondary)', cursor: row.refreshing === true ? 'default' : 'pointer', opacity: row.refreshing === true ? 0.45 : 1 },
@@ -4599,12 +4610,15 @@
                         onClick: () => setAdvancedOpen(isAdvanced ? null : row.provider),
                         style: { fontSize: '11px', lineHeight: '20px', padding: '2px 10px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
                       }, `${isAdvanced ? '▾' : '▸'} ${translate('quota.advanced')}`)),
-                    ...(isAdvanced && row.status === 'unconfigured' && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
+                    ...(isAdvanced && Array.isArray(row.credentialHints) && row.credentialHints.length > 0
                       ? (() => {
                           const editingCred = credEditor !== null && credEditor.provider === row.provider
                           const hints = row.credentialHints
                           const selectedName = hints.some((hint) => hint.name === credDraft.name) ? credDraft.name : (hints[0]?.name ?? '')
                           const selectedHint = hints.find((hint) => hint.name === selectedName)
+                          // 已保存的凭据同样要有入口（密钥轮换 / 换账号 / 填错想改）：宿主对已适配行
+                          // 一律下发 credentialHints，这里只按「有没有已配置的线索」切换入口文案。
+                          const anyConfigured = hints.some((hint) => hint.configured === true)
                           return [editingCred
                             ? React.createElement('div', { key: 'cred-editor', 'data-testid': `quota-cred-editor-${row.provider}`, style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' } },
                                 hints.length > 1
@@ -4640,7 +4654,10 @@
                                   onClick: () => openCredEditor(row),
                                   style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', ...fullRound(999), border: '1px solid var(--dsw-alias-brand-primary)', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
                                 // 宿主按 kind registry 下发凭据入口语义键；客户端只本地化，避免新增 kind 时复制分支。
-                                }, translate(`quota.credential.${typeof row.credentialEntryKey === 'string' && row.credentialEntryKey !== '' ? row.credentialEntryKey : 'edit'}`)))]
+                                // 已配置行统一显示「修改凭据（已配置）」——同一个编辑器，进去就能覆盖或清除。
+                                }, translate(anyConfigured
+                                  ? 'quota.credential.editExisting'
+                                  : `quota.credential.${typeof row.credentialEntryKey === 'string' && row.credentialEntryKey !== '' ? row.credentialEntryKey : 'edit'}`)))]
                         })()
                       : []),
                     ...resetCardNodes,

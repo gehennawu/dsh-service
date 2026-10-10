@@ -238,6 +238,11 @@ const QUOTA_MIN_INTERVAL_MS = 15000
 const QUOTA_MANUAL_COOLDOWN_MS = 5000
 const QUOTA_BACKOFF_BASE_MS = 30000
 const QUOTA_BACKOFF_MAX_MS = 15 * 60 * 1000
+// 确定性失败矩阵：自动重试不会改变结果，只会白打上游（CPA 还会累计 fail2ban 失败次数、把 IP 打进 30 分钟封禁）。
+// 命中即把该 provider 转入「手动模式」——此后只认手动重试这一条路，直到一次成功落定或用户改配置/凭据。
+// 表外（network / network-transient / timeout / 5xx / upstream-error / cancelled）是可能自愈的瞬时失败，
+// 保留指数退避自动重试。与 QUOTA_UNUSABLE_ERROR_RE 无关：这里只决定「还要不要自动打上游」。
+const QUOTA_MANUAL_ONLY_ERROR_RE = /^(credential-missing|credential-rejected|credentials-unavailable|no-base-url|no-subscription|host-not-pinned|mgmt-disabled|mgmt-banned|transport-unavailable|bad-payload|http-status:4\d\d|upstream-status:4\d\d)/i
 const QUOTA_CONFIG_STAT_TTL_MS = 5000
 const QUOTA_MAX_CONCURRENCY = 4
 const MAX_QUOTA_RESPONSE_BYTES = 1024 * 1024
@@ -2241,8 +2246,9 @@ async function requestQuotaJson(endpoint, options = {}) {
 }
 
 // 每 provider 节流状态机（内存态，重启清零）。一切来源共用同一判定，优先序：
-// 单飞去重 > 失败指数退避（30s×2 封顶 15min）> 成功 TTL 60s > 最小上游间隔 15s（与 attempt()
-// 判定序一致）；now 由调用方注入，测试可推进假时钟。
+// 单飞去重 > 确定性失败后的手动模式 > 失败指数退避（30s×2 封顶 15min）> 成功 TTL 60s >
+// 最小上游间隔 15s（与 attempt() 判定序一致）；手动模式只由「一次成功落定」或用户写操作
+// （resetGates）解除，中途不会因时间流逝自动恢复。now 由调用方注入，测试可推进假时钟。
 function createQuotaThrottle(options = {}) {
   const successTtlMs = options.successTtlMs ?? QUOTA_SUCCESS_TTL_MS
   const minIntervalMs = options.minIntervalMs ?? QUOTA_MIN_INTERVAL_MS
@@ -2253,7 +2259,7 @@ function createQuotaThrottle(options = {}) {
   const entryOf = (provider) => {
     let entry = entries.get(provider)
     if (entry === undefined) {
-      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, lastManualAt: 0, backoffUntil: 0, failures: 0, inflight: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined, lastErrorEndpoint: undefined, lastErrorAccount: undefined }
+      entry = { lastSuccessAt: 0, lastUpstreamAt: 0, lastManualAt: 0, backoffUntil: 0, failures: 0, inflight: false, manualOnly: false, windows: undefined, fetchedAt: 0, lastError: undefined, lastErrorDetail: undefined, lastErrorEndpoint: undefined, lastErrorAccount: undefined }
       entries.set(provider, entry)
     }
     return entry
@@ -2273,7 +2279,7 @@ function createQuotaThrottle(options = {}) {
         lastErrorAccount: entry.lastErrorAccount,
       }
     },
-    /** 只读快照：缓存窗口、是否刷新中、下次允许发起上游的时间（null=进行中未知）。 */
+    /** 只读快照：缓存窗口、是否刷新中、是否已转手动、下次允许自动发起上游的时间（null=进行中/手动模式）。 */
     view(provider, now = Date.now()) {
       const entry = entryOf(provider)
       return {
@@ -2284,21 +2290,28 @@ function createQuotaThrottle(options = {}) {
         lastErrorDetail: entry.lastErrorDetail,
         lastErrorEndpoint: entry.lastErrorEndpoint,
         lastErrorAccount: entry.lastErrorAccount,
-        nextAllowedAt: entry.inflight
+        // 手动模式：自动路径一律拒发，故没有「下次自动重试时刻」可报（客户端据此换文案）。
+        manualOnly: entry.manualOnly === true,
+        nextAllowedAt: entry.inflight || entry.manualOnly
           ? null
           : Math.max(entry.backoffUntil, entry.lastUpstreamAt + minIntervalMs, entry.lastSuccessAt + successTtlMs),
       }
     },
-    /** 申请一次上游调用。允许则置单飞并返回 ok；拒绝时给出稳定原因与 nextAllowedAt（优先序：单飞 > 退避 > 成功 TTL > 最小间隔）。 */
-    attempt(provider, now = Date.now()) {
+    /** 申请一次上游调用。允许则置单飞并返回 ok；拒绝时给出稳定原因与 nextAllowedAt
+     * （优先序：单飞 > 手动模式 > 退避 > 成功 TTL > 最小间隔）。
+     * options.manual=true 是「用户手动连接」：跳过手动模式与三道时间闸，只受 force() 的冷却约束。 */
+    attempt(provider, now = Date.now(), options = {}) {
       const entry = entryOf(provider)
       if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
-      if (now < entry.backoffUntil) return { ok: false, reason: 'backoff', nextAllowedAt: entry.backoffUntil }
-      if (now - entry.lastSuccessAt < successTtlMs) {
-        return { ok: false, reason: 'fresh', nextAllowedAt: entry.lastSuccessAt + successTtlMs }
-      }
-      if (entry.lastUpstreamAt > 0 && now - entry.lastUpstreamAt < minIntervalMs) {
-        return { ok: false, reason: 'interval', nextAllowedAt: entry.lastUpstreamAt + minIntervalMs }
+      if (options.manual !== true) {
+        if (entry.manualOnly) return { ok: false, reason: 'manual-only', nextAllowedAt: null }
+        if (now < entry.backoffUntil) return { ok: false, reason: 'backoff', nextAllowedAt: entry.backoffUntil }
+        if (now - entry.lastSuccessAt < successTtlMs) {
+          return { ok: false, reason: 'fresh', nextAllowedAt: entry.lastSuccessAt + successTtlMs }
+        }
+        if (entry.lastUpstreamAt > 0 && now - entry.lastUpstreamAt < minIntervalMs) {
+          return { ok: false, reason: 'interval', nextAllowedAt: entry.lastUpstreamAt + minIntervalMs }
+        }
       }
       entry.inflight = true
       entry.lastUpstreamAt = now
@@ -2312,6 +2325,8 @@ function createQuotaThrottle(options = {}) {
         entry.lastSuccessAt = now
         entry.failures = 0
         entry.backoffUntil = 0
+        // 唯一解锁点（除 resetGates 的用户写操作外）：一次成功落定即回归自动模式。
+        entry.manualOnly = false
         entry.windows = outcome.windows ?? []
         entry.fetchedAt = now
         entry.lastError = undefined
@@ -2324,27 +2339,29 @@ function createQuotaThrottle(options = {}) {
       const delay = Math.min(backoffBaseMs * 2 ** (entry.failures - 1), backoffMaxMs)
       entry.backoffUntil = now + delay
       entry.lastError = typeof outcome.code === 'string' ? outcome.code : 'unknown'
+      // 确定性失败（换凭据/改配置才可能恢复）→ 转手动模式：自动快照不再重打上游。
+      // 瞬时失败保持自动退避，等下一轮快照接续。
+      if (QUOTA_MANUAL_ONLY_ERROR_RE.test(entry.lastError)) entry.manualOnly = true
       entry.lastErrorDetail = typeof outcome.detail === 'string' && outcome.detail !== '' ? outcome.detail : undefined
       // 渠道特有事实（多候选链的失败端点 / CPA 的失败账号）：只作附注，与错误码、上游原话分开存。
       entry.lastErrorEndpoint = sanitizeQuotaErrorDetail(outcome.endpoint)
       entry.lastErrorAccount = sanitizeQuotaErrorDetail(outcome.account)
     },
-    /** 手动刷新：允许绕过成功 TTL，但保留失败退避，并有不可绕过的硬冷却；单飞仍优先。 */
+    /** 手动重试的准入判定：只受单飞与不可绕过的硬冷却约束——手动模式与失败退避都由调用方的
+     * attempt({ manual: true }) 跳过（用户明确要求「仅可手动连接报错的渠道」，手动不该比自动更受限）。 */
     force(provider, now = Date.now()) {
       const entry = entryOf(provider)
       if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
-      if (now < entry.backoffUntil) return { ok: false, reason: 'backoff', nextAllowedAt: entry.backoffUntil }
       if (entry.lastManualAt > 0 && now - entry.lastManualAt < manualCooldownMs) {
         return { ok: false, reason: 'cooldown', nextAllowedAt: entry.lastManualAt + manualCooldownMs }
       }
       entry.lastManualAt = now
-      entry.lastSuccessAt = 0
-      entry.lastUpstreamAt = 0
       return { ok: true }
     },
     // 凭据/适配变更后的闸门重置（保存 key/Cookie、改适配类型时调用）：旧失败是旧配置造成的，
     // 填完就该立刻重试，不傻等最长 15min 的指数退避（GUI 反馈点名）；单飞在途不抢占。
-    // 与 force() 的区别：本方法只由宿主写入口触发，可以连硬冷却一并清掉。
+    // 这也是手动模式唯一的「非成功解锁」路径——保存凭据/改适配本身就是用户的手动动作，
+    // 且凭据类错误的「手动连接」正是保存后立刻重试。与 force() 的区别：连硬冷却一并清掉。
     resetGates(provider) {
       const entry = entryOf(provider)
       if (entry.inflight) return { ok: false, reason: 'inflight', nextAllowedAt: null }
@@ -2353,6 +2370,7 @@ function createQuotaThrottle(options = {}) {
       entry.lastManualAt = 0
       entry.lastUpstreamAt = 0
       entry.lastSuccessAt = 0
+      entry.manualOnly = false
       return { ok: true }
     },
     prune(activeProviders) {
@@ -5678,8 +5696,10 @@ function apply(ctx, featureConfig) {
   }
   // 远端额度：后台补拉一次。index.js 只提供节流/生命周期/受控传输 context；所有方言、
   // 端点、凭据策略与编排都通过同一 Adapter interface 执行，不再区分 parser/fetcher 形状。
-  const kickQuotaRefresh = (profile, adapter, config) => {
-    const decision = quotaThrottle.attempt(profile.name)
+  // options.manual=true 只由 quota-refresh（手动重试/连接）传入：跳过手动模式与三道时间闸，
+  // 是「确定性失败转手动」之后唯一还能打上游的路径。
+  const kickQuotaRefresh = (profile, adapter, config, options = {}) => {
+    const decision = quotaThrottle.attempt(profile.name, Date.now(), { manual: options.manual === true })
     if (!decision.ok) return
     const queued = enqueueQuotaWork(async () => {
       const controller = new AbortController()
