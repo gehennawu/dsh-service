@@ -43,6 +43,18 @@ test('README image references exist and screenshots ship in the npm package', ()
   assert.ok(packageJson.files.includes('screenshots'), 'package files must include screenshots used by the READMEs')
 })
 
+// 安装章节里的精确版本号（`包名@x.y.z`）是「当前 npm 最新版」的展示副本，必须等于 package.json
+// 的版本：发布轮漏改这两处，照抄安装示例的用户就会装到上一版。把同步点变成可执行断言
+// （发布流程的同步点清单见 docs/internals/release.md 第 1 步）。
+test('README install examples pin the version that package.json ships', () => {
+  const version = JSON.parse(read('package.json')).version
+  for (const path of ['README.md', 'README.en.md']) {
+    const pins = [...read(path).matchAll(/@gehennawu\/dsh-service@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/g)].map((match) => match[1])
+    assert.ok(pins.length >= 3, `${path} must show the exact install version in both install sections and the FAQ`)
+    assert.deepEqual([...new Set(pins)], [version], `${path} pins @gehennawu/dsh-service@${pins.join('/')} but package.json ships ${version}`)
+  }
+})
+
 test('published browser entry stays at the DSH-standard package-root client.js', async () => {
   const packageJson = JSON.parse(read('package.json'))
   assert.equal(packageJson.exports['./client'], './client.js')
