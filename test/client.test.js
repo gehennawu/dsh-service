@@ -1217,11 +1217,13 @@ test('service panel puts versions first and renders switchable provider-prefixed
   assert.equal(xAxis.props.style.bottom, '0')
   assert.equal(bars.length, 7)
   assert.equal(bars.some((bar) => Number.parseFloat(bar.props.style.height) > 112), true)
-  assert.equal(refreshes, 1)
+  // 进入统计页的边沿会补一次（挂载那次 + 进页那次），故此处只断言「已经补过」，不看确切次数。
+  assert.ok(refreshes >= 1, 'entering the usage page folds at least once')
   assert.match(renderer.text('settings.section'), /输入 tok.*缓存命中率.*73\.2%/)
+  const beforeManualRefresh = refreshes
   await renderer.findButton('刷新统计').props.onClick()
   await renderer.flush()
-  assert.equal(refreshes, 2)
+  assert.equal(refreshes, beforeManualRefresh + 1, 'the manual click issues exactly one extra fold')
 })
 
 test('usage partial failures stay visible globally, explain stale rows in zh/en, and clear after recovery', async () => {
@@ -1239,6 +1241,7 @@ test('usage partial failures stay visible globally, explain stale rows in zh/en,
   }
   const cleanUsage = { ...usageWithFailure, indexedSessions: 2, successfulSessions: 2, failedSessions: [] }
   let refreshes = 0
+  let allowCleanRefresh = false
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-partial' } }
@@ -1246,7 +1249,10 @@ test('usage partial failures stay visible globally, explain stale rows in zh/en,
     if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 2, activeAgents: 0, activeJobs: 0 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: usageWithFailure }
-    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: cleanUsage } }
+    // 挂载/进页的自动补拉（新口径）一律回同一份带失败的载荷，让「跳过会话告警」断言测的是
+    // 载荷本身而不是「恰好在 5 分钟窗口内所以没刷新」；只有测试显式放行后（模拟用户点「刷新统计」）
+    // 才回干净数据。用开关而不是调用计数：自动补拉的出现次数会随触发边沿调整，计数断言很脆。
+    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: allowCleanRefresh ? cleanUsage : usageWithFailure } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
 
@@ -1273,9 +1279,12 @@ test('usage partial failures stay visible globally, explain stale rows in zh/en,
   assert.match(renderer.text('settings.section'), /legacy-v0.*Session format migration was refused/)
   assert.match(renderer.text('settings.section'), /Retained stale statistics \(included in totals\)/)
 
+  // 放行干净数据后手动点刷新：告警才清除。
+  allowCleanRefresh = true
+  const beforeManual = refreshes
   renderer.findByTestId('usage-refresh').props.onClick()
   await renderer.flush()
-  assert.equal(refreshes, 1)
+  assert.equal(refreshes, beforeManual + 1, 'the manual click issues exactly one fold')
   assert.equal(renderer.hasTest('usage-failure-warning'), false, 'a clean manual refresh clears the warning')
   assert.equal(renderer.hasTest('usage-statistics-region'), true)
 })
@@ -1298,6 +1307,7 @@ test('usage all-failed payload shows warning without indexed sessions and recove
     failedSessions: [],
   }
   let refreshes = 0
+  let allowRecovery = false
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-all-failed' } }
@@ -1305,7 +1315,10 @@ test('usage all-failed payload shows warning without indexed sessions and recove
     if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: failedUsage }
-    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: recoveredUsage } }
+    // 挂载即无条件补拉（新口径）：首轮回同一份全失败载荷，让「全失败仍可见」测的是载荷本身；
+    // 手动点「刷新统计」才回恢复后的数据。
+    // 同上一用例：自动补拉一律回全失败载荷，只有测试放行（模拟手动刷新）才回恢复后的数据。
+    if (endpoint === 'usage-refresh') { refreshes += 1; return { ok: true, value: allowRecovery ? recoveredUsage : failedUsage } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
 
@@ -1324,9 +1337,11 @@ test('usage all-failed payload shows warning without indexed sessions and recove
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /broken-session.*Session could not be opened or read.*No cached data, excluded from totals/)
 
+  allowRecovery = true
+  const beforeManual = refreshes
   renderer.findButton('Refresh usage').props.onClick()
   await renderer.flush()
-  assert.equal(refreshes, 1)
+  assert.equal(refreshes, beforeManual + 1, 'the manual click issues exactly one fold')
   assert.equal(renderer.hasTest('usage-failure-warning'), false)
 })
 
@@ -14735,5 +14750,308 @@ test('holiday calendar settings are removed entirely; the generated table only d
     assert.equal(configCalls.filter((payload) => payload?.section === 'quotaHolidays').length, 0)
   } finally {
     Date.now = realNow
+  }
+})
+
+test('usage syncs unconditionally on mount, on entering the page, and only on real edges afterwards', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const dayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  // 固定在一个「本地当天已过 4 分钟」的时刻：索引 updatedAt 也在 4 分钟前，
+  // 即**落在旧实现的 5 分钟新鲜度窗口内**——这正是用户「不手动刷新就没有今天统计」的场景。
+  //
+  // 时刻必须**相对真实当天**构造：渲染器算「今日」用的是 `new Date()`（真实时钟，不受
+  // 本用例覆盖的 Date.now 影响），若把夹具日期写死，用例只在当天恰好等于那个日子时通过。
+  const now = new Date()
+  now.setHours(14, 30, 0, 0)
+  const realNow = Date.now
+  Date.now = () => now.getTime()
+  let usageCalls = 0
+  let refreshCalls = 0
+  let todayInput = 1000
+  const buildUsage = () => {
+    const totals = { steps: 1, inputTokens: todayInput, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+    return {
+      updatedAt: now.getTime() - 4 * 60 * 1000,
+      indexedSessions: 1,
+      successfulSessions: 1,
+      failedSessions: [],
+      totals,
+      projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+      errors: { models: [], tools: [] },
+      days: { [dayKey(now)]: { totals, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals, models: [] }] } },
+    }
+  }
+  try {
+    // 最小 document 桩：本用例要驱动 visibilitychange 边沿（主渲染器环境默认没有 document）。
+    const visListeners = new Set()
+    globalThis.document = {
+      visibilityState: 'visible',
+      addEventListener(type, handler) { if (type === 'visibilitychange') visListeners.add(handler) },
+      removeEventListener(type, handler) { if (type === 'visibilitychange') visListeners.delete(handler) },
+    }
+    const fireVisibility = (state) => { globalThis.document.visibilityState = state; for (const fn of [...visListeners]) fn() }
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-edges' } }
+      if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+      if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'usage') { usageCalls += 1; return { ok: true, value: buildUsage() } }
+      if (endpoint === 'usage-refresh') {
+        refreshCalls += 1
+        todayInput += 1000 // 每次折叠都把今天的用量往前推一档
+        return { ok: true, value: buildUsage() }
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+
+    // 挂载即无条件补拉，不因「索引比 5 分钟新」而跳过——旧的 300000 门槛在此必然短路。
+    assert.equal(usageCalls, 1, 'mount reads the cached snapshot once')
+    assert.equal(refreshCalls, 1, 'mount MUST fold once even though the index is under five minutes old')
+
+    await renderer.findButton('模型统计').props.onClick()
+    await renderer.flush()
+    assert.ok(refreshCalls >= 2, 'entering the usage page folds again')
+    assert.match(renderer.text('settings.section'), /输入 token\s*3K/, 'the freshly folded value is rendered')
+
+    // 关键：**没有固定周期**——统计页不再挂任何分钟级轮询定时器。
+    // 排除既有的 5s 健康轮询（本功能之外的固定存在），只看统计自己有没有排分钟级轮询。
+    assert.equal(
+      renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length,
+      1,
+      'only the day-boundary timer may be parked while the usage page is open (no polling chain)',
+    )
+
+    // 时间流逝（推进健康轮询）不会带来任何额外折叠：这正是不再周期性重折的保证。
+    const afterEnter = refreshCalls
+    await renderer.advanceTimer(5000)
+    await renderer.flush()
+    await renderer.advanceTimer(5000)
+    await renderer.flush()
+    assert.equal(refreshCalls, afterEnter, 'idling on the usage page must not refold on a timer')
+
+    // 边沿①：从后台切回前台（visibilitychange → 可见）补一次。
+    assert.equal(visListeners.size, 1, 'the usage page subscribes to visibilitychange')
+    fireVisibility('hidden')
+    await renderer.flush()
+    assert.equal(refreshCalls, afterEnter, 'becoming hidden must not fold')
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(refreshCalls, afterEnter + 1, 'becoming visible again folds once')
+
+    // 边沿②：跨本地零点。排的是「到下一个本地 0:00:01」的定时器，触发后补一次。
+    const beforeMidnight = refreshCalls
+    const midnightDelays = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    assert.equal(midnightDelays.length, 1, 'exactly one day-boundary timer is parked')
+    // 2026-10-11 14:30 本地 → 次日 0:00:01 = 9h30m01s = 34201000ms
+    assert.equal(midnightDelays[0], 34201000, 'the timer is aligned to the next local midnight (+1s grace)')
+    await renderer.advanceTimer(midnightDelays[0])
+    await renderer.flush()
+    assert.equal(refreshCalls, beforeMidnight + 1, 'crossing local midnight folds once')
+    // 触发后重排下一天：不会退化成周期轮询。
+    const nextMidnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    assert.equal(nextMidnight.length, 1, 'the day-boundary timer re-arms for the following day')
+
+    // 切走统计页 → 断链：零点定时器与可见性监听一并撤掉。
+    await renderer.findButton('概览').props.onClick()
+    await renderer.flush()
+    assert.equal(
+      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000).length,
+      0,
+      'leaving the usage page must withdraw the day-boundary timer',
+    )
+    const afterLeaving = refreshCalls
+    await renderer.advanceTimer(5000)
+    await renderer.flush()
+    assert.equal(refreshCalls, afterLeaving, 'no fold is issued once the usage page is left')
+
+    // 回到统计页 → 进页边沿补一次，并重新挂上零点定时器。
+    await renderer.findButton('模型统计').props.onClick()
+    await renderer.flush()
+    assert.equal(refreshCalls, afterLeaving + 1, 'returning to the usage page folds once')
+    assert.equal(
+      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000).length,
+      1,
+      'the day-boundary timer is re-armed on return',
+    )
+
+    renderer.unmount('settings.section')
+    assert.equal(renderer.pendingTimerDelays().length, 0, 'unmounting leaves no timer behind')
+    assert.equal(visListeners.size, 0, 'unmounting withdraws the visibility listener')
+  } finally {
+    Date.now = realNow
+    delete globalThis.document
+  }
+})
+
+test('usage does not refold on any timer while the page idles, but a midnight crossing still lands', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const dayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  const realNow = Date.now
+  // 23:00 打开面板（索引新鲜），随后跨过本地零点：新的一天还没有任何桶。
+  //
+  // 两个日期桶**相对真实当天**推导：渲染器取「今日」用 `new Date()`（真实时钟），
+  // 所以「新的一天」必须是真实当天，否则夹具与渲染器各按一套日期，用例会随日历翻页失效。
+  const realToday = new Date()
+  realToday.setHours(0, 0, 0, 0)
+  const dayTwo = realToday                                      // 真实当天（刷新后才出现）
+  const dayOne = new Date(realToday.getTime() - 24 * 60 * 60 * 1000) // 前一天
+  let nowMs = new Date(realToday.getTime() + 23 * 60 * 60 * 1000).getTime() // 当天 23:00
+  Date.now = () => nowMs
+  let refreshCalls = 0
+  const totalsFor = (input) => ({ steps: 1, inputTokens: input, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 })
+  const usageFor = () => ({
+    updatedAt: nowMs,
+    indexedSessions: 1,
+    successfulSessions: 1,
+    failedSessions: [],
+    totals: totalsFor(1000),
+    projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+    errors: { models: [], tools: [] },
+    days: {
+      [dayKey(dayOne)]: { totals: totalsFor(1000), projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: totalsFor(1000), models: [] }] },
+      // 只有当宿主被重新折叠之后，新的一天才会出现在载荷里。
+      ...(refreshCalls > 0 ? { [dayKey(dayTwo)]: { totals: totalsFor(500), projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: totalsFor(500), models: [] }] } } : {}),
+    },
+  })
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-midnight' } }
+      if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+      if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'usage') return { ok: true, value: usageFor() }
+      if (endpoint === 'usage-refresh') { refreshCalls += 1; return { ok: true, value: usageFor() } }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('模型统计').props.onClick()
+    await renderer.flush()
+    assert.equal(renderer.hasTest('usage-statistics-region'), true)
+
+    // 敞着不动：**没有任何分钟级轮询定时器**被挂上——唯一的非健康定时器是跨零点那个，
+    // 量级 > 1 小时。旧 60s 自续链会在这里挂一个 60000 的定时器，本断言即红。
+    const parked = renderer.pendingTimerDelays().filter((delay) => delay !== 5000)
+    assert.equal(parked.length, 1, 'exactly one non-health timer is parked')
+    assert.ok(parked[0] > 3600000, `the parked timer must be the day boundary, not a polling chain (got ${parked[0]})`)
+
+    // 推进健康轮询不得带来任何额外折叠。
+    const settled = refreshCalls
+    await renderer.advanceTimer(5000)
+    await renderer.flush()
+    await renderer.advanceTimer(5000)
+    await renderer.flush()
+    assert.equal(refreshCalls, settled, 'idling must not refold on a timer')
+
+    // 跨过零点并触发那天唯一一个零点定时器。
+    nowMs = new Date(realToday.getTime() + 24 * 60 * 60 * 1000 + 2000).getTime()
+    const midnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    assert.equal(midnight.length, 1, 'the day-boundary timer is parked')
+    await renderer.advanceTimer(midnight[0])
+    await renderer.flush()
+    assert.equal(refreshCalls, settled + 1, 'the midnight edge folds once')
+    // 新一天的桶已经在载荷里 → 「今日」卡不再是旧日期的数字。
+    assert.match(renderer.text('settings.section'), /输入 token\s*500/, 'the new local day shows up without a manual refresh')
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test('a manual usage refresh shares the busy flag and never overlaps an automatic fold', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const dayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  // 与另两个用例同法：日期相对真实当天推导（渲染器取「今日」用真实时钟）。
+  const now = new Date()
+  now.setHours(9, 0, 0, 0)
+  const realNow = Date.now
+  Date.now = () => now.getTime()
+  const totals = { steps: 1, inputTokens: 1000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
+  const usage = {
+    updatedAt: now.getTime(),
+    indexedSessions: 1,
+    successfulSessions: 1,
+    failedSessions: [],
+    totals,
+    projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+    errors: { models: [], tools: [] },
+    days: { [dayKey(now)]: { totals, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals, models: [] }] } },
+  }
+  let refreshCalls = 0
+  let holdFolds = false
+  const pending = []
+  const visListeners = new Set()
+  globalThis.document = {
+    visibilityState: 'visible',
+    addEventListener(type, handler) { if (type === 'visibilitychange') visListeners.add(handler) },
+    removeEventListener(type, handler) { if (type === 'visibilitychange') visListeners.delete(handler) },
+  }
+  const fireVisibility = (state) => { globalThis.document.visibilityState = state; for (const fn of [...visListeners]) fn() }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-busy' } }
+      if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+      if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'usage') return { ok: true, value: usage }
+      if (endpoint === 'usage-refresh') {
+        refreshCalls += 1
+        // 由测试决定是否挂起：自动（挂载/进页/边沿）那几次立即兑现，
+        // 测试用 holdFolds 让「正在飞的那一次」挂起，以观察忙碌态与串行闸。
+        if (!holdFolds) return { ok: true, value: usage }
+        return new Promise((resolve) => pending.push(() => resolve({ ok: true, value: usage })))
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    await renderer.findButton('模型统计').props.onClick()
+    await renderer.flush()
+    const autoFolds = refreshCalls
+    assert.ok(autoFolds >= 1, 'the automatic folds happened')
+
+    // 点在飞的刷新：按钮进入「刷新中…」且被禁用，重复点击不会并发第二次折叠。
+    holdFolds = true
+    const refreshButton = renderer.findByTestId('usage-refresh')
+    refreshButton.props.onClick()
+    await renderer.flush()
+    assert.equal(refreshCalls, autoFolds + 1, 'the manual refresh is issued once')
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新中…', 'the busy label is shown while the fold is in flight')
+    assert.equal(renderer.findByTestId('usage-refresh').props.disabled, true, 'the button is disabled while in flight')
+    renderer.findByTestId('usage-refresh').props.onClick()
+    await renderer.flush()
+    assert.equal(refreshCalls, autoFolds + 1, 'a second click while in flight must not start another fold')
+
+    while (pending.length > 0) pending.shift()()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新统计', 'the busy label clears once the fold settles')
+
+    // 自动（边沿）同步同样必须点亮「刷新中…」：折叠可长达数十秒，静默等待看起来就像没刷新。
+    assert.equal(visListeners.size, 1, 'visibilitychange is subscribed')
+    const beforeEdge = refreshCalls
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(refreshCalls, beforeEdge + 1, 'the visibility edge issued a fold')
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新中…', 'the automatic fold also shows the busy label')
+    assert.equal(renderer.findByTestId('usage-refresh').props.disabled, true)
+    while (pending.length > 0) pending.shift()()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新统计', 'the label clears after the automatic fold settles')
+  } finally {
+    Date.now = realNow
+    delete globalThis.document
   }
 })

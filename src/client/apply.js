@@ -4715,6 +4715,17 @@
       // 不是布尔值——同组失败关掉后不再提示，出现新的失败会话则指纹变化、告警重新出现。
       const USAGE_FAILURE_DISMISS_KEY = 'dsh-service-usage-failures-dismissed'
 
+      // 统计同步的触发**边沿**（不再是固定周期）：三处边沿各管一类「数据确实变了」的场景，
+      // 配合挂载时那一次无条件补拉，覆盖「重开面板 / 跨本地零点 / 从后台切回」全部主场景。
+      //
+      // 为什么放弃 60s 自续链：宿主 `usage-refresh` 对「有历史代(v3)的会话」会整份重读
+      // （持久化层 read(offset) 不做 seek），本机实测活跃使用时单次折叠约 30s、而空闲时
+      // 0.3s；若语料一直在动，60s 周期会让宿主长期按高占空比重折。改成边沿后，
+      // 「一直敞着且语料在动」不再周期性烧 CPU，而三个真正会改变今天数字的时刻仍然刷新。
+      // 越过零点后再等 1s 触发，避开「本地时钟刚好落在 0:00:00.000」时宿主仍按前一日
+      // 分桶的边界竞态。
+      const USAGE_MIDNIGHT_GRACE_MS = 1000
+
       function ServicePanel() {
         const translate = useTranslation()
         const { value: features } = useFeatures()
@@ -4777,6 +4788,12 @@
         const [heatScope, setHeatScope] = useState('day')
         const [usageProject, setUsageProject] = useState('all')
         const usageDataCacheRef = useRef(null)
+        // 挂载同步与统计页的三处触发边沿共用同一个 sync（后者经此 ref 取用，避免把函数写进
+        // 依赖数组导致 effect 每轮重建定时器/监听）。null = 面板未挂载或未启用。
+        const usageSyncRef = useRef(null)
+        // 串行闸：折叠可长达数十秒，边沿触发与手动刷新若并发，既浪费一次全量折叠，
+        // 也会让两边的 usageBusy 互相提前清掉。同一时刻只放行一个。
+        const usageInflightRef = useRef(false)
         const [modelErrorsOpen, setModelErrorsOpen] = useState(false)
         const [toolErrorsOpen, setToolErrorsOpen] = useState(false)
         const [modelsOpen, setModelsOpen] = useState(false)
@@ -4955,29 +4972,122 @@
         useEffect(() => {
           try { setUsageFailureDismissed(localStorage.getItem(USAGE_FAILURE_DISMISS_KEY)) } catch (_) { setUsageFailureDismissed(null) }
         }, [])
+        // 用量挂载同步：读取持久缓存后**无条件**补一次增量折叠（面板挂载即执行，与当前停在
+        // 哪一页无关——概览的模型/工具报错行也取自同一份 usage）。
+        //
+        // 为什么此前会「不自动刷新」：初版把补拉挂了 5 分钟新鲜度门槛
+        // （`updatedAt > 0 && Date.now() - updatedAt <= 300000` 就 return），**整块只跑一次**。
+        // 于是①在 5 分钟窗口内重开面板不补拉、②面板敞着永不刷新（跨本地零点后「今日」卡切到
+        // 尚无桶的新一天也照样空着），只有点「刷新统计」才补——用户看到的正是这个现象。
+        // 门槛原本的省流动机由「同步只在挂载与统计页的三个边沿上发生」承担，见紧随其后的 Effect。
+        //
+        // 与手动刷新共用 usageBusy：冷折叠本机实测约 30s（纯读仅 32ms），不显示「刷新中…」
+        // 的话静默的 30 秒看起来就像没反应。
         useEffect(() => {
           if (!featureEnabled('modelUsage')) return () => {}
           let active = true
-          rpcCall('usage', usageRequestPayload).then(async (res) => {
-            if (!active) return
-            if (!res || res.ok === false) { setUsageError(translate('usage.error')); return }
-            setUsageError(null)
-            setUsageFailureDetails(false)
-            setUsage(res.value)
-            if (res.value.updatedAt > 0 && Date.now() - res.value.updatedAt <= 300000) return
+          // interactive=true 只决定「失败要不要显式报错」；自动同步与手动刷新**都**点亮
+          // usageBusy——自动那次同样可能触发数十秒冷折叠，用户需要看到反馈。
+          const sync = async (interactive) => {
+            if (usageInflightRef.current) return
+            usageInflightRef.current = true
+            setUsageBusy(true)
             try {
-              const refreshed = await rpcCall('usage-refresh', usageRequestPayload)
-              if (active && refreshed && refreshed.ok) {
+              const base = await rpcCall('usage', usageRequestPayload)
+              if (!active) return
+              if (!base || base.ok === false) {
+                // 读缓存失败：只有用户主动触发的那一次把错误态显式化；
+                // 后台轮询保持既有画面，避免一次瞬时抖动把统计区换成错误行。
+                if (interactive) setUsageError(translate('usage.error'))
+                return
+              }
+              setUsageError(null)
+              setUsageFailureDetails(false)
+              setUsage(base.value)
+              // 补拉失败**永不**降级：缓存已经渲染出来了，刷新只是锦上添花
+              // （这也是改动前的口径——refresh 异常被静默吞掉），失败留给下一轮再试。
+              const refreshed = await rpcCall('usage-refresh', usageRequestPayload).catch(() => null)
+              if (!active) return
+              if (refreshed && refreshed.ok) {
                 setUsageError(null)
                 setUsageFailureDetails(false)
                 setUsage(refreshed.value)
               }
-            } catch (_) {}
-          }).catch(() => {
-            if (active) setUsageError(translate('usage.error'))
-          })
-          return () => { active = false }
+            } catch (_) {
+              if (active && interactive) setUsageError(translate('usage.error'))
+            } finally {
+              usageInflightRef.current = false
+              if (active) setUsageBusy(false)
+            }
+          }
+          usageSyncRef.current = sync
+          // 首轮：面板挂载即无条件补一次（不再看 updatedAt 新鲜度），失败要让错误态可见。
+          sync(true)
+          return () => {
+            active = false
+            usageSyncRef.current = null
+          }
         }, [features.modelUsage])
+        // 三处触发边沿——都只在**统计页可见**时生效，全部走 ctx.timer / 事件监听并返回
+        // disposer（卸载/切页即断链，测试桩里不会留真实定时器）：
+        //   ① 跨本地零点：`ctx.timer.timeout` 精确排到「本地次日 0 点 + 1s」。
+        //      这是「今日」卡切到新一天的唯一时刻；旧实现在这里会一直空着。
+        //      用「距下个零点的毫秒数」而非固定周期：一天只醒一次，跨夏令时也不会偏。
+        //   ② 页面从后台切回前台：`visibilitychange` → 可见时补一次。用户合上笔记本、
+        //      切走标签页期间用量照涨，回来这一个边沿正好补上（相当于「重开面板」的等价物）。
+        //   ③ 每次进入统计页：`activeTab` 变 'usage' 时补一次（切走再切回的边沿；
+        //      首次挂载那一次由上面的挂载同步负责，此处会再确认一次，代价可接受）。
+        //
+        // 为什么按页门控：一次折叠本机实测 0.3s（空闲）～30s（有历史代且语料在动），
+        // 用户停在额度/维护页时白烧没有意义。
+        useEffect(() => {
+          if (!featureEnabled('modelUsage')) return () => {}
+          // 标签被功能关闭时 visiblePrimaryTab 会回退到 overview，此处同口径只看 activeTab。
+          if (activeTab !== 'usage') return () => {}
+          let active = true
+          let cancelMidnight = null
+          const run = () => {
+            if (!active) return
+            const sync = usageSyncRef.current
+            if (sync !== null && sync !== undefined) {
+              try { sync(false) } catch (_) {}
+            }
+          }
+          // ① 排到下一个本地零点之后（凌晨 0:00:01），触发后再排下一天。
+          const scheduleMidnight = () => {
+            if (!active) return
+            // 用 `new Date(Date.now())` 而不是 `new Date()`：前者既可被测试替换的时钟驱动
+            // （仓库既有用例统一覆盖 Date.now），又仍按**本地时区**取年月日分量。
+            const now = new Date(Date.now())
+            const nextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, USAGE_MIDNIGHT_GRACE_MS / 1000, 0)
+            const delay = Math.max(1000, nextDay.getTime() - now.getTime())
+            cancelMidnight = ctx.timer.timeout(() => {
+              if (!active) return
+              run()
+              scheduleMidnight()
+            }, delay)
+          }
+          scheduleMidnight()
+          // ② 可见性边沿：只在「重新变可见」时补，隐藏时不做任何事。
+          const onVisibilityChange = () => {
+            if (!active) return
+            let hidden = false
+            try { hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden' } catch (_) {}
+            if (!hidden) run()
+          }
+          if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', onVisibilityChange)
+          }
+          // ③ 进入统计页的边沿。
+          run()
+          return () => {
+            active = false
+            if (cancelMidnight !== null && cancelMidnight !== undefined) cancelMidnight()
+            if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+              document.removeEventListener('visibilitychange', onVisibilityChange)
+            }
+          }
+        }, [features.modelUsage, activeTab])
         useEffect(() => {
           if (!featureEnabled('backupMaintenance')) return () => {}
           let active = true
@@ -5066,6 +5176,10 @@
         }
 
         const refreshUsage = async () => {
+          // 与自动同步共用串行闸与 usageBusy：自动那轮在飞时点按钮只是把「刷新中…」再确认一次，
+          // 不会并发发起第二次全量折叠（冷折叠可长达 30s，并发纯属浪费）。
+          if (usageInflightRef.current) return
+          usageInflightRef.current = true
           setUsageBusy(true)
           setUsageError(null)
           try {
@@ -5075,6 +5189,7 @@
           } catch (_) {
             setUsageError(translate('usage.error'))
           } finally {
+            usageInflightRef.current = false
             setUsageBusy(false)
           }
         }
