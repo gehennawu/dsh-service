@@ -21,6 +21,15 @@ test('provider selection guards drafts and reuses theme-aware channel icons', ()
   assert.match(source, /id: 'model-routes-refresh'/)
   assert.equal((source.match(/id: 'model-add'/g) ?? []).length, 1)
 })
+test('model names show IDs on hover and capability controls use stable horizontal widths', () => {
+  assert.match(source, /className: 'dsh-model-row-name', title: item.id/)
+  assert.match(source, /item.name\?\.trim\(\) \|\| item.id/)
+  assert.match(source, /REASONING_LEVELS = \['minimal', 'low', 'medium', 'high', 'xhigh', 'max'\]/)
+  assert.match(source, /gridTemplateColumns: 'minmax\(0, 2fr\) minmax\(0, 1fr\)'/)
+  assert.match(source, /flex: '1 1 0'/)
+  assert.match(source, /border: '1px solid ' \+ \(checked/)
+  assert.match(source, /margin: '36px 0 12px'/)
+})
 test('homepage copy is localized in both languages', () => {
   const locale = readFileSync(new URL('../src/client/model-config-i18n.js', import.meta.url), 'utf8')
   for (const key of ['homeTitle', 'homeDescription', 'providers', 'customProviders', 'refreshProviders', 'modelList', 'noModels']) {

@@ -17,7 +17,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
   const modelFields = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
   const routeFields = ['displayName', 'api', 'baseURL']
   const numbers = ['contextWindow', 'maxTokens', 'defaultContextWindow', 'defaultMaxTokens', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'requestImagePixelBudget', 'requestImageMaxBytes']
-  const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
   const capacity = (text) => {
     if (!String(text).trim()) return undefined
@@ -228,7 +228,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
   function ModalityButton({ text, title, checked, disabled = false, onClick }) {
     return el('label', {
       title,
-      style: { display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '8px 12px', ...fullRound('8px'), border: '1px solid var(--dsw-alias-border-l2)', background: checked ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)', cursor: disabled ? 'default' : 'pointer', fontSize: '13px' },
+      style: { display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '6px 8px', ...fullRound('8px'), border: '1px solid var(--dsw-alias-border-l2)', background: checked ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)', cursor: disabled ? 'default' : 'pointer', fontSize: '13px' },
     }, el('input', { type: 'checkbox', 'aria-label': title, checked, disabled, onChange: onClick, style: { margin: 0, width: '16px', height: '16px', accentColor: 'var(--dsw-alias-button-primary-fill)' } }), text)
   }
 
@@ -365,7 +365,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
         )
       ),
 
-      el('div', { style: { ...actions, margin: '16px 0 12px' } },
+      el('div', { style: { ...actions, margin: '36px 0 12px' } },
         el('span', { style: { fontSize: '13px' } }, tr('models.smart.title')),
         el('button', {
           type: 'button', role: 'switch', 'aria-checked': enabled, 'data-testid': 'model-smart-toggle', 'aria-label': tr('models.smart.title'),
@@ -421,7 +421,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       ),
 
       el('section', { style: { margin: '18px 0' }, 'data-testid': 'model-advanced-options' },
-      el('div', { style: { display: 'grid', gap: '18px', marginBottom: '18px' } },
+      el('div', { 'data-testid': 'model-modalities-row', style: { display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '8px', marginBottom: '18px' } },
         el('div', null,
           el('label', { style: labelStyle }, tr('models.wb.edit.inputModalities') || '输入模态'),
           // Hidden/Accessible select to honor test automation
@@ -451,20 +451,22 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           el('option', { value: 'false' }, 'false'),
           el('option', { value: 'map' }, 'map')
         ),
-        el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'stretch', margin: '6px 0' } },
+        el('div', { className: 'dsh-model-efforts', 'data-testid': 'model-efforts-row', style: { display: 'flex', flexWrap: 'nowrap', gap: '2px', alignItems: 'stretch', margin: '6px 0', minWidth: 0 } },
+          el('style', null, `.dsh-model-efforts { container-type:inline-size; } .dsh-model-efforts .dsh-model-effort-label { width:100%; box-sizing:border-box; justify-content:center; font-size:clamp(6px, 2.7cqw, 14px); gap:clamp(1px, .4cqw, 4px); padding:8px 1px; } .dsh-model-efforts .dsh-model-effort-check { width:clamp(8px, 2.9cqw, 16px); height:clamp(8px, 2.9cqw, 16px); }`),
           REASONING_LEVELS.map((lvl) => {
             const checked = isEffortChecked(lvl)
-            return el('span', { key: lvl, style: { display: 'flex', alignItems: 'center', gap: '4px' } },
+            return el('span', { key: lvl, style: { display: 'flex', alignItems: 'stretch', minWidth: 0, flex: '1 1 0' } },
               el('label', {
                 'data-testid': 'models-effort-' + lvl,
+                className: 'dsh-model-effort-label',
                 style: {
-                  display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '8px 12px', ...fullRound('8px'), cursor: 'pointer',
-                  border: checked ? '1.5px solid var(--dsh-svc-brand, #3b82f6)' : '1px solid var(--dsw-alias-border-l2)',
+                  display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap', ...fullRound('6px'), cursor: 'pointer',
+                  border: '1px solid ' + (checked ? 'var(--dsh-svc-brand, #3b82f6)' : 'var(--dsw-alias-border-l2)'),
                   background: checked ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)',
                   color: checked ? 'var(--dsw-alias-label-primary)' : 'var(--dsh-svc-text-muted)',
                   fontWeight: checked ? 600 : 400,
                 },
-              }, el('input', { type: 'checkbox', checked, 'aria-label': lvl, onChange: () => toggleEffortLevel(lvl), style: { margin: 0, width: '16px', height: '16px', accentColor: 'var(--dsw-alias-button-primary-fill)' } }), lvl),
+              }, el('input', { type: 'checkbox', className: 'dsh-model-effort-check', checked, 'aria-label': lvl, onChange: () => toggleEffortLevel(lvl), style: { margin: 0, flexShrink: 0, accentColor: 'var(--dsw-alias-button-primary-fill)' } }), lvl),
               checked ? el('input', {
                 style: { display: 'none' },
                 'aria-label': lvl + ' wire',
@@ -683,7 +685,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
         ...models.filter((x) => (x.id + ' ' + (x.name ?? '')).toLowerCase().includes(search.toLowerCase())).map((item, index) =>
           el('div', { key: item.id + ':' + (item.api ?? index), style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '10px', alignItems: 'center', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-3)', marginBottom: '6px' } },
             el('div', { className: 'dsh-model-row-copy', style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' } },
-              el('code', { className: 'dsh-model-row-name', title: item.id, style: { fontWeight: 700, maxWidth: '100%', '--model-name-length': String(Math.max(item.id.length, 1)) } }, item.id),
+              el('span', { className: 'dsh-model-row-name', title: item.id, style: { fontWeight: 700, maxWidth: '100%', '--model-name-length': String(Math.max((item.name?.trim() || item.id).length, 1)) } }, item.name?.trim() || item.id),
               el('div', { className: 'dsh-model-row-capabilities' },
               Array.isArray(item.input) && item.input.includes('image') ? el('span', { style: svcBadgeStyle('neutral') }, tr('models.smart.imageBadge')) : null,
               item.reasoningEfforts !== undefined ? el('span', { style: svcBadgeStyle('neutral') }, tr('models.smart.reasoningBadge')) : null,
