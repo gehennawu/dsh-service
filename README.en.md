@@ -1,392 +1,155 @@
-<div align="center">
+# 🛠️ dsh-service
 
 [中文](./README.md)
 
-# 🛠️ dsh-service
+An operations plugin for DeepSeek Harness (DSH) Web: restart and upgrades, health diagnostics, model usage and quota lookup, model configuration, backups, skills and session management.
 
-<p align="center">
-  <strong>A service-control &amp; operations plugin for DeepSeek Harness (DSH) Web.</strong><br>
-  <em>DeepSeek Harness (DSH) Web 服务控制与运维插件。</em>
-</p>
-
-[![Version](https://img.shields.io/badge/version-2.0.8-3b82f6.svg?style=flat-square)](package.json)
-[![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.2.1--alpha.2-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
-[![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
-[![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
+[![Version](https://img.shields.io/badge/version-2.0.8-3b82f6.svg)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%200.2.1--alpha.2-6366f1.svg)](https://github.com/deepseek-ai/deepseek-harness)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-
-<p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-automatic-restart">Automatic restart</a> •
-  <a href="#-platform-support">Platform support</a> •
-  <a href="#-security-design">Security design</a> •
-  <a href="#-faq">FAQ</a> •
-  <a href="#-contributing">Contributing</a> •
-  <a href="#-license">License</a>
-</p>
-
----
-
-</div>
-
-A service-control and operations plugin for DSH Web: safe restart, version management and one-click upgrade, health diagnostics, model-usage statistics, quota lookup, backup management, task notifications, skills management, session management, and Linux file-permission maintenance.
 
 ![Overview](./screenshots/overview_en.png)
 
-## 📑 Contents
+[Installation](#installation) · [Features](#features) · [Automatic restart](#automatic-restart) · [Important notes](#important-notes) · [FAQ](#faq)
 
-- [🚀 Features](#-features)
-  - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
-  - [Quota lookup](#quota-lookup) · [Model configuration](#model-configuration) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
-  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Model provider icons](#model-provider-icons) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
-- [🏗️ Architecture](#-architecture)
-- [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
-- [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
+## Installation
 
-## 🚀 Features
+Requires Node.js ≥22 and DSH `>=0.1.1-rc.2 <0.2.1-alpha.3`. **Linux + Docker** is the primary verified environment; compatibility on other platforms is not guaranteed.
 
-The Settings "Service Control" panel has a seven-page navigation: **Overview · Model stats · Quota lookup · Model configuration · Health · Maintenance · Configuration**; "Model configuration" contains Providers & models / Subagent routing, "Maintenance" aggregates four subpages — Sessions · Skills · Backups · Restart — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
+### Plugin manager (recommended)
 
-Under **Plugins → Plugin configuration**, thirteen host-level switches: **Health diagnostics, Model statistics, Quota lookup, Model configuration, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Model provider icons, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
+1. Open DSH **Plugins → Add plugin**.
+2. Enter `@gehennawu/dsh-service@2.0.8`, choose an installation source and install.
+3. Restart DSH, reload the page and open **Service Control** in Settings. On Desktop, quit and reopen the application.
 
-![Plugin configuration](./screenshots/plugin-config_en.png)
+You can also enter the GitHub URL `https://github.com/gehennawu/dsh-service` or a local plugin directory.
 
-### Overview
+### Command line
 
-- Status summary (error → warning → info → normal aggregation with a status dot) → actionable items (only when present) → version and runtime → metrics grid → recent errors (rendered only when non-empty, collapsed by default)
-- Aggregation rules: any health/diagnostics/backup/statistics/quota/restart failure is error; permission issues and non-advisory diagnostic warnings are warning; available updates and no backups yet are info (high quota-window usage only shows as a progress bar on the quota page, and a likely manual terminal launch — a standing environment fact — appears only in the health checks and in the restart/upgrade confirmations; neither surfaces as an overview reminder)
+```sh
+dsh plugin --profile web add @gehennawu/dsh-service@2.0.8
+```
 
-### Maintenance and Configuration pages
+For GitHub or local development:
 
-![Maintenance page](./screenshots/maintenance_en.png)
+```sh
+dsh plugin --profile web add github:gehennawu/dsh-service
+dsh plugin --profile web add link:/path/to/dsh-service
+```
 
-![Configuration page](./screenshots/configuration_en.png)
+Restart your existing DSH process and reload the page after installation; do not start an additional Web instance.
 
-- Maintenance groups Sessions, Skills, Backups, and Restart; subagents have a separate subpage under Model configuration, with no duplicate entry; it remembers the most recent subpage and falls back to an available item when a feature is disabled
-- Configuration groups feature switches, task notifications, and settings nav tabs; switches are grouped and apply live, Notifications stays visible but disabled when that feature is off, and Settings Nav supports manual reordering (drag / arrows) and visibility management of all tabs in the settings dialog sidebar, persisted to the server-side unified config file `$DSH_HOME/dsh-service-config.json` (cross-device sync, auto-fetched on startup with a local-cache fallback), applying live (the Service Control tab is permanently locked visible to prevent lockout); quota card order and visibility use the same config (the `quotaCards` section, fetched when the quota page opens)
-- Unified plugin config file: lightweight per-feature preferences converge into a single `$DSH_HOME/dsh-service-config.json` (atomic write, `0600`), partitioned by feature section — updating or clearing one section never touches others; large caches (usage index etc.) and encrypted credentials stay out of this file
+> Pin an exact version: pnpm's release-age policy may select an older version when installing without a version or using `@latest`.
+
+## Features
+
+Settings → Service Control contains **Overview, Model stats, Quota lookup, Model configuration, Health, Maintenance and Configuration**. Feature switches apply immediately; Restart, Quota lookup and Sessions can have optional settings-sidebar shortcuts.
 
 ### Version and updates
 
-- Shows the current DSH and plugin versions, linking to GitHub Releases
-- Automatically checks npm **stable + preview** (latest / next dist-tags)
-- "What's new" sits right after the current version number and is always available: it opens the notes for **the version you are running**; when a new version exists, the status text ("New version: x.y.z") is clickable and expands **the new version's** release info. Either way the host fetches the body from the GitHub Releases API and the client renders it in place (plain Markdown — no iframe, no navigation), with the version number, publish date and a pre-release tag; a missing Release or a failed read each get their own message; clicking anywhere outside the version card or pressing Escape closes it. Both rows lay their version number and "What's new" button out on **one shared set of columns**, with the version number right-aligned so that the gap before the button is fixed — they line up **regardless of version-number length**, since a longer version only widens the whole column instead of knocking one row out of place; narrow containers (phones and narrow settings panels) keep the same alignment — the version number absorbs the row's slack and right-aligns, so both rows still share their column edges
-- One-click upgrade with automatic restart; when no process manager is detected, it confirms the consequences first, keeps running, and shows manual-restart instructions
-- Between the upgrade landing and the process restart (common in a manual-launch environment) the version row reads "Installed X — restart to take effect" and the upgrade button is withdrawn; reopening the panel or refreshing the page keeps that state until the process is restarted
-
-### Safe restart
-
-![Safe restart](./screenshots/restart_en.png)
-
-- Detects active agents, background jobs, and terminals before restart; lists them and requires explicit confirmation
-- `/restart` also works in conversations; automatically refuses while work is running
-- Probes the new process after restart and reloads the page; manual reload offered after 60 seconds. A restart triggered by `/restart` in a conversation reloads the same way: the page records the process identity at load time and compares `instanceId` on reconnect, reloading as soon as the new process is up
-- Optional "Restart" entry in the settings left navigation (off by default), sharing the same confirmation flow as the "Maintenance → Restart" subpage
-- A suspected manual terminal launch warns that nothing will bring the process back and gets a yellow caution in Health
-
-### Health diagnostics
-
-![Health diagnostics](./screenshots/health-diagnostics_en.png)
-
-- Uptime, memory, session count, active agents, and background jobs; a "Process and runtime" card shows platform, architecture, and Node version
-- Full diagnostics: session storage, workspace registry, backup storage, tar availability, file permissions, runtime environment, Node version, and the **usage index** — rendered as a two-line check list (name + status dot / detail) with abnormal rows locally emphasized
-- **Usage index**: reports how many sessions are indexed, when the index was last updated, and how many sessions failed to index (a failed fold silently undercounts usage). Failed sessions are partial-success, so they are reported as informational rather than a warning and do not surface as an overview attention item; an index that has never been built (the Model statistics page has not been opened yet) is informational; the whole check is omitted while the Model usage feature is off (the host only skips refreshing the index in that state, so reporting would be stale and misleading)
-- **Notification permission**: the diagnostics page appends a browser-side check after the host checks — a blocked or not-yet-granted system-notification permission both mean "notifications will not fire", with a pointer to restore it; an unsupported browser is informational. The row stays inside the diagnostics page: it never enters overview attention items or lights the ⚠ (using notifications is a user choice), and it is not rendered at all while Task notifications is off
-- **Plugin health checks**: checks for anomalies only (the official plugin page already provides the full inventory and toggles, so no duplicate list here) — a failed plugin or one waiting on dependencies marks the check as error/warning, while fresh pending/loading fibers receive a short startup grace period; disposed or unknown states are explicit informational rows and do not become warnings. Affected plugins are listed below the check list with clipped, redacted failure text and missing deps; failed plugins can be reloaded behind a two-step confirmation (only entries the host confirmed as failed); manually disabled plugins (built-in or custom) never count as an anomaly
-- File-permission deep scan and repair (two-step confirmation) behind a collapsed "Permissions & repair" section
-- Suspected manual launch → yellow "no restart assurance" caution; no backups is informational only and never lights the ⚠
+View DSH and plugin versions, read release notes, check stable and preview releases, and upgrade in one click. Upgrades require a restart; manually launched environments keep running and show instructions. On Desktop, update through the application's plugin manager.
 
 ### Model statistics
 
 ![Model statistics](./screenshots/model-usage_en.png)
 
-- 7-day stacked bar chart of input / output / cache tokens; filter by project, hover for exact values; legend and refresh live in a unified region header; an accessible text summary accompanies the chart. The hover tooltip has seven lines: the date plus input/output/cache-hit detail, then **total tokens, successful model steps, and cache hit rate**; the hit rate is the host's per-day weighted value (ratios must not be summed across buckets)
-- Per-model horizontal bars with a "Today / Last 7 days / All time" toggle
-- A **daily usage heatmap calendar** at the bottom of the card: every day in the index (up to 20 weeks, columns aligned to Monday), four intensity steps by single-day peak, hover for that day's details; follows the project filter. The chart covers only the last 7 days, so this adds the long-range view
-- The heatmap header can switch to an **hourly punch card**: 7 rows (Monday–Sunday) × 24 columns (00–23), each cell the tokens for that slot, answering "when am I busiest". It is the same hourly buckets re-folded along a different axis, with no new persisted fields. The square-cell layout reserves space for weekday labels and gaps, with internal horizontal scrolling on narrow screens
-- **Indexed usage is kept permanently**: deleting a session or a project folder never subtracts history, so totals and the heatmap are always the complete history since the index was built; an index version bump preserves old summaries until readable sessions are fully rebuilt successfully; failures retain history and are retried
-- When a **project folder no longer exists**, that project disappears from the project filter, yet its usage still counts toward the "All projects" totals, day buckets, and model breakdown
-- Last-48-hour model/tool errors (collapsed by default, rendered only when present)
-- **Opening the panel syncs automatically — no manual refresh needed**: the mount sync always runs once (it renders the persisted cache first, then folds the delta in the background); after that it only syncs on **real edges** — crossing local midnight (the "Today" card lands on the new day), returning from a background tab, and each time you enter the usage page. Idling on the page arms no polling at all, and other pages pay none of that cost. The refresh button reads "Refreshing…" during a sync (about 0.3 s when idle, but tens of seconds when historical-format sessions exist and the corpus is changing)
-- Steps whose provider reports no token usage are excluded
-- A session that cannot be read, migrated, or parsed no longer blocks other sessions. An all-projects warning shows successful/skipped counts and expandable session IDs, error categories, and safe summaries. Previously indexed data is retained and marked stale; first-time failures contribute nothing and are retried on the next refresh. Only global errors, such as an unavailable service, failed session listing, or failed index write, fail the entire refresh. The warning can be dismissed (remembered locally), and silencing it mutes only that same failure set: a newly skipped session or a changed error category brings it back, so dismissing once never hides a new problem for good
+- View input, output and cache tokens, cache hit rates and errors by project, model and date.
+- Includes a 7-day trend, daily heatmap and hourly distribution; entering the page syncs automatically, with manual refresh available.
+- Indexed history remains after deleting sessions or projects. Usage not reported by a provider cannot be counted; unreadable sessions are reported and retried on the next sync.
 
 ### Quota lookup
 
 ![Quota lookup](./screenshots/quota-lookup_en.png)
 
-- Provider cards keep the existing window presentation (label + percent / independent bar / reset countdown); **configuration** (credentials, kind switching, manual reset entries) is collapsed per card by default
-- Card **order and visibility**: "Reorder & visibility" on the quota page expands a management list where cards can be dragged or nudged with ↑/↓, and a toggle hides cards you rarely need (hiding only affects display, not querying); the config shares one backend with the Settings Nav tabs, stored in the `quotaCards` section of the unified server-side config `$DSH_HOME/dsh-service-config.json` (cross-device sync with a local-cache fallback, sections never affect each other)
-- A **quota ring** in the conversation composer follows the current session's model provider and shows the tightest budget window (<80% green, ≥80% amber); clicking opens a detail panel that becomes a centered overlay on narrow screens
-- Built-in adaptations:
+View balances, plan windows and reset times; the composer quota entry follows the current model's provider. Cards can be reordered, hidden or manually assigned an adapter type.
 
-| Provider | Data source |
-| --- | --- |
-| DeepSeek Platform | Official balance + peak/off-peak ribbon and countdown (peak = Mon–Fri 09:00–12:00 and 14:00–18:00 UTC+8, **excluding Chinese public holidays**; weekends and public holidays are off-peak all day) |
-| Zhipu GLM Coding Plan | Official endpoint: 5-hour rolling / weekly / monthly MCP windows + peak/off-peak ribbon and countdown (peak = Mon–Fri 14:00–18:00 UTC+8) |
-| OpenCode Go | `{baseURL}/usage` (built-in channel without an explicit baseURL uses the registry default `https://opencode.ai/zen/go/v1`) |
-| OpenRouter | Credits used % |
-| Kimi / SiliconFlow | CNY balance |
-| StepFun Balance | Official `GET /v1/accounts` (API key, com/ai dual domains) |
-| StepFun Step Plan | Console BFF subscription quota (Oasis-Token console session; 5-hour/weekly windows vs Credit pool auto-detected) |
-| Xiaomi MiMo Token Plan | Console-origin plan quota (web session cookie) |
-| Command Code (command-goat) | Official account quota plane `api.commandcode.ai/alpha/*` (same key reused: balance + period spend + plan + 5-hour/weekly windows) |
-| CLIProxyAPI deployment | Official remaining quota of each OAuth upstream account |
+Supports DeepSeek, Zhipu GLM Coding Plan, OpenCode Go, OpenRouter, Kimi, SiliconFlow, StepFun balance / Step Plan, Xiaomi MiMo Token Plan, Command Code and CLIProxyAPI.
 
-- Credentials go into the DSH credential store (`$DSH_HOME/.credentials.yaml`, hot-effective): an API key, the CPA management key, the Xiaomi console cookie, or the StepFun Step Plan console token (Oasis-Token; the `Oasis-Webid` is derived from the token automatically — no manual entry); the Command Code quota plane reuses the inference key, so no extra credential is needed
-- **Credentials can be changed at any time**: every adapted card keeps a credential entry in its **Config** area — unconfigured rows show the per-channel wording, configured rows show "Edit credential (configured)", where the stored value can be overwritten (key rotation, another account, a typo) or cleared; the value is only ever sent with the save request and is never echoed back
-- Anti-rate-limit pacing: 60 s result cache, exponential backoff for transient network errors (30 s doubling, capped at 15 min); **deterministic failures switch to manual** — credential errors, 4xx, expired plans, management API disabled, unexpected response shapes and anything else only a config change can fix stop the automatic retries (the error line then reads "Auto-retry paused — retry manually"), and only a successful manual reconnect via the refresh button (5 s cooldown) returns the channel to automatic mode; querying is fully manual — a snapshot is fetched when you open the quota page, expand the ring, or hit refresh, and the client never arms a periodic poll (upstream throttling still lives entirely in the host)
-- **CLIProxyAPI management-plane bans get their own notice**: five consecutive auth failures from one IP ban that IP for 30 minutes on the management plane; while banned the card reads "Temporarily banned by CLIProxyAPI" plus the upstream message (including the remaining time). That state offers no credential form (the key is fine) — wait for the ban to expire, or change the host's egress IP, then hit "Retry connection". The ban covers the management plane only; model inference through that CPA is unaffected
-- CLIProxyAPI: when an account's live query fails, its last cached snapshot windows are shown with a "cached" badge; snapshot windows whose reset time has already passed (the window they described has ended) are dropped, avoiding the illusion of quota stuck on yesterday
-- Failures state their real reason: cards and the ring show "error copy (HTTP status · failing endpoint · failing account · upstream message) · next automatic retry" — a wrong key, an unpaid balance, rate limiting, and a moved endpoint each read differently instead of one generic notice; an upstream 401/403 is classified as "credential rejected by upstream" and the card keeps its credential form available, and business error codes inside an HTTP 200 envelope are classified the same way (auth failure → credential rejected, expired plan → no active subscription, vendor-side failure → upstream service error) instead of being reported as "unexpected response format"; rows switched to manual mode end with "Auto-retry paused — retry manually" instead of a retry time
-- API keys are resolved only inside the host process; the browser receives normalized window data only; unadapted providers are never requested
+Enter or change credentials in each card's **Config** area: API keys for regular providers, the **management key** for CLIProxyAPI, a console cookie for Xiaomi, and `Oasis-Token` for Step Plan. Command Code reuses its inference key. Stored credentials are never echoed back.
 
-### Backup management
-
-![Backup management](./screenshots/backup-management_en.png)
-
-- Backup records use light two-line rows (name on the first line, size · time on the second, separator layout; same style as the session list)
-
-- Creates `.tar.gz` archives of sessions, configuration, and plugin-profile manifests; sessions are snapshotted through the persistence layer's stable-read seam (active-agent writes no longer fail creation), and creation shows one continuous phase progress bar (copy / pack / verify / publish, step counter 1/4–4/4, real percentage during copy)
-- **DSH version at backup time**: the archive filename carries the DSH version running when the backup was taken (`dsh-backup-YYYYMMDD-HHmmss-dsh0.1.7-rc.1.tar.gz`), and `meta/backup.json` inside the archive records the DSH version, plugin version, and creation time; both the panel row and the restore preflight show it, so you can tell which version a snapshot came from (restoring across a downgrade cannot read newer session formats). Archives written by older plugin versions have no version segment: they still list and restore normally, they simply show no version line, and import accepts filenames both with and without the segment
-- Export download / import upload / delete (two-step confirmation); unlimited, never auto-pruned; imported archives must pass the same integrity inspection used by restore
-- **Integrity inspection** validates gzip/tar structure, paths, and entry types. Only `sessions`, the three allowlisted config files, `profiles/<name>/package.json`, and `meta/backup.json` are accepted; traversal, links, special files, unknown content, corrupt archives, and invalid profile manifests are rejected
-- **Restore preflight** produces a single-use five-minute plan showing the full sessions replacement, config replacements/removals, and profile-manifest updates. Final commit rechecks the archive SHA-256 and current-target fingerprint; any drift rejects the restore
-- **Cross-device / cross-platform restore**: every path inside an archive is relative and restore lands under the local `$DSH_HOME`, so a different DSH_HOME, username, or mount point makes no difference to import; `meta/backup.json` also records the source platform and architecture, and the preflight reports when the source system differs from the current one. The preflight additionally lists read-only notices (they never block a restore): paths past the classic Windows limit, paths differing only by case collapsing on this volume, and a sessions directory that is currently unwritable (in use or lacking permissions)
-- **Target profile selection**: you choose which local profile the archive's `profiles/<name>` content restores into — candidates come from the profiles that actually exist here (the active one is marked), or you can keep the source name. A cross-name mapping does **not** overwrite the local profile's plugin manifest (`package.json`) by default; tick the box to overwrite it explicitly. The Profile configuration layer (`cordis.patch.yml`) is restored whenever the archive carries it
-- Restore uses a transaction journal and rollback directory: sessions are replaced in full, config is made exact to the snapshot, and profiles update according to that mapping while keeping node_modules, credentials, and attachments. Managed runtimes restart automatically; manual launches receive hand-restart instructions. On Windows, a target left in use by another process fails with explicit guidance (quit the desktop app, pause sync clients, disable real-time antivirus scanning, then retry)
-
-### Skills management
-
-![Skills management](./screenshots/skill-manager_en.png)
-
-- Lists local skills in three sections — **auto-loaded / manual-only / fully disabled**; same-name shadowing marks both copies, bundled directories are read-only
-- Entries start collapsed into one row (name plus source / read-only / annotated badges); the top button expands or collapses every visible entry at once, and clicking an entry's name row toggles that entry alone; an invalid entry keeps its ⚠ and one-click fix visible while collapsed
-- Two switches edit the SKILL.md frontmatter directly (`disable-model-invocation` / `user-invocable`); changes go live within ~200 ms
-- Entries with legacy camelCase keys are dropped by the official parser: ⚠ warning + one-click canonical fix
-- ✨ Fill with AI: pick a model to draft a description (follows the UI language), saved to a plugin sidecar index — **SKILL.md is never modified**; one-click batch fill runs in the host background and can be cancelled. Already-annotated skills are listed separately in the plan and are only overwritten after a "Confirm forced refill" second confirmation (annotating no longer blocks future batch fills forever); completion-log timestamps use your local timezone
+Queries run when you open the quota page, expand the composer quota entry or refresh manually. Credential errors and expired plans pause automatic retries; retry manually after correcting the configuration.
 
 ### Model configuration
 
-> Model-configuration writes require a host with trackable configuration revisions. Older hosts without this capability remain view-only and writes are explicitly refused. Legacy workbench source and tests are retained as compatibility regression assets; the current UI and host register only the models3 flow. Sensitive authentication headers and historical manual-recovery states must be handled through native DSH configuration/recovery rather than automatically cleared here.
+> **Screenshot pending: provider and model configuration.**
+<!-- Screenshot placeholder: model-configuration.png / model-configuration_en.png. Add both assets before linking. -->
 
-- A top-level **Model configuration** page: the left sub-tab **Channels & models** (default) plus the right **Subagent routing** (reusing the "Subagent model" block; the sub-tab bar disappears entirely when only one sub-page applies). There is **one interface only** — the old hidden localStorage Simple/Legacy split is retired
-- **Vertical accordion**: providers are laid out as cards in two groups (built-in / custom); clicking a title row expands that provider's detail, one card is open at a time, and clicking again collapses it. On narrow screens (≤640px) only the inner padding shrinks — it **never becomes a side-by-side layout**. Switching providers with unsaved edits asks first
-- **Channel-first loop**: provider list → "Add custom provider" (id / display name / protocol / address / API key / manual or picked model IDs) → provider detail → model list · independent model detail · separate credential replacement · deletion and latest restore. Creating does not automatically discover models; an entered API key is stored under an independent credential reference after creation is confirmed
-- **This page edits only a few provider fields**: display name, address, protocol (editable for custom providers; built-in providers show the currently resolved protocol read-only) and credentials. Provider-level advanced keys — provider defaults, headers, thinkingBudgets, transport/cache, timeouts, image budgets and retryPolicy — have no editor here, and **saving never clears them** (writes merge as field patches; keys that are not shown survive untouched). No second JSON editing mode either
-- **Anthropic model discovery**: `anthropic-messages` uses `/v1/models?limit=1000`, accepts base URLs with or without trailing `/v1`, sends `x-api-key` and `anthropic-version`, and reads `display_name`. Only one page is fetched; pagination is not followed automatically. Existing public-address and response guardrails remain in force rather than using the official unguarded fetch path
-- **Discovery and manual entry are peers**: the network is contacted only when you click "Fetch online"; results distinguish already-added from addable models and support search plus multi-select batch adds. A failed discovery, an unsupported protocol or a refused probe only reports the reason — **entering ids manually always keeps working**. Listing models does not prove they can be called
-- **The per-model panel**: the model ID is **editable** (including rows added from an online discovery list); the value is bounded in three ways — it must match the model-ID format, it may not duplicate another ID on the same provider, and a rename is likewise refused when it collides with an existing ID, and disabled models must be explicitly enabled before renaming. A rename is submitted as "delete the old, add the new", so it still passes the deletion-reference guard. The same panel carries display name, context window / max output tokens (**accepts K/M suffixes such as `256K` or `1M`**; blank means inherit the catalog default), input modalities (the text box is checked and disabled, only image can be toggled; saved as an explicit host-schema declaration), output modalities (display only, text — the pi-ai model profile has no such field) and reasoning levels. The save button sits at the **bottom** of the panel next to the "unsaved" status and is disabled until something changes; submitting writes only the changed fields
-- **The advanced model-parameter area has no collapsible header**: input modalities and reasoning levels are always expanded inside model detail, not hidden behind a disclosure title
-- **Deleting a model or a provider both check references**: the confirmation first lists the **exact references** — main-chat default model, subagent primary model, subagent fallback model — each as `provider / model`, and any reference blocks deletion. A custom provider cannot lose its final model, and inherited-provider reset is not presented as deletion
-- **Enabling and disabling apply immediately, with no second confirmation**: the provider switch in the header and each model-row switch commit as soon as you click them (the host fetches a plan and submits it within the same click; no confirmation dialog follows). The provider switch's hover text states that disabling makes the provider unselectable and blocks new main-chat and subagent calls while keeping configuration and credentials. Disabled state is Profile-scoped, and disabled providers leave composer and subagent catalogs and reject new exact-model calls, including saved routes, explicit overrides and prepared calls not yet dispatched. Already-running calls are not forcibly cancelled. This is plugin policy, not an official `enabled` configuration field; unloading the plugin removes enforcement
-- **A basic call test is not a capability audit**: the model-row test action directly tests the saved entry without a second fee confirmation. The host sends fixed short text with a 30,000-token / 120-second ceiling and may incur charges. Elapsed time is shown while running; failures expose sanitized codes, HTTP status, finish reason and details. It verifies only a basic text call, not images, capacity or every reasoning level. A failure never rolls back saved configuration
-- **Built-in inheritance is not a gap**: built-in channels inherit capability fields from the catalog (runtime falls back to the catalog base), so "not written in settings" does not mean "missing capability" — you will not be nagged to fill in reasoning levels
-- **Manual editor**: id / name / context / max output always visible; the capabilities area is always expanded (two vision switches, six equal-width horizontal reasoning checkboxes (off is not shown); metadata wire mappings are retained, but wire-edit inputs are currently not visible). Clearing a field removes the explicit override to inherit the default, and `reasoningEfforts: false` explicitly declares "not supported" (distinct from omitting it)
-- **Deletion keeps the credential and is restorable**: deleting a channel removes only the route from settings and keeps the credential reference (other channels sharing it are unaffected). The full pre-deletion configuration goes into a snapshot first, and the **restore entry stays at the bottom of the list** instead of disappearing with the row. Restore writes the reference back but **never the old key value**
-- **Configuration is not a call-time selection**: effort checkboxes declare selectable levels, not the level selected for every call. Unconfigured levels inherit existing values or leave behavior to the API default; they do not automatically disable reasoning. Smart fill retains mappings explicitly declared by metadata. Manually checking a non-off level currently uses its English name as the wire value, whose suitability must be checked. Saving requires at least one non-off mapping
-- **Drafts stay on the page**: a failed save or a concurrent conflict never clears the draft, and a conflict asks you to re-confirm against the latest values; leaving with unsaved edits warns first; drafts are never persisted across refreshes (so keys never reach browser storage)
-- **Built-in and custom catalogs are handled separately**: built-in providers show the resolved protocol and allow adding out-of-catalog models or editing current Profile model entries. Catalog defaults are displayed as inherited values rather than copied wholesale when unchanged. Unknown overrides and advanced fields are retained; the entire dynamic catalog is not frozen
-- **Zero external network on the overview**: reads the current Profile, pi-ai catalog, runtime providers and sidecar, with saved / loaded / basic-call status shown separately. Opening the provider list does not query external metadata
-- **Per-model smart fill**: OFF whenever the detail opens. ON queries the local pi-ai index and fixed modelparams.dev / OpenRouter sources, **never provider discovery, inference or automatic save**. **This round is model-ID-scoped filling: it binds no current-provider or protocol source**, and the UI has no source picker or binding action (candidates are evidence only and are never written into configuration)
-- **Suggestions shown per parameter**: display name, context capacity, maximum output, input modalities and reasoning levels are shown separately. Modalities are compared as sets, so ordering is not a difference. Suggestions use a stable source order; reasoning prefers explicitly declared mappings without filtering by the current provider, and missing mappings never fabricate levels. modelparams request ranges are not model output limits. Metadata is reference information, not a real API capability test
-- **One confirmation to fill**: "Fill all" first lists which draft fields it will replace; confirming **only updates the draft**, writes no configuration and still requires Save. There is no source binding or per-field ✓ / ✕. Hovering the switch explains the sources and operation boundaries
-- **The two reasoning notices are distinct**: when the model metadata declares reasoning support but no concrete level suggestions were found, the panel says reasoning is supported yet the level values are unavailable and the API default is unknown; when there is no reasoning metadata at all it says no reasoning level suggestions were found and to configure them manually. **Absent metadata is not "unsupported"**; only `reasoningEfforts: false` declares that explicitly
-- **Effort badges use English level names**: current and suggested levels render as `minimal / low / medium / high / xhigh / max` badges regardless of the UI language (the `models.smart.effort.*` Chinese dictionary is retained but not used here); the "Current levels / Suggested levels" labels themselves still follow the UI language
-- **Snapshot before mutation**: ordinary save is one click; delete / credential replacement / restore preview consequences before confirmation. Snapshot failure prevents configuration writes. Creation, edits and restore capture owner / full fingerprint / revision and reject concurrent overwrite; subsequent external edits block undo. Ordinary snapshots exclude sensitive headers; deletion is refused if sensitive values cannot be restored in full safely
-- **Online verification**: looks a model up in the OpenRouter model directory by id (fixed domain, redirects not followed); results are shown for reference only and never change your config
+- Add and edit providers, models and credentials; enable or disable providers and models. Enter model IDs manually or explicitly fetch them online.
+- Edit names, context windows, maximum output, image input and reasoning levels. Capacity fields accept `256K`, `1M` and similar values; advanced settings not shown remain unchanged.
+- Smart fill provides parameter suggestions only. Confirming fills the draft; you still need to save. Metadata does not verify API capabilities.
+- Basic call tests **may incur charges** and verify text calls only, not every capability.
+- Deletion checks main-chat and subagent references. Deleting a provider keeps credentials; configuration can be restored, but old key values cannot.
 
-#### URL and credential safety
-
-- **No input concatenation**: address edits are schema-validated configuration data; entering or saving an address never fetches it. Discovery uses only the **baseURL read from the current host Profile**. Model IDs / names never enter shell commands, filesystem paths or command arguments; metadata requests use fixed host-owned source domains
-- **Online discovery guardrails**: HTTPS-only, no userinfo, port empty or 443, IP literals refused, **every** DNS resolution result must be outside private/reserved ranges, redirects refused, the resolved address pinned for a direct connection with the correct Host header (anti DNS-rebinding), 10s timeout, ≤4MB transferred and ≤8MB decompressed. Non-public / plain-HTTP / non-443 endpoints can still be saved and written by hand — they are simply barred from online discovery and labelled "not verified by the plugin"
-- **Separate credential management**: replacement values pass over loopback into the system store, never returned, logged or snapshotted. Defaults to a new independent reference, not overwriting shared credentials. Explicit shared replacement previews users; configuration failure reports stored credentials honestly and never deletes them as compensation. Discovery resolves `apiKeyEnv` and sends it only to the current provider address, never metadata sites
-- **Short-lived host handles**: editing baselines, deletion, restore and credential consequences bind to `sessionId` / `planId`; submission re-checks the complete baseline and revision. Unknown, expired or replayed handles are rejected. Manual parameters pass a closed schema vocabulary
-- **Structural write protection**: writes use `settings.mutate(entryId, ops, expectedRevision)` with the current pi-ai owner's dynamically resolved entry ID; only legacy hosts use `llm-pi-ai`. Complete official validation, atomic persistence and live reconciliation are retained; no direct writes to real configuration YAML
-- **Loopback only**: every endpoint is exposed through the single-segment `/dsh-service` channel with `loopback` authority
+Older hosts without configuration revision support are view-only. Online discovery requires a public HTTPS endpoint allowed by the security policy; local or HTTP providers can still be saved with manually entered models.
 
 ### Subagent model
 
 ![Subagent model](./screenshots/subagent-model_en.png)
 
-- Three modes: **Default** (no override) / **Follow main model** (the provider/model actually used by the latest main-conversation request) / **Custom** (pin every unspecified subagent)
-- A provider/model explicitly carried by the delegation always wins; pinned presets are never overridden
-- Custom mode optionally selects a **reasoning effort**: the dropdown appears only for the exact provider/model when its adapter declares selectable levels; leaving it empty means "use the target model default", materialized by the adapter
-- Values come from adapter metadata (`reasoning.efforts[].id`); effort ids are opaque to the host. Models with no declared levels disable the dropdown and show a hint
-- **inherit / follow / feature gate off** inject no provider, model, or reasoning effort at all; subagents that carry an explicit provider/model are unaffected
-- **Mode switching keeps the config** — the saved custom model (including its reasoning effort) and the fallback list survive switching between the three modes; a mode only decides whether the route applies, so switching back to "Custom" needs no re-selection (provider/model missing from the runtime catalog fall back to the first catalog entry)
-- **No shift on entry** — the page seeds its first frame from the most recent successful read, so it lands directly on the real mode instead of showing "Default" and then jumping to "Custom"; on a fresh install or a different browser (no cache) it briefly shows "Reading configuration…"
-- **Fallback models (in order)** — both Follow and Custom modes accept an ordered fallback list: when the primary route is unavailable (channel unloaded, or quota state marks it unserviceable), the next model is tried in order; if none works, delegations fall back to native inheritance instead of failing. Fallback entries pass the same allow-list check as the primary route, with an optional reasoning effort per entry
-- **Conversation-page visibility** — a session-level line sits under the composer listing the models your subagents actually ran on, e.g. `Subagents: cpa/gpt-5.6-luna (xhigh) · opencode-go/deepseek-v4-flash (max)` — covering fallback hits, explicit routes, and inherited sources, so you can verify the custom route at a glance. The line is mounted on the official `conversation.composer.dock` slot, occupying its own line right below the official stats instead of sharing their row; 20s refresh, independent of turn data (it keeps showing even when compaction folds the delegation tool calls), covered from the host dispatch records and visible in any view; switch it off independently from Model configuration → Subagent routing. Records live in host memory (survive page reloads, cleared on process restart). Works regardless of the official "assign subagent models" switch
-- Config stored in `$DSH_HOME/dsh-service-subagent-route.json` (atomic writes, `0600`); one-click reset
+Under **Model configuration → Subagent routing**, choose Default, Follow main model or Custom, with optional reasoning effort and ordered fallback models. Explicit provider/model values in a delegation take priority. Switching modes preserves saved custom settings. A line below the composer can show the models actually used by the session's subagents.
 
-### Task notifications
+### Health diagnostics
 
-![Task notifications](./screenshots/task-notifications_en.png)
+![Health diagnostics](./screenshots/health-diagnostics_en.png)
 
-- Browser notification when a root session finishes its turn or any session needs approval / plan review / an answer; subagent completion is silent; clicking focuses the page
-- Subagent approval / plan-review / question requests still notify
-- Four independent toggles: master, task completion, approvals & questions, composer-bell visibility
-- The composer bell toggles the master switch quickly; all toggles persist across reloads
-
-### Mobile adaptation
-
-![Mobile adaptation](./screenshots/mobile-adaptation_en.png)
-
-- Off by default; active only below a 1024 px viewport (phones / narrow windows), desktops unaffected
-- Sidebar becomes a drawer, details column is hidden on mobile (matching the official narrow-screen behavior), modals become full-screen panels, settings left nav a horizontal top strip
-- The official Plugins panel header never wraps its text on phones: when "title + intro" and "refresh / Add plugin" no longer fit one row, the whole toolbar drops to a second row flush right, keeping the intro and the button label each on a single line; this also fixes the old drawer-button clearance rule that rewrote this page header's vertical/right padding (it used to squeeze the intro into two lines with an orphan character and wrap the "Add plugin" label inside its pill)
-- The model selector follows dynamic untruncated measurement with persistent reasoning effort: removes the 45cqw clamp so measurement reflects natural unclipped text; when space allows, it shows the brand icon, full model name, and reasoning effort without truncation; when space is tight (narrow screens, long names, or tools added by other plugins), the model name collapses into compact form while the reasoning effort (e.g. High / Low) and brand icon remain persistently displayed ([brand icon] High ▾), models without reasoning effort collapse into a sleek 45px icon button, with zero wrapping and zero awkward clipping; on mobile the "Search models…" input row is hidden to prevent autoFocus from forcing up the mobile on-screen keyboard, presenting the model list directly
-- The stats line under the composer ("turns/steps · tok/s | tok · cache hit") **stays on one line, centred and straight** on phones: this row's own horizontal padding is tightened (official 32 px → 2 px) along with its gaps to free up width, and the official `justify-content` centres both chips — zero truncation from ~420 px up, proportionally less text cut than the official fixed truncation below that, with no wrapping and no horizontal scrolling; this also works on older DSH (on 0.1.5-rc.2 the row spans the full width, where the earlier sub-item `flex-grow` pushed both chips as a group to the left — they no longer grow) (desktops unaffected)
-- The session header is re-flowed on phones (≤560 px): the title row keeps only the **title + preset chip** (the chip hugs the "…" button on the right, the title stays nearly fully visible), while the "N subagents" and "N background jobs running" counter chips park as a pair on the right of the Conversation/Trajectory tab row (tab gap 36→20, tapping a chip still opens its menu); the official crumbs **hard-clip** is eliminated, and layouts ≥561 px keep the official flow. From DSH 0.1.7-rc.1 the official preset label hides itself via `@container (width<=540px)` (the container is the title row, roughly viewports up to 606 px), so the mode chip vanished on every phone; the plugin overrides that back to visible across the whole mobile range (from 390 px up the title stays untruncated, only 320–375 px trade away 15–70 px of title as an ellipsis)
-- The Agent Team panel stays on screen on phones (<1024 px): the official panel is left-anchored (`left:0`), so sitting in the header's right-hand action slot pushes it off the right edge (measured 112–352 px past the viewport at 320–1023 px). On mobile the session header becomes the positioning context and the panel is re-anchored to the **right with a 16 px inset** and capped at `100vw − 32px`, leaving 16 px on each side; desktop ≥1024 px keeps the official geometry byte-for-byte
-- Scroll immersion: inside a conversation, swiping down auto-hides the header, the top-left drawer icon, and composer for full-screen reading (the top-left drawer icon slides up and fades out in sync with the top-right sidebar button, and the composer yields its layout space so the transcript really fills the screen; on reveal, if you are still at the end of the conversation it re-aligns to the bottom). Swipe up, tapping the official "Back to bottom" button, or focusing the composer brings them back (no extra floating button); already sitting at the end of the conversation, a single small backward nudge reveals it right away (no full threshold needed), and after a back-to-bottom tap the resting position gets one extra bottom snap. Programmatic scrolling (streaming pinning, anchor jumps) never triggers it
-- Swipeable drawers: with both drawers closed, a horizontally dominant swipe rightward anywhere opens the sidebar drawer and a swipe leftward anywhere opens the official right sidebar (DSH 0.1.5+; stays inert when unavailable); once open, a swipe in the reverse direction anywhere closes them. Swipes starting at the screen edge additionally benefit from stolen-gesture completion for browser edge navigation, and horizontal scrolling inside editors never misfires
-- The "Back to bottom" button is shifted flush right on mobile (no more large empty strip); a matching circular up-arrow now sits above it on all platforms, jumping to the previous user message on each click for step-by-step back navigation. Targets outside the loaded history auto-trigger the official "load earlier" action; the button hides once you reach the very top and reappears when you scroll back down
-- Transparent large-JSON compression (≥4KB auto gzip/brotli per `Accept-Encoding`) speeds up long session histories
-- Adds `viewport-fit=cover` with safe-area avoidance, disables double-tap zoom, keeps inputs ≥16px against iOS focus zoom
-- `?dshsvc-mobile-debug=1` shows a floating diagnostics chip (debugging only)
+Checks runtime, session storage, backups, usage index, notification permissions and file permissions. Plugin health checks list failed plugins and missing dependencies; failed plugins can be reloaded after confirmation. Manually disabled plugins are not anomalies, and disposed or unknown states are informational only. File-permission repairs require a second confirmation.
 
 ### Session manager
 
 ![Session manager](./screenshots/session-manager_en.png)
 
-- **View**: one unified list for sessions (running / cold / archived) with status badges, workspace, event count, and size; the list sorts by creation time (newest/oldest first) or by title, or **by project** — grouped into one section per workspace (each section header shows the path and session count; newest first within a project; sections are **collapsed by default** and expand/collapse on header click); **starts on the “Archived” view by default**, and each of the All / Archived / Deleted filters fetches its own subset from the host **once,** then keeps it in a **module-level cache** — switching filters sends no requests, and **closing and reopening the panel renders the cache instantly while quietly refreshing the current view once in the background** (only a page reload clears the cache), with a “Refresh” button for a forced refetch of the current view; normal lists also provide a “Select multiple” button; in that mode, clicking anywhere on a session row selects or clears it without requiring a precise checkbox click, while one-click select-all / clear-all remains available for the current filtered result, and selected rows use a slim brand-colored edge without replacing their background; the toolbar shows eligible counts and runs batch export / archive / delete actions (changing filters, searching, or opening details exits selection mode automatically); sizes are never shipped with the list — each row fetches its size lazily (double-cached in the module and in host memory: reopened panels and refreshed pages reuse it, cleared on delete); the detail page walks events as paged cards (single-slot host snapshot cache: paging and reopening the same session never re-reads the log, live sessions stay fresh within 30 seconds), with **event bodies rendered as official Markdown** (reusing the platform renderer `MarkdownText`, same look as the chat UI: code blocks, lists, tables, math — raw HTML and unsafe links are rejected by default; older DSH shells without the renderer automatically fall back to plain text), and consecutive system events **and tool messages each collapse into their own countable block by default** (tool messages = `tool/call`, `tool/result` and the other `tool/*` events, plus assistant messages that carry nothing but tool calls — those dominate real long sessions, so tool arguments no longer flood the detail page); click a collapsed line to expand the details and click again to collapse; when a search hit falls inside a collapsed block that block opens automatically and keeps the hit highlighted; **entering a detail remembers the list scroll position and returning to the list drops you back exactly where you were** (reusing the official panel's scroll container; changing the filter or search while in the detail discards the restore)
-- **Subagent recognition**: sessions delegated to subagents carry a “Subagent” badge (the marker comes from official session header fields: `origin=subagent` is the product classification, with `delegationDepth` as the fallback for older logs; a plain fork lineage carrying only `parentSession` does not count); a “Subagents only” checkbox in the search row focuses the list (same row and widget language as “search archived only”; an orthogonal qualifier layered on top of All / Archived — hidden in the Deleted view, and its state survives view switches), and batch mode offers “Select subagents” to fold every visible subagent session into the selection (without clearing existing picks; the button stays hidden when no subagent rows are visible) for quick batch archive / delete cleanups; on older plugin hosts that do not ship the flag the list behaves as before, and enabling the qualifier explains that the host is outdated and carries no subagent flags instead of showing an unexplained empty list
-- **Export**: one-click or batch download through the official export path (one full ZIP per session, including subagents and attachments) — the host never assembles a package itself
-- **Archive & unarchive**: archive one or many non-running sessions, hiding them from the official sidebar; hosts running DSH ≥0.1.6 support unarchiving individually or in batches, while older DSH hosts keep the one-way notice
-- **Content search**: full-text semantic search over conversations (case-insensitive, whitespace-flexible) with cross-session hits (matched text is highlighted; multiple matches show seq chips for one-click jumps) → **hit-window view**: opening a result centers a context window on the matched seq (15 events on each side; the matched event gets a HIT badge, is highlighted, **auto-scrolled into view and flashes for 2 seconds**), with **previous / next match** navigation and navigator seq chips for direct jumps (mirroring dsh-session-kb's Locate interaction); the window can keep loading later events; optionally restricted to the archived zone
-- **Delete**: Only archived sessions can be deleted, and a session that becomes live is rejected again immediately before execution; the two-phase confirmation shows its id / title / workspace / size, persists the deletion record atomically first, and only then removes the log directory; deleted records stay visible under the Deleted filter, with support for single-item clear or batch multi-select / select-all clear (two-phase confirmation, permanently removes from record list); a successful delete notifies the official side immediately — it re-emits the official session-removed event and clears the dead id from the archive set — so the official sidebar and the “Archived sessions” Settings page reflect the new state without a browser reload
-- Entry: the “Sessions” subpage under “Maintenance” (on by default); the optional settings-sidebar entry is off by default
-- Delete records live at `$DSH_HOME/dsh-service-sessions-deleted.json` (atomic write, `0600`, title/time only — no content, not recoverable)
+- Browse sessions by project or time, search their contents and jump to matches; filter subagents separately.
+- Export complete ZIPs, archive and unarchive individually or in batches (unarchiving requires DSH ≥0.1.6).
+- **Only archived sessions can be deleted**; running sessions cannot be deleted. A confirmation lists the affected sessions. Deletion records contain no transcript and cannot restore a session.
 
-### Model provider icons
+Entry: Maintenance → Sessions.
 
-- The **model button in the composer shows the current provider's brand icon**: on wide screens (>480px) it is **prepended to the model name**; on phones (≤480px, where the official UI collapses the name into an icon) it **replaces** the official generic icon
-- **Providers with no matching icon keep the official default icon untouched** (nothing prepended on wide screens, official icon unchanged on phones) — never a blank or a wrong logo
-- Covers **38 of pi-ai's 40 built-in providers** (`ant-ling` and `radius` have no matching brand mark, so they fall back), plus commonly used routes: Ollama, vLLM, LM Studio, Perplexity, Cohere, Volcengine, Doubao, Hunyuan, Yuanbao, StepFun, SenseNova, Baichuan, 01.AI, Fal, Replicate, Midjourney and more — 62 marks across 76 provider mappings; regional and billing variants (e.g. `xiaomi-token-plan-*`, `qwen-token-plan-*`) share one brand mark
-- **Custom route names are recognised by prefix/alias**: `opencode-goo` → opencode, `openrouter-f` → openrouter, `zai-coding-cn` → Zhipu, `xiaomi-token-plan-cn` → Xiaomi, `command-goat` → Command Code
-- **Unrecognised names fall back to the quota manual adaptation**: when a channel matches neither the built-in table nor any prefix rule, but you have **manually adapted** it in the quota page to some kind (`cpa` → CLIProxyAPI, or any relay → OpenRouter / Zhipu / Command Code / StepFun…), its brand mark is shown; changing the adapted kind swaps the icon immediately, and un-adapting falls back to the official default icon. Two premises: only **manual** adaptation counts (a kind merely auto-inferred from the baseURL does not), and **the channel name always wins** when it matches (`openrouter-f` keeps showing OpenRouter even if you adapt it to something else)
-- **The CLIProxyAPI icon appears on demand**: the hand-drawn "concave diamond + mirrored swirl" mark shows on the model button **only after you have manually adapted some provider as CLIProxyAPI in the quota page** (regardless of the provider's name — `cpa` or a custom one alike); it is one instance of the fallback rule above, and un-adapting immediately falls back to the official default icon
-- **Quota cards carry the icons too**: adapted provider cards show the same brand mark before the channel name (14px; colour tiers keep their brand colour, mono tiers follow the theme text colour). The same "fall back to the manual adaptation" rule applies here — the card list is exactly where you adapt, so the mark appears/swaps immediately
-- **The model picker's group headings carry them too**: open the model button → the "Model" list, and each **provider/channel group heading gets the same mark in front of it** (13px, matching the 12px heading scale). Same resolution and fallback rules: unrecognised groups keep the official heading untouched, with no icon added
-- **Legible in both light and dark themes**: a brand colour is kept only when its contrast is adequate against **both** a light and a dark background; otherwise the icon automatically switches to a monochrome variant that follows the theme's text colour — so you never get a black logo on a dark background, or a nearly invisible one in light mode
-- **Zero runtime network requests**: icons are inlined into the client bundle at build time, so it works offline, needs no CSP exceptions, and never leaks your provider names to a third party
-- The icon is sized to match the **quota ring** beside the composer (each mark's viewBox is tightened to its real drawn extent and squared at build time, so every brand reads at the same visual size instead of some filling the box and others shrinking)
-- Toggle under Plugins → Plugin configuration → Interaction (on by default, applied live)
-- Icons come from the MIT-licensed [LobeHub Icons](https://github.com/lobehub/lobe-icons) (pinned to `@1.95.0`); the Xiaomi icon uses the plain "mi" mark from CC0 [Simple Icons](https://github.com/simple-icons/simple-icons) (LobeHub's version is a two-line "Xiaomi / MIMO" wordmark that turns to mush at 15px). **Brand marks remain the property of their owners**, so review each vendor's brand guidelines before public-facing use
-- **Every icon is browsable in one page**: [icon catalog](docs/model-icons.html) — 62 marks, 76 provider mappings, the matching rules, and a light/dark comparison; a single offline file, generated from the very data inlined into the client bundle
+### Skills management
 
-### Right-Sidebar file editing
+![Skills management](./screenshots/skill-manager_en.png)
 
-- The official right-Sidebar preview header gains an **“Edit” button in its top-right corner** (next to the renderer name): one click enters editing — a monospaced editor with a dirty marker, `Ctrl/Cmd + S` saving, “Reload”, “Undo save”, and a one-click “Preview” back to the official renderer
-- Two equivalent extra routes: the original **renderer dropdown**, and **right-click the tab → ⋯ menu → “Edit”** (the latter uses an official menu seat with no DOM injection at all, as the fallback if the header button ever stops working); while the editor tier is active the header button retracts itself
-- **The official renderers keep their default status**: suffixes they own (`.md`, `.js`, …) still open as Markdown / code previews; only suffixes with no official renderer — the ones that used to fall back to plain text, such as `.txt`, `.log`, `.conf` — default to the editor. When the official preview is absent (older DSH), the whole block stays silent
-- **Writes go through the session's own file service and sandbox policy**: the browser only sends a `dsh-resource://file/session/<session>/<path>` resource address, and the host resolves the session and workspace root itself — free-form paths are refused. Saving carries the version read earlier, so **a file changed by an Agent or another window is never overwritten silently**; you choose “Reload (discard edits)” or “Overwrite with mine”. Read-only sandbox sessions stay preview-only
-- **Keep typing while saving**: a save response acknowledges only the submitted text; any newer typing stays in the editor as unsaved changes. The status distinguishes saving, unsaved changes, and saved. You can keep editing after a conflict, and overwrite uses the latest draft shown in the editor
-- **Protect drafts before leaving**: the editor's own “Preview” and “Reload” buttons show an inline confirmation when changes are unsaved, with a cancel action to keep editing. “Undo save” also requires confirmation and retains its version guard rather than silently overwriting newer disk changes
-- One 2 MiB cap per file (larger files are read-only); editing is unavailable when the session is inactive or the sandbox policy service is missing (the official preview remains available)
-- Not in this first version: syntax highlighting, multi-cursor, find/replace (the plugin half has no bundler to borrow an editor component), and no unsaved-changes prompt when a tab closes
-- The switch lives under Plugins → Plugin configuration → Interaction (on by default, live)
+Manage auto-loaded, manual-only and disabled skills, and repair legacy frontmatter keys. Bundled skills are read-only. AI fill drafts individual or batch descriptions; confirmed descriptions go into the plugin index without rewriting skill-file bodies.
 
-### External liveness probe
+### Backup management
 
-- `GET` / `HEAD /healthz` returns an empty 200; other methods return 405
-- Suitable for Uptime Kuma, Docker, Kubernetes, and other external monitors
+![Backup management](./screenshots/backup-management_en.png)
 
-## 🏗️ Architecture
+Create, download, import, delete and restore archives of sessions, configuration and plugin-profile manifests. Old backups are never pruned automatically.
 
-The plugin is a Cordis two-half structure: the **Host half (`index.js`)** owns all capabilities and data access, while the **Client half (`client.js`)** only renders UI in the browser; the two sides communicate over Typert JSON-RPC on a single-layer absolute path channel `/dsh-service`, with `loopback` authority throughout.
+- Filenames include the DSH version at backup time (`dsh-backup-YYYYMMDD-HHmmss-dsh…tar.gz`); version information is also recorded in `meta/backup.json`.
+- **Integrity inspection** must pass before **Restore preflight** shows full session replacement, configuration changes and target profiles for confirmation. Commit rechecks the archive SHA-256 and target fingerprint; changes abort the restore.
+- Choose a local target profile; restoring under a different name does not overwrite its plugin manifest by default. Credentials, attachments and node_modules are not replaced.
+- Newer session formats cannot be restored into an older DSH version. Managed environments restart after a successful restore; manual launches and Desktop show restart instructions.
 
-```mermaid
-flowchart TB
-    subgraph Client["🌐 Client browser half (client.js)"]
-        UI["Settings : Service Control panel (seven-page navigation + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
-    end
+### Safe restart
 
-    subgraph Host["⚙️ Host half (index.js)"]
-        RPC["Loopback RPC · /dsh-service<br/>version / check-update / restart / quota / skills / backup"]
-        SPAWN["Controlled spawn<br/>chmod / chown / npm upgrade"]
-    end
+![Safe restart](./screenshots/restart_en.png)
 
-    subgraph DSH["🚀 DSH core runtime (read-only consumption)"]
-        CORE["agents · jobs · terminals · sessions<br/>sessionQuery · skills · credentials"]
-        WEB["webServer routes<br/>GET/HEAD /healthz"]
-    end
+Maintenance → Restart lists active agents, background jobs and terminals before confirmation. The conversation command `/restart` refuses while work is running. Web detects the new process and reloads automatically; on Desktop, quit and reopen the application.
 
-    subgraph OS["💾 Host machine & external"]
-        PM["Process manager<br/>Docker / systemd / pm2"]
-        FS["$DSH_HOME<br/>config / backups / credentials / skills index"]
-        REG["npm registry"]
-        QUOTA["Upstream quota APIs"]
-    end
+**The plugin does not relaunch the process.** Configure [automatic restart](#automatic-restart) first.
 
-    UI -- "Typert JSON-RPC (loopback)" --> RPC
-    RPC --> CORE
-    RPC --> SPAWN
-    RPC --> REG
-    RPC --> QUOTA
-    RPC -- "process.exit(42)" --> PM
-    SPAWN --> FS
-    MON["External monitors<br/>Uptime Kuma / Docker / K8s"] -- "GET /healthz" --> WEB
-```
+### Task notifications and configuration
 
-Key contracts:
+![Configuration](./screenshots/configuration_en.png)
 
-- **Loopback only**: capabilities are exposed solely through the `/dsh-service` loopback channel; webServer routes return only information-free status codes
-- **Restart = `process.exit(42)`**: the plugin only sends an exit signal; an external process manager brings it back — no manager, no restart guarantee
-- **Zero input concatenation**: the browser side never supplies URLs, package names, commands, or paths; all commands go through a host-side whitelist
-- **Credentials never leave the host**: API keys are resolved only inside the host process; the browser receives only normalized window data
+- Notifications fire when a main session finishes a task, or when a main session / subagent needs approval, plan review or an answer. Subagent completion is silent.
+- Enable the master notification switch and grant system permission; the composer bell provides a quick toggle.
+- Configuration groups feature switches, notifications and settings-navigation order / visibility. Preferences sync across devices.
 
-## ⚡ Installation
+### Other features
 
-### Option 1: DSH plugin manager (graphical, recommended)
+- **Mobile adaptation**: off by default; enables narrow-screen navigation, drawer gestures and scroll-to-read immersion.
+- **Provider icons**: provider marks in model buttons, model lists and quota cards, including custom aliases such as Cline. Unknown names can use the adapter type manually chosen on the quota page. Icons work offline; see the [icon catalog](docs/model-icons.html).
+- **Right-sidebar file editing**: click Edit in a file preview. Supports `Ctrl/Cmd + S`, reload and undo save; respects session sandbox rules and concurrent-change protection. Maximum file size: 2 MiB.
+- **External liveness probe**: `GET` / `HEAD /healthz` returns an empty 200 for Uptime Kuma or container health checks.
 
-1. Open the **Plugins** page in the left sidebar.
-2. Click the **+ Add plugin** button in the top-right corner.
-3. In the dialog, fill in **one of the three** source forms (the same field accepts all three, and the hint below it follows what you type):
-   - **npm package name (recommended)**: `@gehennawu/dsh-service@2.0.8` — **include the exact version** (written as `package@version`);
-   - **GitHub repository URL**: `https://github.com/gehennawu/dsh-service` (public repository, no token needed; the shorthand `github:gehennawu/dsh-service` works too);
-   - **Local plugin directory**: an absolute path on this machine, e.g. `/path/to/dsh-service` (for your own or pre-downloaded plugins).
-4. Pick the **install source** for your network: the default **official npm registry**, or the **China mainland mirror** if fetching from npm is restricted there (it affects package-name installs only; GitHub URLs and local directories are unaffected).
-5. Click **Install** and wait for the official layer to add the package to the current profile (the dialog reports progress and the result).
-6. The plugin then appears under **Installed**. The host half takes effect after the DSH process restarts; the client half applies on a page refresh.
-   - On Web: use this plugin's **Service Control → Restart**, or send `/restart` in a conversation;
-   - On DSH Desktop: quit the app and open it again (the desktop app owns the host process, so this plugin never exits it on its own).
+## Automatic restart
 
-> Tip: all three forms go through the official installation path — no manual profile edits; entering a GitHub URL in the dialog is equivalent to the `github:` prefix on the command line.
+Web restart exits the process and requires an external process manager to relaunch it. A directly launched `dsh web` will not recover automatically.
 
-> **Why the npm form wants a version**: pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes). **Without a version** (including `@latest`), a release published less than the cooldown period ago is not installed automatically, so the package manager falls back to the newest version that has cleared it — which is why the plugin page may report that it installed x.y.z instead of the latest a.b.c. Writing an **exact version** (e.g. `@gehennawu/dsh-service@2.0.8`) installs exactly the release you name. The cooldown is a supply-chain safety policy, not a sign that the new release is broken; if you are not in a hurry, installing without a version after the 24 hours have passed also reaches the new release.
-
-### Option 2: Command line
-
-| Method | Command |
-| --- | --- |
-| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service@2.0.8` |
-| GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
-| Local development | `dsh plugin --profile web add link:/path/to/dsh-service` |
-
-The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above. The npm method is subject to the same pnpm release cooldown: without a version it installs the newest release that has cleared the cooldown, while an exact version (`@gehennawu/dsh-service@2.0.8`) installs that release (see the note under Option 1).
-
-Restart DSH Web after installing or updating:
-
-```sh
-dsh web
-```
-
-Open DSH Web Settings and select **Service Control**.
-
-## 🔄 Automatic restart
-
-The plugin only sends an exit signal; it does not start the process again. Without a process manager, restart stops DSH Web.
-
-The plugin passively detects a process manager (environment variables, `/.dockerenv`, `/proc/1/cgroup`, terminal TTY): with Docker/systemd/pm2/supervisord/Kubernetes detected it restarts as usual; when nothing is detected and stdin/stdout are an interactive terminal, it treats the launch as manual — flagged in Health diagnostics and switching one-click upgrade to keep running with manual-restart instructions. Heuristics cannot cover redirected output or wrappers such as NSSM/WinSW; declare `DSH_SERVICE_RUNTIME_ENV=managed|manual|desktop` explicitly.
-
-### Docker Compose
+Docker Compose:
 
 ```yaml
 services:
@@ -394,141 +157,41 @@ services:
     restart: unless-stopped
 ```
 
-### systemd
+systemd (add to your existing service):
 
 ```ini
 [Service]
-ExecStart=/usr/local/bin/dsh web --host 127.0.0.1
 Restart=on-failure
 RestartSec=2
 ```
 
-### pm2
+Or use pm2:
 
 ```sh
 pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 ```
 
-## 🖥️ Platform support
+If detection is inaccurate, set `DSH_SERVICE_RUNTIME_ENV=managed|manual|desktop` explicitly. This variable does not install or configure a process manager for you.
 
-| Environment | Plugin features | Automatic recovery | Verification |
-| --- | --- | --- | --- |
-| Linux + Docker Compose | Supported | Supported with a restart policy | Verified |
-| Linux + systemd / pm2 | Expected to work | Managed externally | Not separately tested |
-| macOS / Windows + pm2 or similar | Not blocked by the code | Managed externally | Not tested |
-| DSH Desktop (Windows, Electron) | Supported | Owned by the desktop app | Verified (real host, 2026-09-28) |
-| DSH Desktop (macOS / Linux, Electron) | Not blocked by the code | Owned by the desktop app | Not verified |
-| Direct `dsh web` execution | Supported | Not supported | Expected behavior |
+## Important notes
 
-Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
+- Operational capabilities are exposed through loopback RPC only; `/healthz` reveals no runtime information.
+- Keys go into the DSH credential store and are never echoed to the browser. Do not publish configuration, credentials or unchecked screenshots.
+- Deletion, restore, credential replacement and permission repairs preview consequences. Configuration and file saves reject concurrent overwrites.
+- Icon sources: [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT) and [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0). Brand marks belong to their respective owners.
 
-**DSH compatibility statement (alpha.1 baseline)**: adapted to DSH `0.2.1-alpha.1` — session format V4 (V3 logs are migrated by the official layer into a `session.v4.jsonl.zstd` generation file on first read, with the old `session.v3.jsonl.zstd` retained per the format catalog's policy; the detail view automatically archives system events), the `SettingsForms` configuration surface (plugin config now lives in the Profile's `cordis.patch.yml` with hot updates over `loader/volatile-update`, while the legacy `settings.register` remains authoritative on 0.1.5/0.1.6 so the two never cross-contaminate on a shared host), and all existing V3 adaptation (the `system/message` history, the handle-based sessionPersistence, the official right sidebar, the object-shaped turn-process), plus dual-hash compatibility for mobile bottom-row triggers, subagent turn-tail list-slot adaptive compatibility, `plugins.bundle.config` slot injection, and session-detail open fallback through `uiWorkspace`. Older DSH releases (`>=0.1.1-rc.2`) remain supported. The alpha.1 review established the previous declared range through `0.2.1-alpha.1` (then bounded by `<0.2.1-alpha.2`); source-level, npm-artifact-level (per-source-module sha256 via rolldown `//#region` slices) and real-host mounting reviews of 0.2.1-alpha.1 (266 commits) confirmed that 17 of the 20 existing seams are region-identical and the 3 changed ones do not touch this plugin's contracts, that the 9 slot keys, 25 theme tokens and the 35 official `data-*` hooks this plugin uses show zero removals, and that host RPC, `webServer`, the settings surface, persistence and session-format artifacts are byte-identical; the removed runtime invariant mechanism (each package's `./invariant` export 38->0, `dsh-invariants` retired) is unreferenced here, and the upstream fix for toggling a plugin removing other plugins' styles benefits this plugin. **The single display-level break is adapted in dual mode**: upstream split the composer stats row into `activity`/`usage` entries and dropped the row root class `.root`, so the mobile rules keep the legacy `[class*="bOPqQW_root"]` anchor for older hosts and add the official `[data-composer-stat]` hook plus the <=375px font step for the new host; the 0.2.0-rc.2 MenuGroup group-heading dual selector remains effective and the Client Inspect hang defect stays fixed as of 0.2.0-rc.2. The plugin-version gate introduced in rc.1 reads only `peerDependencies` (this plugin declares none, so the gate does not apply); real-host mounting on DSH `0.2.1-alpha.1` is operational. The settings surface and the persistence/layout seams all run in dual shapes detected from runtime capabilities, and adaptation items that target newer structures are naturally inert on older hosts (cosmetic only, no functional loss). Note: sessions written after upgrading cannot be read by older DSH releases — **backups do not restore across a version downgrade**. The plugin marketplace judges compatibility from the `engines.dsh` range in `package.json`, which is the single declaration of the supported range.
+## FAQ
 
-**DSH 0.2.1-alpha.2 compatibility update**: the supported range now includes `0.2.1-alpha.2` (`engines.dsh`: `>=0.1.1-rc.2 <0.2.1-alpha.3`). Subagent startup supports both the new `startActivation(spec)` and older `start` / `startContinuable` methods. Mobile task-chip CSS handles the removal of `.QsffPG_root` and the switch to a body-portaled task menu. On the current alpha.2 Web host, the plugin RPC, `available:true` subagent seam, real `subagent` and `subagent_fork` executions and their routed dispatch records were verified; legacy and new API tests pass. With an actual background task on alpha.2, the mobile chip geometry was checked at 320/360/390/560px, its in-flow fallback at 561px, and the portaled menu was opened twice at 390px without crossing the viewport. At 320px the task-count text is fully elided, but the icons and complete `aria-label` remain. **A real older-host UI comparison and other tab counts remain unverified.**
+**Still on an old version after installation?** Pin `@gehennawu/dsh-service@2.0.8` or use the one-click upgrade in Service Control, then restart DSH and reload the page.
 
-**DSH Desktop (Electron) statement**: the desktop app reuses the same Web frontend and the same client plugin graph (`platform: web`), so the plugin loads as usual and almost everything works unchanged; only "restart" and "one-click upgrade" differ in meaning. The host is owned by the desktop app, so **restart never calls `process.exit(42)`** there (the shell treats any non-zero exit as a host crash, shows a native failure dialog and does not relaunch it; there is no official programmatic restart RPC) — the Restart button, the `/restart` command and the post-restore restart all guide the user to quit and reopen the desktop app instead; **one-click upgrade is greyed out on the desktop** and points at the app's own plugin manager (the bundled CLI cannot boot or mutate `profiles/desktop`, so the upgrade endpoint short-circuits with `desktop-managed-upgrade` and spawns nothing); the Health diagnostics "Runtime environment" row reads "Managed by DSH Desktop (Electron)". The signal is `process.versions.electron` inside the host process (measured on the real Windows desktop build: `44.0.0`, with `ELECTRON_RUN_AS_NODE=1` and non-TTY stdio); non-Electron desktop wrappers can declare `DSH_SERVICE_RUNTIME_ENV=desktop`. Task notifications **do work on the desktop app** (the permission is granted and a real system notification has been observed); the only boundary is that **clicking a notification cannot bring the window back** (closing the window hides it and `dshDesktop` exposes no window API — use the tray). macOS / Linux desktop builds are not verified.
+**Did not recover after restart?** Check your process manager and restart policy. The plugin only exits the process; it does not launch a new one.
 
-## 🔒 Security design
+**No notifications?** Check the master switch and browser / system permissions. On Desktop, clicking a notification may not restore a hidden window; open it from the tray.
 
-| Area | Boundary |
-| --- | --- |
-| Input | The browser cannot supply URLs, package names, commands, or file paths. **One exception**: right-Sidebar file editing accepts only a `dsh-resource://file/session/<session>/<path>` resource address (decoded per segment; every other shape is refused); the session and workspace root are always resolved host-side, and writes are fenced by the session's sandbox policy |
-| Network | Update checks only access fixed npm registry endpoints |
-| RPC | Loopback-only; data never leaves the machine |
-| Data | The usage index stores no messages, prompts, tool arguments, or credentials; API keys are used inside the host process only |
-| Actions | Destructive operations (restart, delete, permission repair) all require two-step confirmation |
-| Credentials | Stored in the DSH credential store (`$DSH_HOME/.credentials.yaml`), sent to fixed endpoints only |
+**Quota credentials rejected?** Update the key or console session in the card's Config area. Repeated CLIProxyAPI authentication failures may ban the egress IP; wait for expiry or change the egress IP before retrying. Management-plane bans do not affect model inference.
 
-## ❓ FAQ
+## Feedback and license
 
-<details>
-<summary><strong>It does not come back after restart?</strong></summary>
-
-The plugin only sends an exit signal; a process manager brings it back (see "Automatic restart"). When the panel flags a manual launch, a plain `dsh web` terminal process exits for good — run it under Docker Compose / systemd / pm2 instead.
-</details>
-
-<details>
-<summary><strong>What is the yellow "no restart assurance" caution in Health?</strong></summary>
-
-It is the "likely manual terminal launch" detection — no process manager found. If it is actually managed by NSSM/WinSW or output redirection, declare `DSH_SERVICE_RUNTIME_ENV=managed` to clear it.
-</details>
-
-<details>
-<summary><strong>Why do task notifications not appear on DSH Desktop?</strong></summary>
-
-Check two things first: (1) the **master notification switch** under "Configuration → Notifications" must actually be on — it defaults to off and only turns on after you click "Enable notifications" and the system grants permission (if you only see the "Enable notifications" button, permission has not been granted yet); (2) the session must really go from running to finished, and it must not be a subagent session. System notifications themselves do work on the desktop app: Windows "Settings → System → Notifications" registers an `electron.app.DeepSeek Harness` entry, and a real "task complete" toast has been observed on the actual machine. The only known boundary is that **clicking the notification does not bring the window back** — closing the window hides it and the current desktop bridge exposes no window API; use the system tray instead.
-</details>
-
-<details>
-<summary><strong>A quota card shows "credential missing"?</strong></summary>
-
-Use the inline form on the card: an API key for regular adaptations, the management key for CLIProxyAPI (not the proxy key), and the console cookie for Xiaomi Token Plan. The value goes into the DSH credential store and the provider refreshes automatically; if a process environment variable shadows the name, the host refuses the write — change the variable itself. To fix a typo or rotate a key, a configured card keeps an "Edit credential (configured)" entry in its **Config** area where the stored value can be overwritten or cleared.
-</details>
-
-<details>
-<summary><strong>A CLIProxyAPI card shows "Temporarily banned by CLIProxyAPI"?</strong></summary>
-
-Repeated wrong management keys tripped the CPA fail2ban: five failures from one IP ban that IP for 30 minutes, and while banned **even the correct key is rejected**. That state deliberately offers no credential form (the key itself is fine). Wait for the ban to expire (the upstream message carries the remaining time), or change the DSH host's egress IP, then hit "Retry connection". The ban applies to the `/v0/management` plane only — model inference through that CPA keeps working.
-</details>
-
-<details>
-<summary><strong>Command Code shows "credential rejected by upstream"?</strong></summary>
-
-The inference and quota planes share one key (`user_*` prefix, created in Studio's API keys page). This error means the upstream rejected the key: regenerate or copy it in Studio at commandcode.ai, then paste it via "Set API credential". If the channel's baseURL points at a self-hosted relay rather than `api.commandcode.ai`, note the quota plane always queries the official account plane — a relay key cannot read official quota.
-</details>
-
-<details>
-<summary><strong>Xiaomi shows "credential rejected by upstream"?</strong></summary>
-
-The web session expired. Log back in at platform.xiaomimimo.com, copy the `Cookie:` header from any `/api/v1/tokenPlan/` request, and paste it again via "Set console cookie".
-</details>
-
-<details>
-<summary><strong>StepFun Step Plan card shows "credential missing"?</strong></summary>
-
-Step Plan has no API-key query endpoint — it needs a web session token. Log in at platform.stepfun.com, press F12 → Application → Cookies → platform.stepfun.com, copy the full `Oasis-Token` value (shaped like `xxx...yyy`; the two-dot separator is part of the token format, do not split it), then paste it via "Set console token (Oasis-Token, browser session)". The `Oasis-Webid` is derived from the token automatically.
-</details>
-
-<details>
-<summary><strong>StepFun Step Plan card shows "credential rejected by upstream"?</strong></summary>
-
-The token expired (the official `oasis-token is embezzled` error means the token and web_id no longer match). Log back in at platform.stepfun.com, copy the full new `Oasis-Token` from Cookies and paste it again; if the copied value carries an `Oasis-Token=` or `Cookie: ` prefix it is stripped automatically.
-</details>
-
-<details>
-<summary><strong>What does restoring a backup do?</strong></summary>
-
-The host first runs an integrity inspection and presents a restore-preflight plan for final confirmation. Immediately before commit it rechecks the backup SHA-256, current-target fingerprint, and running work; any change aborts without a partial overwrite or restart. A successful commit replaces sessions in full, makes the allowlisted config files exact to the snapshot, and updates profiles exactly as the preflight mapping says (a cross-name mapping restores only the Profile configuration layer unless you tick the manifest box; node_modules, credentials, and attachments stay untouched). Docker/systemd/pm2-style managed runtimes restart automatically; likely terminal-launched instances show manual-restart instructions. Deleting a backup also requires two-step confirmation.
-</details>
-
-<details>
-<summary><strong>Why is a skill switch greyed out?</strong></summary>
-
-That skill lives in a read-only bundled directory. Only `project-*` and `user-*` sources support the two-way switches.
-</details>
-
-<details>
-<summary><strong>Saving a skill switch says "the skill file just changed"?</strong></summary>
-
-Concurrency protection kicked in: SKILL.md was just modified by an external editor (version mismatch). Refresh to get the latest state and retry.
-</details>
-
-<details>
-<summary><strong>The plugin page installed the plugin, but the version is an older one?</strong></summary>
-
-pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes): **installing without a version** (including `@latest`) only selects the newest release that has already cleared the cooldown, so a freshly published release is skipped and the official plugin page reports that it installed x.y.z instead of the latest a.b.c. To get the new version right away: uninstall it in the plugin page and reinstall with `package@version` (e.g. `@gehennawu/dsh-service@2.0.8`), or use this plugin's **Service Control → Upgrade** — it installs an exact version and is not subject to the cooldown. The cooldown is a supply-chain policy (a fresh release may contain defects that are not known yet); after the 24 hours have passed, installing without a version also reaches the new release.
-</details>
-
-<details>
-<summary><strong>Does a failed update check affect other features?</strong></summary>
-
-No. It is a read-only request to the npm registry and fails silently; everything else keeps working.
-</details>
-
-## 🤝 Contributing
-
-Issues and pull requests are welcome. See AGENTS.md in the repository for the development roadmap and conventions, and its "Release" section for publishing rules.
-
-## 📄 License
+Submit bugs and suggestions through [Issues](https://github.com/gehennawu/dsh-service/issues). Pull requests are welcome.
 
 [MIT](./LICENSE)
