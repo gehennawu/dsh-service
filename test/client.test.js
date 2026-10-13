@@ -56,6 +56,8 @@ function createRenderer(rpcCall, options = {}) {
     subagentRoute: true,
     // v1.8：模型厂家/渠道图标默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
     modelProviderIcons: true,
+    // v1.10：模型配置工作台默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
+    modelCatalog: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -210,7 +212,13 @@ function createRenderer(rpcCall, options = {}) {
       const epochSuffix = currentSlot === 'conversation.input.right' && options.strictSessionSlots === true ? ':' + sessionSlot.epoch : ''
       currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name + epochSuffix
       hookCursor = 0
-      const output = node.type(node.props)
+      // 真实 react-dom 语义：createElement 的第三参及之后会成为 props.children
+      // （单子为值本身、多子为数组、无子为 undefined）。替身此前只转交 props，
+      // 函数组件收到的 children 恒为 undefined——model-config 的 Button 这类
+      // 「函数组件 + children」写法在真机有文案、在替身里却渲染成空标签。
+      const output = node.type(node.children.length === 0
+        ? node.props
+        : { ...node.props, children: node.children.length === 1 ? node.children[0] : node.children })
       // React 规则：同一组件实例每次渲染的 hook 数必须恒定。软替身此前不校验，
       // 「提前 return 之后才声明 hook」的组件（QuotaRing 的 bottomOffset）在
       // 「无数据 → 数据落地」的同挂载重渲染里 hook 数变化，真机 React 直接抛错、
@@ -2016,6 +2024,8 @@ test('every page and sub-page root block shares the svcCardStyle container conve
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
     if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
     if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'models3-snapshot') return { ok: true, value: { routes: [], removedRoutes: [] } }
+    if (endpoint === 'subagent-route') return { ok: true, value: { available: true, mode: 'inherit', models: [] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
@@ -2034,8 +2044,12 @@ test('every page and sub-page root block shares the svcCardStyle container conve
     await openTab(label)
     assertCard(id)
   }
-  // 维护页默认子页（子代理）的根块同样是卡式容器；会话/技能/重启三个子页块也各带根 testid。
+  // 维护页默认子页（会话管理）的根块同样是卡式容器。
   await openTab('维护')
+  assertCard('sessions-section')
+  // 子代理已迁到「模型配置」页的子标签（维护页不再有重复入口）：其根块沿用卡式容器。
+  await openTab('模型配置')
+  await openTab('子代理路由')
   assertCard('subagent-section')
 })
 
@@ -2136,19 +2150,19 @@ test('tab and top alerts identify health and backup failures without treating an
   assert.equal(renderer.hasTest('tab-dot-overview'), false, 'overview has no failure')
   assert.equal(renderer.hasTest('tab-dot-configuration'), false, 'configuration has no failure')
   assert.equal(renderer.hasTest('tab-dot-usage'), false, 'usage has no failure')
-  // v0.39：单行六页分段条，容器 testid = service-tab-list，按钮 testid = service-tab-<id>。
+  // v1.10：模型配置页插在额度之后、诊断之前（旧分支的信息架构）。
   assert.deepEqual(renderer.findAllByTestIdPrefix('service-tab-').map((node) => node.props['data-testid']), [
     'service-tab-list',
-    'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-diagnostics',
-    'service-tab-maintenance', 'service-tab-configuration',
-  ], 'order: overview → usage → quota → diagnostics → maintenance → configuration')
+    'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-models',
+    'service-tab-diagnostics', 'service-tab-maintenance', 'service-tab-configuration',
+  ], 'order: overview → usage → quota → models → diagnostics → maintenance → configuration')
   // 重启不再是顶层标签：收敛为维护子页（maintenance-tab-*）。
   assert.equal(renderer.hasTest('top-tab-restart'), false, 'no legacy top tabs remain')
   assert.equal(renderer.hasTest('service-tab-restart'), false, 'restart is a maintenance subpage, not a primary tab')
   assert.match(text, /服务控制提醒.*健康诊断.*维护/)
 })
 
-test('maintenance aggregate page: subagent default, localStorage persistence, and fallback when stored page is disabled', async () => {
+test('maintenance aggregate page: sessions default, localStorage persistence, fallback, and no duplicate subagent entry', async () => {
   const rpc = async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     if (endpoint === 'check-update') return { ok: false, error: 'offline' }
@@ -2156,19 +2170,22 @@ test('maintenance aggregate page: subagent default, localStorage persistence, an
     if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
     if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
     if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {} } }
+    if (endpoint === 'models3-snapshot') return { ok: true, value: { routes: [], removedRoutes: [] } }
+    if (endpoint === 'subagent-route') return { ok: true, value: { available: true, mode: 'inherit', models: [] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }
-  // 首次进入维护页：默认「子代理」（用户点名），无 localStorage 记忆。
+  // 首次进入维护页：默认「会话管理」，无 localStorage 记忆；子代理不再是维护子页。
   const first = createRenderer(rpc)
   await first.load()
   await first.findButton('维护').props.onClick()
   await first.flush()
-  assert.equal(first.findByTestId('maintenance-tab-subagent').props['aria-selected'], 'true')
+  assert.equal(first.findByTestId('maintenance-tab-sessions').props['aria-selected'], 'true')
+  assert.equal(first.hasTest('maintenance-tab-subagent'), false, 'subagent is not duplicated under maintenance')
   assert.equal(first.findByTestId('service-panel-root').props['data-dshsvc-page'], 'maintenance')
-  // 用户切到「会话管理」：写入记忆键。
-  await first.findByTestId('maintenance-tab-sessions').props.onClick()
+  // 用户切到「技能」：写入记忆键。
+  await first.findByTestId('maintenance-tab-skills').props.onClick()
   await first.flush()
-  assert.equal(localStorage.getItem('dsh-service-maintenance-tab'), 'sessions')
+  assert.equal(localStorage.getItem('dsh-service-maintenance-tab'), 'skills')
 
   // 冷启动带记忆：直接落在已存储子页。
   const stored = createRenderer(rpc)
@@ -2186,6 +2203,15 @@ test('maintenance aggregate page: subagent default, localStorage persistence, an
   await fallback.flush()
   assert.equal(fallback.hasTest('maintenance-tab-backup'), false, 'disabled subpage is removed')
   assert.equal(fallback.findByTestId('maintenance-tab-sessions').props['aria-selected'], 'true', 'falls back to the first available page')
+
+  // 子代理路由的唯一入口在「模型配置」页的子标签下。
+  await first.findButton('模型配置').props.onClick()
+  await first.flush()
+  assert.equal(first.hasTest('models-tab-subagent'), true, 'the models page owns the subagent subpage')
+  await first.findByTestId('models-tab-subagent').props.onClick()
+  await first.flush()
+  await first.flush()
+  assert.equal(first.hasTest('subagent-section'), true)
 })
 
 test('disabling the active primary page returns the panel to overview', async () => {
@@ -5417,6 +5443,10 @@ test('the ring panel shows only each account\'s nearest reset card and collapses
               { id: 'r-1-codex-5h', kindKey: 'codex-5h', label: 'relient8888@gmail.com', percent: 0 },
             ],
             // 刻意乱序：最近到期的排在中间，验证展示取「最近」而不是原序第一张。
+            //
+            // 日期**相对当前时间**推导，不写死字面量：写死会随日历腐烂——卡一旦落到过去就被
+            // 判为已过期并 prune 掉，断言随之失败（本用例 2026-09-22 即因此变红，产品行为正确）。
+            // 偏移量保持原有的相对次序（g1 最近 → g2 → r1 → r2 → g3）。
             resetCards: [
               { id: 'g2', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: gCard2.raw },
               { id: 'g1', provider: 'cpa', account: 'gehenna8888@gmail.com', expiresAt: gCard1.raw },
@@ -8509,6 +8539,16 @@ test('manual-only rows pause auto retry, rename the action to a manual reconnect
 
 // ─── v0.27 子代理模型路由 ────────────────────────────────────────────────────
 
+// v1.11 起子代理路由是「模型配置」页的子页（维护页不再有重复入口）。
+// 导航统一走 模型配置 → 子代理路由；各用例的断言保持原样，只换入口。
+async function openSubagentPage(renderer) {
+  renderer.findButton('模型配置').props.onClick()
+  await renderer.flush()
+  renderer.findButton('子代理路由').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+}
+
 function createSubagentRenderer(options = {}) {
   const state = {
     route: options.route ?? { available: true, mode: 'inherit' },
@@ -8553,6 +8593,7 @@ function createSubagentRenderer(options = {}) {
     if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
     if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
     if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: Date.now() } }
+    if (endpoint === 'models3-snapshot') return { ok: true, value: { routes: [], removedRoutes: [] } }
     if (endpoint === 'web') return { ok: true, value: { instanceId: 'new-instance' } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { featureSettings: options.featureSettings, initialStorage: options.initialStorage })
@@ -8563,11 +8604,7 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   const { renderer, state } = createSubagentRenderer()
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
 
   assert.equal(renderer.hasTest('subagent-section'), true)
   assert.equal(renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
@@ -8621,11 +8658,7 @@ test('subagent tab restores the saved custom route after switching modes (draft 
   const { renderer, state } = createSubagentRenderer({ route: { available: true, mode: 'follow', provider: 'cpa', model: 'gpt-5.6-sol' } })
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
 
   renderer.findByTestId('subagent-mode-custom').props.onClick()
   await renderer.flush()
@@ -8648,11 +8681,7 @@ test('subagent tab preserves the reasoning effort across mode switches', async (
   const { renderer, state } = createSubagentRenderer({ models, route: { available: true, mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' } })
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
   assert.equal(renderer.findByTestId('subagent-reasoning-effort').props.value, 'high')
 
   renderer.findByTestId('subagent-mode-follow').props.onClick()
@@ -8689,8 +8718,8 @@ test('subagent first paint: cached route seeds the first frame so the mode does 
   await pending.renderer.load()
   pending.renderer.mount('settings.section')
   // 不等待 flush：进入子代理页后的第一帧就必须读缓存，而非等宿主响应（否则首帧先亮旧模式，出现「跳一下」窗口）。
-  pending.renderer.findButton('维护').props.onClick()
-  pending.renderer.findButton('子代理').props.onClick()
+  pending.renderer.findButton('模型配置').props.onClick()
+  pending.renderer.findButton('子代理路由').props.onClick()
   // 首帧（宿主未响应）：模式已经是自定义，自定义区块与回退编辑器在位——不先画初始再跳。
   assert.equal(pending.renderer.findByTestId('subagent-mode-custom').props['aria-pressed'], 'true')
   assert.equal(pending.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'false')
@@ -8711,11 +8740,7 @@ test('subagent first paint: cached route seeds the first frame so the mode does 
   const cold = createSubagentRenderer()
   await cold.renderer.load()
   cold.renderer.mount('settings.section')
-  cold.renderer.findButton('维护').props.onClick()
-  await cold.renderer.flush()
-  cold.renderer.findButton('子代理').props.onClick()
-  await cold.renderer.flush()
-  await cold.renderer.flush()
+  await openSubagentPage(cold.renderer)
   assert.equal(cold.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true')
 })
 
@@ -8723,11 +8748,7 @@ test('subagent route cache: written after a successful load/save and ignored whe
   const { renderer, state } = createSubagentRenderer({ route: { available: true, mode: 'follow' } })
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
   // load 成功即落缓存（只含轻量路由字段，不含模型清单）。
   const written = JSON.parse(localStorage.getItem('dsh-service-subagent-route-cache'))
   assert.equal(written.mode, 'follow')
@@ -8752,11 +8773,7 @@ test('subagent route cache: written after a successful load/save and ignored whe
     const broken = createSubagentRenderer({ initialStorage: { 'dsh-service-subagent-route-cache': raw } })
     await broken.renderer.load()
     broken.renderer.mount('settings.section')
-    broken.renderer.findButton('维护').props.onClick()
-    await broken.renderer.flush()
-    broken.renderer.findButton('子代理').props.onClick()
-    await broken.renderer.flush()
-    await broken.renderer.flush()
+    await openSubagentPage(broken.renderer)
     assert.equal(broken.renderer.findByTestId('subagent-mode-inherit').props['aria-pressed'], 'true', `bad cache ${raw} must be ignored`)
     assert.equal(broken.renderer.findByTestId('subagent-section') !== undefined, true)
   }
@@ -8766,11 +8783,7 @@ test('subagent fallback list: load/add/move/remove rows and save ordered fallbac
   const { renderer, state } = createSubagentRenderer()
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
 
   // inherit 无回退块；切到 follow 出现，初始为空提示。
   assert.equal(renderer.hasTest('subagent-fallback-block'), false)
@@ -8832,21 +8845,13 @@ test('subagent tab is feature-gated and renders host errors/unavailable status i
   const unavailable = createSubagentRenderer({ route: { available: false, mode: 'inherit' } }).renderer
   await unavailable.load()
   unavailable.mount('settings.section')
-  unavailable.findButton('维护').props.onClick()
-  await unavailable.flush()
-  unavailable.findButton('子代理').props.onClick()
-  await unavailable.flush()
-  await unavailable.flush()
+  await openSubagentPage(unavailable)
   assert.match(unavailable.findByTestId('subagent-unavailable').children.join(''), /subagents 服务缺席/)
 
   const failed = createSubagentRenderer({ saveError: 'invalid-model-route' }).renderer
   await failed.load()
   failed.mount('settings.section')
-  failed.findButton('维护').props.onClick()
-  await failed.flush()
-  failed.findButton('子代理').props.onClick()
-  await failed.flush()
-  await failed.flush()
+  await openSubagentPage(failed)
   failed.findByTestId('subagent-mode-custom').props.onClick()
   await failed.flush()
   await failed.flush()
@@ -8864,11 +8869,7 @@ test('subagent reasoning effort: custom 显示选择器、选项只来自当前�
   const { renderer, state } = createSubagentRenderer({ models: reasoningModels })
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
 
   // inherit 默认不显示 reasoning selector。
   assert.equal(renderer.hasTest('subagent-reasoning-effort'), false)
@@ -8919,11 +8920,7 @@ test('subagent reasoning effort: invalid-reasoning-effort 显示正确中文/英
   const { renderer } = createSubagentRenderer({ saveError: 'invalid-reasoning-effort' })
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
   renderer.findByTestId('subagent-mode-custom').props.onClick()
   await renderer.flush()
   await renderer.flush()
@@ -9121,11 +9118,7 @@ test('subagent page: composer subagent-info toggle defaults on, flips the indepe
   const { renderer } = createSubagentRenderer()
   await renderer.load()
   renderer.mount('settings.section')
-  renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  renderer.findButton('子代理').props.onClick()
-  await renderer.flush()
-  await renderer.flush()
+  await openSubagentPage(renderer)
   // 默认开（DEFAULT_FEATURES subagentModelsDock: true）。
   assert.equal(renderer.hasTest('subagent-dock-toggle-row'), true)
   assert.equal(renderer.findByTestId('subagent-dock-toggle').props['aria-checked'], 'true')
@@ -15054,4 +15047,1364 @@ test('a manual usage refresh shares the busy flag and never overlaps an automati
     Date.now = realNow
     delete globalThis.document
   }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.11 模型配置（src/client/model-config.js，models3 端点）：渠道纵向折叠手风琴、
+// 内置目录优先分组、单模型编辑面板、智能填充（一键填入 + 一次确认）与保存冲突。
+// 锁的是**当前已批准的界面行为**：不再有可单独采纳/拒绝的建议、参考来源绑定或
+// 只读依据卡片；删除走简化确认弹窗（含引用阻塞）；启停直接提交不等二次确认。
+// 与宿主端 test/model-config.test.js 互补——那边锁协议与事务，这边锁渲染与交互。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODELS3_SCHEMA = {
+  modelFields: ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat'],
+  routeFields: ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'retryPolicy'],
+  levels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
+  compatGates: {
+    'openai-completions': ['supportsStore', 'supportsReasoningEffort', 'maxTokensField'],
+    'openai-responses': ['supportsMaxOutputTokens'],
+    'anthropic-messages': ['supportsTemperature'],
+  },
+  compatEnums: { maxTokensField: ['max_completion_tokens', 'max_tokens'] },
+  routeEnums: { api: ['openai-completions', 'openai-responses', 'anthropic-messages'], reasoning: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], cacheRetention: ['none', 'short', 'long'], transport: ['sse', 'websocket', 'websocket-cached', 'auto'] },
+}
+
+const MODELS3_SNAPSHOT = {
+  // 服务端顺序刻意把自定义渠道排在前面：客户端必须按「内置目录优先」重新分组。
+  routes: [
+    { route: 'cpa', displayName: 'CPA Relay', source: 'custom', configured: true, modelCount: 2, runtimeLoaded: true, lastValidation: { ok: true, at: 1 } },
+    { route: 'builtin-gw', displayName: 'Builtin Gateway', source: 'builtin', configured: false, modelCount: 1, runtimeLoaded: false, lastValidation: null },
+  ],
+  templates: [
+    { id: 'tmpl-ai', name: 'Template AI', api: 'openai-completions', baseURL: 'https://api.template.ai/v1', models: [{ id: 't1', name: 'T1' }, { id: 't2', name: 'T2' }] },
+  ],
+  removedRoutes: [],
+}
+
+const MODELS3_OPEN_CPA = {
+  route: 'cpa',
+  profile: {
+    displayName: 'CPA Relay',
+    api: 'openai-completions',
+    baseURL: 'https://gw.example.com/v1',
+    apiKeyEnv: 'CPA_API_KEY',
+    defaultContextWindow: 200000,
+    headers: { 'X-Trace': 'public' },
+    models: [
+      { id: 'm1', name: 'One', contextWindow: 131072, maxTokens: 8192, input: ['text'], reasoningEfforts: { high: 'high' } },
+      { id: 'm2' },
+    ],
+  },
+  inherited: {},
+  explicit: {},
+  effective: { displayName: 'CPA Relay', api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [{ id: 'm1', name: 'One' }] },
+  schema: MODELS3_SCHEMA,
+  sessionId: 's-cpa',
+  readOnly: false,
+  inheritedRoute: false,
+  fingerprint: 'fp1',
+}
+
+const MODELS3_OPEN_BUILTIN = {
+  route: 'builtin-gw',
+  profile: { displayName: 'Builtin Gateway', api: 'openai-completions', baseURL: 'https://builtin.example/v1', models: [{ id: 'b1', name: 'Builtin One' }] },
+  inherited: {},
+  explicit: {},
+  effective: { displayName: 'Builtin Gateway' },
+  catalogModels: [{ id: 'b1', api: 'openai-completions', name: 'Builtin One' }],
+  schema: MODELS3_SCHEMA,
+  sessionId: 's-builtin-gw',
+  readOnly: false,
+  inheritedRoute: false,
+  fingerprint: 'fp-builtin',
+}
+
+const MODELS3_OPEN_RELAY2 = {
+  route: 'relay2',
+  profile: { displayName: 'Relay Two', api: 'openai-completions', baseURL: 'https://relay2.example/v1', models: [{ id: 'one' }, { id: 'two' }] },
+  inherited: {},
+  explicit: {},
+  effective: { displayName: 'Relay Two' },
+  schema: MODELS3_SCHEMA,
+  sessionId: 's-relay2',
+  readOnly: false,
+  inheritedRoute: false,
+  fingerprint: 'fp2',
+}
+
+// models3 DTO 替身：默认端点与宿主同名同形；用例只在需要时覆盖个别端点。
+function models3Fixture(overrides = {}) {
+  const calls = []
+  const base = async (channel, endpoint, payload = {}) => {
+    assert.equal(channel, '/dsh-service')
+    if (Object.hasOwn(overrides, endpoint)) {
+      const override = overrides[endpoint]
+      return typeof override === 'function' ? override(payload) : override
+    }
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'i' } }
+    if (endpoint === 'check-update') return { ok: false, error: 'offline' }
+    if (endpoint === 'health') return { ok: true, value: { uptime: 0, rss: 0, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: false, error: 'disabled fixture' }
+    if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+    if (endpoint === 'quota') return { ok: true, value: { providers: [], serverTime: 0 } }
+    if (endpoint === 'diagnostics') return { ok: true, value: { checks: [], status: 'ok' } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'activity') return { ok: true, value: { hasActive: false, items: [] } }
+    if (endpoint === 'subagent-route') return { ok: true, value: { available: true, mode: 'inherit', models: [] } }
+    if (endpoint === 'models3-snapshot') return { ok: true, value: MODELS3_SNAPSHOT }
+    if (endpoint === 'models3-open') return { ok: true, value: payload.route === 'builtin-gw' ? MODELS3_OPEN_BUILTIN : payload.route === 'relay2' ? MODELS3_OPEN_RELAY2 : MODELS3_OPEN_CPA }
+    if (endpoint === 'models3-fill') return { ok: true, value: { mode: 'on', groups: [], sources: [], readonly: [] } }
+    return { ok: true, value: {} }
+  }
+  const rpc = async (channel, endpoint, payload = {}) => {
+    calls.push({ endpoint, payload })
+    return base(channel, endpoint, payload)
+  }
+  return { calls, rpc }
+}
+
+const models3Calls = (calls, endpoint) => calls.filter((call) => call.endpoint === endpoint)
+const settle = async (renderer, times = 2) => { for (let index = 0; index < times; index += 1) await renderer.flush() }
+const openModelsPage = async (renderer) => { renderer.findButton('模型配置').props.onClick(); await settle(renderer) }
+const openModelsRoute = async (renderer, route) => { await openModelsPage(renderer); renderer.findByTestId('model-route-open-' + route).props.onClick(); await settle(renderer) }
+const openModelsModel = async (renderer, id) => { renderer.findByTestId('model-open-' + id).props.onClick(); await settle(renderer) }
+const nodeText = (node) => {
+  if (Array.isArray(node)) return node.map(nodeText).join('')
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node !== 'object') return String(node)
+  return (node.children || []).map(nodeText).join('')
+}
+const byAria = (renderer, label) => {
+  const hit = renderer.findNode((node) => node.props?.['aria-label'] === label)
+  assert.ok(hit, `aria-label ${JSON.stringify(label)} was not rendered`)
+  return hit.node
+}
+const labelCheckbox = (renderer, includes) => {
+  const hit = renderer.findNode((node) => node.type === 'label' && nodeText(node).includes(includes))
+  assert.ok(hit, `label containing ${JSON.stringify(includes)} was not rendered`)
+  let box
+  const walk = (node) => {
+    if (box !== undefined || node === null || node === undefined || typeof node !== 'object') return
+    if (node.props?.type === 'checkbox') { box = node; return }
+    for (const child of node.children || []) walk(child)
+  }
+  walk(hit.node)
+  assert.ok(box, `no checkbox inside the label containing ${JSON.stringify(includes)}`)
+  return box
+}
+// 冲突对照里的「此字段使用最新值」按钮：每字段一行，按钮无 testid，故按行内 <b>field</b> 定位。
+const latestRowButton = (renderer, field) => {
+  const hit = renderer.findNode((node) => {
+    if (node.type !== 'div' || !Array.isArray(node.children)) return false
+    const bold = node.children.find((child) => child !== null && typeof child === 'object' && child.type === 'b')
+    return bold !== undefined && nodeText(bold) === field && nodeText(node).includes('最新配置') && nodeText(node).includes('我的草稿')
+  })
+  assert.ok(hit, `latest/draft comparison row for ${JSON.stringify(field)} was not rendered`)
+  let button
+  const walk = (node) => {
+    if (button !== undefined || node === null || node === undefined || typeof node !== 'object') return
+    if (node.type === 'button' && nodeText(node).includes('此字段使用最新值')) { button = node; return }
+    for (const child of node.children || []) walk(child)
+  }
+  walk(hit.node)
+  assert.ok(button, `use-latest button for ${JSON.stringify(field)} was not rendered`)
+  return button
+}
+const subtreeHas = (node, testId) => {
+  let found = false
+  const walk = (current) => {
+    if (found || current === null || current === undefined || typeof current !== 'object') return
+    if (Array.isArray(current)) { for (const child of current) walk(child); return }
+    if (current.props?.['data-testid'] === testId) { found = true; return }
+    for (const child of current.children || []) walk(child)
+  }
+  walk(node)
+  return found
+}
+// 官方 Modal 在客户端测试替身里没有提供（ui-primitives 只替身 Markdown 组件），
+// 弹窗标题/footer 常作为 props 承载，真实外壳会把它挂进 portal，替身只遍历 children。
+// 因此对弹窗控件补一个会下钻 props 的查找器；普通渲染树仍走 findByTestId/byAria。
+const deepFind = (renderer, predicate) => {
+  let match
+  const walk = (node) => {
+    if (match !== undefined || node === null || node === undefined || typeof node !== 'object') return
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (predicate(node)) { match = node; return }
+    for (const child of node.children || []) walk(child)
+    for (const value of Object.values(node.props || {})) if (value !== null && typeof value === 'object') walk(value)
+  }
+  for (const tree of renderer.roots()) walk(tree)
+  assert.ok(match, 'the requested modal control was not rendered')
+  return match
+}
+const deepFindId = (renderer, id) => deepFind(renderer, (node) => node.props?.['data-testid'] === id || node.props?.id === id)
+const deepFindAria = (renderer, label) => deepFind(renderer, (node) => node.props?.['aria-label'] === label)
+// 弹窗子树在替身里以未求值的元素挂在 props 上：文本断言同样要下钻 props。
+const deepText = (renderer) => {
+  const parts = []
+  const walk = (node) => {
+    if (node === null || node === undefined || typeof node === 'boolean') return
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (typeof node !== 'object') { parts.push(String(node)); return }
+    for (const child of node.children || []) walk(child)
+    for (const value of Object.values(node.props || {})) if (value !== null && typeof value === 'object') walk(value)
+  }
+  for (const tree of renderer.roots()) walk(tree)
+  return parts.join('')
+}
+const deepLabelCheckbox = (renderer, includes) => {
+  const label = deepFind(renderer, (node) => node.type === 'label' && nodeText(node).includes(includes))
+  let box
+  const walk = (node) => {
+    if (box !== undefined || node === null || node === undefined || typeof node !== 'object') return
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (node.props?.type === 'checkbox') { box = node; return }
+    for (const child of node.children || []) walk(child)
+  }
+  walk(label)
+  assert.ok(box, `no checkbox inside the modal label containing ${JSON.stringify(includes)}`)
+  return box
+}
+// 弹窗按钮在替身里是未求值的 Button 函数元素（type 是函数，文本在 children）。
+const deepButton = (renderer, label) => deepFind(renderer, (node) => typeof node.type === 'function' && nodeText(node) === label)
+const idNode = (renderer, id) => renderer.findNode((node) => node.props?.id === id)?.node
+
+test('models page renders inside the primary tab, fetches a zero-network snapshot, and lists providers', async () => {
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  // 标签在，但进页前没有任何 models3 请求（零网络默认）。
+  assert.equal(renderer.hasTest('service-tab-models'), true)
+  assert.deepEqual(models3Calls(calls, 'models3-snapshot'), [])
+  await openModelsPage(renderer)
+  const snapshots = models3Calls(calls, 'models3-snapshot')
+  assert.equal(snapshots.length, 1)
+  assert.deepEqual(snapshots[0].payload, {}, 'the snapshot endpoint takes no payload')
+  assert.equal(renderer.hasTest('models-page'), true)
+  assert.equal(renderer.findByTestId('models-tab-providers').props['aria-selected'], 'true')
+  assert.equal(renderer.findByTestId('models-tab-subagent').props['aria-selected'], 'false')
+  assert.equal(renderer.hasTest('model-providers'), true)
+  // 分组按来源重排：内置目录优先，自定义供应商在后（与服务端行序无关）。
+  const list = nodeText(renderer.findByTestId('model-provider-list'))
+  assert.ok(list.indexOf('内置目录') >= 0 && list.indexOf('自定义供应商') >= 0, 'both source groups are labelled')
+  assert.ok(list.indexOf('内置目录') < list.indexOf('Builtin Gateway'), 'the built-in group comes first')
+  assert.ok(list.indexOf('Builtin Gateway') < list.indexOf('自定义供应商'), 'built-in rows precede the custom group header')
+  assert.ok(list.indexOf('自定义供应商') < list.indexOf('CPA Relay'), 'custom rows follow their group header')
+  // 纵向手风琴默认全部折叠：没有任何渠道正文，展开状态为 false。
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], false)
+  assert.equal(renderer.findByTestId('model-route-open-builtin-gw').props['aria-expanded'], false)
+  assert.equal(renderer.findAllByTestIdPrefix('model-provider-content').length, 0)
+  assert.equal(renderer.hasTest('model-route-detail'), false)
+  assert.equal(renderer.hasTest('model-provider-sidebar'), false, 'there is no separate sidebar layout')
+  // 状态点只表达配置来源，不再渲染运行时/测试散文。
+  byAria(renderer, '配置已保存')
+  byAria(renderer, '配置继承目录')
+  assert.doesNotMatch(renderer.text('settings.section'), /运行时已加载|运行时未加载|尚未做真实调用测试/)
+  // 子代理是「模型配置」页的子标签。
+  renderer.findByTestId('models-tab-subagent').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('models-tab-subagent').props['aria-selected'], 'true')
+  assert.equal(renderer.hasTest('subagent-section'), true)
+  assert.equal(renderer.hasTest('model-providers'), false, 'switching subpage unmounts the providers panel')
+  assert.equal(models3Calls(calls, 'models3-snapshot').length, 1, 'switching subpages does not refetch the snapshot')
+})
+
+test('models page sub-tabs hide when only the providers subpage applies', async () => {
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc, { featureSettings: { subagentRoute: false } })
+  await renderer.load()
+  await openModelsPage(renderer)
+  assert.equal(renderer.hasTest('model-providers'), true)
+  assert.equal(renderer.hasTest('models-tab-providers'), false, 'a single subpage renders without the sub-tab bar')
+  assert.equal(renderer.hasTest('models-tab-subagent'), false)
+  assert.equal(models3Calls(calls, 'subagent-route').length, 0, 'the subagent route is never queried while its feature is off')
+})
+
+test('models page gates its providers and subagent subpages independently', async () => {
+  // modelCatalog 关、subagentRoute 开：主标签仍在（子代理独立可达），供应商子页消失且零 models3 请求。
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc, { featureSettings: { modelCatalog: false } })
+  await renderer.load()
+  assert.equal(renderer.hasTest('service-tab-models'), true, 'closing model editing must not hide the still-enabled subagent routing')
+  await openModelsPage(renderer)
+  assert.equal(renderer.hasTest('models-page'), true)
+  assert.equal(renderer.hasTest('model-providers'), false, 'the disabled providers subpage is removed')
+  assert.equal(renderer.hasTest('models-tab-providers'), false, 'a single remaining subpage renders without the sub-tab bar')
+  assert.equal(renderer.hasTest('subagent-section'), true, 'the subagent subpage owns the page')
+  assert.equal(calls.some((call) => call.endpoint.startsWith('models3-')), false, 'a disabled providers subpage never fetches its endpoints')
+  // 两个功能都关：连主标签一起消失，且没有任何模型配置/子代理请求。
+  const off = models3Fixture()
+  const offRenderer = createRenderer(off.rpc, { featureSettings: { modelCatalog: false, subagentRoute: false } })
+  await offRenderer.load()
+  assert.equal(offRenderer.hasTest('service-tab-models'), false, 'the tab disappears when both features are off')
+  assert.equal(off.calls.some((call) => call.endpoint.startsWith('models3-') || call.endpoint === 'subagent-route'), false, 'a disabled page never fetches its endpoints')
+})
+
+test('models page is one interface with no hidden localStorage mode switch', async () => {
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc, { initialStorage: { 'dsh-service-models-workbench': 'legacy' } })
+  await renderer.load()
+  await openModelsPage(renderer)
+  // 浏览器里残留旧的 legacy 标记也不改变默认路径（该键已退役）。
+  assert.equal(renderer.hasTest('model-providers'), true)
+  assert.equal(models3Calls(calls, 'models3-snapshot').length, 1)
+})
+
+test('models page surfaces a failed snapshot and recovers on refresh', async () => {
+  let fail = true
+  const { calls, rpc } = models3Fixture({ 'models3-snapshot': () => (fail ? rpcError('unknown-endpoint') : { ok: true, value: MODELS3_SNAPSHOT }) })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  // 端点缺席不得炸面板：页面照常渲染，只是没有渠道行。
+  assert.equal(renderer.hasTest('models-page'), true)
+  assert.equal(renderer.findAllByTestIdPrefix('model-route-open-').length, 0)
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /unknown-endpoint/, 'the failure code is surfaced, not swallowed')
+  fail = false
+  renderer.findByTestId('model-routes-refresh').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-snapshot').length, 2)
+  assert.equal(renderer.findAllByTestIdPrefix('model-route-open-').length, 2, 'a successful refresh repopulates the list')
+})
+
+test('models page creates a custom provider through preview and commit, then opens it', async () => {
+  let created = false
+  const extra = { route: 'relay2', displayName: 'Relay Two', source: 'custom', configured: true, modelCount: 2, runtimeLoaded: true, lastValidation: null }
+  const { calls, rpc } = models3Fixture({
+    'models3-snapshot': () => ({ ok: true, value: { ...MODELS3_SNAPSHOT, routes: created ? [...MODELS3_SNAPSHOT.routes, extra] : MODELS3_SNAPSHOT.routes } }),
+    'models3-create-preview': (payload) => ({ ok: true, value: { planId: 'plan-create', route: payload.route, profile: {}, credentialStored: !!payload.key } }),
+    'models3-create-commit': () => { created = true; return { ok: true, value: { route: 'relay2', saved: true, undoable: true, credentialValueRestored: false } } },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  renderer.findByTestId('model-route-create').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-route'), true)
+  // 当前界面不再渲染任何「创建不会探测/不会写密钥」的边界散文卡片。
+  assert.doesNotMatch(renderer.text('settings.section'), /创建不会探测渠道或写入密钥/)
+  assert.doesNotMatch(renderer.text('settings.section'), /只有点击才使用当前渠道凭据在线发现/)
+  // 进入创建页不触网：没有发现/凭据/打开请求。
+  assert.equal(models3Calls(calls, 'models3-discover').length, 0)
+  assert.equal(models3Calls(calls, 'models3-credential-preview').length, 0)
+  byAria(renderer, '渠道标识（小写字母、数字、连字符）').props.onChange({ target: { value: 'relay2' } })
+  byAria(renderer, '渠道显示名称').props.onChange({ target: { value: 'Relay Two' } })
+  byAria(renderer, 'API地址').props.onChange({ target: { value: 'https://relay2.example/v1' } })
+  byAria(renderer, '手动模型 ID（空白或逗号分隔）').props.onChange({ target: { value: 'one, two one' } })
+  await settle(renderer)
+  renderer.findByTestId('model-create-save').props.onClick()
+  await settle(renderer)
+  const preview = models3Calls(calls, 'models3-create-preview')
+  assert.equal(preview.length, 1)
+  assert.deepEqual(preview[0].payload, {
+    route: 'relay2',
+    profile: { displayName: 'Relay Two', api: 'openai-completions', baseURL: 'https://relay2.example/v1', models: [{ id: 'one' }, { id: 'two' }] },
+  }, 'manual ids are de-duplicated into the preview payload')
+  const commit = models3Calls(calls, 'models3-create-commit')
+  assert.equal(commit.length, 1, 'the write happens only after the explicit preview')
+  assert.deepEqual(commit[0].payload, { planId: 'plan-create' })
+  // 创建成功后回到首页并展开新渠道（宿主快照已包含它）。
+  assert.equal(renderer.hasTest('model-create-route'), false)
+  assert.equal(renderer.findByTestId('model-route-open-relay2').props['aria-expanded'], true)
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  assert.match(renderer.text('settings.section'), /Relay Two/)
+})
+
+test('models page offers template dropdown, candidate models unchecked by default, and left nav shortcut switch', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-create-preview': (payload) => ({ ok: true, value: { planId: 'plan-create-tmpl', route: payload.route, profile: {}, credentialStored: !!payload.key } }),
+    'models3-create-commit': () => ({ ok: true, value: { route: 'tmpl-ai', saved: true, undoable: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+
+  // 1. 左列快捷入口胶囊开关存在并能切换
+  assert.equal(renderer.hasTest('models-nav-switch'), true)
+  assert.equal(renderer.findByTestId('models-nav-switch').props['aria-checked'], 'false')
+  renderer.findByTestId('models-nav-switch').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('models-nav-switch').props['aria-checked'], 'true')
+
+  // 2. 添加渠道：模板下拉框带出身份与候选模型
+  renderer.findByTestId('model-route-create').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-template'), true)
+  renderer.findByTestId('model-create-template').props.onChange({ target: { value: 'tmpl-ai' } })
+  await settle(renderer)
+  assert.equal(byAria(renderer, '渠道标识（小写字母、数字、连字符）').props.value, 'tmpl-ai')
+  assert.equal(byAria(renderer, '渠道显示名称').props.value, 'Template AI')
+  assert.equal(byAria(renderer, 'API地址').props.value, 'https://api.template.ai/v1')
+
+  // 3. 候选模型默认全部不勾选
+  assert.match(renderer.text('settings.section'), /选择模型/)
+  const t1Checkbox = labelCheckbox(renderer, 't1')
+  const t2Checkbox = labelCheckbox(renderer, 't2')
+  assert.equal(t1Checkbox.props.checked, false, 'candidate models are NOT checked by default')
+  assert.equal(t2Checkbox.props.checked, false, 'candidate models are NOT checked by default')
+
+  // 4. 未勾选任何模型时保存：提示错误，不发出 preview
+  renderer.findByTestId('model-create-save').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-create-preview').length, 0, 'blocks write when zero models are selected')
+  assert.match(renderer.text('settings.section'), /请至少勾选或输入一个模型/)
+
+  // 5. 勾选 t1、输入密钥后保存：只写勾选项与密钥
+  t1Checkbox.props.onChange({ target: { checked: true } })
+  byAria(renderer, 'API Key').props.onChange({ target: { value: 'my-tmpl-key' } })
+  await settle(renderer)
+  renderer.findByTestId('model-create-save').props.onClick()
+  await settle(renderer)
+  const preview = models3Calls(calls, 'models3-create-preview')
+  assert.equal(preview.length, 1)
+  assert.deepEqual(preview[0].payload, {
+    route: 'tmpl-ai',
+    profile: { displayName: 'Template AI', api: 'openai-completions', baseURL: 'https://api.template.ai/v1', models: [{ id: 't1' }] },
+    key: 'my-tmpl-key',
+  })
+})
+
+test('models page route detail edits connection and replaces the key through preview and commit', async () => {
+  let credentialCommits = 0
+  const { calls, rpc } = models3Fixture({
+    'models3-credential-preview': () => ({ ok: true, value: { planId: 'plan-cred', ref: 'CPA_KEY_NEW', shared: false, users: ['cpa'], externalConsumersUnknown: true, configured: false } }),
+    'models3-credential-commit': () => {
+      credentialCommits += 1
+      return credentialCommits === 1
+        ? { ok: true, value: { saved: true, credentialStored: true, ref: 'CPA_KEY_NEW', shared: false, undoable: true } }
+        : { ok: true, value: { saved: false, credentialStored: true, ref: 'CPA_KEY_NEW', shared: false, configurationFailed: true, undoable: false } }
+    },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  assert.deepEqual(models3Calls(calls, 'models3-open')[0].payload, { route: 'cpa' })
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  // 连接信息：地址/协议可编辑；密钥标签是「API密钥」，输入框不回显旧值。
+  const keyInput = byAria(renderer, 'API密钥')
+  assert.equal(keyInput.props.type, 'password')
+  assert.equal(keyInput.props.value, '', 'the key field never echoes the old value')
+  assert.equal(keyInput.props.placeholder, '留空保持不变，输入新密钥以更换')
+  assert.match(renderer.text('settings.section'), /更新密钥/)
+  // 不再渲染凭据/发现的边界散文卡片。
+  assert.doesNotMatch(renderer.text('settings.section'), /默认分配当前渠道独立凭据引用/)
+  assert.doesNotMatch(renderer.text('settings.section'), /只有点击才使用当前渠道凭据在线发现/)
+
+  // 重命名走菜单里的极简弹窗，确认后只改草稿。
+  renderer.findByTestId('model-route-menu').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-route-rename').props.onClick()
+  await settle(renderer)
+  deepFindAria(renderer, '渠道显示名称').props.onChange({ target: { value: 'CPA Relay MK2' } })
+  await settle(renderer)
+  deepFindId(renderer, 'model-route-rename-confirm').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-route-save').props.onClick()
+  await settle(renderer)
+  const routeSave = models3Calls(calls, 'models3-save-route')
+  assert.equal(routeSave.length, 1)
+  assert.deepEqual(routeSave[0].payload.patch, { displayName: 'CPA Relay MK2' }, 'only the edited display name is sent')
+  assert.deepEqual(routeSave[0].payload.unset, [])
+
+  // 地址可直接编辑并保存。
+  byAria(renderer, 'API地址').props.onChange({ target: { value: 'https://new.example/v1' } })
+  await settle(renderer)
+  renderer.findByTestId('model-route-save').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-save-route')[1].payload.patch, { baseURL: 'https://new.example/v1' })
+
+  // 换密钥：先预览后果，再显式确认（当前界面不再有「共享引用」勾选）。
+  byAria(renderer, 'API密钥').props.onChange({ target: { value: 'sk-abc' } })
+  await settle(renderer)
+  renderer.findByTestId('model-key-preview').props.onClick()
+  await settle(renderer)
+  const credentialPreview = models3Calls(calls, 'models3-credential-preview')
+  assert.equal(credentialPreview.length, 1)
+  assert.deepEqual(credentialPreview[0].payload, { sessionId: 's-cpa', shared: false })
+  assert.equal(renderer.hasTest('model-plan'), true)
+  assert.match(renderer.text('settings.section'), /仅恢复配置与凭据引用/)
+  deepFindId(renderer, 'model-plan-confirm').props.onClick()
+  await settle(renderer)
+  const credentialCommit = models3Calls(calls, 'models3-credential-commit')
+  assert.equal(credentialCommit.length, 1, 'the credential is written only after the explicit confirmation')
+  assert.deepEqual(credentialCommit[0].payload, { planId: 'plan-cred', key: 'sk-abc' })
+
+  // 配置更新失败（凭据已写入）：必须明确反馈实际后果，且清空密钥输入。
+  byAria(renderer, 'API密钥').props.onChange({ target: { value: 'sk-def' } })
+  await settle(renderer)
+  renderer.findByTestId('model-key-preview').props.onClick()
+  await settle(renderer)
+  deepFindId(renderer, 'model-plan-confirm').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-credential-commit').length, 2)
+  assert.match(renderer.text('settings.section'), /密钥已写入，但配置更新失败/)
+  assert.equal(byAria(renderer, 'API密钥').props.value, '', 'a partial failure clears the key input instead of pretending success')
+})
+
+test('models page deletes models and providers after a preview and blocks referenced removal', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-remove-preview': (payload) => (Array.isArray(payload.modelIds) && payload.modelIds.includes('m2')
+      ? { ok: true, value: { planId: 'plan-blocked', route: 'cpa', references: [{ kind: 'agent-default-model', provider: 'cpa', model: 'm2' }], blocked: true, modelsRemoved: ['m2'], credentialRetained: true, before: {} } }
+      : { ok: true, value: { planId: 'plan-remove', route: 'cpa', references: [], blocked: false, removeRoute: !Array.isArray(payload.modelIds), modelsRemoved: Array.isArray(payload.modelIds) ? payload.modelIds : ['m1', 'm2'], credentialRetained: true, before: {} } }),
+    'models3-remove-commit': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  // 模型删除：简化确认弹窗（无边界散文），预览与确认是两次不同点击。
+  renderer.findByTestId('model-delete-m1').props.onClick()
+  await settle(renderer)
+  const firstPreview = models3Calls(calls, 'models3-remove-preview')
+  assert.equal(firstPreview.length, 1)
+  assert.deepEqual(firstPreview[0].payload, { sessionId: 's-cpa', modelIds: ['m1'] })
+  assert.equal(models3Calls(calls, 'models3-remove-commit').length, 0, 'the preview never writes')
+  assert.ok(deepFindId(renderer, 'model-plan'), 'the simplified delete modal renders')
+  assert.match(deepText(renderer), /确定删除以下模型吗/)
+  assert.equal(idNode(renderer, 'model-removal-conflicts'), undefined)
+  assert.doesNotMatch(deepText(renderer), /仅恢复配置与凭据引用；删除保留凭据/)
+  assert.equal(deepFindId(renderer, 'model-plan-confirm').props.disabled, false)
+  deepFindId(renderer, 'model-plan-confirm').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-remove-commit')[0].payload, { planId: 'plan-remove' })
+
+  // 被主模型引用的模型：预览列出引用事实，确认按钮禁用且不写入。
+  renderer.findByTestId('model-delete-m2').props.onClick()
+  await settle(renderer)
+  const conflicts = deepFindId(renderer, 'model-removal-conflicts')
+  assert.ok(conflicts, 'the referenced model surfaces a conflicts block')
+  const conflictText = nodeText(conflicts)
+  assert.match(conflictText, /无法删除：以下设置仍在引用/)
+  assert.match(conflictText, /主对话默认模型/)
+  assert.match(conflictText, /cpa \/ m2/)
+  assert.match(deepText(renderer), /请先在子代理设置或默认模型设置中更换这些引用/)
+  assert.equal(deepFindId(renderer, 'model-plan-confirm').props.disabled, true, 'a referenced model cannot be removed')
+  assert.equal(models3Calls(calls, 'models3-remove-commit').length, 1, 'the blocked confirm never fires a write')
+
+  // 渠道删除：走同一弹窗，不带 modelIds 的整渠道预览。
+  renderer.findByTestId('model-route-menu').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-route-delete').props.onClick()
+  await settle(renderer)
+  const routePreview = models3Calls(calls, 'models3-remove-preview').at(-1)
+  assert.deepEqual(routePreview.payload, { sessionId: 's-cpa' })
+  const routePlan = nodeText(deepFindId(renderer, 'model-plan'))
+  assert.match(routePlan, /确定删除以下渠道及其模型配置吗？API 密钥保留。/)
+  assert.match(routePlan, /cpa/)
+  deepFindId(renderer, 'model-plan-confirm').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-remove-commit').at(-1).payload, { planId: 'plan-remove' })
+})
+
+test('models page restores the last removal from the list page and surfaces restore conflicts', async () => {
+  const snapshot = { routes: MODELS3_SNAPSHOT.routes, removedRoutes: [{ route: 'gone', displayName: 'Old Relay', at: 1, taken: false }] }
+  const { calls, rpc } = models3Fixture({
+    'models3-snapshot': { ok: true, value: snapshot },
+    'models3-restore-preview': (payload) => (payload.route === 'gone'
+      ? { ok: true, value: { planId: 'plan-restore', route: 'gone', before: {}, restore: { displayName: 'Old Relay', models: [{ id: 'x' }] }, removesRoute: false, credentialValueRestored: false } }
+      : rpcError('restore-conflict')),
+    'models3-restore-commit': () => ({ ok: true, value: { route: 'gone', saved: true, undoable: true } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  assert.equal(renderer.hasTest('model-removed-routes'), true)
+  renderer.findByTestId('model-removed-gone').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-restore-preview')[0].payload, { route: 'gone' })
+  assert.match(renderer.text('settings.section'), /删除保留凭据，恢复不会写回旧密钥/)
+  renderer.findByTestId('model-restore-confirm').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-restore-commit')[0].payload, { planId: 'plan-restore' })
+
+  // 恢复冲突：外部后续修改时拒绝恢复，错误本地化且不写入。
+  const conflict = models3Fixture({
+    'models3-snapshot': { ok: true, value: snapshot },
+    'models3-restore-preview': () => rpcError('restore-conflict'),
+  })
+  const conflictRenderer = createRenderer(conflict.rpc)
+  await conflictRenderer.load()
+  await openModelsPage(conflictRenderer)
+  conflictRenderer.findByTestId('model-removed-gone').props.onClick()
+  await settle(conflictRenderer)
+  assert.match(nodeText(conflictRenderer.findByTestId('model-config-error')), /拒绝恢复/)
+  assert.equal(models3Calls(conflict.calls, 'models3-restore-commit').length, 0)
+})
+
+test('models page add panel discovers on demand with search and multi-select', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-discover': () => ({ ok: true, value: { route: 'cpa', usedCredential: true, candidates: [
+      { id: 'm1', name: 'Already Here' },
+      { id: 'm2', name: 'Second' },
+      { id: 'm3', name: 'Third' },
+    ] } }),
+    'models3-add-models': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  // 进入渠道详情不自动发现模型列表。
+  assert.equal(models3Calls(calls, 'models3-discover').length, 0)
+  renderer.findByTestId('model-discover').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-discover')[0].payload, { sessionId: 's-cpa' })
+  const discovery = deepFindId(renderer, 'model-discovery')
+  assert.ok(discovery, 'the discovery modal renders')
+  // 已添加的模型不可再次勾选。
+  assert.equal(deepLabelCheckbox(renderer, 'm1').props.disabled, true, 'an already-configured model cannot be picked twice')
+  assert.match(nodeText(discovery), /已添加/)
+  // 全选排除已添加项，清空后可从搜索过滤里单选。
+  deepButton(renderer, '选择所有未添加项').props.onClick()
+  await settle(renderer)
+  deepButton(renderer, '清空选择').props.onClick()
+  await settle(renderer)
+  deepFindAria(renderer, '搜索模型 ID 或名称').props.onChange({ target: { value: 'sec' } })
+  await settle(renderer)
+  assert.ok(deepFindId(renderer, 'model-discovery'))
+  deepLabelCheckbox(renderer, 'm2').props.onChange({ target: { checked: true } })
+  await settle(renderer)
+  deepFindId(renderer, 'model-add-batch').props.onClick()
+  await settle(renderer)
+  const batch = models3Calls(calls, 'models3-add-models')
+  assert.equal(batch.length, 1)
+  assert.deepEqual(batch[0].payload, { sessionId: 's-cpa', modelIds: ['m2'] })
+})
+
+test('models page adds a new model, defaulting smart fill off, and saves it with add:true', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  renderer.findByTestId('model-add').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(renderer.hasTest('model-new-id'), true, 'a new draft exposes the model id field')
+  assert.equal(renderer.hasTest('model-test-m1'), false, 'a new draft replaces the route list and offers no row live test')
+  assert.equal(renderer.findByTestId('model-smart-toggle').props['aria-checked'], false, 'smart fill defaults off on entry')
+  assert.equal(models3Calls(calls, 'models3-fill').length, 0, 'entering a new draft never queries metadata')
+  // 未填 ID 时即使开启胶囊也不查询（没有可查身份）。
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 0, 'an empty model id never issues a fill query')
+  renderer.findByTestId('model-new-id').props.onChange({ target: { value: 'm-new' } })
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 1, 'once the id exists the enabled capsule queries')
+  assert.deepEqual(models3Calls(calls, 'models3-fill')[0].payload, { route: 'cpa', modelId: 'm-new', api: 'openai-completions' })
+  assert.equal(renderer.hasTest('model-smart-empty'), true, 'an empty suggestion set is stated explicitly')
+  // 字段标签：可见标签是渠道工作台用词，aria 标签是模型编辑用词。
+  assert.match(renderer.text('settings.section'), /上下文窗口/)
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'New One' } })
+  byAria(renderer, '上下文容量').props.onChange({ target: { value: '1M' } })
+  byAria(renderer, '模型最大输出').props.onChange({ target: { value: '256K' } })
+  byAria(renderer, '输入模态').props.onChange({ target: { value: 'image' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload, {
+    sessionId: 's-cpa',
+    modelId: 'm-new',
+    add: true,
+    patch: { name: 'New One', contextWindow: 1000000, maxTokens: 256000, input: ['text', 'image'] },
+    unset: [],
+  })
+  // 保存成功后回到渠道详情（面板收起）。
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  assert.equal(renderer.hasTest('model-detail'), false)
+})
+
+test('models page saved model detail writes only changed fields, parses K/M, and keeps invalid input as a draft', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(renderer.hasTest('model-new-id'), false, 'a saved model does not use the new-draft id testid')
+  assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '131072', 'the capacity field starts from the saved row')
+  assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '8192')
+  assert.equal(byAria(renderer, '上下文容量').props['aria-label'], '上下文容量', 'the capacity field uses the current model-editing label')
+  assert.equal(byAria(renderer, '模型最大输出').props['aria-label'], '模型最大输出')
+  assert.equal(renderer.findByTestId('model-detail-save').props.disabled, true, 'a clean draft disables save')
+  byAria(renderer, '上下文容量').props.onChange({ target: { value: '256K' } })
+  byAria(renderer, '模型最大输出').props.onChange({ target: { value: '12X' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-save-model').length, 0, 'unreadable capacity blocks the write instead of sending NaN')
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /参数组合或输入无效/, 'the invalid input is explained')
+  assert.equal(byAria(renderer, '模型最大输出').props.value, '12X', 'the raw invalid text stays as the draft')
+  byAria(renderer, '模型最大输出').props.onChange({ target: { value: '12M' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload, {
+    sessionId: 's-cpa',
+    modelId: 'm1',
+    originalModelId: 'm1',
+    add: false,
+    patch: { contextWindow: 256000, maxTokens: 12000000 },
+    unset: [],
+  }, 'only the changed fields are sent; M suffixed capacities parse into token counts')
+})
+
+test('models page saved model detail keeps untouched capabilities while editing input, reasoning wires and compat', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  byAria(renderer, '输入模态').props.onChange({ target: { value: 'image' } })
+  // 文本模态锁定：勾选且不可取消；图片模态可切换。
+  assert.equal(byAria(renderer, '文本输入').props.checked, true)
+  assert.equal(byAria(renderer, '文本输入').props.disabled, true, 'text input is locked on')
+  assert.equal(byAria(renderer, '图片输入').props.disabled, false)
+  // 思考映射整组编辑：档位勾选暴露对应 wire 值输入。
+  assert.equal(byAria(renderer, 'high wire').props.value, 'high', 'an existing mapping exposes its current wire value')
+  byAria(renderer, 'high wire').props.onChange({ target: { value: 'high-2024' } })
+  // compat 只展示当前协议可写键；空值继承，true 是显式覆盖。
+  byAria(renderer, 'supportsStore').props.onChange({ target: { value: 'true' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload.patch, {
+    input: ['text', 'image'],
+    reasoningEfforts: { high: 'high-2024' },
+    compat: { supportsStore: true },
+  }, 'untouched name/contextWindow/maxTokens are never rewritten')
+})
+
+test('models page edits an existing model ID and sends the original id as originalModelId', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  const idInput = byAria(renderer, '模型 ID')
+  assert.notEqual(idInput.props.readOnly, true, 'the id of an existing model stays editable')
+  assert.equal(idInput.props.value, 'm1')
+  idInput.props.onChange({ target: { value: 'm1-renamed' } })
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Renamed' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload, {
+    sessionId: 's-cpa',
+    modelId: 'm1-renamed',
+    originalModelId: 'm1',
+    add: false,
+    patch: { name: 'Renamed' },
+    unset: [],
+  }, 'renaming sends the new id plus the original baseline id, never re-adding the model')
+})
+
+test('models page renders reasoning level labels in English rather than localized names', async () => {
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  const text = renderer.text('settings.section')
+  for (const level of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']) assert.ok(text.includes(level), `the raw level id ${level} is shown`)
+  // 词典里的本地化档位名不得出现在标签上：档位 ID 就是显示名。
+  assert.doesNotMatch(text, /最低|极高|最高/)
+  assert.equal(renderer.hasTest('models-effort-minimal'), true)
+  assert.equal(renderer.hasTest('models-effort-max'), true)
+  assert.equal(byAria(renderer, 'high').props.checked, true, 'the saved mapping checks the raw level id')
+  // 高级选择器保留英文 wire 语义。
+  const select = byAria(renderer, '思考等级与协议值')
+  assert.deepEqual(select.children.map((option) => option.props.value), ['inherit', 'false', 'map'])
+})
+
+test('models page smart fill stays off until toggled, fills all through one confirmation, and never binds sources', async () => {
+  const groups = [
+    { key: 'name', field: 'name', path: ['name'], candidates: [{ id: 'n1', value: 'One Renamed', source: 'modelparams' }] },
+    { key: 'contextWindow', field: 'contextWindow', path: ['contextWindow'], candidates: [{ id: 'c1', value: 256000, source: 'modelparams' }] },
+    { key: 'reasoningEfforts', field: 'reasoningEfforts', path: ['reasoningEfforts'], candidates: [{ id: 'r1', value: { low: 'low', high: 'high' }, source: 'pi-ai' }] },
+    { key: 'compat.supportsStore', field: 'compat', path: ['compat', 'supportsStore'], candidates: [{ id: 'k1', value: true, source: 'pi-ai' }] },
+    { key: 'output', field: 'output', path: ['output'], candidates: [{ id: 'o1', value: ['text'], source: 'modelparams' }] },
+  ]
+  const { calls, rpc } = models3Fixture({
+    'models3-fill': () => ({ ok: true, value: { mode: 'on', network: true, reasoningSupported: true, groups, sources: [{ sourceId: 'pi-ai', status: 'ok' }, { sourceId: 'modelparams', status: 'cached', fetchedAt: 1 }], readonly: [{ field: 'maxTokens', value: 999999, kind: 'api-parameter-max' }] } }),
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 默认 OFF：不发任何资料请求，也没有建议区或一键填入。
+  assert.equal(renderer.findByTestId('model-smart-toggle').props['aria-checked'], false)
+  assert.equal(renderer.hasTest('model-smart-auto-fill'), false)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 0)
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  const fills = models3Calls(calls, 'models3-fill')
+  assert.equal(fills.length, 1)
+  assert.deepEqual(fills[0].payload, { route: 'cpa', modelId: 'm1', api: 'openai-completions' })
+  assert.equal(renderer.hasTest('model-smart-inline-bar'), true)
+  assert.equal(renderer.findAllByTestIdPrefix('model-smart-auto-fill').length, 1, 'exactly one Fill all control exists')
+  assert.equal(renderer.hasTest('model-suggestion-name'), true)
+  // 一键填入必须挂在对折开关**下方**的启用区块里，而不是开关行内。
+  const article = renderer.findByTestId('model-detail')
+  const childIndex = (testId) => article.children.findIndex((child) => subtreeHas(child, testId))
+  assert.ok(childIndex('model-smart-toggle') >= 0 && childIndex('model-smart-auto-fill') >= 0)
+  assert.ok(childIndex('model-smart-toggle') < childIndex('model-smart-auto-fill'), 'Fill all sits below the toggle')
+  const toggleRow = renderer.findNode((node) => Array.isArray(node.children) && node.children.some((child) => child?.props?.['data-testid'] === 'model-smart-toggle'))
+  assert.ok(toggleRow, 'the toggle row is rendered')
+  assert.equal(subtreeHas(toggleRow.node, 'model-smart-auto-fill'), false, 'Fill all is not part of the toggle row')
+  // 已批准的界面没有逐条采纳/拒绝、参考来源绑定或只读依据卡片。
+  assert.equal(renderer.hasTest('model-accept-name'), false)
+  assert.equal(renderer.hasTest('model-reject-name'), false)
+  assert.equal(renderer.hasTest('model-source-bind'), false)
+  assert.equal(renderer.hasTest('model-field-output'), false, 'output stays a read-only fact, never an editable field')
+  assert.doesNotMatch(renderer.text('settings.section'), /采纳建议|本轮拒绝建议|参考来源|只读来源依据与参数范围|记住参考关联/)
+  assert.equal(calls.some((call) => call.endpoint === 'models3-bind-source'), false)
+  // 预览不前移草稿。
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'One')
+  assert.equal(byAria(renderer, '上下文容量').props.value, '131072')
+  assert.equal(models3Calls(calls, 'models3-save-model').length, 0)
+  // 一键填入 → 一次确认 → 整组写入草稿。
+  renderer.findByTestId('model-smart-auto-fill').props.onClick()
+  await settle(renderer)
+  assert.match(deepText(renderer), /将以下建议值填入对应输入框/)
+  deepFindId(renderer, 'model-smart-fill-confirm').props.onClick()
+  await settle(renderer)
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'One Renamed')
+  assert.equal(byAria(renderer, '上下文容量').props.value, '256000')
+  assert.equal(byAria(renderer, '模型最大输出').props.value, '8192', 'fields without suggestions keep the saved value')
+  assert.equal(byAria(renderer, 'low').props.checked, true)
+  assert.equal(byAria(renderer, 'high').props.checked, true)
+  assert.equal(byAria(renderer, 'supportsStore').props.value, 'true')
+  // 保存只提交手改 + 已采纳项；越界的 output 建议绝不进入载荷。
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload.patch, {
+    name: 'One Renamed',
+    contextWindow: 256000,
+    reasoningEfforts: { low: 'low', high: 'high' },
+    compat: { supportsStore: true },
+  })
+  assert.equal('output' in saves[0].payload.patch, false, 'out-of-scope suggestions never leak into the write payload')
+})
+
+test('models page smart fill distinguishes supported reasoning with no levels from missing metadata', async () => {
+  let supported = true
+  const { calls, rpc } = models3Fixture({
+    'models3-fill': () => ({ ok: true, value: { mode: 'on', groups: [], sources: [], readonly: [], reasoningSupported: supported } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-smart-empty')), /此模型未获取到建议值/)
+  assert.match(nodeText(renderer.findByTestId('model-smart-reasoning-empty')), /此模型支持开启思考，但未获取到思考等级建议值/)
+  // 资料不支持思考：换成另一条明确的「不代表已声明等级」提示。
+  supported = false
+  renderer.findByTestId('model-smart-refresh').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 2)
+  assert.match(nodeText(renderer.findByTestId('model-smart-reasoning-empty')), /资料中支持思考不代表已声明具体等级/)
+  assert.doesNotMatch(nodeText(renderer.findByTestId('model-smart-reasoning-empty')), /此模型支持开启思考/)
+})
+
+test('models page smart fill drops a late reply after switching off and keeps the latest query', async () => {
+  const resolver = []
+  const { calls, rpc } = models3Fixture({ 'models3-fill': () => new Promise((resolve) => { resolver.push(resolve) }) })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(resolver.length, 1)
+  assert.equal(renderer.hasTest('model-smart-loading'), true, 'an in-flight query is visible')
+  // 关闭：停止/忽略在途任务，撤去未确认建议。
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-smart-loading'), false)
+  assert.equal(renderer.hasTest('model-smart-auto-fill'), false)
+  assert.equal(resolver.length, 1, 'turning off never issues a request')
+  // 晚到结果不得复活已关闭的建议，也不得改写草稿。
+  resolver[0]({ ok: true, value: { groups: [{ key: 'contextWindow', field: 'contextWindow', path: ['contextWindow'], candidates: [{ id: 'x', value: 1, source: 's' }] }], sources: [], readonly: [] } })
+  await settle(renderer, 3)
+  assert.equal(renderer.hasTest('model-suggestion-contextWindow'), false, 'a late reply after OFF is ignored')
+  assert.equal(byAria(renderer, '上下文容量').props.value, '131072', 'a late reply never overwrites the draft')
+  // 再次开启：新查询为准，旧结果不覆盖新模型结果。
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(resolver.length, 2)
+  resolver[1]({ ok: true, value: { groups: [{ key: 'maxTokens', field: 'maxTokens', path: ['maxTokens'], candidates: [{ id: 'y', value: 2, source: 's' }] }], sources: [], readonly: [] } })
+  await settle(renderer, 3)
+  assert.equal(renderer.hasTest('model-suggestion-maxTokens'), true, 'the newest query result renders')
+  assert.equal(renderer.hasTest('model-suggestion-contextWindow'), false, 'the stale result never renders alongside it')
+  assert.equal(models3Calls(calls, 'models3-fill').length, 2)
+})
+
+test('models page keeps drafts through fill errors and save conflicts, then compares the latest state', async () => {
+  let fillError = 'conflict'
+  let opens = 0
+  const latest = { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, models: [{ ...MODELS3_OPEN_CPA.profile.models[0], name: 'Server Renamed', contextWindow: 262144 }, MODELS3_OPEN_CPA.profile.models[1]] } }
+  const { calls, rpc } = models3Fixture({
+    'models3-fill': () => ({ ok: false, error: fillError }),
+    'models3-save-model': () => ({ ok: false, error: 'conflict' }),
+    'models3-open': () => { opens += 1; return { ok: true, value: opens === 1 ? MODELS3_OPEN_CPA : latest } },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /草稿仍保留/, 'a fill failure keeps the draft and explains itself')
+  assert.equal(renderer.hasTest('model-smart-inline-bar'), false)
+  // 未知错误码走通用文案，不泄露宿主内部信息。
+  fillError = 'mystery-code'
+  renderer.findByTestId('model-smart-refresh').props.onClick()
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /操作未完成：mystery-code/)
+  // 保存冲突：草稿与原始输入保留，不自动重放、不强制覆盖。
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Edited' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-save-model').length, 1)
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /配置或版本在编辑后发生变化/)
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Edited', 'the conflicting draft is retained')
+  assert.equal(renderer.hasTest('model-detail'), true, 'a conflict never navigates away')
+  // 冲突对照：读取最新值并逐字段展示「最新配置 / 我的草稿」，绝不自动覆盖。
+  assert.equal(renderer.hasTest('model-conflict'), true)
+  renderer.findByTestId('model-conflict-compare').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-open').length, 2, 'comparison re-reads the route, it never writes')
+  const conflictText = nodeText(renderer.findByTestId('model-conflict'))
+  assert.match(conflictText, /最新配置: Server Renamed/)
+  assert.match(conflictText, /我的草稿: Edited/)
+  // 逐字段采用最新值只改该字段的草稿。
+  latestRowButton(renderer, 'name').props.onClick()
+  await settle(renderer)
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Server Renamed')
+  assert.equal(byAria(renderer, '上下文容量').props.value, '131072', 'other fields keep the draft')
+  // 以最新基线继续编辑：冲突态清除，且不触发任何写入。
+  renderer.findByTestId('model-conflict-rebase').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-conflict'), false, 'rebasing clears the conflict state')
+  assert.equal(models3Calls(calls, 'models3-save-model').length, 1, 'rebasing never writes')
+})
+
+test('models page route conflict compares latest fields and rebases without writing', async () => {
+  let opens = 0
+  const latest = { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, baseURL: 'https://remote.example/v1' } }
+  const { calls, rpc } = models3Fixture({
+    'models3-open': () => { opens += 1; return { ok: true, value: opens === 1 ? MODELS3_OPEN_CPA : latest } },
+    'models3-save-route': () => ({ ok: false, error: 'conflict' }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  byAria(renderer, 'API地址').props.onChange({ target: { value: 'https://local.example/v1' } })
+  await settle(renderer)
+  renderer.findByTestId('model-route-save').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-save-route').length, 1)
+  assert.deepEqual(models3Calls(calls, 'models3-save-route')[0].payload.patch, { baseURL: 'https://local.example/v1' })
+  assert.equal(renderer.hasTest('model-route-conflict'), true)
+  assert.equal(byAria(renderer, 'API地址').props.value, 'https://local.example/v1', 'the route draft is retained')
+  renderer.findByTestId('model-route-compare').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-open').length, 2)
+  assert.match(nodeText(renderer.findByTestId('model-route-conflict')), /最新配置: https:\/\/remote.example\/v1/)
+  latestRowButton(renderer, 'baseURL').props.onClick()
+  await settle(renderer)
+  assert.equal(byAria(renderer, 'API地址').props.value, 'https://remote.example/v1')
+  renderer.findByTestId('model-route-rebase').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-conflict'), false)
+  assert.equal(models3Calls(calls, 'models3-save-route').length, 1, 'rebasing never writes')
+})
+
+test('models page ignores legacy per-suggestion acceptance and source-binding payloads', async () => {
+  const filled = { ok: true, value: {
+    mode: 'on', network: true, reasoningSupported: true, groups: [
+      { key: 'contextWindow', field: 'contextWindow', path: ['contextWindow'], candidates: [{ id: 'c1', value: 256000, source: 'modelparams' }] },
+    ],
+    readonly: [{ field: 'output', value: ['text'], kind: 'capability', source: 'modelparams' }], sources: [{ sourceId: 'modelparams', status: 'ok' }],
+    queryId: 'q1', selectedSource: '', bindingNeedsReview: true,
+    candidates: [{ id: 'modelparams', name: 'modelparams' }, { id: 'openrouter', name: 'openrouter' }],
+  } }
+  const { calls, rpc } = models3Fixture({
+    'models3-fill': () => filled,
+    'models3-bind-source': () => ({ ok: true, value: { route: 'cpa', bound: true } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  // 宿主仍可能回传旧字段；界面必须完全忽略它们。
+  assert.equal(renderer.hasTest('model-source-bind'), false)
+  assert.equal(renderer.hasTest('model-source-unbind'), false)
+  assert.equal(renderer.hasTest('model-accept-contextWindow'), false)
+  assert.equal(renderer.hasTest('model-reject-contextWindow'), false)
+  assert.doesNotMatch(renderer.text('settings.section'), /参考来源|记住参考关联|只读来源依据与参数范围|已保存/)
+  assert.equal(calls.some((call) => call.endpoint === 'models3-bind-source'), false, 'the client never binds a source')
+  // 建议仍在，且只能整组一键填入。
+  assert.equal(renderer.hasTest('model-suggestion-contextWindow'), true)
+  assert.equal(renderer.findAllByTestIdPrefix('model-smart-auto-fill').length, 1)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 1, 'legacy fields never trigger a re-query')
+})
+
+test('models page built-in providers support configuring models and connection parameters', async () => {
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'builtin-gw')
+  assert.deepEqual(models3Calls(calls, 'models3-open')[0].payload, { route: 'builtin-gw' })
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  // 内置渠道支持配置模型与连接，不虚构可写的 output 字段。
+  assert.equal(renderer.findByTestId('model-open-b1').props.disabled, false, 'a built-in catalog model row stays editable')
+  assert.equal(renderer.hasTest('model-delete-b1'), true)
+  assert.equal(renderer.hasTest('model-add'), true)
+  assert.equal(renderer.hasTest('model-discover'), true)
+  assert.equal(renderer.hasTest('model-field-output'), false, 'no write slot is invented for a non-persistable output field')
+  assert.equal(renderer.hasTest('model-route-save'), true, 'built-in connection parameters can be saved')
+  // 协议来自宿主动态目录：只读展示，不可本地改写。
+  const protocol = byAria(renderer, '协议')
+  assert.equal(protocol.props.readOnly, true)
+  assert.equal(protocol.props.value, 'openai-completions')
+})
+
+test('models page warns before discarding a dirty draft on back navigation', async () => {
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  // 干净草稿：返回无需确认。
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-detail-back').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  // 编辑后返回：默认拒绝离开（未确认时保留草稿）。
+  await openModelsModel(renderer, 'm1')
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Changed' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-back').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-detail'), true, 'a dirty draft blocks navigation without confirmation')
+  const confirms = []
+  globalThis.window.confirm = (message) => { confirms.push(message); return false }
+  renderer.findByTestId('model-detail-back').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(confirms.length, 1)
+  assert.match(confirms[0], /未保存/)
+  // 确认后才真正离开，草稿被丢弃。
+  globalThis.window.confirm = () => true
+  renderer.findByTestId('model-detail-back').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  delete globalThis.window.confirm
+})
+
+test('models page conflict rebase keeps the local draft (including invalid input) and only writes on explicit save', async () => {
+  let saves = 0
+  let opens = 0
+  // 最新基线也修改未触碰的 contextWindow：rebase 必须带入该值，不能静默覆盖外部修改。
+  const latest = { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, models: [{ ...MODELS3_OPEN_CPA.profile.models[0], name: 'Server Renamed', contextWindow: 256000 }, MODELS3_OPEN_CPA.profile.models[1]] } }
+  const { calls, rpc } = models3Fixture({
+    'models3-open': () => { opens += 1; return { ok: true, value: opens === 1 ? MODELS3_OPEN_CPA : latest } },
+    'models3-save-model': () => { saves += 1; return saves === 1 ? { ok: false, error: 'conflict' } : { ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } } },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Local Name' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-conflict'), true)
+  // 「读取最新值」必须显式点击：仅出现冲突不触网、不覆盖草稿。
+  assert.equal(models3Calls(calls, 'models3-open').length, 1, 'showing the conflict never re-reads the latest state')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-conflict'), true, 'successful metadata query cannot dismiss an unresolved save conflict')
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Local Name')
+  // 冲突态下再把最大输出改成不可解析的文本：本地校验会拒绝写，但草稿必须原样留着。
+  byAria(renderer, '模型最大输出').props.onChange({ target: { value: '12X' } })
+  await settle(renderer)
+  renderer.findByTestId('model-conflict-compare').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-open').length, 2, 'the comparison is an explicit read')
+  const compared = nodeText(renderer.findByTestId('model-conflict'))
+  assert.match(compared, /最新配置: Server Renamed/)
+  assert.match(compared, /我的草稿: Local Name/)
+  assert.match(compared, /最新配置: 8192 · 我的草稿: 12X/, 'the unparseable draft text is shown as-is beside the latest value')
+  // 对照本身不自动采纳任何最新值。
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Local Name')
+  assert.equal(byAria(renderer, '模型最大输出').props.value, '12X')
+  // 以最新为基线继续编辑：草稿（含无效值）整体保留，只清冲突态，不写入。
+  renderer.findByTestId('model-conflict-rebase').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-conflict'), false, 'rebasing clears the conflict state')
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Local Name', 'rebasing keeps the local draft')
+  assert.equal(byAria(renderer, '模型最大输出').props.value, '12X', 'rebasing keeps even an invalid draft value')
+  assert.equal(byAria(renderer, '上下文容量').props.value, '256000', 'untouched fields adopt external changes instead of being reverted on save')
+  assert.equal(saves, 1, 'rebasing never writes')
+  // 无效值仍被本地校验拦下：不发出第二次写。
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.equal(saves, 1, 'the retained invalid value blocks the write instead of sending NaN')
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /参数组合或输入无效/)
+  // 修好后保存：相对**最新基线**只提交本地改动。
+  byAria(renderer, '模型最大输出').props.onChange({ target: { value: '20K' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.equal(saves, 2)
+  assert.deepEqual(models3Calls(calls, 'models3-save-model')[1].payload, {
+    sessionId: 's-cpa', modelId: 'm1', originalModelId: 'm1', add: false, patch: { name: 'Local Name', maxTokens: 20000 }, unset: [],
+  }, 'after rebasing, only the local deltas against the latest baseline are written')
+})
+
+test('models page blocks sub-tab and primary-tab switches while a model draft is dirty', async () => {
+  delete globalThis.window.confirm
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Dirty Draft' } })
+  await settle(renderer)
+  // 无确认函数：离开守卫默认拒绝。
+  renderer.findByTestId('models-tab-subagent').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('models-tab-providers').props['aria-selected'], 'true', 'a dirty draft blocks the models sub-tab switch')
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(renderer.hasTest('subagent-section'), false)
+  // 用户拒绝确认：仍留在详情，草稿不丢。
+  const confirms = []
+  globalThis.window.confirm = (message) => { confirms.push(message); return false }
+  renderer.findByTestId('models-tab-subagent').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(renderer.hasTest('subagent-section'), false)
+  assert.equal(confirms.length, 1)
+  assert.match(confirms[0], /未保存/)
+  // 主标签切换受同一守卫：确认前不换页。
+  renderer.findByTestId('service-tab-diagnostics').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('service-tab-models').props['aria-selected'], 'true', 'the primary tab switch is guarded too')
+  assert.equal(renderer.findByTestId('service-tab-diagnostics').props['aria-selected'], 'false')
+  assert.equal(renderer.hasTest('model-detail'), true)
+  assert.equal(confirms.length, 2)
+  // 确认后子标签才真正切换。
+  globalThis.window.confirm = () => true
+  renderer.findByTestId('models-tab-subagent').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('subagent-section'), true)
+  assert.equal(renderer.hasTest('model-detail'), false, 'the confirmed switch discards the draft')
+  delete globalThis.window.confirm
+})
+
+test('models page live test runs directly from a saved model row without an extra confirmation', async () => {
+  let commitOk = true
+  let holdPreview = false
+  const pendingPreview = []
+  // 行内测试的进度计时用 window.setInterval；测试替身的 window 没有它，
+  // 这里按真实语义补上最小实现，避免用例结束后残留未捕获的定时器错误。
+  const intervals = []
+  const { calls, rpc } = models3Fixture({
+    'models3-test-preview': () => (holdPreview
+      ? new Promise((resolve) => pendingPreview.push(resolve))
+      : { ok: true, value: { planId: 'plan-test', text: 'ping', maxTokens: 16, timeoutMs: 15000 } }),
+    'models3-test-commit': () => ({ ok: true, value: { ok: commitOk } }),
+  })
+  const renderer = createRenderer(rpc)
+  globalThis.window.setInterval = (callback) => { intervals.push(callback); return intervals.length }
+  globalThis.window.clearInterval = () => {}
+  try {
+    await renderer.load()
+    await openModelsRoute(renderer, 'cpa')
+    const rowTest = renderer.findByTestId('model-test-m1')
+    assert.equal(rowTest.props['aria-label'], '主动测试保存状态 m1')
+    assert.equal(renderer.hasTest('model-test-confirm'), false, 'no charge-confirmation step exists before the row test')
+    // 在途预览期间显示进度并保持计费边界文案，但不允许并发第二次真实调用。
+    holdPreview = true
+    rowTest.props.onClick()
+    await settle(renderer)
+    assert.equal(models3Calls(calls, 'models3-test-preview').length, 1)
+    assert.equal(models3Calls(calls, 'models3-test-commit').length, 0, 'the preview is awaited before the real call')
+    assert.match(nodeText(renderer.findByTestId('model-test-progress')), /m1 · 测试中/)
+    holdPreview = false
+    pendingPreview.shift()({ ok: true, value: { planId: 'plan-test', text: 'ping', maxTokens: 16, timeoutMs: 15000 } })
+    await settle(renderer)
+    assert.deepEqual(models3Calls(calls, 'models3-test-preview')[0].payload, { sessionId: 's-cpa', modelId: 'm1' })
+    // 行内直连：预览后立即真实调用，没有第二次点击。
+    assert.deepEqual(models3Calls(calls, 'models3-test-commit')[0].payload, { planId: 'plan-test' })
+    assert.equal(renderer.hasTest('model-test-progress'), false, 'the progress indicator clears when the call settles')
+    assert.match(renderer.text('settings.section'), /基础文本调用成功/)
+    // 失败结果必须显式报告为失败，不伪装成功。
+    commitOk = false
+    renderer.findByTestId('model-test-m1').props.onClick()
+    await settle(renderer)
+    assert.equal(models3Calls(calls, 'models3-test-commit').length, 2)
+    assert.match(renderer.text('settings.section'), /基础文本调用失败或未完成/)
+    // 窄行（只有 id）同样可用：行测试按 item.id 发起。
+    renderer.findByTestId('model-test-m2').props.onClick()
+    await settle(renderer)
+    assert.deepEqual(models3Calls(calls, 'models3-test-preview').at(-1).payload, { sessionId: 's-cpa', modelId: 'm2' })
+    // 窄行详情退回渠道默认值而不是崩溃。
+    await openModelsModel(renderer, 'm2')
+    assert.equal(renderer.findByTestId('model-detail').props['data-model-id'], 'm2')
+    assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '200K', 'a narrow row shows the provider default context')
+    assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '', 'an undefined provider default renders empty')
+  } finally {
+    delete globalThis.window.setInterval
+    delete globalThis.window.clearInterval
+  }
+})
+
+test('models homepage availability switch commits immediately without a confirmation plan', async () => {
+  const snapshot = structuredClone(MODELS3_SNAPSHOT)
+  snapshot.routes[0].enabled = true
+  const { calls, rpc } = models3Fixture({
+    'models3-snapshot': () => ({ ok: true, value: structuredClone(snapshot) }),
+    'models3-enabled-preview': (payload) => ({ ok: true, value: { planId: 'enabled-plan', enabled: payload.enabled, configurationRetained: true } }),
+    'models3-enabled-commit': () => { snapshot.routes[0].enabled = false; return { ok: true, value: { enabled: false } } },
+    'models3-model-enabled': (payload) => ({ ok: true, value: { modelId: payload.modelId, enabled: payload.enabled } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  const toggle = renderer.findByTestId('model-route-enabled')
+  assert.equal(toggle.props['aria-checked'], true)
+  toggle.props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-enabled-preview')[0].payload, { sessionId: 's-cpa', enabled: false })
+  assert.equal(models3Calls(calls, 'models3-enabled-commit').length, 1, 'the route switch commits immediately, no plan step')
+  assert.equal(renderer.hasTest('model-plan'), false, 'no confirmation card is rendered for the availability switch')
+  assert.equal(renderer.findByTestId('model-route-enabled').props['aria-checked'], false)
+  assert.equal(models3Calls(calls, 'models3-save-route').length, 0)
+  assert.equal(models3Calls(calls, 'models3-remove-commit').length, 0)
+  // 单模型开关同样直接提交（带 expected 乐观并发），不等二次确认。
+  const snapshotsBefore = models3Calls(calls, 'models3-snapshot').length
+  renderer.findByTestId('model-enabled-m1').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-model-enabled')[0].payload, { sessionId: 's-cpa', modelId: 'm1', enabled: false, expected: true })
+  assert.equal(models3Calls(calls, 'models3-snapshot').length > snapshotsBefore, true, 'a successful switch refreshes the snapshot')
+})
+
+test('models homepage keeps a vertical accordion and switches provider details on click', async () => {
+  const { calls, rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  assert.equal(renderer.hasTest('model-workspace'), true)
+  assert.equal(renderer.hasTest('model-provider-sidebar'), false, 'the vertical accordion replaces the sidebar layout')
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], false)
+  assert.equal(renderer.findByTestId('model-route-open-builtin-gw').props['aria-expanded'], false)
+  renderer.findByTestId('model-route-open-cpa').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], true)
+  assert.equal(renderer.findAllByTestIdPrefix('model-provider-content').length, 1)
+  assert.equal(renderer.hasTest('model-route-detail'), true)
+  assert.deepEqual(models3Calls(calls, 'models3-open').at(-1).payload, { route: 'cpa' })
+  assert.equal(renderer.findByTestId('model-route-open-builtin-gw').props['aria-expanded'], false, 'opening one row keeps the others collapsed')
+  // 打开另一个渠道：同一时刻只有一个正文。
+  renderer.findByTestId('model-route-open-builtin-gw').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-route-open-builtin-gw').props['aria-expanded'], true)
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], false)
+  assert.equal(renderer.findAllByTestIdPrefix('model-provider-content').length, 1)
+  assert.deepEqual(models3Calls(calls, 'models3-open').at(-1).payload, { route: 'builtin-gw' })
+  // 再点一次收起。
+  renderer.findByTestId('model-route-open-builtin-gw').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-route-open-builtin-gw').props['aria-expanded'], false)
+  assert.equal(renderer.findAllByTestIdPrefix('model-provider-content').length, 0)
+  assert.equal(models3Calls(calls, 'models3-discover').length, 0)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 0)
+})
+
+test('models page explains the smart-fill toggle and provider switch through focus and hover tooltips', async () => {
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  // 渠道启停：悬停与聚焦都弹出边界说明，离开/失焦/Esc 收起。
+  const routeToggle = renderer.findByTestId('model-route-enabled')
+  routeToggle.props.onMouseEnter({ clientX: 120, clientY: 60 })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-enabled-help'), true)
+  assert.match(nodeText(renderer.findByTestId('model-route-enabled-help')), /关闭后该渠道不再可选/)
+  renderer.findByTestId('model-route-enabled').props.onMouseLeave()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-enabled-help'), false)
+  renderer.findByTestId('model-route-enabled').props.onFocus({ currentTarget: { getBoundingClientRect: () => ({ right: 40, bottom: 30 }) } })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-enabled-help'), true)
+  renderer.findByTestId('model-route-enabled').props.onKeyDown({ key: 'Escape' })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-route-enabled-help'), false)
+
+  // 智能填充：悬停与聚焦都说明「不获取渠道列表、不发推理请求」。
+  // 提示层用的是 id（不是 testid），与真实 DOM 的可访问性关联一致。
+  await openModelsModel(renderer, 'm1')
+  const smartToggle = renderer.findByTestId('model-smart-toggle')
+  assert.equal(smartToggle.props['aria-describedby'], undefined)
+  smartToggle.props.onMouseEnter({ currentTarget: { getBoundingClientRect: () => ({ left: 10, bottom: 20 }) } })
+  await settle(renderer)
+  const help = idNode(renderer, 'model-smart-help')
+  assert.ok(help, 'the smart-fill tooltip renders on hover')
+  assert.match(nodeText(help), /不会获取当前渠道模型列表，也不会发送推理请求/)
+  assert.equal(renderer.findByTestId('model-smart-toggle').props['aria-describedby'], 'model-smart-help')
+  renderer.findByTestId('model-smart-toggle').props.onMouseLeave()
+  await settle(renderer)
+  assert.equal(idNode(renderer, 'model-smart-help'), undefined)
+  renderer.findByTestId('model-smart-toggle').props.onFocus({ currentTarget: { getBoundingClientRect: () => ({ left: 10, bottom: 20 }) } })
+  await settle(renderer)
+  assert.ok(idNode(renderer, 'model-smart-help'), 'focus also opens the tooltip')
+  renderer.findByTestId('model-smart-toggle').props.onBlur()
+  await settle(renderer)
+  assert.equal(idNode(renderer, 'model-smart-help'), undefined)
+})
+
+test('models page clears a stale smart-fill error once a retry succeeds', async () => {
+  let ok = false
+  const { calls, rpc } = models3Fixture({
+    'models3-fill': () => (ok ? { ok: true, value: { mode: 'on', groups: [], sources: [], readonly: [] } } : { ok: false, error: 'network-down' }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-config-error'), true, 'the failed query surfaces its error')
+  ok = true
+  renderer.findByTestId('model-smart-refresh').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-fill').length, 2)
+  assert.equal(renderer.hasTest('model-config-error'), false, 'a successful retry clears the stale error')
 })

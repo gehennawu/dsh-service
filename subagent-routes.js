@@ -17,11 +17,13 @@ export function createSubagentRoutes({
   listSubagentDispatches,
   listSubagentModels,
   rpcTechnicalFailure,
+  providerAvailability,
 }) {
   return {
     'subagent-route': { feature: 'subagentRoute', handle: async (payload, rpcEndpoint) => {
       try {
         await subagentRouteLoadPromise
+        if (providerAvailability) await providerAvailability.loading
         const llm = ctx.get('llm')
         // 模型清单沿用 skills-models 的白名单口径（llm.listProviders × listModels，单渠道失败跳过），
         // 并对每个精确模型附加 adapter 的 reasoning metadata（resolveModelInfo 缺席时保留原目录项）；
@@ -128,6 +130,11 @@ export function createSubagentRoutes({
           }
         }
         return await serializeSubagentRouteWrite(async (config) => {
+          if (providerAvailability) {
+            await providerAvailability.loading
+            if (primary.provider) providerAvailability.assertEnabled(primary.provider, primary.model)
+            for (const fallback of fallbacks) providerAvailability.assertEnabled(fallback.provider, fallback.model)
+          }
           config.mode = mode
           if (mode === 'custom') {
             config.provider = primary.provider

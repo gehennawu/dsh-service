@@ -60,10 +60,11 @@
           'body[data-ds-dark-theme]{--dsh-svc-tab-active-text:#111318}',
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段；
           // markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画图标、currentColor 跟主题。
-          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
+          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-models-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
+          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-models-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
+          '[data-dsh-service-models-nav]::before{' + navIconMask(NAV_ICON_BODY_MODELS) + '}',
           '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
           // 窄面板主导航（v0.39）：≤640px 六页单行横滑——本插件自己的面板 UI，不挂 data-dshsvc-mobile。
@@ -158,9 +159,9 @@
           '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
           '[data-dshsvc-root] .dshsvc-tab[aria-selected="true"]{background:var(--dsh-svc-tab-active-bg);color:var(--dsh-svc-tab-active-text);font-weight:650;border-radius:8px}',
           // 二级子标签：下划线标签语言，与模型列表内联标签同源。
-          '[data-dshsvc-root] .dshsvc-subtabs{display:flex;flex-wrap:wrap;gap:2px;margin:10px 0 0;border-bottom:1px solid var(--dsh-svc-border)}',
-          '[data-dshsvc-root] .dshsvc-subtab{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 10px;font:inherit;font-size:13px;font-weight:550;color:var(--dsh-svc-text-muted);cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
-          '[data-dshsvc-root] .dshsvc-subtab[aria-selected="true"]{color:var(--dsh-svc-brand);border-bottom-color:var(--dsh-svc-brand);font-weight:700}',
+          '.dshsvc-subtabs,[data-dshsvc-root] .dshsvc-subtabs{display:flex;flex-wrap:wrap;gap:2px;margin:10px 0 0;border-bottom:1px solid var(--dsh-svc-border)}',
+          '.dshsvc-subtab,[data-dshsvc-root] .dshsvc-subtab{appearance:none;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 10px;font:inherit;font-size:13px;font-weight:550;color:var(--dsh-svc-text-muted);cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,border-color var(--dsh-svc-dur-fast) ease}',
+          '.dshsvc-subtab[aria-selected="true"],[data-dshsvc-root] .dshsvc-subtab[aria-selected="true"]{color:var(--dsh-svc-brand);border-bottom-color:var(--dsh-svc-brand);font-weight:700}',
           // 页面头部：非吸附标题行（标题 + 主操作/次级组换行共处）+ 一行描述。
           '[data-dshsvc-root] .dshsvc-page-header{margin:14px 2px 2px}',
           '[data-dshsvc-root] .dshsvc-page-header-row{display:flex;align-items:center;justify-content:space-between;gap:var(--dsh-svc-space-3);flex-wrap:wrap}',
@@ -183,7 +184,7 @@
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true }
       // 特性设置门面：静态 inject 不带任何设置服务，运行时按能力探测接入
       // （configForms → settingsScope → 内存兜底；见 src/client/feature-settings.js）。
       // 0.1.7-alpha.1 移除了 settingsScope，静态依赖它会在该版本阻断整个客户端激活；
@@ -200,6 +201,7 @@
         () => markSettingsNavRows([
           { attr: 'data-dsh-service-nav', label: () => t('nav.label') },
           { attr: 'data-dsh-service-quota-nav', label: () => t('tabs.quota') },
+          { attr: 'data-dsh-service-models-nav', label: () => t('tabs.models') },
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
           { attr: 'data-dsh-service-sessions-nav', label: () => t('tabs.sessions') },
         ]),
@@ -224,15 +226,17 @@
       const { SubagentModelsDock } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
       // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
       // 可见性/顺序/回退全部收敛为纯函数（可独立测试）；ServicePanel 只持状态与业务块。
-      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'diagnostics', 'maintenance', 'configuration']
-      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
-      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', diagnostics: 'healthDiagnostics' }
+      // v1.10 模型配置工作台：插入在「额度查询」之后、「诊断」之前（与旧分支的信息架构一致）。
+      // 门控 = modelCatalog（供应商与模型 + 子代理路由两个子标签都由本页承载）。
+      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'models', 'diagnostics', 'maintenance', 'configuration']
+      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', models: 'tabs.models', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
+      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', models: ['modelCatalog', 'subagentRoute'], diagnostics: 'healthDiagnostics' }
       const getVisiblePrimaryTabs = (features, warnings) => PRIMARY_TAB_ORDER
-        .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || features[PRIMARY_TAB_FEATURES[id]] !== false)
+        .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || (Array.isArray(PRIMARY_TAB_FEATURES[id]) ? PRIMARY_TAB_FEATURES[id].some((key) => features[key] !== false) : features[PRIMARY_TAB_FEATURES[id]] !== false))
         .map((id) => ({ id, labelKey: PRIMARY_TAB_LABELS[id], warning: warnings !== undefined && warnings[id] === true }))
       // 维护子页顺序（用户点名）：sessions → skills → subagent → backup → restart；
       // restart 不受功能门控（重启永远可用），维护页实际恒可达。
-      const MAINTENANCE_TAB_ORDER = ['sessions', 'skills', 'subagent', 'backup', 'restart']
+      const MAINTENANCE_TAB_ORDER = ['sessions', 'skills', 'backup', 'restart']
       const MAINTENANCE_TAB_LABELS = { sessions: 'tabs.sessions', skills: 'tabs.skills', subagent: 'tabs.subagent', backup: 'tabs.backup', restart: 'tabs.restart' }
       const MAINTENANCE_TAB_FEATURES = { sessions: 'sessionManager', skills: 'skillManager', subagent: 'subagentRoute', backup: 'backupMaintenance' }
       const getVisibleMaintenanceTabs = (features) => MAINTENANCE_TAB_ORDER
@@ -346,6 +350,7 @@
       // 技能与子代理的左列入口撤销（维护页内仍有完整功能）；存储键统一迁到 shortcut-* 命名。
       const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-restart', legacyStorageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
       const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-quota', legacyStorageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
+      const modelsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-models', legacyStorageKey: 'dsh-service-models-nav', sectionId: 'dsh-service-models', order: 497, labelKey: 'tabs.models', feature: ['modelCatalog', 'subagentRoute'], renderContent: () => React.createElement(ModelsSection, { SubagentSection }) })
       const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-sessions', legacyStorageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       // ── 批量补全共享状态：正文已抽至 src/client/skills-batch-shared.js（工厂作用域分片）；
@@ -1483,7 +1488,7 @@
       // 两处共用同一分组与同一写入路径（featureScope.set，行级 saving 锁）。
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
-        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager'], true],
+        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager', 'modelCatalog'], true],
         ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor'], true],
         ['features.external', ['healthz'], false],
       ]
@@ -4725,6 +4730,19 @@
       // 越过零点后再等 1s 触发，避开「本地时钟刚好落在 0:00:00.000」时宿主仍按前一日
       // 分桶的边界竞态。
       const USAGE_MIDNIGHT_GRACE_MS = 1000
+      // ── 模型配置页（src/client/model-config.js）─────────────────
+      // 页面内两个子标签：「供应商与模型」+「子代理路由」（复用既有 SubagentSection）。
+      // SubagentSection 是 apply 内的函数声明，晚于本处定义但早于 ServicePanel 调用，
+      // 而组件只在渲染期被引用（不是立即求值），故这里传引用是安全的。
+      const { ModelsSection, canLeave: canLeaveModelConfig } = createModelConfig({
+        useTranslation,
+        rpcCall,
+        SvcTabs,
+        // 传 hook 本身而不是快照：ModelsSection 在自己的渲染期调用它，才能随开关热更新
+        // （工厂这里位于 ServicePanel 之外，拿不到它的局部 features 快照）。
+        useFeatures,
+        modelsNavToggle,
+      })
 
       function ServicePanel() {
         const translate = useTranslation()
@@ -6653,7 +6671,7 @@
           try { stored = localStorage.getItem('dsh-service-maintenance-tab') } catch (_) {}
           // 无记忆键 = 首次进入：保留「子代理」默认值（不可用时由渲染期 normalize 回退）；
           // 有键但非法/被关 = 回退白名单首项。
-          setMaintenanceTab(stored === null ? 'subagent' : normalizeMaintenanceTab(stored, features))
+          setMaintenanceTab(normalizeMaintenanceTab(stored, features))
         }, [])
         const selectMaintenanceTab = (id) => {
           setMaintenanceTab(id)
@@ -6670,6 +6688,9 @@
             ? usageBlock
             : visiblePrimaryTab === 'quota'
               ? React.createElement(RemoteQuotaCard, null)
+            : visiblePrimaryTab === 'models'
+              // SubagentSection 是 apply 内后置的函数声明；此处只在渲染期求值，不受声明顺序影响。
+              ? React.createElement(ModelsSection, { SubagentSection })
             : visiblePrimaryTab === 'diagnostics'
               ? healthBlock
             : visiblePrimaryTab === 'maintenance'
@@ -6711,7 +6732,7 @@
                 : null,
             })),
             activeId: visiblePrimaryTab,
-            onChange: (id) => { setActiveTab(id); if (id === 'diagnostics') runDiagnostics(false) },
+            onChange: (id) => { if (!canLeaveModelConfig()) return; setActiveTab(id); if (id === 'diagnostics') runDiagnostics(false) },
             testIdPrefix: 'service-tab',
             dotLabel: translate('tabs.alert.dot'),
             ariaLabel: translate('nav.label'),
@@ -6802,18 +6823,22 @@
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
-        // 左列「重启」「额度查询」「会话管理」入口由各自页内的开关控制，默认不注册
+        // 左列「重启」「额度查询」「模型配置」「会话管理」入口由各自页内的开关控制，默认不注册
         restartNavToggle.sync()
         quotaNavToggle.sync()
+        modelsNavToggle.sync()
         sessionsNavToggle.sync()
         const unsubscribeFeatures = featureScope.subscribe(quotaNavToggle.sync)
+        const unsubscribeFeaturesModels = featureScope.subscribe(modelsNavToggle.sync)
         const unsubscribeFeaturesSessions = featureScope.subscribe(sessionsNavToggle.sync)
         return () => {
           unsubscribeFeatures()
+          unsubscribeFeaturesModels()
           unsubscribeFeaturesSessions()
           disposePanel()
           restartNavToggle.disposeEntry()
           quotaNavToggle.disposeEntry()
+          modelsNavToggle.disposeEntry()
           sessionsNavToggle.disposeEntry()
         }
       })

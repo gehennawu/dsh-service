@@ -20,6 +20,46 @@ import { createSessionsRoutes } from './session-routes.js'
 import { createQuotaRoutes } from './quota-routes.js'
 import { createSubagentRoutes } from './subagent-routes.js'
 import { createBackupRoutes } from './backup-routes.js'
+import { createModelConfigRoutes } from './model-config-routes.js'
+import { createProviderAvailability, installProviderAvailability } from './provider-availability.js'
+import { createWorkbenchStore, loadPiAiCatalog } from './model-workbench.js'
+import {
+  WORKBENCH_SIDECAR_VERSION,
+  applySuggestions,
+  applyUndo,
+  arbitrateModelSuggestions,
+  buildPiAiIndex,
+  abilityPatch,
+  consensusFields,
+  createFreshnessManager,
+  deriveKeyRefFor,
+  diffModelLists,
+  emptyWorkbenchSidecar,
+  fetchModelsProbe,
+  hostnameOf,
+  indexModelParamsDev,
+  isPrivateIpAddress,
+  loadModelParamsSnapshot,
+  loadWorkbenchSidecar,
+  modelParamsCandidates,
+  modelParamsDevEfforts,
+  modelPatchFromPiAi,
+  openRouterModelFacts,
+  openRouterVerifySource,
+  pickOpenRouterMatch,
+  modelsProbeLookup,
+  normalizeBaseURLForMatch,
+  parseModelListing,
+  probeBaseURLCheck,
+  profileFingerprint,
+  readLlmProfiles,
+  saveModelParamsSnapshot,
+  saveWorkbenchSidecar,
+  selfCheckModelsPatch,
+  suggestRouteId,
+  suggestionId,
+  undoPreviewModels,
+} from './model-workbench.js'
 import { collectPluginHealth, pluginCheckItem, restartPluginEntry } from './plugin-health.js'
 import {
   buildCliproxyAccountPlan as buildCliproxyAccountPlanAdapter,
@@ -88,6 +128,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   // v1.8 新增：composer 模型按钮显示厂家/渠道图标（宽态加在模型名前，
   // 窄态替换官方默认图标；未适配渠道保留官方默认图标）。
   modelProviderIcons: true,
+  // v1.10 新增：模型配置工作台（供应商与模型 / 子代理路由），写路径经两段式确认。
+  modelCatalog: true,
 })
 /** 标记为「可热更新」的 Config 字段（0.1.7-alpha.1 的表单与原地热更新以此为准）。 */
 const volatileField = (schema) => (typeof schema?.extra === 'function' ? schema.extra('volatile', true) : schema)
@@ -4236,7 +4278,7 @@ function subagentRouteCandidates(request, config, options = {}) {
 
 function resolveSubagentInjection(request, config, options = {}) {
   for (const candidate of subagentRouteCandidates(request, config, options)) {
-    if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider)) {
+    if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider, candidate.model)) {
       options.note?.(`${candidate.provider}/${candidate.model} skipped (not routable)`)
       continue
     }
@@ -5348,6 +5390,18 @@ function apply(ctx, featureConfig) {
   // 版本一变即自然失效，不必手工清理。
   const releaseNotesCache = new Map()
   const quotaThrottle = createQuotaThrottle()
+  // 模型配置工作台（v1.10）：侧车仓库持有写前快照/绑定/验证摘要/人工恢复态。
+  // 写串行化在仓库内部；目录随 DSH 升级才变，进程内缓存一次。
+  const modelProfileDir = ctx.get('profileContext')?.dir ?? process.env.DSH_PROFILE_DIR
+  const workbenchStore = createWorkbenchStore(typeof modelProfileDir === 'string' && modelProfileDir !== '' ? modelProfileDir : join(dshHome, 'dsh-service-model-config', 'legacy'))
+  const providerAvailability = createProviderAvailability(workbenchStore)
+  const notifyProviderAvailability = () => ctx.emit('llm/adapters-updated')
+  ctx.inject(['llm'], (scope) => {
+    const llm = scope.get('llm') ?? ctx.get('llm')
+    if (!llm) return
+    const dispose = installProviderAvailability(llm, providerAvailability, notifyProviderAvailability)
+    scope.effect(() => dispose)
+  })
   // 技能管理（v0.22）：侧车索引缓存 + 批量补全状态。批量随 Fiber 销毁中止。
   // 可重赋值的 let 一律以 { current } 箱体跨模块传递：端点工厂解构是值快照，
   // let 重赋值不会穿过解构边界；箱体靠对象身份保持活绑定。
@@ -5432,7 +5486,8 @@ function apply(ctx, featureConfig) {
     const hasActivation = typeof subagents?.startActivation === 'function'
     const hasLegacyStarts = typeof subagents?.start === 'function' && typeof subagents?.startContinuable === 'function'
     if (!hasActivation && !hasLegacyStarts) return
-    const isRoutable = (provider) => {
+    const isRoutable = (provider, model) => {
+      if (model !== undefined && !providerAvailability.modelEnabled(provider, model)) return false
       const llm = ctx.get('llm')
       if (llm === undefined || typeof llm.listProviders !== 'function') return false
       try {
@@ -5483,6 +5538,8 @@ function apply(ctx, featureConfig) {
       return quotaProviderUnusable(view) === false
     }
     const applyInjection = (request) => {
+      const explicit = request?.agentOptions?.provider
+      if (typeof explicit === 'string' && explicit) providerAvailability.assertEnabled(explicit, request?.agentOptions?.model)
       // 功能关闭：零记录（完全静默，与原生行为一致）——记录是 subagentRoute 功能的一部分。
       if (!featureEnabled('subagentRoute')) return { request, dispatch: undefined }
       const routeOptions = {
@@ -5493,7 +5550,7 @@ function apply(ctx, featureConfig) {
       }
       const injected = resolveSubagentInjection(request, subagentRouteRef.current, routeOptions)
       const routeCandidates = injected === undefined ? [] : subagentRouteCandidates(request, subagentRouteRef.current, routeOptions)
-        .filter((candidate) => isRoutable(candidate.provider) && isQuotaHealthy(candidate.provider) !== false)
+        .filter((candidate) => isRoutable(candidate.provider, candidate.model) && isQuotaHealthy(candidate.provider) !== false)
         .filter((candidate, index, candidates) => candidates.findIndex((item) => item.provider === candidate.provider && item.model === candidate.model) === index)
       const injectedIndex = routeCandidates.findIndex((candidate) => candidate.provider === injected?.provider && candidate.model === injected?.model)
       const eligibleRoutes = injectedIndex < 0 ? [] : routeCandidates.slice(injectedIndex)
@@ -5525,17 +5582,20 @@ function apply(ctx, featureConfig) {
     const originalStart = subagents.start
     const originalStartContinuable = subagents.startContinuable
     if (hasActivation) {
-      subagents.startActivation = (spec) => {
+      subagents.startActivation = async (spec) => {
+        await providerAvailability.loading
         const { request: decorated, dispatch } = applyInjection(spec.request)
         if (dispatch === undefined) return originalStartActivation.call(subagents, spec)
         return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, { ...spec, request: decorated }))
       }
     } else {
-      subagents.start = (name, request) => {
+      subagents.start = async (name, request) => {
+        await providerAvailability.loading
         const { request: decorated, dispatch } = applyInjection(request)
         return runWithDispatch(dispatch, () => originalStart.call(subagents, name, decorated))
       }
-      subagents.startContinuable = (spec) => {
+      subagents.startContinuable = async (spec) => {
+        await providerAvailability.loading
         const { request: decorated, dispatch } = applyInjection(spec.request)
         return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
       }
@@ -6201,8 +6261,29 @@ function apply(ctx, featureConfig) {
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
-    createSubagentRoutes({ ctx, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
+    createSubagentRoutes({ ctx, providerAvailability, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, listLocalProfiles, name, rpcFailure }),
+    createModelConfigRoutes({
+      ctx,
+      loadPiCatalog: loadPiAiCatalog,
+      workbenchStore,
+      providerAvailability,
+      notifyProviderAvailability,
+      // 移除守卫的只读引用面：子代理路由配置 + 官方默认模型选择（都是宿主侧事实，浏览器不参与）。
+      loadSubagentRoute: async () => {
+        await subagentRouteLoadPromise
+        return subagentRouteRef.current
+      },
+      loadAgentDefaultModelSelection: () => {
+        const service = ctx.get('agentDefaultModel')
+        if (service === undefined || typeof service.currentSelection !== 'function') return undefined
+        return service.currentSelection()
+      },
+      writeSubagentRoute: serializeSubagentRouteWrite,
+      listSubagentModels,
+      dshHome,
+      pluginVersion,
+    }),
   ])
 
   const dispatchEndpoint = createRpcDispatcher({ endpoints: rpcEndpoints, featureEnabled, logger: ctx.logger })
@@ -6312,6 +6393,45 @@ export {
   saveUnifiedConfig,
   updateUnifiedConfigSection,
   sanitizeSettingsNavConfig,
+  // 模型配置工作台（v1.10）：领域纯函数经 index.js 再导出，测试从 '../index.js' 导入的
+  // 既有约定保持不变（旧分支 test/workbench.test.js 即此形状）。
+  WORKBENCH_SIDECAR_VERSION,
+  applySuggestions,
+  applyUndo,
+  arbitrateModelSuggestions,
+  buildPiAiIndex,
+  createWorkbenchStore,
+  deriveKeyRefFor,
+  diffModelLists,
+  emptyWorkbenchSidecar,
+  fetchModelsProbe,
+  hostnameOf,
+  isPrivateIpAddress,
+  loadWorkbenchSidecar,
+  modelPatchFromPiAi,
+  modelsProbeLookup,
+  normalizeBaseURLForMatch,
+  parseModelListing,
+  probeBaseURLCheck,
+  profileFingerprint,
+  readLlmProfiles,
+  saveWorkbenchSidecar,
+  selfCheckModelsPatch,
+  suggestRouteId,
+  suggestionId,
+  undoPreviewModels,
+  // P3.5 补充源（modelparams.dev）与多源共识：同样经 index.js 再导出供测试直达。
+  abilityPatch,
+  consensusFields,
+  createFreshnessManager,
+  indexModelParamsDev,
+  loadModelParamsSnapshot,
+  modelParamsCandidates,
+  modelParamsDevEfforts,
+  openRouterModelFacts,
+  openRouterVerifySource,
+  pickOpenRouterMatch,
+  saveModelParamsSnapshot,
 }
 // 插件 Config：0.1.7-alpha.1 起宿主配置面由 Profile 的插件 Config 托管；声明它即可让
 // 功能开关出现在插件管理页，并让宿主经 `loader/volatile-update` 热更新（无需重启）。

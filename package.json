@@ -25,6 +25,13 @@
     "quota-routes.js",
     "subagent-routes.js",
     "backup-routes.js",
+    "model-workbench.js",
+    "model-workbench-routes.js",
+    "model-workbench-settings.js",
+    "model-config-routes.js",
+    "provider-availability.js",
+    "model-config-schema.js",
+    "model-smart-fill.js",
     "plugin-health.js",
     "client.js",
     "cordis.patch.yml",
@@ -64,7 +71,8 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-primitives"
       ],
       "platform": "web"
     }

@@ -15,6 +15,7 @@ import { dirname, resolve } from 'node:path'
 // 「立即求值的前向引用」。
 const CLIENT_SOURCE_FILES = [
   'src/client.js',
+  'src/client/model-config-i18n.js',
   'src/client/visual-primitives.js',
   'src/client/notification-service.js',
   'src/client/version-restart.js',
@@ -28,6 +29,8 @@ const CLIENT_SOURCE_FILES = [
   'src/client/model-icons.js',
   // 特性设置门面：必须在 apply.js 之前——apply 的同步函数体在声明处立即调用它。
   'src/client/feature-settings.js',
+  'src/client/models-workbench.js',
+  'src/client/model-config.js',
   'src/client/apply.js',
 ]
 
