@@ -70,6 +70,34 @@ test('installed SettingsForms: saved Anthropic discovery resolves credentials wi
   assert.deepEqual(host.raw, before); assert.equal(host.count(), 0)
 })
 
+test('installed SettingsForms: saved openai-responses discovery uses saved credentials and never mutates the profile', { skip: !SettingsForms || !Config }, async (t) => {
+  let resolvedRef; let options
+  const host = makeHost({ credentials: { resolve: async (key) => { resolvedRef = key; return { value: 'responses-isolated-secret' } } } })
+  Object.assign(host.raw.providers.relay, { api: 'openai-responses', baseURL: 'https://gateway.example/prefix/v1', apiKeyEnv: 'RESPONSES_KEY' })
+  const before = clone(host.raw)
+  t.mock.method(modelsProbeLookup, 'impl', async () => [{ address: '8.8.8.8', family: 4 }])
+  t.mock.method(https, 'request', (requestOptions, callback) => {
+    options = requestOptions
+    const request = new EventEmitter()
+    request.destroy = (error) => { if (error) request.emit('error', error) }
+    request.end = () => queueMicrotask(() => {
+      const response = new EventEmitter(); response.statusCode = 200; response.resume = () => {}
+      callback(response); response.emit('data', Buffer.from(JSON.stringify({ data: [{ id: 'gpt-responses-example', name: 'Responses Example' }] }))); response.emit('end')
+    })
+    return request
+  })
+  const opened = await host.routes['models3-open'].handle({ route: 'relay' })
+  const result = await host.routes['models3-discover'].handle({ sessionId: opened.value.sessionId })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(resolvedRef, 'RESPONSES_KEY')
+  assert.equal(options.path, '/prefix/v1/models')
+  assert.equal(options.method, 'GET')
+  assert.equal(options.headers.authorization, 'Bearer responses-isolated-secret')
+  assert.equal(options.headers['x-api-key'], undefined)
+  assert.deepEqual(result.value.candidates, [{ id: 'gpt-responses-example', name: 'Responses Example' }])
+  assert.equal(JSON.stringify(result).includes('responses-isolated-secret'), false)
+  assert.deepEqual(host.raw, before); assert.equal(host.count(), 0)
+})
 test('installed SettingsForms: availability preview/commit retains complete profile and rejects stale plans', { skip: !SettingsForms || !Config }, async () => {
   const host = makeHost()
   const before = clone(host.raw)

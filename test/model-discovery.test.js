@@ -63,6 +63,32 @@ test('OpenAI model discovery keeps Bearer authentication and existing path seman
   assert.equal(requests[0].headers.authorization, 'Bearer isolated-key')
   assert.equal(requests[0].headers['x-api-key'], undefined)
 })
+test('openai-responses discovery RPC parses model IDs and names without saving or invoking responses', async (t) => {
+  const requests = network(t, { body: JSON.stringify({ data: [{ id: 'gpt-example', name: 'GPT Example' }, { id: 'gpt-other' }] }) })
+  const endpoints = createModelConfigRoutes({ ctx: { get: () => undefined } })
+  const result = await endpoints['models3-discover'].handle({ baseURL: 'https://gateway.example/prefix/v1/?tenant=example', api: 'openai-responses', key: 'isolated-key' })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.value.saved, false)
+  assert.deepEqual(result.value.candidates, [{ id: 'gpt-example', name: 'GPT Example' }, { id: 'gpt-other', name: undefined }])
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'GET')
+  assert.equal(requests[0].path, '/prefix/v1/models?tenant=example')
+  assert.equal(requests[0].headers.authorization, 'Bearer isolated-key')
+  assert.equal(requests[0].headers['anthropic-version'], undefined)
+  assert.equal(JSON.stringify(result).includes('isolated-key'), false)
+})
+test('openai-responses discovery shares public DNS and redirect guards', async (t) => {
+  await t.test('private DNS', async (t) => {
+    const requests = network(t)
+    modelsProbeLookup.impl = async () => [{ address: '127.0.0.1', family: 4 }]
+    await assert.rejects(fetchModelsProbe('https://gateway.example/v1', undefined, 'openai-responses'), /probe-not-public/)
+    assert.equal(requests.length, 0)
+  })
+  await t.test('redirect', async (t) => {
+    network(t, { status: 302 })
+    await assert.rejects(fetchModelsProbe('https://gateway.example/v1', undefined, 'openai-responses'), /probe-redirect:302/)
+  })
+})
 test('Anthropic discovery without a credential sends no authentication and preserves gateway query data', async (t) => {
   const requests = network(t)
   await fetchModelsProbe('https://gateway.example/prefix?tenant=example', undefined, 'anthropic-messages')
