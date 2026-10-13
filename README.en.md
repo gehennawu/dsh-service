@@ -9,7 +9,7 @@
   <em>DeepSeek Harness (DSH) Web 服务控制与运维插件。</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.0.7-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-2.0.8-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
 [![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.2.1--alpha.2-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
@@ -186,7 +186,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Enabling and disabling apply immediately, with no second confirmation**: the provider switch in the header and each model-row switch commit as soon as you click them (the host fetches a plan and submits it within the same click; no confirmation dialog follows). The provider switch's hover text states that disabling makes the provider unselectable and blocks new main-chat and subagent calls while keeping configuration and credentials. Disabled state is Profile-scoped, and disabled providers leave composer and subagent catalogs and reject new exact-model calls, including saved routes, explicit overrides and prepared calls not yet dispatched. Already-running calls are not forcibly cancelled. This is plugin policy, not an official `enabled` configuration field; unloading the plugin removes enforcement
 - **A basic call test is not a capability audit**: the model-row test action directly tests the saved entry without a second fee confirmation. The host sends fixed short text with a 30,000-token / 120-second ceiling and may incur charges. Elapsed time is shown while running; failures expose sanitized codes, HTTP status, finish reason and details. It verifies only a basic text call, not images, capacity or every reasoning level. A failure never rolls back saved configuration
 - **Built-in inheritance is not a gap**: built-in channels inherit capability fields from the catalog (runtime falls back to the catalog base), so "not written in settings" does not mean "missing capability" — you will not be nagged to fill in reasoning levels
-- **Manual editor**: id / name / context / max output always visible; the capabilities area is always expanded (two vision switches, seven reasoning checkboxes; metadata wire mappings are retained, but wire-edit inputs are currently not visible). Clearing a field removes the explicit override to inherit the default, and `reasoningEfforts: false` explicitly declares "not supported" (distinct from omitting it)
+- **Manual editor**: id / name / context / max output always visible; the capabilities area is always expanded (two vision switches, six equal-width horizontal reasoning checkboxes (off is not shown); metadata wire mappings are retained, but wire-edit inputs are currently not visible). Clearing a field removes the explicit override to inherit the default, and `reasoningEfforts: false` explicitly declares "not supported" (distinct from omitting it)
 - **Deletion keeps the credential and is restorable**: deleting a channel removes only the route from settings and keeps the credential reference (other channels sharing it are unaffected). The full pre-deletion configuration goes into a snapshot first, and the **restore entry stays at the bottom of the list** instead of disappearing with the row. Restore writes the reference back but **never the old key value**
 - **Configuration is not a call-time selection**: effort checkboxes declare selectable levels, not the level selected for every call. Unconfigured levels inherit existing values or leave behavior to the API default; they do not automatically disable reasoning. Smart fill retains mappings explicitly declared by metadata. Manually checking a non-off level currently uses its English name as the wire value, whose suitability must be checked. Saving requires at least one non-off mapping
 - **Drafts stay on the page**: a failed save or a concurrent conflict never clears the draft, and a conflict asks you to re-confirm against the latest values; leaving with unsaved edits warns first; drafts are never persisted across refreshes (so keys never reach browser storage)
@@ -196,7 +196,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Suggestions shown per parameter**: display name, context capacity, maximum output, input modalities and reasoning levels are shown separately. Modalities are compared as sets, so ordering is not a difference. Suggestions use a stable source order; reasoning prefers explicitly declared mappings without filtering by the current provider, and missing mappings never fabricate levels. modelparams request ranges are not model output limits. Metadata is reference information, not a real API capability test
 - **One confirmation to fill**: "Fill all" first lists which draft fields it will replace; confirming **only updates the draft**, writes no configuration and still requires Save. There is no source binding or per-field ✓ / ✕. Hovering the switch explains the sources and operation boundaries
 - **The two reasoning notices are distinct**: when the model metadata declares reasoning support but no concrete level suggestions were found, the panel says reasoning is supported yet the level values are unavailable and the API default is unknown; when there is no reasoning metadata at all it says no reasoning level suggestions were found and to configure them manually. **Absent metadata is not "unsupported"**; only `reasoningEfforts: false` declares that explicitly
-- **Effort badges use English level names**: current and suggested levels render as `off / minimal / low / medium / high / xhigh / max` badges regardless of the UI language (the `models.smart.effort.*` Chinese dictionary is retained but not used here); the "Current levels / Suggested levels" labels themselves still follow the UI language
+- **Effort badges use English level names**: current and suggested levels render as `minimal / low / medium / high / xhigh / max` badges regardless of the UI language (the `models.smart.effort.*` Chinese dictionary is retained but not used here); the "Current levels / Suggested levels" labels themselves still follow the UI language
 - **Snapshot before mutation**: ordinary save is one click; delete / credential replacement / restore preview consequences before confirmation. Snapshot failure prevents configuration writes. Creation, edits and restore capture owner / full fingerprint / revision and reject concurrent overwrite; subsequent external edits block undo. Ordinary snapshots exclude sensitive headers; deletion is refused if sensitive values cannot be restored in full safely
 - **Online verification**: looks a model up in the OpenRouter model directory by id (fixed domain, redirects not followed); results are shown for reference only and never change your config
 
@@ -349,7 +349,7 @@ Key contracts:
 1. Open the **Plugins** page in the left sidebar.
 2. Click the **+ Add plugin** button in the top-right corner.
 3. In the dialog, fill in **one of the three** source forms (the same field accepts all three, and the hint below it follows what you type):
-   - **npm package name (recommended)**: `@gehennawu/dsh-service@2.0.7` — **include the exact version** (written as `package@version`);
+   - **npm package name (recommended)**: `@gehennawu/dsh-service@2.0.8` — **include the exact version** (written as `package@version`);
    - **GitHub repository URL**: `https://github.com/gehennawu/dsh-service` (public repository, no token needed; the shorthand `github:gehennawu/dsh-service` works too);
    - **Local plugin directory**: an absolute path on this machine, e.g. `/path/to/dsh-service` (for your own or pre-downloaded plugins).
 4. Pick the **install source** for your network: the default **official npm registry**, or the **China mainland mirror** if fetching from npm is restricted there (it affects package-name installs only; GitHub URLs and local directories are unaffected).
@@ -360,17 +360,17 @@ Key contracts:
 
 > Tip: all three forms go through the official installation path — no manual profile edits; entering a GitHub URL in the dialog is equivalent to the `github:` prefix on the command line.
 
-> **Why the npm form wants a version**: pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes). **Without a version** (including `@latest`), a release published less than the cooldown period ago is not installed automatically, so the package manager falls back to the newest version that has cleared it — which is why the plugin page may report that it installed x.y.z instead of the latest a.b.c. Writing an **exact version** (e.g. `@gehennawu/dsh-service@2.0.7`) installs exactly the release you name. The cooldown is a supply-chain safety policy, not a sign that the new release is broken; if you are not in a hurry, installing without a version after the 24 hours have passed also reaches the new release.
+> **Why the npm form wants a version**: pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes). **Without a version** (including `@latest`), a release published less than the cooldown period ago is not installed automatically, so the package manager falls back to the newest version that has cleared it — which is why the plugin page may report that it installed x.y.z instead of the latest a.b.c. Writing an **exact version** (e.g. `@gehennawu/dsh-service@2.0.8`) installs exactly the release you name. The cooldown is a supply-chain safety policy, not a sign that the new release is broken; if you are not in a hurry, installing without a version after the 24 hours have passed also reaches the new release.
 
 ### Option 2: Command line
 
 | Method | Command |
 | --- | --- |
-| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service@2.0.7` |
+| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service@2.0.8` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | Local development | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
-The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above. The npm method is subject to the same pnpm release cooldown: without a version it installs the newest release that has cleared the cooldown, while an exact version (`@gehennawu/dsh-service@2.0.7`) installs that release (see the note under Option 1).
+The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above. The npm method is subject to the same pnpm release cooldown: without a version it installs the newest release that has cleared the cooldown, while an exact version (`@gehennawu/dsh-service@2.0.8`) installs that release (see the note under Option 1).
 
 Restart DSH Web after installing or updating:
 
@@ -516,7 +516,7 @@ Concurrency protection kicked in: SKILL.md was just modified by an external edit
 <details>
 <summary><strong>The plugin page installed the plugin, but the version is an older one?</strong></summary>
 
-pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes): **installing without a version** (including `@latest`) only selects the newest release that has already cleared the cooldown, so a freshly published release is skipped and the official plugin page reports that it installed x.y.z instead of the latest a.b.c. To get the new version right away: uninstall it in the plugin page and reinstall with `package@version` (e.g. `@gehennawu/dsh-service@2.0.7`), or use this plugin's **Service Control → Upgrade** — it installs an exact version and is not subject to the cooldown. The cooldown is a supply-chain policy (a fresh release may contain defects that are not known yet); after the 24 hours have passed, installing without a version also reaches the new release.
+pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes): **installing without a version** (including `@latest`) only selects the newest release that has already cleared the cooldown, so a freshly published release is skipped and the official plugin page reports that it installed x.y.z instead of the latest a.b.c. To get the new version right away: uninstall it in the plugin page and reinstall with `package@version` (e.g. `@gehennawu/dsh-service@2.0.8`), or use this plugin's **Service Control → Upgrade** — it installs an exact version and is not subject to the cooldown. The cooldown is a supply-chain policy (a fresh release may contain defects that are not known yet); after the 24 hours have passed, installing without a version also reaches the new release.
 </details>
 
 <details>
