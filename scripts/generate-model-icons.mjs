@@ -121,6 +121,7 @@ const ENTRIES = [
   ['codex', 'codex'],
   ['grok', 'grok'],
   ['gemini', 'gemini'],
+  ['cline', 'cline'],
 ]
 
 /** 客户端前缀/别名匹配规则（自定义渠道名 → slug），与上表同源生成。 */
@@ -158,6 +159,7 @@ const PREFIX_RULES = [
   ['groq', 'groq'],
   ['github', 'github'],
   ['copilot', 'github'],
+  ['cline', 'cline'],
   ['perplexity', 'perplexity'],
   ['cohere', 'cohere'],
   ['ollama', 'ollama'],
@@ -204,16 +206,41 @@ async function fetchSvg(slug) {
 /**
  * 归一化：剥掉 title/width/height/style，只留 viewBox 与图形本体。
  * 我们的 CSS 用 em 尺寸控制大小，源尺寸属性留着只会打架。
+ *
+ * **但根级的 `fill-rule` / `clip-rule` 必须留下**：它们是**继承**给子元素的呈现属性，
+ * 剥根标签时一并丢掉，靠 evenodd 挖洞的图形就会被默认的 nonzero 填实。实测 Targon——
+ * 上游根标签写 `fill-rule="evenodd"`（路径上只有管裁剪的 `clip-rule`，管不了填充绕向），
+ * 丢掉后第二个镂空被填实；保留规则后，同源 data-URI 的墨迹像素数从 50179 降到 44760。
+ *
+ * 保留办法是把它们挂到一层 `<g>` 上让子元素继承，根标签的重建逻辑（两处
+ * data-URI 构造器）不用动。只保留**非默认值**（nonzero 即默认），避免给本就等价的
+ * 图形加无用节点——全量实测：非默认值包裹只让 Targon 的渲染真正改变，其余 62 张
+ * 逐像素一致或仅有 1–3 像素抗锯齿噪声（墨迹数相同）。
  */
+const DEFAULT_PRESENTATION_RULES = { 'fill-rule': 'nonzero', 'clip-rule': 'nonzero' }
+
+/** 从根标签抽非默认的 fill-rule / clip-rule（顺序固定，产物才确定）。 */
+function inheritedRuleAttrs(rootTag) {
+  const attrs = []
+  for (const [name, fallback] of Object.entries(DEFAULT_PRESENTATION_RULES)) {
+    const matched = rootTag.match(new RegExp(`\\s${name}="([^"]+)"`))
+    if (matched !== null && matched[1] !== fallback) attrs.push(`${name}="${matched[1]}"`)
+  }
+  return attrs
+}
+
 function normalize(svg) {
   const viewBoxMatch = svg.match(/viewBox="([^"]+)"/)
   const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 24 24'
-  const inner = svg
+  const rootTag = svg.match(/<svg[^>]*>/)
+  let inner = svg
     .replace(/<svg[^>]*>/, '')
     .replace(/<\/svg>\s*$/, '')
     .replace(/<title>[\s\S]*?<\/title>/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+  const rules = inheritedRuleAttrs(rootTag === null ? '' : rootTag[0])
+  if (rules.length > 0) inner = `<g ${rules.join(' ')}>${inner}</g>`
   return { viewBox, inner }
 }
 

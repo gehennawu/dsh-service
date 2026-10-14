@@ -1270,6 +1270,37 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
   return windows
 }
 
+// Non-monetary points retain decimal strings instead of implying a currency or quota denominator.
+function normalizePoePoints(payload) {
+  const raw = payload?.current_point_balance
+  const text = typeof raw === 'string' ? raw : typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : ''
+  if (text.length > 64 || !/^-?\d+(?:\.\d+)?$/.test(text)) return { windows: [] }
+  return { windows: [{ id: 'points', kindKey: 'points', text: `${text} points`, unit: 'points' }] }
+}
+
+function normalizeVercelCredits(payload) {
+  // The API declares USD decimal strings. Lifetime spend is not a quota denominator.
+  const balance = payload?.balance
+  if (typeof balance !== 'string' || balance.length > 64 || !/^\d+(?:\.\d+)?$/.test(balance)
+    || !Number.isFinite(Number(balance)) || Number(balance) > Number.MAX_SAFE_INTEGER) return { windows: [] }
+  return { windows: [{ id: 'balance', kindKey: 'balance', text: `$${balance}`, unit: 'usd' }] }
+}
+
+function normalizeClinePassUsage(payload) {
+  if (payload?.success !== true || !Array.isArray(payload?.data?.limits)) return { windows: [] }
+  const windows = []
+  for (const [type, id] of [['five_hour', 'five-hour'], ['weekly', 'weekly'], ['monthly', 'monthly']]) {
+    const matches = payload.data.limits.filter((entry) => entry?.type === type)
+    if (matches.length > 1) return { windows: [] }
+    const entry = matches[0]
+    if (typeof entry?.percentUsed !== 'number' || !Number.isFinite(entry.percentUsed) || entry.percentUsed < 0) continue
+    const resetsAt = typeof entry.resetsAt === 'string' && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(entry.resetsAt)
+      ? normalizeResetTimestamp(entry.resetsAt) : undefined
+    windows.push({ id, percent: Math.min(100, Math.round(entry.percentUsed)), ...(resetsAt !== undefined ? { resetsAt } : {}) })
+  }
+  return { windows }
+}
+
 function createQuotaAdapterCatalog() {
   return Object.freeze([
     createEndpointAdapter({
@@ -1329,6 +1360,30 @@ function createQuotaAdapterCatalog() {
       endpoints: ['https://api.siliconflow.cn/v1/user/info'],
       keyHints: ['SILICONFLOW_API_KEY'],
       hosts: ['siliconflow.cn'],
+    }),
+    createEndpointAdapter({
+      kind: 'vercel-ai-gateway',
+      normalize: normalizeVercelCredits,
+      endpoints: ['https://ai-gateway.vercel.sh/v1/credits'],
+      keyHints: ['AI_GATEWAY_API_KEY'],
+      hosts: ['ai-gateway.vercel.sh'],
+      routeIds: ['vercel-ai-gateway'],
+    }),
+    createEndpointAdapter({
+      kind: 'poe',
+      normalize: normalizePoePoints,
+      endpoints: ['https://api.poe.com/usage/current_balance'],
+      keyHints: ['POE_API_KEY'],
+      hosts: ['api.poe.com'],
+      routeIds: ['poe'],
+    }),
+    createEndpointAdapter({
+      kind: 'clinepass',
+      normalize: normalizeClinePassUsage,
+      endpoints: ['https://api.cline.bot/api/v1/users/me/plan/usage-limits'],
+      keyHints: ['CLINEPASS_API_KEY'],
+      hosts: ['api.cline.bot'],
+      routeIds: ['clinepass'],
     }),
     createEndpointAdapter({
       kind: 'deepseek',

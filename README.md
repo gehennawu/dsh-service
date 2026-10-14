@@ -130,6 +130,9 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 | OpenCode Go | `{baseURL}/usage`（内置渠道未写 baseURL 时用注册表默认端点 `https://opencode.ai/zen/go/v1`） |
 | OpenRouter | credits 已用百分比 |
 | Kimi / 硅基流动 | 人民币余额 |
+| Vercel AI Gateway | 官方 `GET /v1/credits` 查询团队剩余 USD 余额（Gateway API key；累计消费不作为套餐上限） |
+| Poe | API key 查询剩余 points（非货币积分，不显示金额油表） |
+| ClinePass | API key 查询 5 小时 / 每周 / 每月套餐用量及重置时间 |
 | StepFun 余额 | 官方 `GET /v1/accounts`（API key，com/ai 双域） |
 | StepFun Step Plan | 控制台 BFF 订阅额度（Oasis-Token 登录令牌；5 小时/周窗口与 Credit 月池自动识别） |
 | 小米 MiMo Token Plan | 控制台同源套餐额度（网页登录态 Cookie） |

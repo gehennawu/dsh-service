@@ -5,7 +5,7 @@
 function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount }) {
   const { useState, useEffect } = React
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway']
       const QUOTA_CARD_ORDER_KEY = 'dsh-service-quota-card-order'
       const QUOTA_CARD_HIDDEN_KEY = 'dsh-service-quota-card-hidden'
       // 供应商名由 settings / llm 渠道清单派生，可能含中文、空格、`@`（用户自定义键），

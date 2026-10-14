@@ -151,10 +151,25 @@ test('model icon catalog is regenerated from the generated data and covers every
 
   const html = read('docs/model-icons.html')
   const slugs = Object.keys(parsed.data)
-  assert.equal(slugs.length, 62, 'icon mark count changed — update the catalog expectations with it')
+  assert.equal(slugs.length, 63, 'icon mark count changed — update the catalog expectations with it')
   for (const slug of slugs) {
     assert.match(html, new RegExp(`data-slug="${slug}"`), `catalog is missing mark ${slug}`)
   }
+  // 根级呈现属性必须留：Targon 的**第二个镂空**只靠上游根标签上的 `fill-rule="evenodd"`
+  // 挖出来（路径上那个 `clip-rule` 管的是裁剪，管不了填充绕向）。归一化剥根标签时丢掉它，
+  // 图形会被默认的 nonzero 填实——真机同源 data-URI 渲染实测墨迹 +12%、少一个洞。
+  // 这条锁住 normalize 的保留逻辑（包裹层固定在图形本体之外）。
+  assert.match(
+    parsed.data.targon.m,
+    /^<g fill-rule="evenodd">/,
+    'root-level fill-rule must survive normalization (Targon loses a cutout without it)',
+  )
+  // 默认值不包（nonzero 即默认），避免给等价图形加无用节点。
+  assert.equal(
+    Object.values(parsed.data).some((spec) => spec.m.startsWith('<g fill-rule="nonzero">')),
+    false,
+    'default fill-rule must not be materialised into a wrapper',
+  )
   // provider 精确表与别名表都必须逐条落进页面（源码折叠块里的 slug 不算数，
   // 表格行才是有意展示的口径）。
   for (const provider of Object.keys(parsed.providers)) {

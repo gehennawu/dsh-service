@@ -6227,6 +6227,57 @@ test('command-goat card shows the account balance, period spend, plan and usage 
   assert.match(renderer.text('settings.section'), /填写 API 密钥/)
 })
 
+test('Vercel renders a USD balance without fake quota windows or reset times', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '2.0.8', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '2.0.8', latest: '2.0.8', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: Date.now(), providers: [
+      { provider: 'vercel-ai-gateway', displayName: 'Vercel AI Gateway', adapted: true, kind: 'vercel-ai-gateway', status: 'ok', windows: [{ id: 'balance', kindKey: 'balance', text: '$95.50', unit: 'usd' }] },
+    ] } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  assert.match(text, /Vercel AI Gateway/)
+  assert.match(text, /\$95\.50/)
+  assert.doesNotMatch(text, /¥95|5 小时额度|本周|本月/)
+  assert.equal(renderer.hasTest('quota-card-reset-vercel-ai-gateway-balance'), false)
+})
+
+test('Poe points stay non-monetary and ClinePass windows render reset times', async () => {
+  const now = Date.now()
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '2.0.8', instanceId: 'x' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '2.0.8', latest: '2.0.8', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'quota') return { ok: true, value: { serverTime: now, providers: [
+      { provider: 'poe', displayName: 'Poe', adapted: true, kind: 'poe', status: 'ok', windows: [{ id: 'points', kindKey: 'points', text: '1234.25 points', unit: 'points' }] },
+      { provider: 'clinepass', displayName: 'ClinePass', adapted: true, kind: 'clinepass', status: 'ok', windows: [{ id: 'five-hour', percent: 25, resetsAt: new Date(now + 3600000).toISOString() }, { id: 'weekly', percent: 50 }, { id: 'monthly', percent: 75 }] },
+    ] } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.findButton('额度查询').props.onClick()
+  await renderer.flush()
+  const text = renderer.text('settings.section')
+  assert.match(text, /剩余积分/)
+  assert.match(text, /1234\.25 points/)
+  assert.doesNotMatch(text, /[¥$]1234/)
+  assert.match(text, /25%/)
+  assert.match(text, /50%/)
+  assert.match(text, /75%/)
+  assert.ok(renderer.hasTest('quota-card-reset-clinepass-five-hour'))
+})
+
 test('quota kind dropdown offers command-goat alongside every other built-in adapter', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '1.6.3', instanceId: 'x' } }
@@ -6242,9 +6293,10 @@ test('quota kind dropdown offers command-goat alongside every other built-in ada
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const kinds = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(kinds, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
+  assert.deepEqual(kinds, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway'])
   const labels = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.children).flat(Infinity)
   assert.ok(labels.includes('Command Code 账号额度'), `kind dropdown labels missing command-goat: ${JSON.stringify(labels)}`)
+  assert.ok(labels.includes('Vercel AI Gateway 余额'))
 })
 
 test('quota ring renders nothing when the modelDirectories service is absent', async () => {
@@ -6347,7 +6399,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 「配置」未展开时重置卡行不挂「移除」钮；展开后才出现（平时不出现破坏性按钮）。
@@ -13584,12 +13636,21 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.equal(icons.resolve('xiaomi-token-plan-ams').slug, 'xiaomi')
   assert.equal(icons.resolve('qwen-token-plan-individual').slug, 'qwen')
   assert.equal(icons.resolve('kimi-coding').slug, 'kimi')
+  // Cline（编码工具品牌）：单色档；图形为「机器人头 + 天线」两条路径，眼睛靠子路径
+  // 绕向挖空（上游把 fill-rule 写在根标签，生成期已保留进图形本体，见 docs-static 用例）。
+  assert.equal(icons.resolve('cline').slug, 'cline')
+  assert.equal(icons.resolve('Cline').slug, 'cline')
+  assert.equal(icons.resolve('cline').spec.c, 0, 'Cline mark must be mono tier (currentColor source)')
+  assert.equal((icons.resolve('cline').spec.m.match(/<path/g) || []).length, 2, 'Cline mark draws head + antenna as two paths')
 
   // ② 自定义渠道名走前缀/别名（本机真实值）
   assert.equal(icons.resolve('opencode-goo').slug, 'opencode')
   assert.equal(icons.resolve('opencode-go-f').slug, 'opencode')
   assert.equal(icons.resolve('openrouter-f').slug, 'openrouter')
   assert.equal(icons.resolve('siliconflow').slug, 'siliconcloud')
+  // Cline 的自定义后缀渠道名（分隔符限定 - _ .，'clinet-x' 这类不算）
+  assert.equal(icons.resolve('cline-official').slug, 'cline')
+  assert.equal(icons.resolve('cline.pro').slug, 'cline')
 
   // ③ 大小写与空白归一
   assert.equal(icons.resolve('  OpenAI  ').slug, 'openai')

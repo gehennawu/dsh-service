@@ -80,7 +80,7 @@ const CATEGORIES = [
     note: '面向编码工具的订阅制入口，渠道名常带自定义后缀（靠前缀规则命中）。',
     providers: [
       'opencode', 'opencode-go', 'command-goat', 'commandcode', 'command-code',
-      'github-copilot',
+      'github-copilot', 'cline',
     ],
   },
   {

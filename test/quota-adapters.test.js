@@ -12,6 +12,80 @@ import {
   recognizeQuotaAdapter,
 } from '../quota-adapters.js'
 
+test('Vercel USD balance preserves decimal text without inventing a lifetime-spend denominator', () => {
+  const adapter = findQuotaAdapter(createCatalog(), 'vercel-ai-gateway')
+  for (const balance of ['95.50', '0', '0.000001', '1234.123456789']) {
+    assert.deepEqual(adapter.normalize({ balance, total_used: '999999' }), {
+      windows: [{ id: 'balance', kindKey: 'balance', text: `$${balance}`, unit: 'usd' }],
+    })
+  }
+  for (const balance of [undefined, null, '', ' ', true, 95.5, [], {}, '-1', 'NaN', 'Infinity', '1e10', '9007199254740992']) {
+    assert.deepEqual(adapter.normalize({ balance, total_used: '10' }), { windows: [] })
+  }
+  assert.equal(recognizeQuotaAdapter(createCatalog(), { name: 'vercel-ai-gateway', baseURL: '' })?.kind, 'vercel-ai-gateway')
+  assert.equal(adapter.recognize({ name: 'vercel-ai-gateway', baseURL: 'https://relay.example/v1' }), false)
+  assert.equal(adapter.recognize({ baseURL: 'https://ai-gateway.vercel.sh.evil.example/v1' }), false)
+  assert.equal(adapter.recognize({ baseURL: 'https://vercel.com/v1' }), false)
+  assert.deepEqual([...adapter.credentialPolicy({ apiKeyEnv: 'AI_GATEWAY_API_KEY' }).hints], ['AI_GATEWAY_API_KEY'])
+})
+
+test('Poe points retain exact non-monetary values and reject missing or coercible junk', () => {
+  const adapter = findQuotaAdapter(createCatalog(), 'poe')
+  for (const value of ['12345678901234567890.25', 0, -2]) {
+    assert.deepEqual(adapter.normalize({ current_point_balance: value }), {
+      windows: [{ id: 'points', kindKey: 'points', text: `${value} points`, unit: 'points' }],
+    })
+  }
+  for (const value of [null, undefined, '', ' ', true, [], {}, 'NaN', Infinity, '1e10']) {
+    assert.deepEqual(adapter.normalize({ current_point_balance: value }), { windows: [] })
+  }
+})
+
+test('ClinePass normalizes known windows with explicit resets and fails closed on duplicates', () => {
+  const adapter = findQuotaAdapter(createCatalog(), 'clinepass')
+  const limits = [
+    { type: 'monthly', percentUsed: 110 },
+    { type: 'weekly', percentUsed: 25.4, resetsAt: '2026-11-01T00:00:00Z' },
+    { type: 'five_hour', percentUsed: 0 },
+    { type: 'other', percentUsed: 50 },
+  ]
+  assert.deepEqual(adapter.normalize({ success: true, data: { limits } }), { windows: [
+    { id: 'five-hour', percent: 0 },
+    { id: 'weekly', percent: 25, resetsAt: '2026-11-01T00:00:00.000Z' },
+    { id: 'monthly', percent: 100 },
+  ] })
+  for (const percentUsed of [null, '', '50', true, -1, Infinity]) {
+    assert.deepEqual(adapter.normalize({ success: true, data: { limits: [{ type: 'weekly', percentUsed }] } }), { windows: [] })
+  }
+  assert.deepEqual(adapter.normalize({ success: false, data: { limits } }), { windows: [] })
+  assert.deepEqual(adapter.normalize({ success: true, data: { limits: [limits[1], limits[1]] } }), { windows: [] })
+  assert.deepEqual(adapter.normalize({ success: true, data: { limits: [{ type: 'weekly', percentUsed: 5, resetsAt: '2026-11-01T00:00:00' }] } }), { windows: [{ id: 'weekly', percent: 5 }] })
+})
+
+test('Poe and ClinePass use fixed endpoints, isolated hints and existing rejection handling', async () => {
+  for (const [kind, endpoint, hint, payload] of [
+    ['vercel-ai-gateway', 'https://ai-gateway.vercel.sh/v1/credits', 'AI_GATEWAY_API_KEY', { balance: '95.50', total_used: '4.50' }],
+    ['poe', 'https://api.poe.com/usage/current_balance', 'POE_API_KEY', { current_point_balance: '100' }],
+    ['clinepass', 'https://api.cline.bot/api/v1/users/me/plan/usage-limits', 'CLINEPASS_API_KEY', { success: true, data: { limits: [{ type: 'weekly', percentUsed: 20 }] } }],
+  ]) {
+    const adapter = findQuotaAdapter(createCatalog(), kind)
+    assert.deepEqual([...adapter.credentialPolicy({ apiKeyEnv: 'CUSTOM_KEY' }).hints], ['CUSTOM_KEY', hint])
+    assert.equal(adapter.credentialPolicy({}).format('key'), 'Bearer key')
+    assert.equal(adapter.recognize({ name: kind, baseURL: '' }), true)
+    assert.equal(adapter.recognize({ name: kind, baseURL: 'https://evil.example/v1' }), false)
+    assert.equal(adapter.recognize({ baseURL: endpoint }), true)
+    assert.equal(adapter.recognize({ baseURL: endpoint.replace('https:', 'http:') }), false)
+    let calls = 0
+    const context = { profile: { baseURL: 'https://relay.example/v1' }, credential: async () => 'Bearer key',
+      fetchJson: async (url, auth) => { calls++; assert.equal(url, endpoint); assert.equal(auth, 'Bearer key'); return payload } }
+    assert.deepEqual(await adapter.fetchUsage(context), payload)
+    assert.equal(calls, 1)
+    await assert.rejects(adapter.fetchUsage({ ...context, credential: async () => undefined }), /credential-missing/)
+    await assert.rejects(adapter.fetchUsage({ ...context, fetchJson: async () => { const error = new Error('http-status:401'); error.status = 401; throw error } }), /credential-rejected/)
+    await assert.rejects(adapter.fetchUsage({ ...context, fetchJson: async () => ({}) }), /bad-payload/)
+  }
+})
+
 function createCatalog() {
   return createQuotaAdapterCatalog()
 }
@@ -19,7 +93,7 @@ function createCatalog() {
 test('quota Adapter catalog exposes one exact five-method interface per unique kind', () => {
   const adapters = createCatalog()
   const expectedInterface = ['credentialPolicy', 'fetchUsage', 'kind', 'normalize', 'recognize']
-  assert.equal(adapters.length, 11)
+  assert.equal(adapters.length, 14)
   assert.equal(new Set(adapters.map((adapter) => adapter.kind)).size, adapters.length)
   for (const adapter of adapters) {
     assert.deepEqual(Object.keys(adapter).sort(), expectedInterface)

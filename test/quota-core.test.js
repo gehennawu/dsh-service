@@ -244,6 +244,7 @@ test('quotaExtractBalance extracts amount, currency, symbol and window for balan
   assert.equal(api.quotaExtractBalance([]), null)
   assert.equal(api.quotaExtractBalance(null), null)
   assert.equal(api.quotaExtractBalance([{ id: 'percent-only', percent: 50 }]), null)
+  assert.equal(api.quotaExtractBalance([{ id: 'points', kindKey: 'points', text: '1234.25 points', unit: 'points' }]), null, 'Poe points must not become a currency gauge')
 })
 
 test('resolveBalanceBaseline applies floor, detects recharge, and persists in localStorage', async () => {

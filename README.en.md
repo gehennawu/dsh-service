@@ -128,6 +128,9 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 | OpenCode Go | `{baseURL}/usage` (built-in channel without an explicit baseURL uses the registry default `https://opencode.ai/zen/go/v1`) |
 | OpenRouter | Credits used % |
 | Kimi / SiliconFlow | CNY balance |
+| Vercel AI Gateway | Official `GET /v1/credits` for the team's remaining USD balance (Gateway API key; lifetime spend is not a quota limit) |
+| Poe | API-key query for remaining points (non-monetary; no currency gauge) |
+| ClinePass | API-key query for 5-hour / weekly / monthly plan usage and reset times |
 | StepFun Balance | Official `GET /v1/accounts` (API key, com/ai dual domains) |
 | StepFun Step Plan | Console BFF subscription quota (Oasis-Token console session; 5-hour/weekly windows vs Credit pool auto-detected) |
 | Xiaomi MiMo Token Plan | Console-origin plan quota (web session cookie) |
