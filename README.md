@@ -9,9 +9,9 @@
   <em>A service-control &amp; operations plugin for DeepSeek Harness (DSH) Web.</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.0.8-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-2.0.9-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.2.1--alpha.2-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.2.1--alpha.3-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -176,6 +176,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 
 - 「模型配置」包含**渠道与模型**、**子代理路由**两个子页，区分内置与自定义渠道。
 - **添加自定义渠道**：填写标识、显示名、协议、地址、API Key 与模型 ID；创建不会自动探测接口。
+- **混合协议渠道提示**：渠道目录同时含多种协议（如 0.2.1-alpha.3 起 pi-ai 的 `azure`）时，模板选择与渠道编辑会提示「路由级协议覆盖该路由全部模型」，避免把 Chat Completions 模型钉到 Responses 协议。
 - **渠道编辑**：修改显示名、地址与凭据；自定义渠道可修改协议，内置协议只读。未展示的 headers、超时、缓存与其他高级参数保留不变。
 - **模型获取**：可手填 ID，也可点击「在线获取」搜索、勾选并批量添加；支持 OpenAI 兼容与 Anthropic 模型列表。获取失败不影响手动添加，拿到列表不等于调用成功。
 - **模型编辑**：修改 ID、显示名、上下文窗口、最大输出、图片输入和思考等级；容量支持 `256K`、`1M`，留空继承目录默认值。同渠道 ID 不得重复，已停用模型需启用后改名。
@@ -202,6 +203,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 - 自定义模型声明可选思考等级时可选择，留空使用目标模型默认值；未声明等级时提示不可选。
 - **切换模式保留配置**：自定义模型、思考等级和回退列表不会清除，切回自定义即可恢复。
 - **有序回退**：跟随与自定义模式可配置回退模型，渠道卸载或额度不可用时依次尝试；全部不可用则回落原生继承。
+- **独立 Agent 预设**（0.2.1-alpha.3+ 宿主）：可为派生的子代理统一指定独立预设（角色与工具随预设）；留空跟随父代，调用方显式指定的预设优先，仅对支持独立预设的后端生效。
 - 输入框下方可显示本会话子代理实际使用的模型，包含回退命中和显式路由；可独立关闭。页面刷新不清除记录，进程重启后清除。
 - 配置保存在 `$DSH_HOME/dsh-service-subagent-route.json`，可一键重置。
 
@@ -317,7 +319,7 @@ flowchart TB
 1. 打开左侧边栏的「**插件**」页。
 2. 点右上角的「**+ 添加插件**」按钮。
 3. 在弹窗里按来源**三选一**填写（同一个输入框接受三种形式，底部提示会随填写内容变化）：
-   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.0.8`——**带上精确版本号**（写法 `包名@版本号`）；
+   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.0.9`——**带上精确版本号**（写法 `包名@版本号`）；
    - **GitHub 仓库地址**：`https://github.com/gehennawu/dsh-service`（公开仓库，无需令牌；`github:gehennawu/dsh-service` 简写同样可用）；
    - **本地插件目录**：本机上的绝对路径，例如 `/path/to/dsh-service`（自研或已下载的插件）。
 4. 「**安装源**」按网络情况选择：默认「**npm 官方源**」；国内网络拉取受限时可选「**中国大陆镜像源**」（影响走包名安装时的拉取源，GitHub 地址与本地目录不受其影响）。
@@ -328,17 +330,17 @@ flowchart TB
 
 > 提示：三种形式都走官方安装链路，无需手动改 profile 文件；图形界面填 GitHub 地址与命令行 `github:` 前缀等价。
 
-> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.0.8`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
+> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.0.9`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
 
 ### 方式二：命令行
 
 | 方式 | 命令 |
 | --- | --- |
-| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.0.8` |
+| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.0.9` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | 本地开发 | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
-命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.0.8`）才会装该版（原因见「方式一」的提示）。
+命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.0.9`）才会装该版（原因见「方式一」的提示）。
 
 安装或更新后重启 DSH Web：
 
@@ -390,7 +392,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 兼容范围**：`>=0.1.1-rc.2 <0.2.1-alpha.3`，已适配 `0.2.1-alpha.2`。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
+**DSH 兼容范围**：`>=0.1.1-rc.2 <0.2.1-alpha.4`，已适配 `0.2.1-alpha.3`。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
 
 
 **DSH Desktop**：重启与恢复后的重启改为提示退出应用后重新打开；一键升级使用桌面应用自带的插件管理页。通知需授予系统权限，点击通知可能无法唤回隐藏窗口，请用托盘打开。其他平台尽力而为，不承诺兼容。
@@ -483,7 +485,7 @@ Step Plan 订阅没有 API-key 形态的查询接口，需要网页登录态令�
 <details>
 <summary><strong>插件管理页装了插件，版本却停在旧版？</strong></summary>
 
-pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.0.8`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
+pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.0.9`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
 </details>
 
 <details>
