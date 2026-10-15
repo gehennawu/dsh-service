@@ -279,6 +279,9 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
           name: defaultEntry?.name ?? id,
           api: defaultEntry?.api ?? 'openai-completions',
           baseURL: defaultEntry?.baseUrl ?? '',
+          // 混合协议目录（v2.0.9）：pi-ai 1.1.0 起 azure 等渠道单目录含多种 api。路由级 `api`
+          // 会覆盖该路由全部模型（官方语义），客户端据此提示「钉协议前先确认全部模型同协议」。
+          apis: [...new Set(records.map((x) => x.api).filter(Boolean))],
           models: records,
         }
       })
@@ -317,6 +320,11 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         }
       } catch (_) { /* Missing status must not prevent configuration editing. */ }
       if (builtin(catalog, id)) dto.catalogModels = [...catalog.byModelId.entries()].flatMap(([modelId, records]) => records.filter((x) => x.channel === id).map((x) => ({ id: modelId, api: x.api, ...displayProfile({ models: [{ id: modelId, ...x }] }).models[0] })))
+      // 混合协议目录（v2.0.9）：≥2 种 api 才下发，客户端据它在路由编辑器里提示路由级 api 的覆盖语义。
+      if (Array.isArray(dto.catalogModels)) {
+        const apis = [...new Set(dto.catalogModels.map((entry) => entry.api).filter(Boolean))]
+        if (apis.length > 1) dto.catalogApis = apis
+      }
       dto.resolved = {
         displayName: effectiveRaw.displayName ?? dto.effective.displayName ?? defaultEntry?.name ?? id,
         api: dto.resolvedApi,

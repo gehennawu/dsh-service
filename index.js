@@ -4035,6 +4035,7 @@ async function listSubagentModels(llm, agentDefaultModel) {
 
 /** 子代理路由配置的空档（inherit）：与未安装本功能的原生行为完全一致。 */
 function createEmptySubagentRoute() {
+  // 不含 preset 键：空预设不落盘，磁盘形状与 v2.0.8 及之前逐字节兼容（注入端按 absent = 跟随父代）。
   return { version: SUBAGENT_ROUTE_VERSION, mode: 'inherit' }
 }
 
@@ -4073,12 +4074,16 @@ function parseSubagentRouteText(text) {
   if (parsed.mode === 'custom' && (provider === '' || model === '')) return fallback
   // reasoningEffort 是可选的 adapter 自有等级 ID：只有字符串、trim 后非空才保留（空串视为默认）。
   const reasoningEffort = provider !== '' && model !== '' && typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
+  // 独立 Agent 预设（v2.0.9）：与模式无关的全局字段；空串 = 跟随父代。存在性校验在保存端做
+  // （磁盘配置容忍失效 id——旧宿主/预设被删时注入端按 provider 能力门跳过，不阻塞派生）。
+  const preset = typeof parsed.preset === 'string' ? parsed.preset.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD) : ''
   return {
     version: SUBAGENT_ROUTE_VERSION,
     mode: parsed.mode,
     ...(provider !== '' && model !== '' ? { provider, model } : {}),
     ...(reasoningEffort !== '' ? { reasoningEffort } : {}),
     ...(fallbacks.length > 0 ? { fallbacks } : {}),
+    ...(preset !== '' ? { preset } : {}),
   }
 }
 
@@ -4343,6 +4348,8 @@ function buildSubagentDispatchRecord(agent, parent, dispatch, options = {}) {
   }
   if (typeof turn === 'number' && Number.isFinite(turn)) record.turn = turn
   if (reasoningEffort !== undefined) record.reasoningEffort = reasoningEffort
+  // 独立 Agent 预设（v2.0.9）：仅记录插件注入的值；调用方显式携带时不记（来源不是本插件）。
+  if (typeof dispatch?.preset === 'string' && dispatch.preset !== '') record.preset = dispatch.preset
   return record
 }
 
@@ -5162,7 +5169,9 @@ async function quotaCredentialEndpoint(ctx, refreshQuotaConfig, throttle, payloa
       try {
         await credentials.set(name, value)
       } catch (error) {
-        // 典型拒绝：进程环境层正在遮蔽该名字（describe().writable=false）——seam 契约的显式报错。
+        // 可写性由宿主凭据服务裁决后回传：0.2.1-alpha.3 起托管存储优先、env 层不再只读，
+        // 旧版「进程环境层遮蔽 ⇒ describe().writable=false 且 set 必拒」的成因已不适用；
+        // 这里不预判成因，宿主报什么错就透传什么（seam 契约的显式报错）。
         return { ok: false, error: 'credential-write-failed', detail: sanitizeQuotaErrorDetail(error?.message) }
       }
       // 新凭据落库即清掉该 provider 的退避/冷却闸门：旧失败是旧凭据造成的，
@@ -5574,6 +5583,45 @@ function apply(ctx, featureConfig) {
       const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
       return { request: decorated, dispatch: { parent: request?.parent, provider: injected.provider, model: injected.model, ...(effort !== undefined ? { reasoningEffort: effort } : {}), routeCandidates: eligibleRoutes } }
     }
+    // 独立 Agent 预设（v2.0.9）：官方 0.2.1-alpha.3 起 startActivation 的请求面新增
+    // request.agentPreset（统一设置子代理角色与工具；省略 = 跟随父代当前预设）。注入门完全
+    // 对齐官方 tool-subagent 的 assertProvider：provider.capabilities.agentPreset === true 且
+    // !provider.inheritsParentContext（fork 类继承父代上下文的 provider 不支持）。调用方显式
+    // 携带的 agentPreset 永远赢。其余一切不明朗情形（服务缺席、清单读不到、预设已删/broken、
+    // 能力不明）一律 fail-closed 不注入——给不支持的 provider 注入该字段会被宿主
+    // assertCapabilities 拒绝、派生直接失败，「不生效」永远好过「失败」。每次派发现查清单
+    // （预设集极小、变更低频），保证预设被删后自动回落跟随父代。仅 startActivation 路径装饰：
+    // 旧版 start/startContinuable 的宿主请求类型没有该字段，其 provider 能力面也不含 agentPreset。
+    const resolvePresetForSpec = async (spec, request) => {
+      const configured = typeof subagentRouteRef.current.preset === 'string' ? subagentRouteRef.current.preset : ''
+      if (configured === '') return undefined
+      if (typeof request?.agentPreset === 'string' && request.agentPreset !== '') return undefined
+      let declared
+      try {
+        const registry = ctx.get('agentPresets')
+        if (registry === undefined || registry === null || typeof registry.list !== 'function') return undefined
+        declared = await registry.list()
+      } catch (_) {
+        return undefined
+      }
+      const hit = (Array.isArray(declared) ? declared : []).find((entry) => entry !== null && typeof entry === 'object' && entry.id === configured)
+      if (hit === undefined || (typeof hit.broken === 'string' && hit.broken !== '')) {
+        ctx.logger?.info?.(`dsh-service: subagent preset "${configured}" skipped: not in the host preset list`)
+        return undefined
+      }
+      let provider
+      try {
+        provider = typeof subagents.getProvider === 'function' ? subagents.getProvider(spec?.provider) : undefined
+      } catch (_) {
+        provider = undefined
+      }
+      if (provider === null || typeof provider !== 'object') return undefined
+      if (provider.capabilities?.agentPreset !== true || provider.inheritsParentContext === true) {
+        ctx.logger?.info?.(`dsh-service: subagent preset "${configured}" skipped: provider "${spec?.provider ?? ''}" does not support independent presets`)
+        return undefined
+      }
+      return configured
+    }
     const runWithDispatch = (dispatch, work) => {
       if (dispatch === undefined) return work()
       return pendingDispatchStorage.run(dispatch, work)
@@ -5586,7 +5634,10 @@ function apply(ctx, featureConfig) {
         await providerAvailability.loading
         const { request: decorated, dispatch } = applyInjection(spec.request)
         if (dispatch === undefined) return originalStartActivation.call(subagents, spec)
-        return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, { ...spec, request: decorated }))
+        const preset = await resolvePresetForSpec(spec, decorated)
+        const finalRequest = preset !== undefined ? { ...decorated, agentPreset: preset } : decorated
+        if (preset !== undefined) dispatch.preset = preset
+        return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, { ...spec, request: finalRequest }))
       }
     } else {
       subagents.start = async (name, request) => {

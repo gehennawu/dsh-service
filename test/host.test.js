@@ -7591,6 +7591,98 @@ test('subagent-route seam：混合接口优先包装 startActivation，不重复
   assert.equal(registry.startContinuable, legacyContinuable)
 })
 
+test('subagent-route preset：独立 Agent 预设按 provider 能力注入，显式指定优先，失效清单零注入', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-preset-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['cpa', 'CPA', ['gpt-5.6-sol']]])
+  let host
+  const calls = []
+  const providers = {
+    // 与 0.2.1-alpha.3 官方实现同形：spawn 支持独立预设且不继承父代上下文；fork 两者皆反。
+    spawn: { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: true, depthLimit: true }, inheritsParentContext: false },
+    fork: { name: 'fork', capabilities: { agentOptions: true, agentPreset: false, outputSchema: true, depthLimit: true }, inheritsParentContext: true },
+  }
+  const presetIds = { current: ['researcher', 'broken-one'] }
+  const agentPresets = {
+    async list() {
+      return presetIds.current.map((id) => id === 'broken-one'
+        ? { id, broken: 'composition failed' }
+        : { id, name: id === 'researcher' ? 'Researcher' : id })
+    },
+  }
+  const registry = {
+    getProvider(name) { return providers[name] },
+    async startActivation(spec) {
+      calls.push(spec)
+      const agent = { id: `child-${calls.length}`, options: {}, session: {} }
+      await host.fire('agent/created', { agent })
+      return { childId: agent.id, result: Promise.resolve({}), dispose: async () => {} }
+    },
+  }
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm, agentPresets }, env: { DSH_HOME: dshHome } })
+  const parent = { session: { id: 'preset-parent', requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } }
+  const spec = (provider) => ({ provider, label: 'x', request: { parent, prompt: [{ type: 'text', text: 'hi' }] }, signal: new AbortController().signal, delivery: 'parent' })
+
+  // 快照：清单下发（broken 带标记）、默认无预设、presetSupported:true。
+  const snapshot = await host.handler('subagent-route', {})
+  assert.equal(snapshot.value.presetSupported, true)
+  assert.deepEqual(snapshot.value.presets.map((entry) => entry.id), ['broken-one', 'researcher'])
+  assert.match(snapshot.value.presets.find((entry) => entry.id === 'broken-one').broken, /composition failed/)
+  assert.equal(snapshot.value.preset, undefined)
+
+  // 保存端：未知 / broken 拒绝；合法值落盘；空串清除；payload 不携带键则保留原值。
+  assert.equal((await host.handler('subagent-route-save', { mode: 'inherit', preset: 'nope' })).error, 'invalid-preset')
+  assert.equal((await host.handler('subagent-route-save', { mode: 'inherit', preset: 'broken-one' })).error, 'invalid-preset')
+  const savedPreset = await host.handler('subagent-route-save', { mode: 'inherit', preset: ' researcher ' })
+  assert.equal(savedPreset.ok, true)
+  assert.equal(savedPreset.preset, 'researcher')
+  assert.equal((await host.handler('subagent-route', {})).value.preset, 'researcher')
+  const diskWithPreset = JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8'))
+  assert.deepEqual(diskWithPreset, { version: 1, mode: 'inherit', preset: 'researcher' })
+  await host.handler('subagent-route-save', { mode: 'follow' })
+  assert.equal((await host.handler('subagent-route', {})).value.preset, 'researcher', 'payload 不携带 preset 键时保留原值')
+  const cleared = await host.handler('subagent-route-save', { mode: 'follow', preset: '' })
+  assert.equal(cleared.ok, true)
+  assert.equal(cleared.preset, undefined)
+  assert.deepEqual(JSON.parse(await readFile(join(dshHome, 'dsh-service-subagent-route.json'), 'utf8')), { version: 1, mode: 'follow' }, '空预设不落盘（磁盘形状向后兼容）')
+  await host.handler('subagent-route-save', { mode: 'inherit', preset: 'researcher' })
+
+  // 注入：支持独立预设的 provider 注入并记录；继承父代上下文的不注入；显式指定永远赢。
+  await registry.startActivation(spec('spawn'))
+  assert.equal(calls[0].request.agentPreset, 'researcher')
+  assert.equal((await host.handler('subagent-dispatches', { parentId: parent.id })).value.records[0].preset, 'researcher', '派发记录带预设')
+  await registry.startActivation(spec('fork'))
+  assert.equal(calls[1].request.agentPreset, undefined, '继承父代上下文的 provider 不注入')
+  await registry.startActivation({ ...spec('spawn'), request: { ...spec('spawn').request, agentPreset: 'mine' } })
+  assert.equal(calls[2].request.agentPreset, 'mine', '调用方显式预设优先')
+  assert.equal((await host.handler('subagent-dispatches', { parentId: parent.id })).value.records[0].preset, undefined, '显式来源不记预设')
+
+  // 预设从清单消失 → 自动回落跟随父代，派生不失败。
+  presetIds.current = []
+  await registry.startActivation(spec('spawn'))
+  assert.equal(calls[3].request.agentPreset, undefined)
+
+  // 无 agentPresets 服务的宿主：快照 presetSupported:false、保存拒绝、派生零注入（磁盘上的 preset 仍保留）。
+  host.dispose()
+  const legacyHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-preset-legacy-'))
+  t.after(() => rm(legacyHome, { recursive: true, force: true }))
+  const legacyCalls = []
+  const legacyRegistry = {
+    getProvider(name) { return providers[name] },
+    async startActivation(spec) { legacyCalls.push(spec); return { childId: 'c', result: Promise.resolve({}), dispose: async () => {} } },
+  }
+  const legacyHost = createHost({ featureSettings: {}, services: { subagents: legacyRegistry, llm }, env: { DSH_HOME: legacyHome } })
+  const legacySnapshot = await legacyHost.handler('subagent-route', {})
+  assert.equal(legacySnapshot.value.presetSupported, false)
+  assert.deepEqual(legacySnapshot.value.presets, [])
+  assert.equal((await legacyHost.handler('subagent-route-save', { mode: 'inherit', preset: 'researcher' })).error, 'preset-unavailable')
+  await legacyHost.handler('subagent-route-save', { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', preset: 'researcher' }).catch(() => {})
+  assert.equal((await legacyHost.handler('subagent-route-save', { mode: 'inherit' })).ok, true)
+  await legacyRegistry.startActivation(spec('spawn'))
+  assert.equal(legacyCalls[0].request.agentPreset, undefined, '服务缺席时零注入')
+  legacyHost.dispose()
+})
+
 test('subagent-route runtime fallback：retryable model errors rotate, while cancellation and client errors do not', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-runtime-429-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))

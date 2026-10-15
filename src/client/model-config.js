@@ -619,7 +619,9 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           (opened.builtin || row.source === 'builtin') ? el('label', null,
             el('span', { style: labelStyle }, tr('models.smart.field.api')),
             el('input', { style: inputStyle, readOnly: true, 'aria-label': tr('models.smart.field.api'), value: opened.resolvedApi || draft.api || opened.effective?.api || opened.catalogModels?.find((entry) => entry.api)?.api || tr('models.smart.protocolUnknown') })
-          ) : el(Field, { field: 'api', value: draft.api, schema: opened.schema, api: draft.api, onChange: (v) => { if (!busy) setDraft({ ...draft, api: v }) } })
+          ) : el(Field, { field: 'api', value: draft.api, schema: opened.schema, api: draft.api, onChange: (v) => { if (!busy) setDraft({ ...draft, api: v }) } }),
+          // 混合协议目录（v2.0.9）：宿主在目录含 ≥2 种 api 时下发 catalogApis，提示路由级协议的覆盖语义。
+          Array.isArray(opened.catalogApis) && opened.catalogApis.length > 1 ? el('p', { 'data-testid': 'model-mixed-api-hint', role: 'note', style: { ...muted, margin: 0 } }, tr('models.smart.mixedApiHint').replace('{apis}', opened.catalogApis.join(', '))) : null
         ),
         el('div', null,
           el('label', { style: labelStyle }, tr('models.smart.key')),
@@ -848,6 +850,14 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           ...templates.map((t) => el('option', { key: t.id, value: t.id }, t.name + ' (' + t.id + ')'))
         )
       ) : null,
+
+      // 混合协议模板（v2.0.9）：选中目录含多种协议的模板时提示路由级协议的覆盖语义（azure 等）。
+      (() => {
+        const tmpl = templates.find((t) => t.id === template)
+        return tmpl !== undefined && Array.isArray(tmpl.apis) && tmpl.apis.length > 1
+          ? el('p', { 'data-testid': 'model-create-mixed-api-hint', role: 'note', style: { ...muted, margin: '-6px 0 12px' } }, tr('models.smart.mixedApiHint').replace('{apis}', tmpl.apis.join(', ')))
+          : null
+      })(),
 
       // Identity & URL Grid
       el('div', { style: grid2 },

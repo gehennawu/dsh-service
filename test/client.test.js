@@ -8609,6 +8609,8 @@ function createSubagentRenderer(options = {}) {
       { provider: 'deepseek-official', providerName: 'DeepSeek', id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
       { provider: 'cpa', providerName: 'CPA', id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol' },
     ],
+    // 预设清单（v2.0.9）：缺省 = 旧宿主形态（presetSupported:false、空清单），payload 不带 preset 键。
+    presets: options.presets,
     saves: [],
   }
   const renderer = createRenderer(async (channel, endpoint, payload = {}) => {
@@ -8617,7 +8619,8 @@ function createSubagentRenderer(options = {}) {
       if (options.loadError) return { ok: false, error: options.loadError }
       // beforeRoute：可选的挂起钩子，用来观察「宿主尚未响应」时的首帧渲染。
       if (typeof options.beforeRoute === 'function') await options.beforeRoute()
-      return { ok: true, value: { ...state.route, models: state.models, current: { provider: 'cpa', model: 'gpt-5.6-sol' } } }
+      const presetSupported = state.presets !== undefined
+      return { ok: true, value: { ...state.route, presetSupported, ...(presetSupported ? { presets: state.presets } : {}), models: state.models, current: { provider: 'cpa', model: 'gpt-5.6-sol' } } }
     }
     if (endpoint === 'subagent-route-save') {
       state.saves.push(payload)
@@ -8636,6 +8639,11 @@ function createSubagentRenderer(options = {}) {
         ? (Array.isArray(prior.fallbacks) && prior.fallbacks.length > 0 ? { fallbacks: prior.fallbacks } : {})
         : (Array.isArray(payload.fallbacks) && payload.fallbacks.length > 0 ? { fallbacks: payload.fallbacks } : {})
       state.route = { available: true, mode: payload.mode, ...draft, ...savedFallbacks }
+      // 镜像宿主预设语义：payload 携带 preset 键才写/清；空串 = 跟随父代（不落字段）。
+      if (Object.prototype.hasOwnProperty.call(payload, 'preset')) {
+        if (payload.preset === '') delete state.route.preset
+        else state.route.preset = payload.preset
+      }
       return { ok: true, ...state.route }
     }
     if (endpoint === 'version') return { ok: true, value: { current: '0.26.0', instanceId: 'old-instance' } }
@@ -8703,6 +8711,58 @@ test('subagent tab supports inherit/follow/custom, provider-model selection, sav
   // v0.39：子代理的设置页左列入口已撤销——段内开关不复存在，也不再注册独立 section。
   assert.equal(renderer.hasTest('subagent-nav-switch'), false)
   assert.equal((renderer.registrations()['settings.section'] || []).some((entry) => entry.id === 'dsh-service-subagent'), false)
+})
+
+test('subagent tab exposes the independent agent preset select with host list, and keeps legacy hosts untouched', async () => {
+  // 旧宿主形态（无预设清单）：选择器禁用 + 说明行，保存 payload 不携带 preset 键。
+  const legacy = createSubagentRenderer()
+  await legacy.renderer.load()
+  legacy.renderer.mount('settings.section')
+  await openSubagentPage(legacy.renderer)
+  assert.equal(legacy.renderer.hasTest('subagent-preset-row'), true)
+  assert.equal(legacy.renderer.findByTestId('subagent-preset').props.disabled, true)
+  assert.match(legacy.renderer.findByTestId('subagent-preset-empty').children.join(''), /0\.2\.1-alpha\.3\+/)
+  legacy.renderer.findByTestId('subagent-save').props.onClick()
+  await legacy.renderer.flush()
+  await legacy.renderer.flush()
+  assert.equal(Object.prototype.hasOwnProperty.call(legacy.state.saves[0], 'preset'), false, '旧宿主 payload 不带 preset 键')
+
+  // 新宿主形态：清单下发（broken 置灰）、默认跟随父代、保存携带 preset 并回读。
+  const { renderer, state } = createSubagentRenderer({
+    presets: [
+      { id: 'researcher', name: 'Researcher' },
+      { id: 'broken-one', broken: 'composition failed' },
+    ],
+  })
+  await renderer.load()
+  renderer.mount('settings.section')
+  await openSubagentPage(renderer)
+  const select = renderer.findByTestId('subagent-preset')
+  assert.equal(select.props.disabled, false)
+  assert.equal(select.props.value, '')
+  const options = select.children.filter((child) => child && child.type === 'option')
+  assert.equal(options.length, 3)
+  assert.deepEqual(options.map((option) => option.props.value), ['', 'researcher', 'broken-one'])
+  assert.equal(options[2].props.disabled, true, 'broken 预设置灰不可选')
+  assert.equal(renderer.hasTest('subagent-preset-empty'), false)
+
+  select.props.onChange({ target: { value: 'researcher' } })
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[0], { mode: 'inherit', preset: 'researcher' })
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('subagent-preset').props.value, 'researcher', '保存后经 load 回读')
+
+  // 清空（跟随父代）：空串提交，快照回读后字段消失。
+  renderer.findByTestId('subagent-preset').props.onChange({ target: { value: '' } })
+  await renderer.flush()
+  renderer.findByTestId('subagent-save').props.onClick()
+  await renderer.flush()
+  await renderer.flush()
+  assert.deepEqual(state.saves[1], { mode: 'inherit', preset: '' })
+  assert.equal(state.route.preset, undefined)
 })
 
 test('subagent tab restores the saved custom route after switching modes (draft retention)', async () => {
@@ -15525,6 +15585,43 @@ test('models page offers template dropdown, candidate models unchecked by defaul
     profile: { displayName: 'Template AI', api: 'openai-completions', baseURL: 'https://api.template.ai/v1', models: [{ id: 't1' }] },
     key: 'my-tmpl-key',
   })
+})
+
+test('mixed-protocol catalogs surface the route-level api override hint in create and edit views', async () => {
+  const AZURE_TMPL = { id: 'tmpl-ai', name: 'Template AI', api: 'azure-openai-responses', baseURL: '', apis: ['azure-openai-responses', 'openai-completions'], models: [{ id: 't1', name: 'T1' }, { id: 't2', name: 'T2' }] }
+
+  // 创建视图：选中混合协议模板时提示，切回自定义消失。
+  const createFixture = models3Fixture({
+    'models3-snapshot': () => ({ ok: true, value: { ...MODELS3_SNAPSHOT, templates: [AZURE_TMPL] } }),
+  })
+  const createView = createRenderer(createFixture.rpc)
+  await createView.load()
+  await openModelsPage(createView)
+  createView.findByTestId('model-route-create').props.onClick()
+  await settle(createView)
+  assert.equal(createView.hasTest('model-create-mixed-api-hint'), false, 'custom template shows no hint')
+  createView.findByTestId('model-create-template').props.onChange({ target: { value: 'tmpl-ai' } })
+  await settle(createView)
+  assert.match(nodeText(createView.findByTestId('model-create-mixed-api-hint')), /azure-openai-responses, openai-completions/)
+  assert.match(nodeText(createView.findByTestId('model-create-mixed-api-hint')), /覆盖/)
+
+  // 编辑视图：宿主对混合目录内置渠道下发 catalogApis，路由编辑器提示。
+  const edit = models3Fixture({
+    'models3-open': (payload) => ({
+      ok: true,
+      value: payload.route === 'builtin-gw'
+        ? { ...MODELS3_OPEN_BUILTIN, builtin: true, catalogApis: ['azure-openai-responses', 'openai-completions'] }
+        : MODELS3_OPEN_CPA,
+    }),
+  })
+  const editRenderer = createRenderer(edit.rpc)
+  await editRenderer.load()
+  await openModelsRoute(editRenderer, 'builtin-gw')
+  assert.match(nodeText(editRenderer.findByTestId('model-mixed-api-hint')), /azure-openai-responses/)
+
+  // 单协议目录不下发 catalogApis ⇒ 无提示（CPA 渠道为自定义形态，直接断言无该 testid）。
+  await openModelsRoute(editRenderer, 'cpa')
+  assert.equal(editRenderer.hasTest('model-mixed-api-hint'), false)
 })
 
 test('models page route detail edits connection and replaces the key through preview and commit', async () => {

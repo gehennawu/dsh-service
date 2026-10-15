@@ -36,6 +36,24 @@ export function createSubagentRoutes({
           current = catalog.current
         }
         const config = subagentRouteRef.current
+        // 独立 Agent 预设（v2.0.9）：清单来自宿主 agentPresets 服务（0.2.1-alpha.3+；旧宿主缺席
+        // ⇒ 空清单 + presetSupported:false，客户端禁用选择器）。broken 的声明照常下发但带标记，
+        // 保存端拒绝选中它。
+        let presets = []
+        let presetSupported = false
+        const presetRegistry = ctx.get('agentPresets')
+        if (presetRegistry !== undefined && presetRegistry !== null && typeof presetRegistry.list === 'function') {
+          presetSupported = true
+          try {
+            const declared = await presetRegistry.list()
+            presets = (Array.isArray(declared) ? declared : [])
+              .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.id === 'string' && entry.id !== '')
+              .map((entry) => ({ id: entry.id, ...(typeof entry.name === 'string' && entry.name !== '' ? { name: entry.name } : {}), ...(typeof entry.broken === 'string' && entry.broken !== '' ? { broken: entry.broken } : {}) }))
+              .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+          } catch (_) {
+            presets = []
+          }
+        }
         // 自定义路由草稿（v1.4.12）：三模式统一下发——客户端据此回填表单，切换模式不丢配置。
         const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
         return {
@@ -49,6 +67,9 @@ export function createSubagentRoutes({
               ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
             } : {}),
             ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}),
+            ...(typeof config.preset === 'string' && config.preset !== '' ? { preset: config.preset } : {}),
+            presetSupported,
+            presets,
             models,
             ...(current !== undefined ? { current } : {}),
           },
@@ -129,6 +150,36 @@ export function createSubagentRoutes({
             fallbacks.push(normalized)
           }
         }
+        // 独立 Agent 预设（v2.0.9）：与模式无关，payload 携带 `preset` 键才生效（缺省 = 保留原值，
+        // 与 fallbacks 的草稿语义一致）；空串 = 清除（跟随父代）。非空值必须在 agentPresets 清单内
+        // 且未 broken——宿主在派生端还会按 provider 能力二次把关，这里只挡「明显无效」的引用。
+        let preset
+        if (Object.prototype.hasOwnProperty.call(payload ?? {}, 'preset')) {
+          const rawPreset = payload.preset
+          if (rawPreset === undefined || rawPreset === null || rawPreset === '') {
+            preset = ''
+          } else if (typeof rawPreset !== 'string') {
+            return { ok: false, error: 'invalid-preset' }
+          } else {
+            const candidate = rawPreset.trim().slice(0, MAX_SUBAGENT_ROUTE_FIELD)
+            if (candidate === '') {
+              preset = ''
+            } else {
+              const registry = ctx.get('agentPresets')
+              if (registry === undefined || registry === null || typeof registry.list !== 'function') return { ok: false, error: 'preset-unavailable' }
+              let declared = []
+              try {
+                declared = await registry.list()
+              } catch (_) {
+                declared = []
+              }
+              const hit = (Array.isArray(declared) ? declared : []).find((entry) => entry !== null && typeof entry === 'object' && entry.id === candidate)
+              if (hit === undefined) return { ok: false, error: 'invalid-preset' }
+              if (typeof hit.broken === 'string' && hit.broken !== '') return { ok: false, error: 'invalid-preset' }
+              preset = candidate
+            }
+          }
+        }
         return await serializeSubagentRouteWrite(async (config) => {
           if (providerAvailability) {
             await providerAvailability.loading
@@ -152,12 +203,19 @@ export function createSubagentRoutes({
             if (fallbacks.length > 0) config.fallbacks = fallbacks
             else delete config.fallbacks
           }
+          // 预设：与模式无关；只有本轮 payload 携带了 `preset` 键才写/清。空值一律不落盘
+          // （磁盘形状与不认识该字段的旧版本逐字节兼容；注入端 absent = 跟随父代）。
+          if (preset !== undefined) {
+            if (preset === '') delete config.preset
+            else config.preset = preset
+          }
+          if (config.preset === '') delete config.preset
           const routePresent = typeof config.provider === 'string' && config.provider !== '' && typeof config.model === 'string' && config.model !== ''
           return { value: { ok: true, mode: config.mode, ...(routePresent ? {
             provider: config.provider,
             model: config.model,
             ...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? { reasoningEffort: config.reasoningEffort } : {}),
-          } : {}), ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}) } }
+          } : {}), ...(Array.isArray(config.fallbacks) && config.fallbacks.length > 0 ? { fallbacks: config.fallbacks } : {}), ...(typeof config.preset === 'string' && config.preset !== '' ? { preset: config.preset } : {}) } }
         })
       } catch (error) {
         return rpcTechnicalFailure(error)

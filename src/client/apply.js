@@ -1874,6 +1874,8 @@
         const [error, setError] = useState('')
         const [reasoningEffort, setReasoningEffort] = useState(bootstrap !== null ? bootstrap.reasoningEffort : '')
         const [fallbacks, setFallbacks] = useState(bootstrap !== null ? bootstrap.fallbacks : [])
+        // 独立 Agent 预设（v2.0.9）：'' = 跟随父代；清单来自宿主 agentPresets（旧宿主为空 ⇒ 选择器禁用）。
+        const [preset, setPreset] = useState(bootstrap !== null && typeof bootstrap.preset === 'string' ? bootstrap.preset : '')
         const [reorderMode, setReorderMode] = useState(false)
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
@@ -1891,6 +1893,7 @@
               if (typeof res.value.provider === 'string') setProvider(res.value.provider)
               if (typeof res.value.model === 'string') setModel(res.value.model)
               setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
+              setPreset(typeof res.value.preset === 'string' ? res.value.preset : '')
               // 只缓存宿主确认过的状态（保存后同样经 load 回填），下次进入以此为初值。
               writeSubagentRouteCache(res.value)
               setError('')
@@ -1979,6 +1982,9 @@
             const payload = nextMode === 'custom'
               ? { mode: 'custom', provider: effectiveProvider, model: effectiveModel, ...(effectiveReasoningEffort !== '' ? { reasoningEffort: effectiveReasoningEffort } : {}), ...withFallbacks }
               : { mode: nextMode, ...withFallbacks }
+            // 预设与模式无关：宿主暴露预设清单时总是全量提交（空串 = 跟随父代）；旧宿主
+            // （presetSupported:false）不携带该键，保存语义与 v2.0.8 完全一致。
+            if (snapshot?.presetSupported === true) payload.preset = preset
             const res = await rpcCall('subagent-route-save', payload)
             if (res.ok) {
               setSavedTick((tick) => tick + 1)
@@ -2066,6 +2072,15 @@
           React.createElement('div', { 'data-testid': 'subagent-modes', style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
             SUBAGENT_MODES.map(modeButton)),
           React.createElement('p', { 'data-testid': 'subagent-mode-desc', style: { ...hintStyle, marginTop: '8px' } }, translate('subagent.mode.' + mode + '.desc')),
+          // 独立 Agent 预设（v2.0.9）：与模式无关的统一选择；'' = 跟随父代当前预设。
+          // 宿主未暴露 agentPresets（旧宿主）时禁用并说明；派生时宿主还会按 provider 能力二次把关。
+          React.createElement('div', { 'data-testid': 'subagent-preset-row', style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' } },
+            React.createElement('span', { style: fieldLabelStyle }, translate('subagent.preset')),
+            React.createElement('select', { 'data-testid': 'subagent-preset', value: preset, disabled: loading || saving || !snapshot?.presetSupported || (snapshot?.presets ?? []).length === 0, onChange: (event) => setPreset(event.target.value), style: selectStyle },
+              React.createElement('option', { value: '' }, translate('subagent.preset.inherit')),
+              ...(snapshot?.presets ?? []).map((entry) => React.createElement('option', { key: entry.id, value: entry.id, ...(entry.broken ? { disabled: true } : {}) }, entry.name ? entry.name + ' (' + entry.id + ')' : entry.id))),
+            !snapshot?.presetSupported || (snapshot?.presets ?? []).length === 0 ? React.createElement('span', { 'data-testid': 'subagent-preset-empty', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.preset.empty')) : null),
+          React.createElement('p', { 'data-testid': 'subagent-preset-desc', style: { ...hintStyle, marginTop: '6px' } }, translate('subagent.preset.desc')),
           mode === 'custom' ? React.createElement('div', { 'data-testid': 'subagent-custom', style: { marginTop: '8px' } },
             // 供应商行
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' } },
