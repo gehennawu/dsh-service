@@ -11,7 +11,7 @@
 
 [![Version](https://img.shields.io/badge/version-2.0.9-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20compatible%20with%200.2.1--alpha.3-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20no%20upper%20bound-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -390,7 +390,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-**DSH compatibility**: `>=0.1.1-rc.2 <0.2.1-alpha.4`, adapted through `0.2.1-alpha.3`. Older DSH cannot read newer session formats; **backups cannot be restored across a downgrade**.
+**DSH compatibility**: `>=0.1.1-rc.2` (**no upper bound**), verified through `0.2.1-alpha.4`. Why no upper bound: since `0.2.1-alpha.4` the host gates plugin compatibility on a declared `engines.dsh` alone, so any pinned ceiling blocks the whole plugin on each new DSH release (**and the plugin's own one-click upgrade is blocked by that same gate, leaving no self-recovery path**). An open range keeps the plugin loading on newer versions; individual features may lag, but nothing breaks and no release is needed just to move the ceiling. Older DSH cannot read newer session formats; **backups cannot be restored across a downgrade**.
 
 
 **DSH Desktop**: restart and post-restore restart require quitting and reopening the app; upgrade through its own plugin manager. Notifications require system permission, and clicking one may not restore a hidden window—use the tray. Other platforms are best-effort, without compatibility guarantees.

@@ -11,7 +11,7 @@
 
 [![Version](https://img.shields.io/badge/version-2.0.9-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
-[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E5%B7%B2%E9%80%82%E9%85%8D%200.2.1--alpha.3-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E6%97%A0%E4%B8%8A%E7%95%8C-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
 [![Platform](https://img.shields.io/badge/platform-DSH%20Web-ec4899.svg?style=flat-square)](https://github.com/gehennawu/dsh-service)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/gehennawu/dsh-service/issues)
@@ -392,7 +392,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`，DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 兼容范围**：`>=0.1.1-rc.2 <0.2.1-alpha.4`，已适配 `0.2.1-alpha.3`。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
+**DSH 兼容范围**：`>=0.1.1-rc.2`（**无上界**），已验证至 `0.2.1-alpha.4`。不设上界的理由：`0.2.1-alpha.4` 起宿主门禁改为「插件声明了 `engines.dsh` 就由它单独裁决」，一旦上界写死，每次 DSH 发新版都会把插件整包挡掉（**且插件的一键升级会被同一门禁挡死，无法自救**）；改用开区间后新版本插件照常加载，个别新功能可能尚未适配，但不阻断使用，也无需为 `engines.dsh` 单独发版。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
 
 
 **DSH Desktop**：重启与恢复后的重启改为提示退出应用后重新打开；一键升级使用桌面应用自带的插件管理页。通知需授予系统权限，点击通知可能无法唤回隐藏窗口，请用托盘打开。其他平台尽力而为，不承诺兼容。
