@@ -24,7 +24,7 @@ const README_EN = read('README.en.md')
 
 const declared = manifest.engines?.dsh
 const FLOOR = '0.1.1-rc.2'
-const VERIFIED = '0.2.1-alpha.4'
+const VERIFIED = '0.2.1-alpha.5'
 
 // —— 供本测试自证的最小 semver 子集 ——
 // 只覆盖本插件声明用到的形态（`>=<version>` 单下界）。语义与宿主门禁所用
