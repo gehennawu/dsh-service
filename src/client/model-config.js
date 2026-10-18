@@ -293,6 +293,32 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const capabilityCeiling = Array.isArray(result?.readonly)
       ? result.readonly.find((entry) => entry?.field === 'maxTokens' && entry?.kind === 'capability-ceiling' && typeof entry.value === 'number')
       : undefined
+    // 按上下文窗口给一个可解释的建议值（不是模型能力上限，也不写配置）：
+    //   1) 硬安全边界（默认 0.8/65536/0.16）：reserved 必须满足 W − reserved > 65536/(1−0.16) ≈ 78020，
+    //      否则 retain ≥ threshold，DSH 会抛 TargetPressureConfigError 禁用自动压缩；
+    //   2) 目标「阈值不低于约 60% 窗口」：reserved ≤ 0.4W − 65536，再向下取到 2 的幂档位；
+    //   3) 输出预算封顶 64K（更长输出收益低且挤占输入），且不超过目录声明的能力上限；
+    //   4) 无法安全预留时明确建议留空（此时显式值必然禁用自动压缩）。
+    const recommendMaxTokens = (window, capability) => {
+      if (!Number.isInteger(window) || window <= 0) return { kind: 'unknown' }
+      const hardMax = window - 78020
+      if (hardMax < 2048) return { kind: 'leave-empty' }
+      const byThreshold = Math.floor(window * 0.4 - 65536)
+      let ladder = 8192
+      while (ladder * 2 <= byThreshold && ladder * 2 <= 65536) ladder *= 2
+      let value = Math.min(ladder, 65536, hardMax)
+      if (Number.isInteger(capability) && capability > 0 && capability < value) value = capability
+      if (value < 1024) return { kind: 'leave-empty' }
+      if (value % 1024 !== 0) value = Math.floor(value / 1024) * 1024
+      return { kind: 'value', value }
+    }
+    const maxTokensRecommendation = recommendMaxTokens(hintContextWindow, capabilityCeiling?.value)
+    // 建议值填入后的阈值（与 DSH 同公式），用于直接展示「影响」。
+    const recommendationThreshold = maxTokensRecommendation.kind === 'value'
+      ? Math.floor(Math.min(hintContextWindow * 0.8, hintContextWindow - maxTokensRecommendation.value - 65536))
+      : undefined
+    // 建议值展示用 1024 进制（8K/32K/64K），避免 formatCapacity 的 65.536K 形态。
+    const tokenLabel = (value) => value % 1024 === 0 ? (value / 1024) + 'K' : String(value)
 
     useEffect(() => {
       const id = ++sequence.current
@@ -455,7 +481,13 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           }, hintUnsafe
             ? tr('models.smart.maxTokensUnsafe')
             : tr('models.smart.maxTokensThreshold').replace('{tokens}', String(hintThreshold))) : null,
-          capabilityCeiling !== undefined ? el('small', { 'data-testid': 'model-maxTokens-capability', style: { display: 'block', marginTop: '3px', ...muted } }, tr('models.smart.maxTokensCapability').replace('{value}', String(capabilityCeiling.value))) : null
+          maxTokensRecommendation.kind === 'value' ? el('small', { 'data-testid': 'model-maxTokens-recommend', style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)' } },
+            tr('models.smart.maxTokensRecommend').replace('{value}', tokenLabel(maxTokensRecommendation.value)).replace('{window}', String(hintContextWindow)).replace('{threshold}', String(recommendationThreshold)),
+            String(capacityOr(draft.maxTokens, currentBaseline.maxTokens ?? '')).trim() !== String(maxTokensRecommendation.value)
+              ? el(Button, { id: 'model-maxTokens-apply-recommend', 'data-testid': 'model-maxTokens-apply-recommend', compact: true, style: { marginLeft: '8px', padding: '1px 8px', fontSize: '12px' }, onClick: () => setDraft({ ...draft, maxTokens: String(maxTokensRecommendation.value) }) }, tr('models.smart.maxTokensApplyRecommend'))
+              : null
+          ) : maxTokensRecommendation.kind === 'leave-empty' ? el('small', { 'data-testid': 'model-maxTokens-recommend', style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: 'var(--dsw-alias-state-warn-primary)' } }, tr('models.smart.maxTokensRecommendEmpty')) : null,
+          capabilityCeiling !== undefined ? el('small', { 'data-testid': 'model-maxTokens-capability', style: { display: 'block', marginTop: '3px', ...muted } }, tr('models.smart.maxTokensCapability').replace('{value}', tokenLabel(capabilityCeiling.value))) : null
         )
       ),
 

@@ -16234,6 +16234,90 @@ test('models page estimates maxTokens without materializing catalog-only default
   await openModelsModel(renderer, 'm2')
   assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '')
   assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /134464/)
+
+  // 目录/通道默认值即使存在也不物化进请求头（compaction reserved 仍为 0）：
+  // profile.defaultMaxTokens=999999 时输入框会显示继承值，但阈值仍按 reserved=0 计算。
+  const catalogDefault = createRenderer(models3Fixture({
+    'models3-open': (payload) => payload.route === 'builtin-gw'
+      ? { ok: true, value: MODELS3_OPEN_BUILTIN }
+      : { ok: true, value: { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, defaultContextWindow: 200000, defaultMaxTokens: 999999, models: [{ id: 'm2' }] } } },
+  }).rpc)
+  await catalogDefault.load()
+  await openModelsRoute(catalogDefault, 'cpa')
+  await openModelsModel(catalogDefault, 'm2')
+  assert.equal(catalogDefault.findByTestId('model-field-maxTokens').props.value, '999999', 'the inherited default is shown as the effective value')
+  assert.match(nodeText(catalogDefault.findByTestId('model-maxTokens-budget')), /134464/, 'but the estimate never subtracts a catalog-only default')
+})
+
+test('models page recommends an output reservation from the context window', async () => {
+  const openWithWindow = (contextWindow) => models3Fixture({
+    'models3-open': (payload) => payload.route === 'builtin-gw'
+      ? { ok: true, value: MODELS3_OPEN_BUILTIN }
+      : { ok: true, value: { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, defaultContextWindow: contextWindow, models: [{ id: 'm1' }] } } },
+  })
+  const openWindow = async (contextWindow) => {
+    const { rpc } = openWithWindow(contextWindow)
+    const renderer = createRenderer(rpc)
+    await renderer.load()
+    await openModelsRoute(renderer, 'cpa')
+    await openModelsModel(renderer, 'm1')
+    return renderer
+  }
+  // 1M 上下文：建议 64K，填入后阈值 = min(800000, 1000000−65536−65536) = 800000。
+  const million = await openWindow(1000000)
+  assert.match(nodeText(million.findByTestId('model-maxTokens-recommend')), /64K/)
+  assert.match(nodeText(million.findByTestId('model-maxTokens-recommend')), /800000/, 'the suggestion states the resulting compaction threshold')
+  million.findByTestId('model-maxTokens-apply-recommend').props.onClick()
+  await settle(million)
+  assert.equal(million.findByTestId('model-field-maxTokens').props.value, '65536')
+  assert.match(nodeText(million.findByTestId('model-maxTokens-budget')), /800000/)
+  assert.equal(million.hasTest('model-maxTokens-apply-recommend'), false, 'the action disappears once the draft already equals the suggestion')
+  // 256K 上下文：建议 32K，填入后阈值 = 262144−32768−65536 = 163840。
+  const quarter = await openWindow(262144)
+  assert.match(nodeText(quarter.findByTestId('model-maxTokens-recommend')), /32K/)
+  assert.match(nodeText(quarter.findByTestId('model-maxTokens-recommend')), /163840/)
+  quarter.findByTestId('model-maxTokens-apply-recommend').props.onClick()
+  await settle(quarter)
+  assert.equal(quarter.findByTestId('model-field-maxTokens').props.value, '32768')
+  assert.match(nodeText(quarter.findByTestId('model-maxTokens-budget')), /163840/)
+})
+
+test('models page suggests leaving maxTokens empty when the window leaves no safe reservation', async () => {
+  const { rpc } = models3Fixture({
+    'models3-open': (payload) => payload.route === 'builtin-gw'
+      ? { ok: true, value: MODELS3_OPEN_BUILTIN }
+      : { ok: true, value: { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, defaultContextWindow: 70000, models: [{ id: 'm1' }] } } },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 70000 − 78020 < 0：任何显式预留都满足不了 retain < threshold，只能建议留空。
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-recommend')), /建议留空/)
+  assert.equal(renderer.hasTest('model-maxTokens-apply-recommend'), false)
+})
+
+test('models page recommends 8K for 131072 windows and degrades to 2K near the leave-empty boundary', async () => {
+  const openWithWindow = (contextWindow) => models3Fixture({
+    'models3-open': (payload) => payload.route === 'builtin-gw'
+      ? { ok: true, value: MODELS3_OPEN_BUILTIN }
+      : { ok: true, value: { ...MODELS3_OPEN_CPA, profile: { ...MODELS3_OPEN_CPA.profile, defaultContextWindow: contextWindow, models: [{ id: 'm1' }] } } },
+  })
+  const openWindow = async (contextWindow) => {
+    const renderer = createRenderer(openWithWindow(contextWindow).rpc)
+    await renderer.load()
+    await openModelsRoute(renderer, 'cpa')
+    await openModelsModel(renderer, 'm1')
+    return renderer
+  }
+  // 131072：60% 目标不可达，退化为最小安全档 8K，填入后阈值 57344。
+  const small = await openWindow(131072)
+  assert.match(nodeText(small.findByTestId('model-maxTokens-recommend')), /8K/)
+  assert.match(nodeText(small.findByTestId('model-maxTokens-recommend')), /57344/)
+  // 80068：硬安全边界只剩 2048，建议值退化为 2K（不再是 2 的幂），填入后阈值 12484。
+  const boundary = await openWindow(80068)
+  assert.match(nodeText(boundary.findByTestId('model-maxTokens-recommend')), /2K/)
+  assert.match(nodeText(boundary.findByTestId('model-maxTokens-recommend')), /12484/)
 })
 
 test('models page smart fill distinguishes supported reasoning with no levels from missing metadata', async () => {
