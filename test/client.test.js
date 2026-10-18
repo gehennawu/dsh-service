@@ -16178,6 +16178,64 @@ test('models page smart fill states an alias lookup without changing the adoptio
   assert.equal(exactRenderer.hasTest('model-smart-alias'), false)
 })
 
+test('models page explains maxTokens as a request reservation and flags values that disable compaction', async () => {
+  const { rpc } = models3Fixture({
+    'models3-fill': () => ({ ok: true, value: { mode: 'on', network: false, reasoningSupported: true, groups: [], sources: [], readonly: [{ field: 'maxTokens', value: 235929, kind: 'capability-ceiling' }] } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 语义提示常驻：maxTokens 是单次请求输出预留，不是能力上限。
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-hint')), /单次请求的输出预留/)
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-hint')), /不是模型能力上限/)
+  // m1 生效值：窗口 131072 / maxTokens 8192 → min(104857, 131072−8192−65536)=57344
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /57344/)
+  // 调到接近窗口的值 → 自动压缩阈值 ≤ 0，提示为禁用而非数字。
+  renderer.findByTestId('model-field-maxTokens').props.onChange({ target: { value: '80000' } })
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /自动压力压缩不可用/)
+  // retain ≥ threshold 也会让 DSH 抛 TargetPressureConfigError：131072−55536−65536=10000，
+  // retain=floor((131072−55536)×0.16)=12085 ≥ 10000，页面也必须报不可用而不是“约 10000”。
+  renderer.findByTestId('model-field-maxTokens').props.onChange({ target: { value: '55536' } })
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /自动压力压缩不可用/)
+  // 合理值恢复数字估算：131072−16000−65536=49536。
+  renderer.findByTestId('model-field-maxTokens').props.onChange({ target: { value: '16000' } })
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /49536/)
+  // 智能填充只把目录能力上限当只读信息展示，不进入建议/自动填入。
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-capability')), /235929/)
+  assert.equal(renderer.hasTest('model-suggestion-maxTokens'), false, 'the capability ceiling is never offered as a fill suggestion')
+
+  // 只有 capability-ceiling 的只读项才展示为「目录声明上限」；其它只读 maxTokens 事实不冒充能力上限。
+  const otherReadonly = createRenderer(models3Fixture({
+    'models3-fill': () => ({ ok: true, value: { mode: 'on', network: false, reasoningSupported: true, groups: [], sources: [], readonly: [{ field: 'maxTokens', value: 999999, kind: 'api-parameter-max' }] } }),
+  }).rpc)
+  await otherReadonly.load()
+  await openModelsRoute(otherReadonly, 'cpa')
+  await openModelsModel(otherReadonly, 'm1')
+  otherReadonly.findByTestId('model-smart-toggle').props.onClick()
+  await settle(otherReadonly)
+  assert.equal(otherReadonly.hasTest('model-maxTokens-capability'), false)
+
+})
+
+test('models page estimates maxTokens without materializing catalog-only defaults', async () => {
+  // 模型条目未显式配置 maxTokens 时，compaction 的 reserved 实为 0（目录/通道默认不物化进请求头）：
+  // m2 无 maxTokens，生效窗口取 profile.defaultContextWindow=200000 → 阈值 = 200000 − 0 − 65536 = 134464，
+  // 而不是按目录能力上限报危险。
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm2')
+  assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '')
+  assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /134464/)
+})
+
 test('models page smart fill distinguishes supported reasoning with no levels from missing metadata', async () => {
   let supported = true
   const { calls, rpc } = models3Fixture({

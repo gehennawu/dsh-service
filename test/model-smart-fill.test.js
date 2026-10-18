@@ -360,7 +360,7 @@ test('groups: capability options carry exact/reference evidence and require expl
     target: { channel: 'alpha', api: 'anthropic-messages', modelId: 'shared', current: { contextWindow: 200000, input: ['image', 'text'] } },
     piIndex: index,
   })
-  for (const field of ['name', 'contextWindow', 'maxTokens', 'input']) {
+  for (const field of ['name', 'contextWindow', 'input']) {
     const group = groupOf(groups, field)
     assert.ok(group !== undefined, `${field} group exists`)
     assert.equal(group.readOnly, false)
@@ -372,6 +372,14 @@ test('groups: capability options carry exact/reference evidence and require expl
     assert.ok(evidence.has('cross-channel-reference'))
     assert.ok(group.options.every((option) => option.adoptable === true), 'cross-channel capacities are reference but explicitly adoptable')
   }
+  // maxTokens 的能力值是「模型最大输出上限」，而 route maxTokens 是「单次请求预留」：
+  // 能力上限只读，绝不进入自动填入（填成上限会挤爆 DSH 压缩预算）。
+  const maxTokensGroup = groupOf(groups, 'maxTokens')
+  assert.equal(maxTokensGroup.readOnly, true)
+  assert.equal(maxTokensGroup.adoptable, false)
+  assert.ok(maxTokensGroup.options.length >= 3)
+  assert.ok(maxTokensGroup.options.every((option) => option.readOnly === true && option.adoptable === false && option.kind === 'capability-ceiling'))
+  assert.ok(maxTokensGroup.notes.some((note) => /不自动填入|单次请求/.test(note)))
   // 模态比较按集合：current ['image','text'] vs exact ['text'] → differs；vs same-channel ['image','text'] → match
   const inputGroup = groupOf(groups, 'input')
   assert.equal(inputGroup.comparison.state, 'match', 'order-insensitive set match against the same-channel option')
@@ -1452,10 +1460,10 @@ test('adoption: only explicit adoptable candidates apply, readOnly and unknown a
     piIndex: index,
     modelParams: modelParamsReference(indexModelParamsRecords(MODELPARAMS_FIXTURE), 'shared'),
   })
-  const adoptable = optionsOf(groups, 'maxTokens').find((option) => option.adoptable === true && option.evidence === 'exact-channel-protocol')
+  const adoptable = optionsOf(groups, 'contextWindow').find((option) => option.adoptable === true && option.evidence === 'exact-channel-protocol')
   const applied = applyAdoption({ id: 'shared' }, groups, [adoptable.candidateId])
   assert.equal(applied.ok, true)
-  assert.equal(applied.draft.maxTokens, adoptable.value)
+  assert.equal(applied.draft.contextWindow, adoptable.value)
   assert.equal(applied.draft.id, 'shared', 'untouched draft fields survive')
 
   // 未知候选 → 整体拒绝，不产生半套状态
@@ -1463,11 +1471,12 @@ test('adoption: only explicit adoptable candidates apply, readOnly and unknown a
   assert.equal(unknown.ok, false)
   assert.equal(unknown.error, 'unknown-candidate')
 
-  // readOnly 候选 → 拒绝
-  const readOnly = optionsOf(groups, 'paramRangeMax')[0]
-  assert.equal(adoptCandidate(groups, readOnly.candidateId).ok, false)
-  assert.equal(adoptCandidate(groups, readOnly.candidateId).error, 'not-adoptable')
-  assert.equal(applyAdoption({}, groups, [readOnly.candidateId]).ok, false)
+  // readOnly 候选 → 拒绝（modelparams 参数上限与 maxTokens 能力上限都不接受采纳）
+  for (const readOnly of [optionsOf(groups, 'paramRangeMax')[0], optionsOf(groups, 'maxTokens')[0]]) {
+    assert.equal(adoptCandidate(groups, readOnly.candidateId).ok, false)
+    assert.equal(adoptCandidate(groups, readOnly.candidateId).error, 'not-adoptable')
+    assert.equal(applyAdoption({}, groups, [readOnly.candidateId]).ok, false)
+  }
 
   // compat 按 key 合并进草稿
   const compatOption = optionsOf(groups, 'compat').find((option) => option.adoptable === true)

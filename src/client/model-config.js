@@ -266,6 +266,34 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const dirty = !equal(draft, initialTexts(currentBaseline, modelFields)) || modelId !== (currentBaseline.id ?? '')
     useLeaveGuard(dirty, tr)
 
+    // maxTokens 语义提示（不自动改值）：route 配置的是**单次请求输出预留**，不是模型能力上限。
+    // DSH compaction（装机 0.2.1-rc.2，默认 thresholdRatio 0.8 / headroom 65536 / retainRatio 0.16）：
+    //   reserved = 请求头 config.maxTokens（仅模型条目显式配置时物化，否则 0）
+    //   threshold = floor(min(窗口×0.8, 窗口 − reserved − 65536))
+    //   retain    = floor((窗口 − reserved) × 0.16)
+    // 阈值 ≤0 或 retain ≥ threshold 都会抛 TargetPressureConfigError ⇒ 自动压力压缩不可用
+    // （只剩请求溢出后的强制压缩与手动压缩）。这里按同一公式做估算，不替用户改值。
+    const capacityOr = (text, fallback) => {
+      if (text === '' || text === undefined) return fallback
+      if (typeof text === 'number') return text
+      try { return capacity(text) } catch (_) { return fallback }
+    }
+    const hintContextWindow = capacityOr(draft.contextWindow, resolvedModel.contextWindow)
+    const hintExplicitMaxTokens = draft.maxTokens === ''
+      ? (Number.isSafeInteger(currentBaseline.maxTokens) ? currentBaseline.maxTokens : undefined)
+      : capacityOr(draft.maxTokens, undefined)
+    const hintReserved = Number.isInteger(hintExplicitMaxTokens) && hintExplicitMaxTokens > 0 ? hintExplicitMaxTokens : 0
+    let hintThreshold
+    let hintUnsafe = false
+    if (Number.isInteger(hintContextWindow) && hintContextWindow > 0) {
+      hintThreshold = Math.floor(Math.min(hintContextWindow * 0.8, hintContextWindow - hintReserved - 65536))
+      const hintRetain = Math.floor((hintContextWindow - hintReserved) * 0.16)
+      hintUnsafe = hintThreshold <= 0 || hintRetain >= hintThreshold
+    }
+    const capabilityCeiling = Array.isArray(result?.readonly)
+      ? result.readonly.find((entry) => entry?.field === 'maxTokens' && entry?.kind === 'capability-ceiling' && typeof entry.value === 'number')
+      : undefined
+
     useEffect(() => {
       const id = ++sequence.current
       if (!enabled || !modelId.trim()) { setResult(null); setLoading(false); return }
@@ -418,7 +446,16 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             placeholder: formatCapacity(resolvedModel.maxTokens) || tr('models.wb.edit.maxTokensPlaceholder'),
             onChange: (e) => setDraft({ ...draft, maxTokens: e.target.value }),
           }),
-          resolvedModel.maxTokens ? el('small', { style: muted }, tr('models.smart.effective') + ': ' + formatCapacity(resolvedModel.maxTokens)) : null
+          resolvedModel.maxTokens ? el('small', { style: muted }, tr('models.smart.effective') + ': ' + formatCapacity(resolvedModel.maxTokens)) : null,
+          el('small', { 'data-testid': 'model-maxTokens-hint', style: { display: 'block', marginTop: '4px', ...muted, lineHeight: '17px' } }, tr('models.smart.maxTokensHint')),
+          hintThreshold !== undefined ? el('small', {
+            role: 'status',
+            'data-testid': 'model-maxTokens-budget',
+            style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: hintUnsafe ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsh-svc-text-muted)' },
+          }, hintUnsafe
+            ? tr('models.smart.maxTokensUnsafe')
+            : tr('models.smart.maxTokensThreshold').replace('{tokens}', String(hintThreshold))) : null,
+          capabilityCeiling !== undefined ? el('small', { 'data-testid': 'model-maxTokens-capability', style: { display: 'block', marginTop: '3px', ...muted } }, tr('models.smart.maxTokensCapability').replace('{value}', String(capabilityCeiling.value))) : null
         )
       ),
 

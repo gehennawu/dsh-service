@@ -1621,7 +1621,21 @@ function capabilityGroup(field, target, pi, openRouter) {
       note: '外部档案只确认模型身份，跨渠道仅参考',
     }))
   }
-  const { options, overflow } = optionOverflow(collected)
+  const { options: rawOptions, overflow } = optionOverflow(collected)
+  // maxTokens 语义特判：目录声明的是「模型最大输出能力」，而 route 配置里的 maxTokens 是
+  // **单次请求的输出预留**——DSH compaction 用 `contextWindow − maxTokens − headroom` 计算
+  // 压力阈值（阈值随 maxTokens 1:1 下降，叠到 ≤0 时自动压缩直接不可用）。二者不是同一概念，
+  // 因此能力上限一律只读参考，**绝不进入自动填入**；用户按实际需要手填（适配器默认 32768）。
+  const options = field === 'maxTokens'
+    ? rawOptions.map((option) => ({
+        ...option,
+        adoptable: false,
+        readOnly: true,
+        confidence: 'read-only',
+        kind: 'capability-ceiling',
+        note: '模型目录声明的最大输出能力；route 的 maxTokens 是单次请求预留，不自动填入',
+      }))
+    : rawOptions
   const anyEvidence = pi.exact.length + pi.sameChannelOtherApi.length + pi.crossChannel.length > 0
   return {
     field,
@@ -1630,14 +1644,16 @@ function capabilityGroup(field, target, pi, openRouter) {
     comparison: comparisonFor(field, target.current?.[field], options),
     options,
     overflow,
-    readOnly: false,
+    readOnly: field === 'maxTokens',
     adoptable: options.some((option) => option.adoptable),
     // 缺席理由：没有资料 vs 资料未表态。两者都不是「不支持」。
     absentReason: options.length === 0 ? (anyEvidence ? 'source-undeclared' : 'no-local-evidence') : undefined,
     unsupported: false,
     notes: options.length === 0
       ? ['资料缺席不是「不支持」，可合法手填']
-      : ['无自动勾选；✓ 才写入草稿'],
+      : (field === 'maxTokens'
+          ? ['能力上限只读；route 的 maxTokens 是单次请求输出预留，不自动填入']
+          : ['无自动勾选；✓ 才写入草稿']),
   }
 }
 
