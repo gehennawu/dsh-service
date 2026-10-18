@@ -67,6 +67,13 @@
           '[data-dsh-service-models-nav]::before{' + navIconMask(NAV_ICON_BODY_MODELS) + '}',
           '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
           '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
+          // 侧栏底部常驻「设置」入口（账号按钮上方）：几何对齐账号按钮——24px 图标位让
+          // 两行文字左缘同列（6px padding + 24px 图标位 + 8px gap）；折叠成图标条时 36px 居中。
+          '[data-dshsvc-settings-entry]{box-sizing:border-box;width:calc(100% + 4px);height:44px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px;display:flex;align-items:center;gap:8px;padding:0 10px 0 6px;margin:0 -2px;cursor:pointer;overflow:hidden;flex:none;text-align:left}',
+          '[data-dshsvc-settings-entry]:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+          '[data-dshsvc-settings-entry][data-collapsed="true"]{width:36px;height:36px;padding:0;margin:0;justify-content:center;gap:0}',
+          '[data-dshsvc-settings-entry-icon]{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;flex:none}',
+          '[data-dshsvc-settings-entry-label]{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
           // 窄面板主导航（v0.39）：≤640px 六页单行横滑——本插件自己的面板 UI，不挂 data-dshsvc-mobile。
           '@media (max-width:640px){',
           '[data-dshsvc-root] .dshsvc-tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:3px}',
@@ -6860,6 +6867,16 @@
       ctx.slots.inject('shell.overlay', () => ctx.slots.register(
         { name: 'shell.overlay', id: 'dsh-service-restart', order: 100, label: () => t('overlay.label') },
         () => React.createElement(RestartOverlay, null),
+      ))
+      // 侧栏底部常驻「设置」入口：官方 list 槽 sidebar.footer.action 渲染在账号按钮
+      // （sidebar.settings）正上方。账号按钮把设置藏在弹出菜单里，未登录/已登录都得先点
+      // 账号按钮——这里直接给出常驻入口，点击打开官方设置面板（打开路径见
+      // src/client/settings-entry.js 的分片头注释）。槽缺席的老宿主上 inject 不生效，
+      // 入口不渲染，其余功能零影响。
+      const settingsEntry = createSettingsEntry({ ctx, useTranslation })
+      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
+        { name: 'sidebar.footer.action', id: 'dsh-service-settings-entry', order: 50, label: () => t('settingsEntry.label') },
+        (props) => React.createElement(settingsEntry.SettingsEntry, props),
       ))
 
       // 额度查询圆环：跟随当前会话所选模型的供应商。modelDirectories 是可选服务

@@ -15302,6 +15302,8 @@ const byAria = (renderer, label) => {
   assert.ok(hit, `aria-label ${JSON.stringify(label)} was not rendered`)
   return hit.node
 }
+// 最大输出 token 的说明收在带圈问号 tooltip 里：模拟悬停/聚焦后再读内容。
+const openMaxTokensHelp = (renderer) => renderer.findByTestId('model-maxTokens-help').props.onMouseEnter({ currentTarget: { getBoundingClientRect: () => ({ left: 10, bottom: 20 }) } })
 const labelCheckbox = (renderer, includes) => {
   const hit = renderer.findNode((node) => node.type === 'label' && nodeText(node).includes(includes))
   assert.ok(hit, `label containing ${JSON.stringify(includes)} was not rendered`)
@@ -15931,7 +15933,9 @@ test('models page adds a new model, defaulting smart fill off, and saves it with
   await settle(renderer)
   assert.equal(models3Calls(calls, 'models3-fill').length, 1, 'once the id exists the enabled capsule queries')
   assert.deepEqual(models3Calls(calls, 'models3-fill')[0].payload, { route: 'cpa', modelId: 'm-new', api: 'openai-completions' })
-  assert.equal(renderer.hasTest('model-smart-empty'), true, 'an empty suggestion set is stated explicitly')
+  // 新模型没有外部资料，但按渠道默认窗口仍有最大输出建议，因此不再显示空态。
+  assert.equal(renderer.hasTest('model-smart-empty'), false, 'the window-based output recommendation is offered')
+  assert.equal(renderer.hasTest('model-suggestion-maxTokensRecommendation'), true)
   // 字段标签：可见标签是渠道工作台用词，aria 标签是模型编辑用词。
   assert.match(renderer.text('settings.section'), /上下文窗口/)
   byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'New One' } })
@@ -15994,7 +15998,7 @@ test('models page saved model detail writes only changed fields, parses K/M, and
   }, 'only the changed fields are sent; M suffixed capacities parse into token counts')
 })
 
-test('models page saved model detail keeps untouched capabilities while editing input, reasoning wires and compat', async () => {
+test('models page saved model detail keeps untouched capabilities while editing input and reasoning wires', async () => {
   const { calls, rpc } = models3Fixture({
     'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
   })
@@ -16010,8 +16014,9 @@ test('models page saved model detail keeps untouched capabilities while editing 
   // 思考映射整组编辑：档位勾选暴露对应 wire 值输入。
   assert.equal(byAria(renderer, 'high wire').props.value, 'high', 'an existing mapping exposes its current wire value')
   byAria(renderer, 'high wire').props.onChange({ target: { value: 'high-2024' } })
-  // compat 只展示当前协议可写键；空值继承，true 是显式覆盖。
-  byAria(renderer, 'supportsStore').props.onChange({ target: { value: 'true' } })
+  // 协议兼容参数不再在页面提供入口（advanced 折叠区已移除）。
+  assert.equal(renderer.hasTest('model-advanced-parameters'), false)
+  assert.equal(renderer.hasTest('model-compat-editor'), false)
   await settle(renderer)
   renderer.findByTestId('model-detail-save').props.onClick()
   await settle(renderer)
@@ -16020,7 +16025,6 @@ test('models page saved model detail keeps untouched capabilities while editing 
   assert.deepEqual(saves[0].payload.patch, {
     input: ['text', 'image'],
     reasoningEfforts: { high: 'high-2024' },
-    compat: { supportsStore: true },
   }, 'untouched name/contextWindow/maxTokens are never rewritten')
 })
 
@@ -16128,7 +16132,7 @@ test('models page smart fill stays off until toggled, fills all through one conf
   assert.equal(byAria(renderer, '模型最大输出').props.value, '8192', 'fields without suggestions keep the saved value')
   assert.equal(byAria(renderer, 'low').props.checked, true)
   assert.equal(byAria(renderer, 'high').props.checked, true)
-  assert.equal(byAria(renderer, 'supportsStore').props.value, 'true')
+  assert.equal(renderer.hasTest('model-compat-editor'), false, 'compat is not offered without a visible editor')
   // 保存只提交手改 + 已采纳项；越界的 output 建议绝不进入载荷。
   renderer.findByTestId('model-detail-save').props.onClick()
   await settle(renderer)
@@ -16138,9 +16142,143 @@ test('models page smart fill stays off until toggled, fills all through one conf
     name: 'One Renamed',
     contextWindow: 256000,
     reasoningEfforts: { low: 'low', high: 'high' },
-    compat: { supportsStore: true },
   })
   assert.equal('output' in saves[0].payload.patch, false, 'out-of-scope suggestions never leak into the write payload')
+})
+
+test('models page keeps provider details simple and saves only identity fields', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-route': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  // 普通用户界面不再出现高级渠道参数：超时、重试、headers、渠道 compat、继承层说明均不渲染。
+  assert.equal(renderer.hasTest('model-route-advanced'), false)
+  assert.equal(renderer.hasTest('model-field-timeoutMs'), false)
+  assert.equal(renderer.hasTest('model-field-defaultContextWindow'), false)
+  assert.equal(renderer.hasTest('model-layer-notes'), false)
+  assert.equal(renderer.hasTest('model-route-compat-protocol-hint'), false)
+  // 身份与连接仍可编辑，保存只提交改动字段。
+  assert.equal(byAria(renderer, 'API地址').props.value, 'https://gw.example.com/v1')
+  byAria(renderer, 'API地址').props.onChange({ target: { value: 'https://gw2.example.com/v1' } })
+  await settle(renderer)
+  renderer.findByTestId('model-route-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-route')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload.patch, { baseURL: 'https://gw2.example.com/v1' })
+  assert.deepEqual(saves[0].payload.unset, [])
+})
+
+test('models page treats an emptied field as inheritance without layer notes', async () => {
+  const opened = {
+    ...MODELS3_OPEN_CPA,
+    explicit: { displayName: 'CPA Relay', models: [{ id: 'm1', name: 'One', contextWindow: 131072, maxTokens: 8192 }] },
+    inherited: { displayName: 'Inherited Relay', models: [{ id: 'm1', contextWindow: 64000, maxTokens: 4096 }] },
+  }
+  const { calls, rpc } = models3Fixture({
+    'models3-open': (payload) => ({ ok: true, value: payload.route === 'builtin-gw' ? MODELS3_OPEN_BUILTIN : opened }),
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 普通用户界面不显示显式/继承/生效值说明；清空仍表示恢复继承。
+  assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '131072')
+  assert.doesNotMatch(renderer.text('settings.section'), /当前 Profile 显式值|当前生效值|恢复继承/)
+  assert.equal(renderer.hasTest('model-inherit-contextWindow'), false)
+  renderer.findByTestId('model-field-contextWindow').props.onChange({ target: { value: '' } })
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '')
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload.unset, ['contextWindow'], 'restoring inheritance unsets the explicit override')
+})
+
+test('models page keeps reasoning wire mapping folded and removes model compat editing', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-save-model': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 协议兼容参数不再提供入口；思考 wire 仍折叠在“协议值映射（高级）”里。
+  assert.equal(renderer.hasTest('model-advanced-parameters'), false)
+  assert.equal(renderer.hasTest('model-compat-editor'), false)
+  assert.equal(renderer.hasTest('model-compat-protocol-hint'), false)
+  assert.equal(renderer.findByTestId('model-reasoning-mode').props.value, 'map')
+  assert.equal(renderer.hasTest('model-reasoning-wire-editor'), true)
+  assert.equal(renderer.findByTestId('model-wire-high').props.value, 'high')
+  renderer.findByTestId('model-wire-high').props.onChange({ target: { value: 'high-2024' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-save-model')[0].payload.patch, { reasoningEfforts: { high: 'high-2024' } })
+})
+
+test('models page keeps the save button usable when the transport fails', async () => {
+  const { rpc } = models3Fixture({ 'models3-save-model': () => Promise.reject(new Error('socket closed')) })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: 'Offline Edit' } })
+  await settle(renderer)
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  // 传输层失败：给出错误、复位忙碌状态、保留草稿，用户可以重试。
+  assert.match(nodeText(renderer.findByTestId('model-config-error')), /操作未完成：operation-failed/)
+  assert.equal(renderer.findByTestId('model-detail-save').props.disabled, false, 'a rejected transport call must not lock the save button')
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'Offline Edit', 'the draft survives the failure')
+})
+
+test('models page create view keeps selections that fall outside the refreshed candidate list', async () => {
+  const { rpc } = models3Fixture({
+    'models3-discover': () => ({ ok: true, value: { route: 'tmpl-ai', usedCredential: false, candidates: [{ id: 'x1', name: 'X1' }, { id: 'x2', name: 'X2' }] } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  renderer.findByTestId('model-route-create').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-create-template').props.onChange({ target: { value: 'tmpl-ai' } })
+  await settle(renderer)
+  labelCheckbox(renderer, 't1').props.onChange({ target: { checked: true } })
+  await settle(renderer)
+  // 在线发现换了一批候选：旧勾选仍保留，但必须显式说明它在当前列表之外。
+  renderer.findByTestId('model-create-discover').props.onClick()
+  await settle(renderer)
+  const summary = nodeText(renderer.findByTestId('model-create-selected'))
+  assert.match(summary, /已选择 1 项/)
+  assert.match(summary, /1 项不在当前列表中/)
+  renderer.findByTestId('model-create-remove-hidden').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-selected'), false, 'removing the hidden selection clears the summary')
+  // 全选只作用于当前可见候选。
+  renderer.findButton('选择所有未添加项').props.onClick()
+  await settle(renderer)
+  assert.equal(labelCheckbox(renderer, 'x1').props.checked, true)
+  assert.equal(labelCheckbox(renderer, 'x2').props.checked, true)
+})
+
+test('models page localizes model identity and modality controls in English', async () => {
+  const { rpc } = models3Fixture()
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 切到英文后控件文案与无障碍名必须跟随词典，不能残留中文硬编码。
+  renderer.setLocale('en')
+  await settle(renderer)
+  assert.equal(byAria(renderer, 'Model ID').props.value, 'm1')
+  assert.equal(byAria(renderer, 'Text input').props.checked, true)
+  assert.equal(byAria(renderer, 'Image input').props.disabled, false)
+  assert.equal(byAria(renderer, 'Text output').props.disabled, true)
 })
 
 test('models page smart fill states an alias lookup without changing the adoption path', async () => {
@@ -16186,7 +16324,10 @@ test('models page explains maxTokens as a request reservation and flags values t
   await renderer.load()
   await openModelsRoute(renderer, 'cpa')
   await openModelsModel(renderer, 'm1')
-  // 语义提示常驻：maxTokens 是单次请求输出预留，不是能力上限。
+  // 说明默认不占版面：悬停问号后才出现语义提示。
+  assert.equal(renderer.hasTest('model-maxTokens-hint'), false, 'the explanation is hidden until the help icon is hovered')
+  openMaxTokensHelp(renderer)
+  await settle(renderer)
   assert.match(nodeText(renderer.findByTestId('model-maxTokens-hint')), /单次请求的输出预留/)
   assert.match(nodeText(renderer.findByTestId('model-maxTokens-hint')), /不是模型能力上限/)
   // m1 生效值：窗口 131072 / maxTokens 8192 → min(104857, 131072−8192−65536)=57344
@@ -16232,6 +16373,8 @@ test('models page estimates maxTokens without materializing catalog-only default
   await renderer.load()
   await openModelsRoute(renderer, 'cpa')
   await openModelsModel(renderer, 'm2')
+  openMaxTokensHelp(renderer)
+  await settle(renderer)
   assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '')
   assert.match(nodeText(renderer.findByTestId('model-maxTokens-budget')), /134464/)
 
@@ -16245,8 +16388,11 @@ test('models page estimates maxTokens without materializing catalog-only default
   await catalogDefault.load()
   await openModelsRoute(catalogDefault, 'cpa')
   await openModelsModel(catalogDefault, 'm2')
-  assert.equal(catalogDefault.findByTestId('model-field-maxTokens').props.value, '999999', 'the inherited default is shown as the effective value')
+  openMaxTokensHelp(catalogDefault)
+  await settle(catalogDefault)
+  assert.equal(catalogDefault.findByTestId('model-field-maxTokens').props.value, '', 'an inherited default never materializes into the draft input')
   assert.match(nodeText(catalogDefault.findByTestId('model-maxTokens-budget')), /134464/, 'but the estimate never subtracts a catalog-only default')
+  assert.doesNotMatch(catalogDefault.text('settings.section'), /当前生效值/, 'no effective-value note is rendered')
 })
 
 test('models page recommends an output reservation from the context window', async () => {
@@ -16261,23 +16407,32 @@ test('models page recommends an output reservation from the context window', asy
     await renderer.load()
     await openModelsRoute(renderer, 'cpa')
     await openModelsModel(renderer, 'm1')
+    openMaxTokensHelp(renderer)
+    await settle(renderer)
     return renderer
+  }
+  // 没有独立的“填入建议值”按钮：推荐值随智能填充“一键填入”一起进草稿。
+  const applyFill = async (renderer) => {
+    renderer.findByTestId('model-smart-toggle').props.onClick()
+    await settle(renderer)
+    renderer.findByTestId('model-smart-auto-fill').props.onClick()
+    await settle(renderer)
+    deepFindId(renderer, 'model-smart-fill-confirm').props.onClick()
+    await settle(renderer)
   }
   // 1M 上下文：建议 64K，填入后阈值 = min(800000, 1000000−65536−65536) = 800000。
   const million = await openWindow(1000000)
   assert.match(nodeText(million.findByTestId('model-maxTokens-recommend')), /64K/)
   assert.match(nodeText(million.findByTestId('model-maxTokens-recommend')), /800000/, 'the suggestion states the resulting compaction threshold')
-  million.findByTestId('model-maxTokens-apply-recommend').props.onClick()
-  await settle(million)
+  assert.equal(million.hasTest('model-maxTokens-apply-recommend'), false, 'no standalone apply button exists')
+  await applyFill(million)
   assert.equal(million.findByTestId('model-field-maxTokens').props.value, '65536')
   assert.match(nodeText(million.findByTestId('model-maxTokens-budget')), /800000/)
-  assert.equal(million.hasTest('model-maxTokens-apply-recommend'), false, 'the action disappears once the draft already equals the suggestion')
   // 256K 上下文：建议 32K，填入后阈值 = 262144−32768−65536 = 163840。
   const quarter = await openWindow(262144)
   assert.match(nodeText(quarter.findByTestId('model-maxTokens-recommend')), /32K/)
   assert.match(nodeText(quarter.findByTestId('model-maxTokens-recommend')), /163840/)
-  quarter.findByTestId('model-maxTokens-apply-recommend').props.onClick()
-  await settle(quarter)
+  await applyFill(quarter)
   assert.equal(quarter.findByTestId('model-field-maxTokens').props.value, '32768')
   assert.match(nodeText(quarter.findByTestId('model-maxTokens-budget')), /163840/)
 })
@@ -16292,6 +16447,8 @@ test('models page suggests leaving maxTokens empty when the window leaves no saf
   await renderer.load()
   await openModelsRoute(renderer, 'cpa')
   await openModelsModel(renderer, 'm1')
+  openMaxTokensHelp(renderer)
+  await settle(renderer)
   // 70000 − 78020 < 0：任何显式预留都满足不了 retain < threshold，只能建议留空。
   assert.match(nodeText(renderer.findByTestId('model-maxTokens-recommend')), /建议留空/)
   assert.equal(renderer.hasTest('model-maxTokens-apply-recommend'), false)
@@ -16308,6 +16465,8 @@ test('models page recommends 8K for 131072 windows and degrades to 2K near the l
     await renderer.load()
     await openModelsRoute(renderer, 'cpa')
     await openModelsModel(renderer, 'm1')
+    openMaxTokensHelp(renderer)
+    await settle(renderer)
     return renderer
   }
   // 131072：60% 目标不可达，退化为最小安全档 8K，填入后阈值 57344。
@@ -16642,17 +16801,13 @@ test('models page blocks sub-tab and primary-tab switches while a model draft is
   delete globalThis.window.confirm
 })
 
-test('models page live test runs directly from a saved model row without an extra confirmation', async () => {
+test('models page live test requires an explicit confirmation with content, budget and timeout', async () => {
   let commitOk = true
-  let holdPreview = false
-  const pendingPreview = []
   // 行内测试的进度计时用 window.setInterval；测试替身的 window 没有它，
   // 这里按真实语义补上最小实现，避免用例结束后残留未捕获的定时器错误。
   const intervals = []
   const { calls, rpc } = models3Fixture({
-    'models3-test-preview': () => (holdPreview
-      ? new Promise((resolve) => pendingPreview.push(resolve))
-      : { ok: true, value: { planId: 'plan-test', text: 'ping', maxTokens: 16, timeoutMs: 15000 } }),
+    'models3-test-preview': (payload) => ({ ok: true, value: { planId: 'plan-test-' + payload.modelId, text: 'ping', system: 'Reply with OK.', maxTokens: 30000, timeoutMs: 120000, mayCharge: true, scope: 'basic-text-call' } }),
     'models3-test-commit': () => ({ ok: true, value: { ok: commitOk } }),
   })
   const renderer = createRenderer(rpc)
@@ -16663,36 +16818,39 @@ test('models page live test runs directly from a saved model row without an extr
     await openModelsRoute(renderer, 'cpa')
     const rowTest = renderer.findByTestId('model-test-m1')
     assert.equal(rowTest.props['aria-label'], '主动测试保存状态 m1')
-    assert.equal(renderer.hasTest('model-test-confirm'), false, 'no charge-confirmation step exists before the row test')
-    // 在途预览期间显示进度并保持计费边界文案，但不允许并发第二次真实调用。
-    holdPreview = true
+    assert.equal(renderer.hasTest('model-plan'), false, 'no plan card exists before the row test')
+    // 可能计费的真实调用：点击只出确认卡，不发起调用。
     rowTest.props.onClick()
     await settle(renderer)
-    assert.equal(models3Calls(calls, 'models3-test-preview').length, 1)
-    assert.equal(models3Calls(calls, 'models3-test-commit').length, 0, 'the preview is awaited before the real call')
-    assert.match(nodeText(renderer.findByTestId('model-test-progress')), /m1 · 测试中/)
-    holdPreview = false
-    pendingPreview.shift()({ ok: true, value: { planId: 'plan-test', text: 'ping', maxTokens: 16, timeoutMs: 15000 } })
-    await settle(renderer)
     assert.deepEqual(models3Calls(calls, 'models3-test-preview')[0].payload, { sessionId: 's-cpa', modelId: 'm1' })
-    // 行内直连：预览后立即真实调用，没有第二次点击。
-    assert.deepEqual(models3Calls(calls, 'models3-test-commit')[0].payload, { planId: 'plan-test' })
-    assert.equal(renderer.hasTest('model-test-progress'), false, 'the progress indicator clears when the call settles')
+    assert.equal(models3Calls(calls, 'models3-test-commit').length, 0, 'the preview never starts the billable call')
+    const details = nodeText(renderer.findByTestId('model-test-details'))
+    assert.match(details, /固定短文本/, 'the confirmation states what will be sent')
+    assert.match(details, /maxTokens=30000/)
+    assert.match(details, /120000ms/)
+    assert.match(details, /可能计费/)
+    assert.equal(renderer.findByTestId('model-plan-confirm').props.disabled, false)
+    renderer.findByTestId('model-plan-confirm').props.onClick()
+    await settle(renderer)
+    assert.deepEqual(models3Calls(calls, 'models3-test-commit')[0].payload, { planId: 'plan-test-m1' })
     assert.match(renderer.text('settings.section'), /基础文本调用成功/)
     // 失败结果必须显式报告为失败，不伪装成功。
     commitOk = false
     renderer.findByTestId('model-test-m1').props.onClick()
     await settle(renderer)
+    renderer.findByTestId('model-plan-confirm').props.onClick()
+    await settle(renderer)
     assert.equal(models3Calls(calls, 'models3-test-commit').length, 2)
     assert.match(renderer.text('settings.section'), /基础文本调用失败或未完成/)
-    // 窄行（只有 id）同样可用：行测试按 item.id 发起。
+    // 窄行（只有 id）同样先确认；行测试按 item.id 发起。
     renderer.findByTestId('model-test-m2').props.onClick()
     await settle(renderer)
     assert.deepEqual(models3Calls(calls, 'models3-test-preview').at(-1).payload, { sessionId: 's-cpa', modelId: 'm2' })
-    // 窄行详情退回渠道默认值而不是崩溃。
+    // 详情页把草稿与生效值分开：未声明的容量不再被旧值填回输入框。
     await openModelsModel(renderer, 'm2')
     assert.equal(renderer.findByTestId('model-detail').props['data-model-id'], 'm2')
-    assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '200K', 'a narrow row shows the provider default context')
+    assert.equal(renderer.findByTestId('model-field-contextWindow').props.value, '', 'an inherited provider default never fills the draft')
+    assert.doesNotMatch(renderer.text('settings.section'), /当前生效值/)
     assert.equal(renderer.findByTestId('model-field-maxTokens').props.value, '', 'an undefined provider default renders empty')
   } finally {
     delete globalThis.window.setInterval
@@ -16700,7 +16858,29 @@ test('models page live test runs directly from a saved model row without an extr
   }
 })
 
-test('models homepage availability switch commits immediately without a confirmation plan', async () => {
+test('models page live test from the saved model detail asks before spending tokens', async () => {
+  const { calls, rpc } = models3Fixture({
+    'models3-test-preview': () => ({ ok: true, value: { planId: 'plan-detail', text: 'ping', maxTokens: 30000, timeoutMs: 120000, mayCharge: true } }),
+    'models3-test-commit': () => ({ ok: true, value: { ok: true } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  // 干净的已保存模型可以直接测试。
+  const detailTest = renderer.findByTestId('model-detail-test')
+  assert.equal(detailTest.props.disabled, false)
+  detailTest.props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-test-preview')[0].payload, { sessionId: 's-cpa', modelId: 'm1' })
+  assert.equal(models3Calls(calls, 'models3-test-commit').length, 0, 'the detail test also stops at the confirmation step')
+  assert.match(nodeText(renderer.findByTestId('model-test-plan')), /maxTokens=30000/)
+  renderer.findByTestId('model-test-confirm').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-test-commit')[0].payload, { planId: 'plan-detail' })
+})
+
+test('models homepage availability switch with no affected references commits immediately', async () => {
   const snapshot = structuredClone(MODELS3_SNAPSHOT)
   snapshot.routes[0].enabled = true
   const { calls, rpc } = models3Fixture({
@@ -16728,6 +16908,29 @@ test('models homepage availability switch commits immediately without a confirma
   await settle(renderer)
   assert.deepEqual(models3Calls(calls, 'models3-model-enabled')[0].payload, { sessionId: 's-cpa', modelId: 'm1', enabled: false, expected: true })
   assert.equal(models3Calls(calls, 'models3-snapshot').length > snapshotsBefore, true, 'a successful switch refreshes the snapshot')
+})
+
+test('models homepage availability switch confirms the affected references before disabling', async () => {
+  const snapshot = structuredClone(MODELS3_SNAPSHOT)
+  snapshot.routes[0].enabled = true
+  const { calls, rpc } = models3Fixture({
+    'models3-snapshot': () => ({ ok: true, value: structuredClone(snapshot) }),
+    'models3-enabled-preview': () => ({ ok: true, value: { planId: 'enabled-plan', enabled: false, previous: true, references: [{ kind: 'agent-default-model', provider: 'cpa', model: 'm1' }], configurationRetained: true, credentialRetained: true } }),
+    'models3-enabled-commit': () => ({ ok: true, value: { enabled: false } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  renderer.findByTestId('model-route-enabled').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-enabled-commit').length, 0, 'a referenced provider never flips before confirmation')
+  const plan = nodeText(renderer.findByTestId('model-availability-references'))
+  assert.match(plan, /主对话默认模型/)
+  assert.match(plan, /cpa \/ m1/)
+  assert.match(plan, /配置与密钥保留/)
+  renderer.findByTestId('model-plan-confirm').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-enabled-commit')[0].payload, { planId: 'enabled-plan' })
 })
 
 test('models homepage keeps a vertical accordion and switches provider details on click', async () => {
@@ -16822,4 +17025,93 @@ test('models page clears a stale smart-fill error once a retry succeeds', async 
   await settle(renderer)
   assert.equal(models3Calls(calls, 'models3-fill').length, 2)
   assert.equal(renderer.hasTest('model-config-error'), false, 'a successful retry clears the stale error')
+})
+
+test('settings entry: an always-visible settings row registers above the account button', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  })
+  await renderer.load()
+
+  // 官方 sidebar.footer.action 是 list 槽，渲染在账号按钮（sidebar.settings）正上方：
+  // 注册在它里面即「常驻在已登录按钮上方」，不再依赖点开账号菜单。
+  const entries = renderer.registrations()['sidebar.footer.action'] ?? []
+  const entry = entries.find((item) => item.id === 'dsh-service-settings-entry')
+  assert.ok(entry, 'the settings entry registers in the official footer action slot')
+  assert.equal(entry.order, 50)
+  assert.equal(typeof entry.label, 'function')
+  assert.equal(entry.label(), '设置')
+
+  const button = renderer.findByTestId('dsh-service-settings-entry')
+  assert.equal(button.type, 'button')
+  assert.equal(button.props['aria-label'], '设置')
+  assert.equal(button.props['data-collapsed'], 'false')
+  assert.match(renderer.text('sidebar.footer.action'), /设置/)
+
+  // 双语词典同键：英文界面下按钮文案与无障碍名一起切换。
+  renderer.setLocale('en')
+  assert.equal(renderer.findByTestId('dsh-service-settings-entry').props['aria-label'], 'Settings')
+  assert.match(renderer.text('sidebar.footer.action'), /Settings/)
+})
+
+test('settings entry: opens the settings shell store and records the path', async () => {
+  const opened = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root' },
+        component: () => null,
+        // 真实宿主：settings-general 把 store 句柄的 create() 覆写成恒返回同一个外壳实例。
+        store: { create: () => ({ actions: { open: () => opened.push('store') } }) },
+      }],
+    },
+  })
+  await renderer.load()
+
+  const target = { dataset: {} }
+  renderer.findByTestId('dsh-service-settings-entry').props.onClick({ currentTarget: target })
+  await renderer.flush()
+  assert.deepEqual(opened, ['store'], 'the shell store action opens the official settings panel')
+  assert.equal(target.dataset.dshsvcOpenVia, 'store')
+})
+
+test('settings entry: falls back to the settings.open command when the shell store is absent', async () => {
+  const invoked = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    services: {
+      shortcuts: {
+        catalog: { getSnapshot: () => [{ id: 'settings.open' }] },
+        registry: { invoke: (id, context) => invoked.push({ id, context }) },
+      },
+    },
+  })
+  await renderer.load()
+
+  const target = { dataset: {} }
+  renderer.findByTestId('dsh-service-settings-entry').props.onClick({ currentTarget: target })
+  await renderer.flush()
+  assert.equal(invoked.length, 1)
+  assert.equal(invoked[0].id, 'settings.open')
+  assert.equal(invoked[0].context.region, 'page')
+  assert.equal(target.dataset.dshsvcOpenVia, 'shortcut')
+})
+
+test('settings entry: rail mode is icon-only and keeps the accessible label', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, { slotProps: { 'sidebar.footer.action': { wide: false } } })
+  await renderer.load()
+
+  const button = renderer.findByTestId('dsh-service-settings-entry')
+  assert.equal(button.props['data-collapsed'], 'true')
+  assert.equal(button.props['aria-label'], '设置')
+  assert.equal(renderer.text('sidebar.footer.action'), '', 'the collapsed rail renders the icon without the visible label')
 })

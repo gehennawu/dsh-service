@@ -554,6 +554,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
     const zh = {
       'nav.label': '服务控制',
       'nav.restart': '重启',
+      'settingsEntry.label': '设置',
       'features.cardTitle': '服务控制（dsh-service）',
       'features.cardHint': '控制可选功能和外部能力。开关立即生效，无需重启。',
       'features.external': '外部能力',
@@ -1811,6 +1812,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
     const en = {
       'nav.label': 'Service Control',
       'nav.restart': 'Restart',
+      'settingsEntry.label': 'Settings',
       'features.cardTitle': 'Service control (dsh-service)',
       'features.cardHint': 'Controls optional features and external capabilities. Switches apply instantly without restart.',
       'features.external': 'External capabilities',

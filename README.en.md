@@ -42,7 +42,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 - [🚀 Features](#-features)
   - [Version and updates](#version-and-updates) · [Safe restart](#safe-restart) · [Health diagnostics](#health-diagnostics) · [Model statistics](#model-statistics)
   - [Quota lookup](#quota-lookup) · [Model configuration](#model-configuration) · [Backup management](#backup-management) · [Skills management](#skills-management) · [Subagent model](#subagent-model)
-  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Model provider icons](#model-provider-icons) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
+  - [Task notifications](#task-notifications) · [Session manager](#session-manager) · [Mobile adaptation](#mobile-adaptation) · [Sidebar settings entry](#sidebar-settings-entry) · [Model provider icons](#model-provider-icons) · [Right-Sidebar file editing](#right-sidebar-file-editing) · [External liveness probe](#external-liveness-probe)
 - [🏗️ Architecture](#-architecture)
 - [⚡ Installation](#-installation) · [🔄 Automatic restart](#-automatic-restart) · [🖥️ Platform support](#-platform-support)
 - [🔒 Security design](#-security-design) · [❓ FAQ](#-faq) · [🤝 Contributing](#-contributing) · [📄 License](#-license)
@@ -175,16 +175,16 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - Model configuration contains **Providers & models** and **Subagent routing**, separating built-in and custom providers.
 - **Add custom providers** with an ID, display name, protocol, address, API key and model IDs. Creation never probes the endpoint automatically.
 - **Mixed-protocol notice**: when a catalog mixes protocols (such as pi-ai's `azure` since 0.2.1-alpha.3), the template picker and provider editor explain that a route-level protocol overrides every model on the route, preventing Chat Completions models from being pinned to the Responses protocol.
-- **Provider editing** covers display name, address and credentials. Custom protocols are editable; built-in protocols are read-only. Unshown headers, timeouts, cache settings and advanced parameters remain unchanged.
-- **Model discovery** supports manual IDs or explicit Fetch online, with search and batch selection for OpenAI-compatible and Anthropic model lists. Discovery failure never blocks manual entry; a returned list does not prove calls work.
-- **Model editing** covers ID, display name, context window, max output, image input and reasoning levels. Capacity accepts `256K` / `1M`; blank inherits catalog defaults. IDs must be unique per provider, and disabled models must be enabled before renaming.
-- **Immediate toggles** block new main-chat and subagent calls while retaining configuration and keys; running calls are not cancelled. Unloading the plugin removes this policy.
-- **Basic call tests may incur charges**. They send short text through saved models and report elapsed time and sanitized errors; they do not verify images, capacity or every reasoning level, and failures never roll back configuration.
+- **Provider editing** covers display name, address and credentials. Custom protocols are editable; built-in protocols are read-only. The ordinary interface does not expose advanced provider parameters; unshown headers, timeouts and cache settings remain untouched — use the native DSH model settings to change them.
+- **Model discovery** supports manual IDs or explicit Fetch online, with search and batch selection for OpenAI-compatible and Anthropic model lists. Discovery failure never blocks manual entry; a returned list does not prove calls work. "Select all" only adds currently visible candidates; selections outside the current list are counted separately and can be removed in one action.
+- **Model editing** covers ID, display name, context window, max output, image input and reasoning levels. Capacity accepts `256K` / `1M`. Reasoning levels are a single click; **wire value mappings live in a collapsed "Wire value mapping (advanced)" section** — checking a level prefills its own name and the actual protocol value can be corrected after expanding — with distinct states for inherited/undeclared, explicitly unsupported and custom mappings. IDs must be unique per provider, and disabled models must be enabled before renaming.
+- **Immediate toggles** block new main-chat and subagent calls while retaining configuration and keys; running calls are not cancelled. **When a provider is referenced by the default model or subagents, disabling first lists the affected references for confirmation**; unreferenced providers still disable in one click, and enabling is always immediate. Unloading the plugin removes this policy.
+- **Basic call tests may incur charges**. Every test first shows the fixed content, token ceiling, timeout and billing notice, and only calls after confirmation. Tests use saved models and report elapsed time and sanitized errors; they do not verify images, capacity or every reasoning level, and failures never roll back configuration.
 - **Smart fill starts disabled**. It queries local pi-ai, modelparams.dev and OpenRouter metadata by model ID, without provider discovery, inference or automatic saving. Suggestions are per parameter; confirming Fill all changes only the draft and still requires Save.
 - **Check reasoning levels against the API**: selectable levels differ from the effort selected for a call. Missing metadata does not mean unsupported; unconfigured values inherit or use API defaults. Manually supplied mappings require verification.
 - **Deletion checks references** to the main-chat default, subagent primary and fallback models, blocking deletion when referenced. A custom provider cannot lose its final model.
 - **Restore and credentials**: provider deletion snapshots configuration and keeps credential references. Restore recovers configuration, never old key values. Replacement defaults to an independent reference; shared replacement first lists users.
-- **Draft and concurrency protection**: failed saves retain drafts, leaving unsaved edits warns, and external changes prevent overwrite until reviewed again. Drafts do not persist across reloads.
+- **Draft and concurrency protection**: failed saves retain drafts; after a dropped connection or host restart the action resets so it can be retried, leaving unsaved edits warns, and external changes prevent overwrite until reviewed again. Drafts do not persist across reloads.
 
 #### URL and credential safety
 
@@ -224,6 +224,13 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Drawer gestures**: swipe right to open the sidebar, left to open the right sidebar, and reverse to close. Editor horizontal scrolling is unaffected.
 - An up-arrow jumps through previous user messages, automatically loading earlier history as needed.
 - Large conversation JSON responses are compressed, with safe-area and mobile input zoom handling.
+
+### Sidebar settings entry
+
+- A persistent **Settings** row sits at the sidebar foot, directly **above the account button**: one click opens the official settings panel — no need to open the account menu first.
+- It stays visible whether signed in or signed out; the official “Settings” item in the account menu is untouched, so both routes work.
+- Collapsed into the icon rail, the entry becomes a 36×36 gear button whose tooltip and accessible name stay “Settings”.
+- Its copy follows the interface language; on hosts without the seat the row simply does not appear and nothing else changes.
 
 ### Session manager
 

@@ -15,6 +15,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
   const grid2 = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '12px' }
   const actions = { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }
   const modelFields = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
+  // 渠道页只编辑身份与连接；高级渠道参数不再在这里提供入口。
   const routeFields = ['displayName', 'api', 'baseURL']
   const numbers = ['contextWindow', 'maxTokens', 'defaultContextWindow', 'defaultMaxTokens', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'requestImagePixelBudget', 'requestImageMaxBytes']
   const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -120,62 +121,20 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     return el('p', { role: 'alert', 'data-testid': 'model-config-error', style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', margin: '8px 0', overflowWrap: 'anywhere' } }, tr(key) === key ? tr('models.smart.error.generic').replace('{code}', error) : tr(key))
   }
 
-  function KeyValues({ value, onChange, label, template = false }) {
-    const tr = useTranslation()
-    const rows = value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []
-    const [pendingKey, setPendingKey] = useState('')
-    const renderValue = (key, val) => {
-      const update = (next) => onChange({ ...value, [key]: next })
-      if (template) return el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', minWidth: 0 } },
-        el('select', { style: inputStyle, 'aria-label': key + ' ' + tr('models.smart.type'), value: val !== null && typeof val === 'object' ? 'variable' : val === null ? 'null' : typeof val, onChange: (e) => update(e.target.value === 'variable' ? { $var: 'thinking.enabled' } : e.target.value === 'null' ? null : e.target.value === 'boolean' ? false : e.target.value === 'number' ? 0 : '') }, ['string', 'number', 'boolean', 'null', 'variable'].map((type) => el('option', { key: type, value: type }, tr('models.smart.type.' + type)))),
-        typeof val === 'boolean' ? el('select', { style: inputStyle, value: String(val), onChange: (e) => update(e.target.value === 'true'), 'aria-label': key }, ['true', 'false'].map((x) => el('option', { key: x }, x)))
-          : val !== null && typeof val === 'object' ? el('div', null,
-            el('select', { style: inputStyle, value: val.$var, 'aria-label': key, onChange: (e) => update({ ...val, $var: e.target.value }) }, ['thinking.enabled', 'thinking.effort', 'thinking.budget'].map((x) => el('option', { key: x }, x))),
-            el('label', null, el('input', { type: 'checkbox', checked: val.omitWhenOff === true, onChange: (e) => update({ ...val, omitWhenOff: e.target.checked }) }), 'omitWhenOff'))
-            : val === null ? null : el('input', { style: inputStyle, value: val, 'aria-label': key, onChange: (e) => update(typeof val === 'number' ? Number(e.target.value) : e.target.value) }))
-      return el('input', { style: inputStyle, value: val ?? '', 'aria-label': key, onChange: (e) => update(e.target.value) })
-    }
-    return el('fieldset', { style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px', padding: '10px', minWidth: 0, marginTop: '8px' } },
-      el('legend', { style: labelStyle }, label),
-      ...rows.map(([key, val]) => el('div', { key, style: { marginBottom: '6px', minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px' } }, el('span', { style: { minWidth: '90px', fontSize: '12px' } }, key), el('div', { style: { flex: 1 } }, renderValue(key, val)), el(Button, { onClick: () => { const next = { ...value }; delete next[key]; onChange(next) }, danger: true }, tr('models.smart.remove')))),
-      el('div', { style: { ...actions, marginTop: '6px' } }, el('input', { style: { ...inputStyle, width: '180px' }, value: pendingKey, 'aria-label': tr('models.smart.newKey'), placeholder: tr('models.smart.newKey'), onChange: (e) => setPendingKey(e.target.value) }), el(Button, { onClick: () => { if (pendingKey && !['__proto__', 'constructor', 'prototype', '__jsExpr'].includes(pendingKey) && !Object.hasOwn(value ?? {}, pendingKey)) { onChange({ ...value, [pendingKey]: '' }); setPendingKey('') } } }, tr('models.smart.add'))))
+  // 基础调用失败的可见摘要：只列有界、已脱敏的字段，不改写为「成功」。
+  function testFailureText(tr, value) {
+    return [tr('models.smart.testFailed'), value?.failure?.code, value?.failure?.status ? 'HTTP ' + value.failure.status : '', value?.finishReason, value?.failure?.message]
+      .filter(Boolean).join(' · ')
   }
 
-  function CompatEditor({ value, onChange, schema, api }) {
-    const tr = useTranslation()
-    const fields = schema.compatGates[api] ?? []
-    const enums = schema.compatEnums
-    const changed = (key, next) => { const result = { ...(value || {}) }; if (next === '') delete result[key]; else result[key] = next; onChange(result) }
-    return el('div', { 'data-testid': 'model-compat-editor', style: { marginTop: '8px' } },
-      ...fields.map((key) => {
-        if (key === 'chatTemplateArgs' || key === 'chatTemplateKwargs') return el(KeyValues, { key, label: key, template: true, value: value?.[key], onChange: (v) => changed(key, v) })
-        if (key === 'vllmPriority') return el('label', { key, style: { display: 'block', marginTop: '6px' } }, el('span', { style: labelStyle }, key), el('input', { style: inputStyle, 'aria-label': key, value: value?.[key] ?? '', onChange: (e) => changed(key, e.target.value) }))
-        return el('label', { key, style: { display: 'block', marginTop: '6px' } }, el('span', { style: labelStyle }, key), el('select', { style: inputStyle, 'aria-label': key, value: value?.[key] === undefined ? '' : String(value[key]), onChange: (e) => changed(key, e.target.value === '' ? '' : enums[key] ? e.target.value : e.target.value === 'true') }, el('option', { value: '' }, tr('models.smart.inherit')), ...(enums[key] ?? ['true', 'false']).map((x) => el('option', { key: x, value: x }, x))))
-      }), el('p', { style: { ...muted, marginTop: '6px' } }, tr('models.smart.compatHint')))
-  }
-
-  function Field({ field, value, onChange, schema, api, effective, displayValue }) {
+  function Field({ field, value, onChange, schema, testId }) {
     const tr = useTranslation()
     const label = tr('models.smart.field.' + field) === 'models.smart.field.' + field ? field : tr('models.smart.field.' + field)
-    if (field === 'compat') return el(CompatEditor, { value, onChange, schema, api })
-    if (field === 'headers') return el(KeyValues, { value, onChange, label })
-    if (field === 'thinkingBudgets') return el('fieldset', { style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px', padding: '10px', minWidth: 0, marginTop: '8px' } }, el('legend', { style: labelStyle }, label), ...['minimal', 'low', 'medium', 'high'].map((level) => el('label', { key: level, style: { display: 'block', marginTop: '4px' } }, el('span', { style: { fontSize: '12px' } }, level), el('input', { style: inputStyle, value: value?.[level] ?? '', 'aria-label': 'thinkingBudgets.' + level, onChange: (e) => { const next = { ...(value || {}) }; if (e.target.value === '') delete next[level]; else next[level] = e.target.value; onChange(next) } }))))
-    if (field === 'retryPolicy') return el('fieldset', { style: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px', padding: '10px', minWidth: 0, marginTop: '8px' } }, el('legend', { style: labelStyle }, label),
-      el('select', { style: inputStyle, 'aria-label': label, value: value?.mode ?? '', onChange: (e) => onChange(e.target.value ? { ...value, mode: e.target.value } : '') }, el('option', { value: '' }, tr('models.smart.inherit')), ...['normal', 'always'].map((mode) => el('option', { key: mode }, mode))),
-      value?.mode === 'normal' ? el('label', { style: { display: 'block', marginTop: '6px' } }, el('span', { style: labelStyle }, 'maxRetries'), el('input', { style: inputStyle, 'aria-label': 'maxRetries', value: value.maxRetries ?? '', onChange: (e) => { const next = { ...value }; if (!e.target.value) delete next.maxRetries; else next.maxRetries = e.target.value; onChange(next) } })) : null,
-      value?.mode === 'normal' ? el('label', { style: { display: 'block', marginTop: '6px' } }, el('span', { style: labelStyle }, 'retryableCodes'), el('input', { style: inputStyle, 'aria-label': 'retryableCodes', value: (value.retryableCodes ?? []).join(', '), onChange: (e) => { const next = { ...value }; if (!e.target.value) delete next.retryableCodes; else next.retryableCodes = e.target.value.split(',').map((x) => x.trim()); onChange(next) } })) : null,
-      value?.mode ? ['initialDelayMs', 'maxDelayMs', 'jitterRatio'].map((key) => el('label', { key, style: { display: 'block', marginTop: '6px' } }, el('span', { style: labelStyle }, 'backoff.' + key), el('input', { style: inputStyle, 'aria-label': 'backoff.' + key, value: value.backoff?.[key] ?? '', onChange: (e) => { const backoff = { ...(value.backoff || {}) }; if (!e.target.value) delete backoff[key]; else backoff[key] = e.target.value; onChange({ ...value, backoff }) } }))) : null)
     const enums = schema?.routeEnums?.[field]
-    return el('label', { style: { display: 'block', minWidth: 0 } },
-      el('span', { style: labelStyle }, label),
-      enums ? el('select', { style: inputStyle, 'aria-label': label, value: value ?? '', onChange: (e) => onChange(e.target.value) }, el('option', { value: '' }, tr('models.smart.inherit')), ...enums.map((x) => el('option', { key: x }, x)))
-        : el('input', { style: inputStyle, 'aria-label': label, 'data-testid': 'model-field-' + field, value: value === '' || value === undefined ? displayValue ?? '' : value, onChange: (e) => onChange(e.target.value), placeholder: tr('models.smart.inherit') }),
-      effective !== undefined ? el('small', { style: muted }, tr('models.smart.effective') + ': ' + shown(effective)) : null)
-  }
-
-  function LayerNotes({ fields, explicit = {}, inherited = {}, onChange }) {
-    const tr = useTranslation()
-    return el('details', { 'data-testid': 'model-layer-notes', style: { marginTop: '8px' } }, el('summary', { style: { fontSize: '12px', color: 'var(--dsh-svc-text-muted)', cursor: 'pointer' } }, tr('models.smart.layers')), ...fields.map((field) => el('div', { key: field, style: { marginTop: '8px' } }, el('b', { style: { fontSize: '12px' } }, tr('models.smart.field.' + field)), el('p', { style: muted }, tr('models.smart.explicitValue') + ': ' + shown(explicit[field]) + ' · ' + tr('models.smart.inheritedValue') + ': ' + shown(inherited[field])), el(Button, { id: 'model-inherit-' + field, onClick: () => onChange(field, '') }, tr('models.smart.restoreInherited')))))
+    const control = enums
+      ? el('select', { style: inputStyle, 'aria-label': label, 'data-testid': 'model-field-' + field, value: value ?? '', onChange: (e) => onChange(e.target.value) }, ...enums.map((x) => el('option', { key: x }, x)))
+      : el('input', { style: inputStyle, 'aria-label': label, 'data-testid': testId ?? 'model-field-' + field, value: value === undefined ? '' : value, onChange: (e) => onChange(e.target.value) })
+    return el('div', { style: { minWidth: 0 } }, el('label', { style: { display: 'block' } }, el('span', { style: labelStyle }, label), control))
   }
 
   function SuggestionGroups({ groups, draft }) {
@@ -203,10 +162,12 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       }))
   }
 
+  // 只有页面可见的字段才进入一键填入；compat 没有编辑器，不能被静默写入。
+  const SMART_FILL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts']
   function smartFillGroups(result) {
     return (result?.groups ?? []).flatMap((group) => {
       const candidate = group.candidates?.find((entry) => entry.evidence === 'exact-channel-protocol') ?? group.candidates?.[0]
-      return candidate && modelFields.includes(group.field) ? [{ ...group, candidate }] : []
+      return candidate && SMART_FILL_FIELDS.includes(group.field) ? [{ ...group, candidate }] : []
     })
   }
 
@@ -241,6 +202,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const [modelId, setModelId] = useState(model.id ?? '')
     const [enabled, setEnabled] = useState(false)
     const [smartHelp, setSmartHelp] = useState(null)
+    const [maxTokensHelp, setMaxTokensHelp] = useState(null)
     const [result, setResult] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
@@ -261,6 +223,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     if (resolvedModel.contextWindow === undefined) resolvedModel.contextWindow = currentOpened.profile.defaultContextWindow
     if (resolvedModel.maxTokens === undefined) resolvedModel.maxTokens = currentOpened.profile.defaultMaxTokens
     if (resolvedModel.input === undefined) resolvedModel.input = currentOpened.profile.defaultInput
+    // 继承层条目仍用于压缩预算估算（恢复继承后实际会生效的值）。
+    const inheritedModel = currentOpened.inherited?.models?.find((entry) => entry.id === (currentBaseline.id ?? modelId)) ?? {}
     const resolvedApi = opened.profile.api || resolvedModel.api || opened.resolvedApi || opened.effective?.api || opened.catalogModels?.find((entry) => entry.api)?.api
     const sequence = useRef(0)
     const dirty = !equal(draft, initialTexts(currentBaseline, modelFields)) || modelId !== (currentBaseline.id ?? '')
@@ -279,8 +243,10 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       try { return capacity(text) } catch (_) { return fallback }
     }
     const hintContextWindow = capacityOr(draft.contextWindow, resolvedModel.contextWindow)
+    // 预算按「保存这份草稿之后」的状态估算：草稿非空用草稿值；草稿空表示恢复继承/未声明，
+    // 此时只有继承层条目会重新生效（渠道/目录默认值不物化进请求头，不能算作预留）。
     const hintExplicitMaxTokens = draft.maxTokens === ''
-      ? (Number.isSafeInteger(currentBaseline.maxTokens) ? currentBaseline.maxTokens : undefined)
+      ? (Number.isSafeInteger(inheritedModel.maxTokens) ? inheritedModel.maxTokens : undefined)
       : capacityOr(draft.maxTokens, undefined)
     const hintReserved = Number.isInteger(hintExplicitMaxTokens) && hintExplicitMaxTokens > 0 ? hintExplicitMaxTokens : 0
     let hintThreshold
@@ -319,6 +285,13 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       : undefined
     // 建议值展示用 1024 进制（8K/32K/64K），避免 formatCapacity 的 65.536K 形态。
     const tokenLabel = (value) => value % 1024 === 0 ? (value / 1024) + 'K' : String(value)
+    // 最大输出不再单独提供“填入建议值”按钮：开启智能填充后，一键填入按窗口推荐值一起写入草稿。
+    const fillSuggestions = (() => {
+      if (maxTokensRecommendation.kind !== 'value') return suggestions
+      const current = String(capacityOr(draft.maxTokens, currentBaseline.maxTokens ?? '')).trim()
+      if (current === String(maxTokensRecommendation.value)) return suggestions
+      return [...suggestions, { key: 'maxTokensRecommendation', field: 'maxTokens', path: ['maxTokens'], candidate: { value: maxTokensRecommendation.value, source: 'context-window' }, candidates: [{ id: 'context-window', value: maxTokensRecommendation.value, source: 'context-window' }] }]
+    })()
 
     useEffect(() => {
       const id = ++sequence.current
@@ -337,18 +310,26 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const save = async () => {
       if (!modelId.trim()) { setError('bad-model-id'); return }
       setBusy(true); setError(''); setNotice('')
-      let patch; try { patch = parseDraft(draft, currentBaseline, modelFields) } catch (_) { setBusy(false); setError('schema-invalid'); return }
-      const res = await rpcCall('models3-save-model', { sessionId: currentOpened.sessionId, modelId: modelId.trim(), ...(!isNew ? { originalModelId: currentBaseline.id } : {}), patch: patch.patch, unset: patch.unset, add: isNew })
-      setBusy(false)
-      if (!res.ok) setError(res.error)
-      else onSaved()
+      try {
+        let patch; try { patch = parseDraft(draft, currentBaseline, modelFields) } catch (_) { setError('schema-invalid'); return }
+        const res = await rpcCall('models3-save-model', { sessionId: currentOpened.sessionId, modelId: modelId.trim(), ...(!isNew ? { originalModelId: currentBaseline.id } : {}), patch: patch.patch, unset: patch.unset, add: isNew })
+        if (!res.ok) setError(res.error)
+        else onSaved()
+      } catch (_) {
+        // 传输层失败（宿主重启 / 断连 / 超时）必须复位并保留草稿，否则按钮永久不可用。
+        setError('operation-failed')
+      } finally {
+        setBusy(false)
+      }
     }
 
     const test = async () => {
       setError(''); setNotice('')
-      const res = await rpcCall('models3-test-preview', { sessionId: currentOpened.sessionId, modelId: model.id })
-      if (!res.ok) setError(res.error)
-      else setTestPlan(res.value)
+      try {
+        const res = await rpcCall('models3-test-preview', { sessionId: currentOpened.sessionId, modelId: model.id })
+        if (!res.ok) setError(res.error)
+        else setTestPlan(res.value)
+      } catch (_) { setError('operation-failed') }
     }
 
     // Modality handling (Text + Image)
@@ -411,7 +392,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       el('div', { style: grid2 },
         el('div', null,
           el('label', { style: labelStyle }, tr('models.wb.edit.modelId') || '模型 ID'),
-          el('input', { style: inputStyle, value: modelId, placeholder: tr('models.wb.edit.modelIdPlaceholder'), 'aria-label': '模型 ID', 'data-testid': isNew ? 'model-new-id' : undefined, onChange: (e) => setModelId(e.target.value) })
+          el('input', { style: inputStyle, value: modelId, placeholder: tr('models.wb.edit.modelIdPlaceholder'), 'aria-label': tr('models.smart.field.modelId'), 'data-testid': isNew ? 'model-new-id' : undefined, onChange: (e) => setModelId(e.target.value) })
         ),
         el('div', null,
           el('label', { style: labelStyle }, tr('models.smart.field.name')),
@@ -438,10 +419,10 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       enabled ? el('div', { style: { padding: '8px 12px', background: 'var(--dsw-alias-bg-layer-2)', borderRadius: '8px', marginBottom: '14px', border: '1px solid var(--dsw-alias-border-l2)' } },
         loading ? el('p', { role: 'status', 'data-testid': 'model-smart-loading', style: { ...muted, margin: 0 } }, tr('models.smart.loading')) : null,
         result ? el('div', null,
-          suggestions.length > 0 ? el('div', { 'data-testid': 'model-smart-inline-bar', style: { ...actions, justifyContent: 'space-between', marginBottom: '8px' } },
+          fillSuggestions.length > 0 ? el('div', { 'data-testid': 'model-smart-inline-bar', style: { ...actions, justifyContent: 'space-between', marginBottom: '8px' } },
             el('b', { style: { fontSize: '12px' } }, tr('models.smart.suggestedValues')),
-            el(Button, { id: 'model-smart-auto-fill', 'data-testid': 'model-smart-auto-fill', style: svcButtonStyle('primary'), onClick: () => setFillPlan(suggestions) }, tr('models.smart.fillAll'))) : null,
-          suggestions.length === 0 ? el('p', { role: 'status', 'data-testid': 'model-smart-empty', style: { ...muted, margin: 0 } }, tr('models.smart.noSuggestions')) : el(SuggestionGroups, { groups: suggestions, draft }),
+            el(Button, { id: 'model-smart-auto-fill', 'data-testid': 'model-smart-auto-fill', style: svcButtonStyle('primary'), onClick: () => setFillPlan(fillSuggestions) }, tr('models.smart.fillAll'))) : null,
+          fillSuggestions.length === 0 ? el('p', { role: 'status', 'data-testid': 'model-smart-empty', style: { ...muted, margin: 0 } }, tr('models.smart.noSuggestions')) : el(SuggestionGroups, { groups: fillSuggestions, draft }),
           // 别名归一提示：原始 ID 在固定来源无记录、改按规范化别名查询时明示，避免误当成精确身份。
           result.identity?.via === 'alias' ? el('p', { role: 'status', 'data-testid': 'model-smart-alias', style: { ...muted, margin: '10px 0 0', lineHeight: '18px', overflowWrap: 'anywhere' } }, tr('models.smart.aliasIdentity').replace('{requested}', String(result.identity.requestedModelId ?? '')).replace('{matched}', String(result.identity.modelId ?? ''))) : null,
           !suggestions.some((group) => group.field === 'reasoningEfforts') ? el('p', { role: 'status', 'data-testid': 'model-smart-reasoning-empty', style: { ...muted, margin: '10px 0 0' } }, tr(result.reasoningSupported ? 'models.smart.reasoningSupportedNoLevels' : 'models.smart.noReasoningSuggestions')) : null,
@@ -456,38 +437,59 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             style: inputStyle,
             'data-testid': 'model-field-contextWindow',
             'aria-label': tr('models.smart.field.contextWindow'),
-            value: draft.contextWindow === '' ? formatCapacity(resolvedModel.contextWindow) : draft.contextWindow,
+            // 只显示草稿；占位符与旁注才体现继承/生效值，清空不会被旧值重新填回。
+            value: draft.contextWindow,
             placeholder: formatCapacity(resolvedModel.contextWindow) || tr('models.wb.edit.contextPlaceholder'),
             onChange: (e) => setDraft({ ...draft, contextWindow: e.target.value }),
           }),
-          resolvedModel.contextWindow ? el('small', { style: muted }, tr('models.smart.effective') + ': ' + formatCapacity(resolvedModel.contextWindow)) : null
         ),
         el('div', null,
-          el('label', { style: labelStyle }, tr('models.wb.edit.maxTokens') || '最大输出 token'),
+          el('label', { style: { ...labelStyle, display: 'inline-flex', alignItems: 'center', gap: '5px' } },
+            tr('models.wb.edit.maxTokens') || '最大输出 token',
+            // 说明收进带圈问号：默认不占版面，悬停或聚焦才展开。
+            el('button', {
+              type: 'button',
+              'data-testid': 'model-maxTokens-help',
+              'aria-label': tr('models.smart.maxTokensHelpLabel'),
+              'aria-describedby': maxTokensHelp ? 'model-maxTokens-help-popup' : undefined,
+              onMouseEnter: (event) => { const rect = event.currentTarget.getBoundingClientRect(); setMaxTokensHelp({ x: rect.left, y: rect.bottom }) },
+              onMouseLeave: () => setMaxTokensHelp(null),
+              onFocus: (event) => { const rect = event.currentTarget.getBoundingClientRect(); setMaxTokensHelp({ x: rect.left, y: rect.bottom }) },
+              onBlur: () => setMaxTokensHelp(null),
+              onKeyDown: (event) => { if (event.key === 'Escape') setMaxTokensHelp(null) },
+              style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', padding: 0, border: 0, background: 'transparent', color: 'var(--dsh-svc-text-muted)', cursor: 'help' },
+            }, el('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', 'aria-hidden': true },
+              el('circle', { cx: 12, cy: 12, r: 9.2 }),
+              el('path', { d: 'M9.7 9.4a2.4 2.4 0 1 1 3.4 2.1c-.7.4-1.1.9-1.1 1.7v.4' }),
+              el('circle', { cx: 12, cy: 17.1, r: 0.95, fill: 'currentColor', stroke: 'none' })))
+          ),
           el('input', {
             style: inputStyle,
             'data-testid': 'model-field-maxTokens',
             'aria-label': tr('models.smart.field.maxTokens'),
-            value: draft.maxTokens === '' ? formatCapacity(resolvedModel.maxTokens) : draft.maxTokens,
+            value: draft.maxTokens,
             placeholder: formatCapacity(resolvedModel.maxTokens) || tr('models.wb.edit.maxTokensPlaceholder'),
             onChange: (e) => setDraft({ ...draft, maxTokens: e.target.value }),
           }),
-          resolvedModel.maxTokens ? el('small', { style: muted }, tr('models.smart.effective') + ': ' + formatCapacity(resolvedModel.maxTokens)) : null,
-          el('small', { 'data-testid': 'model-maxTokens-hint', style: { display: 'block', marginTop: '4px', ...muted, lineHeight: '17px' } }, tr('models.smart.maxTokensHint')),
-          hintThreshold !== undefined ? el('small', {
-            role: 'status',
-            'data-testid': 'model-maxTokens-budget',
-            style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: hintUnsafe ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsh-svc-text-muted)' },
-          }, hintUnsafe
-            ? tr('models.smart.maxTokensUnsafe')
-            : tr('models.smart.maxTokensThreshold').replace('{tokens}', String(hintThreshold))) : null,
-          maxTokensRecommendation.kind === 'value' ? el('small', { 'data-testid': 'model-maxTokens-recommend', style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)' } },
-            tr('models.smart.maxTokensRecommend').replace('{value}', tokenLabel(maxTokensRecommendation.value)).replace('{window}', String(hintContextWindow)).replace('{threshold}', String(recommendationThreshold)),
-            String(capacityOr(draft.maxTokens, currentBaseline.maxTokens ?? '')).trim() !== String(maxTokensRecommendation.value)
-              ? el(Button, { id: 'model-maxTokens-apply-recommend', 'data-testid': 'model-maxTokens-apply-recommend', compact: true, style: { marginLeft: '8px', padding: '1px 8px', fontSize: '12px' }, onClick: () => setDraft({ ...draft, maxTokens: String(maxTokensRecommendation.value) }) }, tr('models.smart.maxTokensApplyRecommend'))
-              : null
-          ) : maxTokensRecommendation.kind === 'leave-empty' ? el('small', { 'data-testid': 'model-maxTokens-recommend', style: { display: 'block', marginTop: '3px', fontSize: '12px', lineHeight: '17px', color: 'var(--dsw-alias-state-warn-primary)' } }, tr('models.smart.maxTokensRecommendEmpty')) : null,
-          capabilityCeiling !== undefined ? el('small', { 'data-testid': 'model-maxTokens-capability', style: { display: 'block', marginTop: '3px', ...muted } }, tr('models.smart.maxTokensCapability').replace('{value}', tokenLabel(capabilityCeiling.value))) : null
+          maxTokensHelp ? el('div', {
+            id: 'model-maxTokens-help-popup',
+            role: 'tooltip',
+            'data-testid': 'model-maxTokens-help-popup',
+            style: { position: 'fixed', zIndex: 1000, width: '320px', maxWidth: 'calc(100vw - 24px)', boxSizing: 'border-box', left: Math.max(12, Math.min(maxTokensHelp.x, window.innerWidth - 332)), top: Math.max(12, Math.min(maxTokensHelp.y + 8, window.innerHeight - 160)), padding: '10px 12px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '8px', background: 'var(--dsw-alias-bg-overlay)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px', lineHeight: '18px', overflowWrap: 'anywhere', pointerEvents: 'none' },
+          },
+            el('p', { 'data-testid': 'model-maxTokens-hint', style: { margin: '0 0 6px' } }, tr('models.smart.maxTokensHint')),
+            hintThreshold !== undefined ? el('p', {
+              role: 'status',
+              'data-testid': 'model-maxTokens-budget',
+              style: { margin: '0 0 6px', color: hintUnsafe ? 'var(--dsw-alias-state-error-primary)' : 'inherit' },
+            }, hintUnsafe
+              ? tr('models.smart.maxTokensUnsafe')
+              : tr('models.smart.maxTokensThreshold').replace('{tokens}', String(hintThreshold))) : null,
+            maxTokensRecommendation.kind === 'value' ? el('p', { 'data-testid': 'model-maxTokens-recommend', style: { margin: '0 0 6px', color: 'var(--dsw-alias-label-secondary)' } },
+              tr('models.smart.maxTokensRecommend').replace('{value}', tokenLabel(maxTokensRecommendation.value)).replace('{window}', String(hintContextWindow)).replace('{threshold}', String(recommendationThreshold))) : null,
+            maxTokensRecommendation.kind === 'leave-empty' ? el('p', { 'data-testid': 'model-maxTokens-recommend', style: { margin: '0 0 6px', color: 'var(--dsw-alias-state-warn-primary)' } }, tr('models.smart.maxTokensRecommendEmpty')) : null,
+            capabilityCeiling !== undefined ? el('p', { 'data-testid': 'model-maxTokens-capability', style: { margin: 0 } }, tr('models.smart.maxTokensCapability').replace('{value}', tokenLabel(capabilityCeiling.value))) : null
+          ) : null
         )
       ),
 
@@ -501,14 +503,14 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             el('option', { value: 'image' }, 'image')
           ),
           el('div', { style: { display: 'flex', gap: '8px' } },
-            el(ModalityButton, { text: '文本', title: '文本输入', checked: true, disabled: true, onClick: () => toggleInputModality('text') }),
-            el(ModalityButton, { text: '图片', title: '图片输入', checked: currentInputModes().includes('image'), onClick: () => toggleInputModality('image') })
+            el(ModalityButton, { text: tr('models.smart.modality.text'), title: tr('models.smart.modality.textInput'), checked: true, disabled: true, onClick: () => toggleInputModality('text') }),
+            el(ModalityButton, { text: tr('models.smart.modality.image'), title: tr('models.smart.modality.imageInput'), checked: currentInputModes().includes('image'), onClick: () => toggleInputModality('image') })
           )
         ),
         el('div', null,
           el('label', { style: labelStyle }, tr('models.wb.edit.outputModalities') || '输出模态'),
           el('div', { style: { display: 'flex', gap: '8px' } },
-            el(ModalityButton, { text: '文本', title: '文本输出', checked: true, disabled: true })
+            el(ModalityButton, { text: tr('models.smart.modality.text'), title: tr('models.smart.modality.textOutput'), checked: true, disabled: true })
           )
         )
       ),
@@ -516,11 +518,11 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       // ── Section 4: 推理档位 (Reasoning Level Chips Matching Screenshot) ──
       el('div', { style: { marginBottom: '14px' } },
         el('label', { style: labelStyle }, tr('models.wb.edit.reasoningLevels') || '推理档位'),
-        // Hidden/Accessible select to honor test automation
-        el('select', { style: { display: 'none' }, 'aria-label': tr('models.smart.field.reasoningEfforts'), value: isReasoningFalse ? 'false' : Object.keys(effortMap).length > 0 ? 'map' : 'inherit', onChange: (e) => setDraft({ ...draft, reasoningEfforts: e.target.value === 'false' ? false : e.target.value === 'map' ? {} : '' }) },
-          el('option', { value: 'inherit' }, 'inherit'),
-          el('option', { value: 'false' }, 'false'),
-          el('option', { value: 'map' }, 'map')
+        // 思考支持状态可见可选：继承/未声明、明确不支持、自定义 wire 映射。
+        el('select', { style: { ...inputStyle, marginBottom: '6px' }, 'aria-label': tr('models.smart.field.reasoningEfforts'), 'data-testid': 'model-reasoning-mode', value: isReasoningFalse ? 'false' : Object.keys(effortMap).length > 0 ? 'map' : 'inherit', onChange: (e) => setDraft({ ...draft, reasoningEfforts: e.target.value === 'false' ? false : e.target.value === 'map' ? {} : '' }) },
+          el('option', { value: 'inherit' }, tr('models.smart.reasoning.inherit')),
+          el('option', { value: 'false' }, tr('models.smart.reasoning.false')),
+          el('option', { value: 'map' }, tr('models.smart.reasoning.map'))
         ),
         el('div', { className: 'dsh-model-efforts', 'data-testid': 'model-efforts-row', style: { display: 'flex', flexWrap: 'nowrap', gap: '2px', alignItems: 'stretch', margin: '6px 0', minWidth: 0 } },
           el('style', null, `.dsh-model-efforts { container-type:inline-size; } .dsh-model-efforts .dsh-model-effort-label { width:100%; box-sizing:border-box; justify-content:center; font-size:clamp(6px, 2.7cqw, 14px); gap:clamp(1px, .4cqw, 4px); padding:8px 1px; } .dsh-model-efforts .dsh-model-effort-check { width:clamp(8px, 2.9cqw, 16px); height:clamp(8px, 2.9cqw, 16px); }`),
@@ -537,24 +539,28 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
                   color: checked ? 'var(--dsw-alias-label-primary)' : 'var(--dsh-svc-text-muted)',
                   fontWeight: checked ? 600 : 400,
                 },
-              }, el('input', { type: 'checkbox', className: 'dsh-model-effort-check', checked, 'aria-label': lvl, onChange: () => toggleEffortLevel(lvl), style: { margin: 0, flexShrink: 0, accentColor: 'var(--dsw-alias-button-primary-fill)' } }), lvl),
-              checked ? el('input', {
-                style: { display: 'none' },
-                'aria-label': lvl + ' wire',
-                value: typeof effortMap[lvl] === 'string' ? effortMap[lvl] : '',
-                placeholder: lvl,
-                onChange: (e) => setEffortWire(lvl, e.target.value),
-              }) : null
+              }, el('input', { type: 'checkbox', className: 'dsh-model-effort-check', checked, 'aria-label': lvl, onChange: () => toggleEffortLevel(lvl), style: { margin: 0, flexShrink: 0, accentColor: 'var(--dsw-alias-button-primary-fill)' } }), lvl)
             )
           })
         ),
+        // wire 值默认折叠：普通用户只用档位按钮；协议映射需要展开后再改。
+        Object.keys(effortMap).length > 0 ? el('details', { 'data-testid': 'model-reasoning-wire-editor', style: { marginTop: '4px' } },
+          el('summary', { style: { cursor: 'pointer', ...muted } }, tr('models.smart.wireEditor')),
+          el('div', { 'data-testid': 'model-reasoning-wires', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', margin: '8px 0 6px' } },
+            ...REASONING_LEVELS.filter((level) => Object.hasOwn(effortMap, level)).map((level) => el('label', { key: level, style: { minWidth: 0 } },
+              el('span', { style: { ...labelStyle, fontSize: '11px' } }, level + ' → ' + tr('models.smart.wireValue')),
+              el('input', {
+                style: { ...inputStyle, minHeight: '30px', fontSize: '12px' },
+                'aria-label': level + ' wire',
+                'data-testid': 'model-wire-' + level,
+                value: typeof effortMap[level] === 'string' ? effortMap[level] : '',
+                placeholder: tr('models.smart.wireRequired'),
+                onChange: (e) => setEffortWire(level, e.target.value),
+              })))),
+          el('small', { style: { ...muted, display: 'block', lineHeight: '17px' } }, tr('models.smart.wireHint'))
+        ) : null
       ),
 
-      ),
-
-      // Hidden compatibility container for automated regression tests
-      el('div', { style: { display: 'none' } },
-        el(Field, { field: 'compat', value: draft.compat, schema: opened.schema, api: opened.profile.api, onChange: (v) => setDraft({ ...draft, compat: v }) })
       ),
 
       isNew ? el('details', { style: { margin: '16px 0' }, 'data-testid': 'model-new-parameters' },
@@ -573,18 +579,30 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           el(Button, { id: 'model-conflict-rebase', style: { marginTop: '8px' }, onClick: () => { const value = latestState.profile.models.find((x) => x.id === currentBaseline.id) ?? { id: modelId }; setDraft(rebaseUntouched(draft, currentBaseline, value, modelFields, conflictChoices)); setRebased(latestState); setBaselineOverride(value); setConflictChoices({}); setError(''); setLatestState(null) } }, tr('models.smart.rebaseDraft'))) : null
       ) : null,
 
-      // Live test call plan confirmation
-      testPlan ? el('section', { style: subCard },
+      // 真实调用确认：内容、预算、超时与计费边界都先展示，确认后才提交。
+      testPlan ? el('section', { style: subCard, 'data-testid': 'model-test-plan' },
         el('p', { style: { margin: '0 0 6px 0', fontSize: '12px' } }, tr('models.smart.testBoundary')),
-        el('code', { style: { fontSize: '12px', display: 'block', marginBottom: '8px' } }, testPlan.text + ' · maxTokens=' + testPlan.maxTokens + ' · ' + testPlan.timeoutMs + 'ms'),
+        el('code', { style: { fontSize: '12px', display: 'block', marginBottom: '4px', overflowWrap: 'anywhere' } }, (testPlan.text ?? 'ping') + ' · maxTokens=' + testPlan.maxTokens + ' · ' + testPlan.timeoutMs + 'ms'),
+        testPlan.mayCharge === true ? el('small', { style: { ...muted, display: 'block', marginBottom: '8px' } }, tr('models.smart.testMayCharge')) : null,
         el('div', { style: actions },
-          el(Button, { id: 'model-test-confirm', style: svcButtonStyle('primary'), onClick: async () => { const res = await rpcCall('models3-test-commit', { planId: testPlan.planId }); setTestPlan(null); if (!res.ok) setError(res.error); else setNotice(tr(res.value.ok ? 'models.smart.testPassed' : 'models.smart.testFailed')) } }, tr('models.smart.confirm')),
+          el(Button, { id: 'model-test-confirm', disabled: busy, style: svcButtonStyle('primary'), onClick: async () => {
+            setBusy(true)
+            try {
+              const res = await rpcCall('models3-test-commit', { planId: testPlan.planId })
+              setTestPlan(null)
+              if (!res.ok) setError(res.error)
+              else if (res.value.ok) setNotice(tr('models.smart.testPassed'))
+              else setError(testFailureText(tr, res.value))
+            } catch (_) { setTestPlan(null); setError('operation-failed') } finally { setBusy(false) }
+          } }, tr('models.smart.confirm')),
           el(Button, { onClick: () => setTestPlan(null) }, tr('models.smart.cancel'))
         )
       ) : null,
       el('div', { style: { ...actions, justifyContent: 'flex-end', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
         el(Button, { onClick: () => { if (canLeave()) onBack() } }, tr('models.smart.cancel')),
         dirty ? el('span', { role: 'status', style: muted }, tr('models.smart.unsaved')) : null,
+        // 测试只针对已保存状态；草稿未保存时给出明确原因而不是静默失败。
+        el(Button, { id: 'model-detail-test', disabled: busy || dirty, title: dirty ? tr('models.smart.testNeedsSaved') : tr('models.smart.test'), onClick: () => void test() }, tr('models.smart.test')),
         el(Button, { id: 'model-detail-save', disabled: busy || !dirty, onClick: () => void save(), style: { ...svcButtonStyle(dirty ? 'primary' : 'neutral'), ...(!dirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) } }, tr('models.smart.save')))
     )
   }
@@ -644,7 +662,14 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     if (model && opened) return el(ModelDetail, { key: model.id ?? 'new', opened, model, isNew: model.isNew === true, onBack: () => setModel(null), onSaved: saved })
     if (!opened || !draft) return el('div', { style: card }, el(ErrorText, { error }), tr('models.smart.loading'))
     const fields = routeFields
-    const prepare = async (endpoint, payload, kind) => { const res = await rpcCall(endpoint, payload); if (!res.ok) setError(res.error); else setPlan({ ...res.value, kind }) }
+    const prepare = async (endpoint, payload, kind) => {
+      setError('')
+      try {
+        const res = await rpcCall(endpoint, payload)
+        if (!res.ok) setError(res.error)
+        else setPlan({ ...res.value, kind })
+      } catch (_) { setError('operation-failed') }
+    }
     const models = (opened.profile?.models && opened.profile.models.length > 0) ? opened.profile.models : []
 
     return el('article', { style: { minWidth: 0 }, 'data-testid': 'model-route-detail' },
@@ -662,8 +687,12 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             onClick: async () => {
               setEnabledHelp(null); setBusy(true); setError('')
               try {
-                const preview = await rpcCall('models3-enabled-preview', { sessionId: opened.sessionId, enabled: row.enabled === false })
+                const nextEnabled = row.enabled === false
+                const preview = await rpcCall('models3-enabled-preview', { sessionId: opened.sessionId, enabled: nextEnabled })
                 if (!preview.ok) { setError(preview.error); return }
+                // 停用会影响主对话/子代理引用：有引用时先展示后果再确认；启用与无引用停用保持一键。
+                const references = preview.value.references ?? []
+                if (!nextEnabled && references.length > 0) { setPlan({ ...preview.value, kind: 'availability' }); return }
                 const result = await rpcCall('models3-enabled-commit', { planId: preview.value.planId })
                 if (!result.ok) setError(result.error); else reload()
               } catch (_) { setError('operation-failed') } finally { setBusy(false) }
@@ -685,12 +714,12 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           el(Button, { id: 'model-route-rename-confirm', disabled: !renameValue.trim(), style: svcButtonStyle('primary'), onClick: () => { setDraft({ ...draft, displayName: renameValue.trim() }); setRenaming(false) } }, tr('models.smart.renameApply'))),
       }, el('input', { autoFocus: true, style: inputStyle, value: renameValue, 'aria-label': tr('models.smart.field.displayName'), onChange: (event) => setRenameValue(event.target.value) })) : null,
       el('section', { style: { minWidth: 0, marginBottom: '24px', display: 'grid', gap: '14px' } },
-        el(Field, { field: 'baseURL', value: draft.baseURL, displayValue: opened.resolved?.baseURL, schema: opened.schema, api: draft.api, onChange: (v) => { if (!busy) setDraft({ ...draft, baseURL: v }) } }),
+        el(Field, { field: 'baseURL', value: draft.baseURL, schema: opened.schema, onChange: (v) => { if (!busy) setDraft({ ...draft, baseURL: v }) } }),
         el('div', { style: { display: 'grid', gap: '14px' } },
           (opened.builtin || row.source === 'builtin') ? el('label', null,
             el('span', { style: labelStyle }, tr('models.smart.field.api')),
             el('input', { style: inputStyle, readOnly: true, 'aria-label': tr('models.smart.field.api'), value: opened.resolvedApi || draft.api || opened.effective?.api || opened.catalogModels?.find((entry) => entry.api)?.api || tr('models.smart.protocolUnknown') })
-          ) : el(Field, { field: 'api', value: draft.api, schema: opened.schema, api: draft.api, onChange: (v) => { if (!busy) setDraft({ ...draft, api: v }) } }),
+          ) : el(Field, { field: 'api', value: draft.api, schema: opened.schema, onChange: (v) => { if (!busy) setDraft({ ...draft, api: v }) } }),
           // 混合协议目录（v2.0.9）：宿主在目录含 ≥2 种 api 时下发 catalogApis，提示路由级协议的覆盖语义。
           Array.isArray(opened.catalogApis) && opened.catalogApis.length > 1 ? el('p', { 'data-testid': 'model-mixed-api-hint', role: 'note', style: { ...muted, margin: 0 } }, tr('models.smart.mixedApiHint').replace('{apis}', opened.catalogApis.join(', '))) : null
         ),
@@ -714,42 +743,56 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
               try {
                 const res = await rpcCall('models3-discover', { sessionId: opened.sessionId })
                 if (!res.ok) setError(res.error)
-                else { setPicked([]); setDiscoverySearch(''); setDiscovered(res.value.candidates) }
+                // 重新发现不清空已有勾选：新列表之外的选择会以「筛选外」摘要显式呈现。
+                else { setDiscoverySearch(''); setDiscovered(res.value.candidates) }
               } catch (_) { setError('operation-failed') } finally { setDiscovering(false) }
             } }, discovering ? tr('models.smart.loading') : tr('models.smart.discover'))
           )
         ),
 
         // Discovered models picker
-        discovered !== null ? el(Modal, {
-          open: true,
-          title: tr('models.smart.discover'),
-          closeLabel: tr('models.smart.cancel'),
-          onClose: () => { if (!busy) { setDiscovered(null); setPicked([]) } },
-          footer: el(React.Fragment, null,
-            el(Button, { disabled: busy, onClick: () => { setDiscovered(null); setPicked([]) } }, tr('models.smart.cancel')),
-            el(Button, { id: 'model-add-batch', disabled: busy || picked.length === 0, style: svcButtonStyle('primary'), onClick: async () => {
-              setBusy(true); setError('')
-              try {
-                const res = await rpcCall('models3-add-models', { sessionId: opened.sessionId, modelIds: picked })
-                if (!res.ok) setError(res.error); else saved()
-              } catch (_) { setError('operation-failed') } finally { setBusy(false) }
-            } }, tr('models.smart.add'))
-          ),
-        }, el('div', { 'data-testid': 'model-discovery' },
-          el('input', { type: 'search', style: { ...inputStyle, marginBottom: '8px' }, 'aria-label': tr('models.smart.search'), value: discoverySearch, placeholder: tr('models.smart.search'), onChange: (e) => setDiscoverySearch(e.target.value) }),
-          el('div', { style: { ...actions, marginBottom: '8px' } },
-            el(Button, { compact: true, disabled: busy, onClick: () => setPicked(discovered.filter((x) => !models.some((m) => m.id === x.id) && (x.id + ' ' + (x.name ?? '')).toLowerCase().includes(discoverySearch.toLowerCase())).map((x) => x.id)) }, tr('models.smart.selectAll')),
-            el(Button, { compact: true, disabled: busy, onClick: () => setPicked([]) }, tr('models.smart.clear'))
-          ),
-          el('div', { style: { maxHeight: 'min(360px, 45dvh)', overflowY: 'auto' } },
-            ...discovered.filter((x) => (x.id + ' ' + (x.name ?? '')).toLowerCase().includes(discoverySearch.toLowerCase())).map((x) => el('label', { key: x.id, style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 4px', fontSize: '13px', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
-              el('input', { type: 'checkbox', checked: picked.includes(x.id), disabled: busy || models.some((m) => m.id === x.id), onChange: (e) => setPicked(e.target.checked ? [...picked, x.id] : picked.filter((id) => id !== x.id)) }),
-              el('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, x.id), models.some((m) => m.id === x.id) ? el('span', { style: svcBadgeStyle('neutral') }, tr('models.smart.added')) : null
-            ))
-          ),
-          el(ErrorText, { error })
-        )) : null,
+        discovered !== null ? (() => {
+          const term = discoverySearch.trim().toLowerCase()
+          const visible = discovered.filter((x) => (x.id + ' ' + (x.name ?? '')).toLowerCase().includes(term))
+          const pickable = visible.filter((x) => !models.some((m) => m.id === x.id)).map((x) => x.id)
+          const hiddenPicks = picked.filter((id) => !discovered.some((x) => x.id === id))
+          return el(Modal, {
+            open: true,
+            title: tr('models.smart.discover'),
+            closeLabel: tr('models.smart.cancel'),
+            onClose: () => { if (!busy) { setDiscovered(null); setPicked([]) } },
+            footer: el(React.Fragment, null,
+              el(Button, { disabled: busy, onClick: () => { setDiscovered(null); setPicked([]) } }, tr('models.smart.cancel')),
+              el(Button, { id: 'model-add-batch', disabled: busy || picked.length === 0, style: svcButtonStyle('primary'), onClick: async () => {
+                setBusy(true); setError('')
+                try {
+                  const res = await rpcCall('models3-add-models', { sessionId: opened.sessionId, modelIds: picked })
+                  if (!res.ok) setError(res.error); else saved()
+                } catch (_) { setError('operation-failed') } finally { setBusy(false) }
+              } }, tr('models.smart.add'))
+            ),
+          }, el('div', { 'data-testid': 'model-discovery' },
+            el('input', { type: 'search', style: { ...inputStyle, marginBottom: '8px' }, 'aria-label': tr('models.smart.search'), value: discoverySearch, placeholder: tr('models.smart.search'), onChange: (e) => setDiscoverySearch(e.target.value) }),
+            el('div', { style: { ...actions, marginBottom: '8px' } },
+              // 全选只并集当前可见且未添加的候选，不会丢弃搜索前已勾选的项。
+              el(Button, { compact: true, disabled: busy, onClick: () => setPicked([...new Set([...picked, ...pickable])]) }, tr('models.smart.selectAll')),
+              el(Button, { compact: true, disabled: busy, onClick: () => setPicked([]) }, tr('models.smart.clear'))
+            ),
+            picked.length > 0 ? el('div', { 'data-testid': 'model-discovery-selected', style: { ...muted, marginBottom: '8px', lineHeight: '18px' } },
+              el('span', null, tr('models.smart.selectedCount').replace('{count}', String(picked.length))),
+              hiddenPicks.length > 0 ? el('span', null, ' · ', tr('models.smart.hiddenPicks').replace('{count}', String(hiddenPicks.length)),
+                el(Button, { id: 'model-discovery-remove-hidden', compact: true, style: { marginLeft: '6px' }, onClick: () => setPicked((current) => current.filter((id) => !hiddenPicks.includes(id))) }, tr('models.smart.removeHiddenPicks'))) : null
+            ) : null,
+            el('div', { style: { maxHeight: 'min(360px, 45dvh)', overflowY: 'auto' } },
+              visible.length === 0 ? el('p', { 'data-testid': 'model-discovery-no-match', role: 'status', style: { ...muted, margin: '2px 0' } }, tr('models.smart.noSearchMatch')) : null,
+              ...visible.map((x) => el('label', { key: x.id, style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 4px', fontSize: '13px', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
+                el('input', { type: 'checkbox', checked: picked.includes(x.id), disabled: busy || models.some((m) => m.id === x.id), onChange: (e) => setPicked(e.target.checked ? [...picked, x.id] : picked.filter((id) => id !== x.id)) }),
+                el('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, x.id), models.some((m) => m.id === x.id) ? el('span', { style: svcBadgeStyle('neutral') }, tr('models.smart.added')) : null
+              ))
+            ),
+            el(ErrorText, { error })
+          ))
+        })() : null,
 
         // Models list search
         models.length > 5 ? el('input', { style: { ...inputStyle, marginBottom: '8px' }, 'aria-label': tr('models.smart.search'), value: search, placeholder: tr('models.smart.search'), onChange: (e) => setSearch(e.target.value) }) : null,
@@ -766,16 +809,10 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
               )
             ),
             el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-              el(Button, { id: 'model-test-' + item.id, compact: true, title: tr('models.smart.test'), 'aria-label': tr('models.smart.test') + ' ' + item.id, style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', padding: '4px' }, disabled: busy, onClick: async () => {
-                setBusy(true); setError(''); setNotice(''); setTestElapsed(0); setTestRunning({ modelId: item.id, startedAt: Date.now() })
-                try {
-                  const preview = await rpcCall('models3-test-preview', { sessionId: opened.sessionId, modelId: item.id })
-                  if (!preview.ok) { setError(preview.error); return }
-                  const result = await rpcCall('models3-test-commit', { planId: preview.value.planId })
-                  if (!result.ok) setError(result.error)
-                  else if (result.value.ok) setNotice(tr('models.smart.testPassed'))
-                  else setError([tr('models.smart.testFailed'), result.value.failure?.code, result.value.failure?.status ? 'HTTP ' + result.value.failure.status : '', result.value.finishReason, result.value.failure?.message].filter(Boolean).join(' · '))
-                } catch (_) { setError('operation-failed') } finally { setTestRunning(null); setBusy(false) }
+              el(Button, { id: 'model-test-' + item.id, compact: true, title: tr('models.smart.test'), 'aria-label': tr('models.smart.test') + ' ' + item.id, style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', padding: '4px' }, disabled: busy, onClick: () => {
+                // 可能计费的真实调用：先出确认卡（内容/预算/超时/费用），确认后才提交。
+                setError(''); setNotice('')
+                void prepare('models3-test-preview', { sessionId: opened.sessionId, modelId: item.id }, 'test')
               } }, el(RowIcon, { kind: 'test' })),
               el(Button, { id: 'model-open-' + item.id, compact: true, title: tr('models.smart.edit'), 'aria-label': tr('models.smart.edit') + ' ' + item.id, style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', padding: '4px' }, onClick: () => { if (canLeave()) setModel(item) } }, el(RowIcon, { kind: 'edit' })),
               el(Button, { id: 'model-delete-' + item.id, compact: true, title: tr('models.smart.remove'), 'aria-label': tr('models.smart.remove') + ' ' + item.id, style: { border: 0, background: 'transparent', color: 'var(--dsw-alias-label-secondary)', padding: '4px' }, onClick: () => void prepare('models3-remove-preview', { sessionId: opened.sessionId, modelIds: [item.id] }, 'remove') }, el(RowIcon, { kind: 'delete' })),
@@ -802,7 +839,16 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
 
       el('div', { style: { ...actions, marginTop: '12px' } },
         routeDirty ? el('span', { role: 'status', style: muted }, tr('models.smart.unsaved')) : null,
-        !opened.readOnly ? el(Button, { id: 'model-route-save', disabled: busy || !routeDirty, style: { ...svcButtonStyle(routeDirty ? 'primary' : 'neutral'), ...(!routeDirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }, onClick: async () => { let patch; try { patch = parseDraft(draft, opened.profile, fields) } catch (_) { setError('schema-invalid'); return }; const res = await rpcCall('models3-save-route', { sessionId: opened.sessionId, ...patch }); if (!res.ok) setError(res.error); else saved() } }, tr('models.smart.saveRoute')) : null,
+        !opened.readOnly ? el(Button, { id: 'model-route-save', disabled: busy || !routeDirty, style: { ...svcButtonStyle(routeDirty ? 'primary' : 'neutral'), ...(!routeDirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }, onClick: async () => {
+          setError('')
+          let patch
+          try { patch = parseDraft(draft, opened.profile, fields) } catch (_) { setError('schema-invalid'); return }
+          setBusy(true)
+          try {
+            const res = await rpcCall('models3-save-route', { sessionId: opened.sessionId, ...patch })
+            if (!res.ok) setError(res.error); else saved()
+          } catch (_) { setError('operation-failed') } finally { setBusy(false) }
+        } }, tr('models.smart.saveRoute')) : null,
       ),
 
       // Plan execution modal / card
@@ -830,12 +876,38 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           el('p', { style: { margin: '8px 0' } }, tr('models.smart.resolveRemovalConflicts'))) : null,
         plan.blocked ? el('p', { role: 'alert', style: { ...muted, color: 'var(--dsw-alias-state-error-primary)' } }, tr('models.smart.error.removal-blocked')) : null
       )) : plan ? el('section', { style: { ...subCard, marginTop: '12px' }, 'data-testid': 'model-plan' },
-        el('h4', { style: { margin: '0 0 6px 0', fontSize: '13px' } }, tr(plan.kind === 'test' ? 'models.smart.test' : 'models.smart.consequences')),
+        el('h4', { style: { margin: '0 0 6px 0', fontSize: '13px' } }, tr(plan.kind === 'test' ? 'models.smart.test' : plan.kind === 'availability' ? 'models.smart.disableProvider' : 'models.smart.consequences')),
         el('p', { style: { ...muted, overflowWrap: 'anywhere' } }, plan.route || row.displayName),
-        el('p', { style: muted }, tr(plan.kind === 'test' ? 'models.smart.testBoundary' : 'models.smart.credentialRetained')),
+        // 停用渠道：宿主已算出主对话/子代理引用，必须逐条展示后再确认。
+        plan.kind === 'availability' ? el('div', { 'data-testid': 'model-availability-references' },
+          el('p', { style: { ...muted, margin: '0 0 6px' } }, tr('models.smart.disableBoundary')),
+          (plan.references ?? []).length > 0 ? el('div', { role: 'alert', style: { color: 'var(--dsw-alias-state-error-primary)', fontSize: '13px', overflowWrap: 'anywhere' } },
+            el('b', null, tr('models.smart.disableReferences')),
+            el('ul', { style: { margin: '8px 0', paddingLeft: '20px' } }, ...(plan.references ?? []).map((reference, index) => el('li', { key: index }, tr('models.smart.referenceKind.' + reference.kind) + '：', el('code', null, reference.provider + ' / ' + reference.model))))) : null,
+          el('p', { style: muted }, tr('models.smart.credentialRetained'))) : null,
+        // 真实调用：固定内容、token 上限、超时与计费边界。
+        plan.kind === 'test' ? el('div', { 'data-testid': 'model-test-details' },
+          el('p', { style: { ...muted, margin: '0 0 6px' } }, tr('models.smart.testBoundary')),
+          el('code', { style: { fontSize: '12px', display: 'block', marginBottom: '4px', overflowWrap: 'anywhere' } }, (plan.text ?? 'ping') + ' · maxTokens=' + plan.maxTokens + ' · ' + plan.timeoutMs + 'ms'),
+          plan.mayCharge === true ? el('small', { style: { ...muted, display: 'block' } }, tr('models.smart.testMayCharge')) : null) : null,
+        plan.kind !== 'availability' && plan.kind !== 'test' ? el('p', { style: muted }, tr('models.smart.credentialRetained')) : null,
         el('div', { style: actions },
-          el(Button, { id: 'model-plan-confirm', danger: plan.kind === 'remove', disabled: plan.blocked, onClick: async () => { const kind = plan.kind; const res = await rpcCall('models3-' + (kind === 'test' ? 'test' : kind === 'availability' ? 'enabled' : kind === 'credential' ? 'credential' : kind === 'remove' ? 'remove' : 'restore') + '-commit', { planId: plan.planId, ...(kind === 'credential' ? { key } : {}) }); setPlan(null); if (!res.ok) setError(res.error); else if (res.value.configurationFailed) { setKey(''); setNotice(tr('models.smart.keyPartial')); } else if (kind === 'test') { setNotice(tr(res.value.ok ? 'models.smart.testPassed' : 'models.smart.testFailed')) } else if (kind === 'availability') { reload() } else if (kind === 'remove' && !plan.modelsRemoved?.length) { reload(); onBack() } else saved() } }, tr('models.smart.confirm')),
-          el(Button, { onClick: () => setPlan(null) }, tr('models.smart.cancel'))
+          el(Button, { id: 'model-plan-confirm', danger: plan.kind === 'remove', disabled: plan.blocked || busy, onClick: async () => {
+            const kind = plan.kind
+            setBusy(true); setError('')
+            if (kind === 'test') { setTestElapsed(0); setTestRunning({ modelId: plan.modelId, startedAt: Date.now() }) }
+            try {
+              const res = await rpcCall('models3-' + (kind === 'test' ? 'test' : kind === 'availability' ? 'enabled' : kind === 'credential' ? 'credential' : kind === 'remove' ? 'remove' : 'restore') + '-commit', { planId: plan.planId, ...(kind === 'credential' ? { key } : {}) })
+              setPlan(null)
+              if (!res.ok) setError(res.error)
+              else if (res.value.configurationFailed) { setKey(''); setNotice(tr('models.smart.keyPartial')) }
+              else if (kind === 'test') { if (res.value.ok) setNotice(tr('models.smart.testPassed')); else setError(testFailureText(tr, res.value)) }
+              else if (kind === 'availability') { reload() }
+              else if (kind === 'remove' && !plan.modelsRemoved?.length) { reload(); onBack() }
+              else saved()
+            } catch (_) { setPlan(null); setError('operation-failed') } finally { setTestRunning(null); setBusy(false) }
+          } }, tr('models.smart.confirm')),
+          el(Button, { disabled: busy, onClick: () => setPlan(null) }, tr('models.smart.cancel'))
         )
       ) : null,
 
@@ -871,6 +943,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const [modelSearch, setModelSearch] = useState('')
     const [picked, setPicked] = useState([])
     const [discovering, setDiscovering] = useState(false)
+    const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
     const dirty = !!(id || name || url || key || ids || picked.length > 0 || api !== 'openai-completions')
     useLeaveGuard(dirty, tr)
@@ -904,10 +977,12 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const discoverLive = async () => {
       if (!url.trim()) { setError('schema-invalid'); return }
       setDiscovering(true); setError('')
-      const res = await rpcCall('models3-discover', { baseURL: url.trim(), api, key: key.trim() })
-      setDiscovering(false)
-      if (!res.ok) setError(res.error)
-      else { setModelSearch(''); setDiscovered(res.value.candidates || []) }
+      try {
+        const res = await rpcCall('models3-discover', { baseURL: url.trim(), api, key: key.trim() })
+        if (!res.ok) setError(res.error)
+        // 重新发现不清空已有勾选：新列表之外的选择会以「筛选外」摘要显式呈现。
+        else { setModelSearch(''); setDiscovered(res.value.candidates || []) }
+      } catch (_) { setError('operation-failed') } finally { setDiscovering(false) }
     }
     const availableModels = discovered !== null ? discovered : candidateModels
     // 按 ID + 名称过滤，大小写不敏感（对齐渠道详情发现弹窗的口径，并额外 trim 首尾空白）；
@@ -916,6 +991,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const visibleModels = modelSearchTerm
       ? availableModels.filter((m) => (m.id + ' ' + (m.name ?? '')).toLowerCase().includes(modelSearchTerm))
       : availableModels
+    // 与渠道详情统一：全选只并集当前可见项，已勾但不可见的选择单独列出并可整体移除。
+    const hiddenPicked = picked.filter((id) => !availableModels.some((m) => m.id === id))
 
     return el('article', { style: card, 'data-testid': 'model-create-route' },
       el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' } },
@@ -984,7 +1061,11 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
           el(Button, { onClick: () => setPicked([...new Set([...picked, ...visibleModels.map((m) => m.id)])]) }, tr('models.smart.selectAll')),
           el(Button, { onClick: () => setPicked([]) }, tr('models.smart.clear')),
           el(Button, { id: 'model-create-discover', disabled: discovering, onClick: () => void discoverLive() }, discovering ? tr('models.smart.loading') : tr('models.smart.discover'))
-        )
+        ),
+        picked.length > 0 ? el('div', { 'data-testid': 'model-create-selected', style: { ...muted, marginTop: '8px', lineHeight: '18px' } },
+          el('span', null, tr('models.smart.selectedCount').replace('{count}', String(picked.length))),
+          hiddenPicked.length > 0 ? el('span', null, ' · ', tr('models.smart.hiddenPicks').replace('{count}', String(hiddenPicked.length)),
+            el(Button, { id: 'model-create-remove-hidden', compact: true, style: { marginLeft: '6px' }, onClick: () => setPicked((current) => current.filter((value) => !hiddenPicked.includes(value))) }, tr('models.smart.removeHiddenPicks'))) : null) : null
       ) : (url.trim() ? el('div', { style: { marginBottom: '8px' } },
         el(Button, { id: 'model-create-discover', disabled: discovering, onClick: () => void discoverLive() }, discovering ? tr('models.smart.loading') : tr('models.smart.discover'))
       ) : null),
@@ -995,20 +1076,23 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       ),
 
       dirty ? el('p', { role: 'status', style: muted }, tr('models.smart.unsaved')) : null,
-      el(Button, { id: 'model-create-save', disabled: !dirty, style: { ...svcButtonStyle(dirty ? 'primary' : 'neutral'), ...(!dirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }, onClick: async () => {
+      el(Button, { id: 'model-create-save', disabled: !dirty || saving, style: { ...svcButtonStyle(dirty ? 'primary' : 'neutral'), ...(!dirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }, onClick: async () => {
         const allIds = [...new Set([...picked, ...ids.split(/[\s,]+/).filter(Boolean)])]
         if (allIds.length === 0) { setError('noModelsSelected'); return }
-        const models = allIds.map((modelId) => ({ id: modelId }))
-        const payload = {
-          route: id.trim(),
-          profile: { displayName: name.trim() || id.trim(), api, baseURL: url.trim(), models },
-          ...(key.trim() ? { key: key.trim() } : {}),
-        }
-        const prepared = await rpcCall('models3-create-preview', payload)
-        if (!prepared.ok) { setError(prepared.error); return }
-        const res = await rpcCall('models3-create-commit', { planId: prepared.value.planId })
-        if (!res.ok) setError(res.error)
-        else onCreated(id.trim())
+        setSaving(true); setError('')
+        try {
+          const models = allIds.map((modelId) => ({ id: modelId }))
+          const payload = {
+            route: id.trim(),
+            profile: { displayName: name.trim() || id.trim(), api, baseURL: url.trim(), models },
+            ...(key.trim() ? { key: key.trim() } : {}),
+          }
+          const prepared = await rpcCall('models3-create-preview', payload)
+          if (!prepared.ok) { setError(prepared.error); return }
+          const res = await rpcCall('models3-create-commit', { planId: prepared.value.planId })
+          if (!res.ok) setError(res.error)
+          else onCreated(id.trim())
+        } catch (_) { setError('operation-failed') } finally { setSaving(false) }
       } }, tr('models.smart.save')),
       el(ErrorText, { error: error === 'noModelsSelected' ? tr('models.smart.noModelsSelected') : error })
     )
