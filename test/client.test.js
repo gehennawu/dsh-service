@@ -15624,6 +15624,86 @@ test('mixed-protocol catalogs surface the route-level api override hint in creat
   assert.equal(editRenderer.hasTest('model-mixed-api-hint'), false)
 })
 
+test('models page create view searches long template candidate lists', async () => {
+  const models = Array.from({ length: 8 }, (_, index) => ({ id: 'tmpl-' + String(index + 1).padStart(2, '0'), name: 'Template ' + (index + 1) }))
+  const many = { id: 'tmpl-many', name: 'Template Many', api: 'openai-completions', baseURL: 'https://many.example/v1', models }
+  const { calls, rpc } = models3Fixture({
+    'models3-snapshot': () => ({ ok: true, value: { ...MODELS3_SNAPSHOT, templates: [...MODELS3_SNAPSHOT.templates, many] } }),
+    'models3-create-preview': (payload) => ({ ok: true, value: { planId: 'plan-create-search', route: payload.route, profile: {} } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  renderer.findByTestId('model-route-create').props.onClick()
+  await settle(renderer)
+  // 候选不多时不占一行搜索；长候选清单（>5）才渲染搜索框。
+  renderer.findByTestId('model-create-template').props.onChange({ target: { value: 'tmpl-ai' } })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-search'), false, 'short candidate lists stay compact')
+  renderer.findByTestId('model-create-template').props.onChange({ target: { value: 'tmpl-many' } })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-search'), true, 'long candidate lists expose search')
+  // 过滤只留匹配候选；无匹配时给出可见提示而不是空白滚动区。
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: 'tmpl-03' } })
+  await settle(renderer)
+  assert.equal(renderer.findNode((node) => node.type === 'label' && nodeText(node).includes('tmpl-04')), undefined)
+  assert.equal(renderer.hasTest('model-create-no-match'), false)
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: 'no-such-model' } })
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-no-match'), true)
+  // 回到匹配项后“选择所有”只作用于可见候选；已勾选项不会被后续过滤掉。
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: 'tmpl-03' } })
+  await settle(renderer)
+  renderer.findButton('选择所有未添加项').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: 'tmpl-07' } })
+  await settle(renderer)
+  renderer.findButton('选择所有未添加项').props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: '' } })
+  await settle(renderer)
+  // 并集语义：先前过滤下勾选的 tmpl-03 仍在，后一次只看得到 tmpl-07；未点的 tmpl-04 不受影响。
+  assert.equal(labelCheckbox(renderer, 'tmpl-03').props.checked, true)
+  assert.equal(labelCheckbox(renderer, 'tmpl-07').props.checked, true)
+  assert.equal(labelCheckbox(renderer, 'tmpl-04').props.checked, false)
+  renderer.findByTestId('model-create-save').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-create-preview')[0].payload.profile.models, [{ id: 'tmpl-03' }, { id: 'tmpl-07' }])
+})
+
+test('models page create view searches on-demand discovered candidates', async () => {
+  const candidates = Array.from({ length: 12 }, (_, index) => ({ id: 'disc-' + String(index + 1).padStart(2, '0'), name: 'Discovery ' + (index + 1) }))
+  const { calls, rpc } = models3Fixture({
+    'models3-discover': () => ({ ok: true, value: { route: 'probe', usedCredential: true, candidates } }),
+    'models3-create-preview': (payload) => ({ ok: true, value: { planId: 'plan-discover-search', route: payload.route, profile: {} } }),
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsPage(renderer)
+  renderer.findByTestId('model-route-create').props.onClick()
+  await settle(renderer)
+  byAria(renderer, '渠道标识（小写字母、数字、连字符）').props.onChange({ target: { value: 'probe' } })
+  byAria(renderer, 'API地址').props.onChange({ target: { value: 'https://probe.example/v1' } })
+  await settle(renderer)
+  renderer.findByTestId('model-create-discover').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.hasTest('model-create-search'), true, 'discovered candidate lists expose search')
+  renderer.findByTestId('model-create-search').props.onChange({ target: { value: 'disc-07' } })
+  await settle(renderer)
+  assert.equal(renderer.findNode((node) => node.type === 'label' && nodeText(node).includes('disc-08')), undefined)
+  labelCheckbox(renderer, 'disc-07').props.onChange({ target: { checked: true } })
+  await settle(renderer)
+  // 重新在线发现会清空搜索词并换回完整候选清单，已勾选项按既有行为保留。
+  renderer.findByTestId('model-create-discover').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-create-search').props.value, '', 'a fresh discovery resets the search term')
+  labelCheckbox(renderer, 'disc-08')
+  assert.equal(labelCheckbox(renderer, 'disc-07').props.checked, true)
+  renderer.findByTestId('model-create-save').props.onClick()
+  await settle(renderer)
+  assert.deepEqual(models3Calls(calls, 'models3-create-preview')[0].payload.profile.models, [{ id: 'disc-07' }])
+})
+
 test('models page route detail edits connection and replaces the key through preview and commit', async () => {
   let credentialCommits = 0
   const { calls, rpc } = models3Fixture({

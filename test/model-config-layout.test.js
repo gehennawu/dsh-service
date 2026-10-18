@@ -30,9 +30,19 @@ test('model names show IDs on hover and capability controls use stable horizonta
   assert.match(source, /border: '1px solid ' \+ \(checked/)
   assert.match(source, /margin: '36px 0 12px'/)
 })
+test('custom provider creation filters long candidate lists instead of making users scroll', () => {
+  // 模板/在线发现一次可带回上百个候选（amazon-bedrock 模板实测 193 个）：候选区必须带搜索，
+  // 且“选择所有”只看过滤后的可见项；空结果要落到可见提示上，不能留空白滚动区。
+  assert.match(source, /'data-testid': 'model-create-search'/)
+  assert.match(source, /const visibleModels = modelSearchTerm/)
+  assert.match(source, /visibleModels\.length \? visibleModels\.map/)
+  assert.match(source, /'data-testid': 'model-create-no-match'/)
+  assert.match(source, /setPicked\(\[\.\.\.new Set\(\[\.\.\.picked, \.\.\.visibleModels\.map\(\(m\) => m\.id\)\]\)\]\)/)
+  assert.match(source, /availableModels\.length > 5 \? el\('input', \{ type: 'search'/)
+})
 test('homepage copy is localized in both languages', () => {
   const locale = readFileSync(new URL('../src/client/model-config-i18n.js', import.meta.url), 'utf8')
-  for (const key of ['homeTitle', 'homeDescription', 'providers', 'customProviders', 'refreshProviders', 'modelList', 'noModels']) {
+  for (const key of ['homeTitle', 'homeDescription', 'providers', 'customProviders', 'refreshProviders', 'modelList', 'noModels', 'noSearchMatch']) {
     assert.equal((locale.match(new RegExp(`'models.smart.${key}':`, 'g')) ?? []).length, 2)
   }
 })

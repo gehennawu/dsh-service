@@ -795,6 +795,9 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const [ids, setIds] = useState('')
     const [candidateModels, setCandidateModels] = useState([])
     const [discovered, setDiscovered] = useState(null)
+    // 渠道模板/在线发现都可能一次带回上百个候选（amazon-bedrock 模板实测 193 个），
+    // 单靠 160px 的滚动条无法定位，故候选区带本地搜索（过滤口径见下方 modelSearchTerm）。
+    const [modelSearch, setModelSearch] = useState('')
     const [picked, setPicked] = useState([])
     const [discovering, setDiscovering] = useState(false)
     const [error, setError] = useState('')
@@ -806,6 +809,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       const val = e.target.value
       setTemplate(val)
       setDiscovered(null)
+      setModelSearch('')
       setPicked([])
       setError('')
       if (val && val !== 'custom') {
@@ -832,9 +836,15 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       const res = await rpcCall('models3-discover', { baseURL: url.trim(), api, key: key.trim() })
       setDiscovering(false)
       if (!res.ok) setError(res.error)
-      else setDiscovered(res.value.candidates || [])
+      else { setModelSearch(''); setDiscovered(res.value.candidates || []) }
     }
     const availableModels = discovered !== null ? discovered : candidateModels
+    // 按 ID + 名称过滤，大小写不敏感（对齐渠道详情发现弹窗的口径，并额外 trim 首尾空白）；
+    // 空查询不过滤，保持模板/发现的原始顺序。
+    const modelSearchTerm = modelSearch.trim().toLowerCase()
+    const visibleModels = modelSearchTerm
+      ? availableModels.filter((m) => (m.id + ' ' + (m.name ?? '')).toLowerCase().includes(modelSearchTerm))
+      : availableModels
 
     return el('article', { style: card, 'data-testid': 'model-create-route' },
       el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' } },
@@ -891,14 +901,16 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       // Models Selection (Explicit checkboxes, UNCHECKED by default!)
       availableModels.length > 0 ? el('div', { style: { ...subCard, marginTop: '8px' } },
         el('p', { style: { ...labelStyle, margin: '0 0 6px 0' } }, tr('models.smart.selectModelsHint')),
+        availableModels.length > 5 ? el('input', { type: 'search', 'data-testid': 'model-create-search', style: { ...inputStyle, marginBottom: '8px' }, 'aria-label': tr('models.smart.search'), value: modelSearch, placeholder: tr('models.smart.search'), onChange: changed(setModelSearch) }) : null,
         el('div', { style: { maxHeight: '160px', overflowY: 'auto', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '6px', padding: '6px', background: 'var(--dsw-alias-bg-layer-2)' } },
-          ...availableModels.map((m) => el('label', { key: m.id, style: { display: 'block', padding: '3px 0', fontSize: '13px' } },
+          visibleModels.length ? visibleModels.map((m) => el('label', { key: m.id, style: { display: 'block', padding: '3px 0', fontSize: '13px' } },
             el('input', { type: 'checkbox', checked: picked.includes(m.id), onChange: (e) => setPicked(e.target.checked ? [...picked, m.id] : picked.filter((x) => x !== m.id)) }),
             ' ' + m.id + (m.name && m.name !== m.id ? ' (' + m.name + ')' : '')
-          ))
+          )) : el('p', { 'data-testid': 'model-create-no-match', role: 'status', style: { ...muted, margin: '2px 0' } }, tr('models.smart.noSearchMatch'))
         ),
         el('div', { style: { ...actions, marginTop: '8px' } },
-          el(Button, { onClick: () => setPicked(availableModels.map((m) => m.id)) }, tr('models.smart.selectAll')),
+          // 只加过滤后仍可见的候选，并保留此前已勾选项——搜索后再点全选不会静默丢弃看不见的选择。
+          el(Button, { onClick: () => setPicked([...new Set([...picked, ...visibleModels.map((m) => m.id)])]) }, tr('models.smart.selectAll')),
           el(Button, { onClick: () => setPicked([]) }, tr('models.smart.clear')),
           el(Button, { id: 'model-create-discover', disabled: discovering, onClick: () => void discoverLive() }, discovering ? tr('models.smart.loading') : tr('models.smart.discover'))
         )
