@@ -49,6 +49,7 @@ import {
   defaultTransport,
   indexModelParamsRecords,
   modalitySet,
+  modelIdAliasCandidates,
   modelParamsReference,
   modelParamsRequest,
   openRouterMatches,
@@ -58,6 +59,7 @@ import {
   parseModelParamsPayload,
   piEvidenceFor,
   querySmartFill,
+  resolveSmartFillIdentity,
   resolveSourceBinding,
   routeIdentityFingerprint,
   runtimeReference,
@@ -1147,6 +1149,210 @@ test('cache: failures stay visible and stale payload is retained', async () => {
   const drifted = await driftCache.get({ ...request, parse: parseModelParamsPayload })
   assert.equal(drifted.status, 'error')
   assert.equal(drifted.staleError, 'bad-shape')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13b. 模型 ID 别名归一：精确身份永远优先，别名只在必要时回退一次
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('identity: alias candidates stay conservative and never split real colon IDs', () => {
+  assert.deepEqual(modelIdAliasCandidates('cn:deepseek-v4.1-flash'), [{ id: 'deepseek-v4.1-flash', kind: 'scope-prefix' }])
+  assert.deepEqual(modelIdAliasCandidates('cline-pass/deepseek-v4.1-flash'), [{ id: 'deepseek-v4.1-flash', kind: 'provider-slug' }])
+  const variant = modelIdAliasCandidates('inclusionai/ling-3.1-flash:free')
+  assert.equal(variant[0].id, 'inclusionai/ling-3.1-flash')
+  assert.equal(variant[0].kind, 'variant-suffix')
+  // 真正带冒号的 Bedrock ID 不能被拆成 `amazon.nova-2-lite-v1`
+  assert.deepEqual(modelIdAliasCandidates('amazon.nova-2-lite-v1:0'), [])
+  assert.deepEqual(modelIdAliasCandidates('anthropic.claude-sonnet-4-5-20250929-v1:0'), [])
+  // 短词、纯 slug、无结构 ID 不产出候选
+  assert.deepEqual(modelIdAliasCandidates('free'), [])
+  assert.deepEqual(modelIdAliasCandidates('anthropic/openrouter/free'), [])
+  assert.deepEqual(modelIdAliasCandidates('gpt-6-astra'), [])
+  // 思考档后缀是受控词表：只剥档位词，兄弟型号（-pro/-fast/-flashx）绝不剥离
+  assert.deepEqual(modelIdAliasCandidates('gemini-3.8-flash-high'), [{ id: 'gemini-3.8-flash', kind: 'thinking-suffix' }])
+  assert.deepEqual(modelIdAliasCandidates('deepseek-v4.1-flash-fast'), [])
+  assert.deepEqual(modelIdAliasCandidates('gpt-6-astra-pro'), [])
+  assert.deepEqual(modelIdAliasCandidates('glm-5.3-flashx'), [])
+  // 变体词黑名单：`gpt-4o:free` 只允许拆出基座，绝不允许反向拆出 `free`（会撞 openrouter/free）
+  const freeVariant = modelIdAliasCandidates('gpt-4o:free')
+  assert.deepEqual(freeVariant.filter((entry) => entry.id === 'free'), [])
+  assert.equal(freeVariant[0].id, 'gpt-4o')
+  assert.equal(freeVariant[0].kind, 'variant-suffix')
+  assert.deepEqual(modelIdAliasCandidates('mystery:free'), [])
+  // 任何剥离方向都不许把变体词当型号：`free-high` 剥档位后是 `free`（会撞 openrouter/free）
+  assert.deepEqual(modelIdAliasCandidates('free-high'), [])
+  assert.deepEqual(modelIdAliasCandidates('auto-high'), [])
+  assert.deepEqual(modelIdAliasCandidates('free:high'), [])
+  assert.deepEqual(modelIdAliasCandidates('batch-medium'), [])
+  assert.deepEqual(modelIdAliasCandidates(''), [])
+  // 组合形态有界、去重、绝不返回原始 ID
+  const many = modelIdAliasCandidates('cn:vendor/author/slug-model:free')
+  assert.ok(many.length > 0 && many.length <= 6)
+  assert.equal(new Set(many.map((entry) => entry.id)).size, many.length)
+  assert.ok(many.every((entry) => entry.id !== 'cn:vendor/author/slug-model:free'))
+})
+
+test('identity: exact local evidence wins and an alias needs a source recognition', () => {
+  const piIndex = buildPiEvidence(PI_FIXTURE)
+  const modelParamsIndex = indexModelParamsRecords(MODELPARAMS_FIXTURE)
+  const exact = resolveSmartFillIdentity('shared', { piIndex, modelParamsIndex })
+  assert.equal(exact.via, 'exact')
+  assert.equal(exact.modelId, 'shared')
+  assert.equal(exact.requestedModelId, 'shared')
+  assert.deepEqual([...exact.recognizedBy].sort(), ['modelparams', 'pi-ai'])
+  const alias = resolveSmartFillIdentity('cw:shared', { piIndex, modelParamsIndex })
+  assert.equal(alias.via, 'alias')
+  assert.equal(alias.modelId, 'shared')
+  assert.equal(alias.kind, 'scope-prefix')
+  assert.deepEqual([...alias.recognizedBy].sort(), ['modelparams', 'pi-ai'])
+  // 无任何本地来源认出：暂取第一候选但 recognizedBy 为空，调用方必须用 OpenRouter 确认或退回精确
+  const guess = resolveSmartFillIdentity('cw:never-heard-of-it', { piIndex, modelParamsIndex })
+  assert.equal(guess.via, 'alias')
+  assert.equal(guess.modelId, 'never-heard-of-it')
+  assert.deepEqual(guess.recognizedBy, [])
+  // OpenRouter 精确命中 ⇒ 精确身份，不启用别名
+  const orExact = resolveSmartFillIdentity('cw:shared', { piIndex, modelParamsIndex, openRouterMatchesCount: 1 })
+  assert.equal(orExact.via, 'exact')
+  assert.deepEqual(orExact.recognizedBy, ['openrouter'])
+  // 思考档后缀走同一套「先认出再回退」：`shared-high` → `shared`
+  const thinking = resolveSmartFillIdentity('shared-high', { piIndex, modelParamsIndex })
+  assert.equal(thinking.via, 'alias')
+  assert.equal(thinking.modelId, 'shared')
+  assert.equal(thinking.kind, 'thinking-suffix')
+})
+
+test('query: prefixed model ID makes exactly one bounded alias fallback and merges the source view', async () => {
+  const urls = []
+  const cache = createMetadataCache({
+    fetcher: createSourceFetcher({
+      transport: async (url) => {
+        urls.push(url)
+        if (url.includes('modelparams')) return { status: 200, headers: { etag: 'm' }, body: JSON.stringify(MODELPARAMS_FIXTURE) }
+        if (url.includes('q=cw%3Ashared')) return { status: 200, headers: { etag: 'o1' }, body: JSON.stringify({ data: [] }) }
+        if (url.includes('q=shared')) return { status: 200, headers: { etag: 'o2' }, body: JSON.stringify(OPENROUTER_FIXTURE) }
+        throw Object.assign(new Error('unexpected-url'), { code: 'network' })
+      },
+    }),
+  })
+  const result = await querySmartFill({
+    mode: 'on',
+    target: { channel: '', api: '', modelId: 'cw:shared', modelOnly: true, current: { maxTokens: 8000 } },
+    piIndex: buildPiEvidence(PI_FIXTURE),
+    cache,
+  })
+  assert.equal(result.identity.via, 'alias')
+  assert.equal(result.identity.requestedModelId, 'cw:shared')
+  assert.equal(result.identity.modelId, 'shared')
+  assert.equal(result.identity.kind, 'scope-prefix')
+  assert.ok(result.identity.recognizedBy.includes('pi-ai'))
+  assert.ok(result.identity.recognizedBy.includes('modelparams'))
+  assert.ok(result.identity.recognizedBy.includes('openrouter'))
+  assert.equal(result.identity.openRouterFallback.attempted, true)
+  assert.ok(result.identity.openRouterFallback.matched > 0)
+  // 两跳：精确 ID 无命中 + 别名命中；不因候选再多而级联请求
+  assert.equal(urls.filter((url) => url.includes('openrouter.ai/api/v1/models?')).length, 2)
+  // 两次读取合并成一条可见来源状态，且留证两次的状态码
+  const openRouterSources = result.sources.filter((source) => source.sourceId === 'openrouter')
+  assert.equal(openRouterSources.length, 1)
+  assert.equal(openRouterSources[0].status, 'ok')
+  assert.equal(openRouterSources[0].identityFallback.exactStatus, 'ok')
+  assert.equal(openRouterSources[0].identityFallback.fallbackStatus, 'ok')
+  // 能力建议来自别名身份，modelOnly 下统一降级为「模型身份参考」，并带别名注记
+  const nameGroup = groupOf(result.groups, 'name')
+  assert.ok(nameGroup.options.length > 0)
+  assert.ok(nameGroup.options.every((option) => ['model-identity', 'external-reference'].includes(option.evidence)))
+  assert.ok(nameGroup.options.some((option) => option.evidence === 'model-identity' && /别名/.test(option.note ?? '')))
+  // modelparams 参考按别名身份取到（证明查询键已切换）
+  assert.ok(result.groups.some((group) => group.field === 'paramRangeMax'))
+  assert.ok(result.notes.some((note) => note.includes('别名')))
+})
+
+test('query: alias fallback stays bounded even when several candidates exist', async () => {
+  const urls = []
+  const cache = createMetadataCache({
+    fetcher: createSourceFetcher({
+      transport: async (url) => {
+        urls.push(url)
+        if (url.includes('/api/v1/model/')) return { status: 404, headers: {}, body: JSON.stringify({ error: { message: 'not found' } }) }
+        return { status: 200, headers: { etag: 'empty' }, body: JSON.stringify({ data: [] }) }
+      },
+    }),
+  })
+  const modelParamsIndex = indexModelParamsRecords({
+    models: [{ model: 'slug-model', provider: 'p', authType: 'api_key', apiSurface: 'x', params: [{ path: 'max_tokens', range: { max: 100 } }] }],
+  })
+  const candidates = modelIdAliasCandidates('cn:vendor/author/slug-model:free')
+  assert.ok(candidates.length > 1, 'the regression fixture really has several candidates')
+  const result = await querySmartFill({
+    mode: 'on',
+    target: { channel: '', api: '', modelId: 'cn:vendor/author/slug-model:free', modelOnly: true },
+    piIndex: buildPiEvidence({}),
+    modelParamsIndex,
+    cache,
+  })
+  assert.equal(result.identity.via, 'alias')
+  assert.ok(result.identity.recognizedBy.includes('modelparams'))
+  // 精确 1 次 + 别名 1 次；即使有多个候选也绝不按候选级联。
+  assert.equal(urls.filter((url) => url.includes('openrouter.ai')).length, 2)
+})
+
+test('query: alias identity never poses as exact channel evidence for non-modelOnly callers', async () => {
+  const result = await querySmartFill({
+    mode: 'on',
+    target: { channel: 'alpha', api: 'openai-completions', modelId: 'cw:shared' },
+    piIndex: buildPiEvidence(PI_FIXTURE),
+    modelParamsIndex: indexModelParamsRecords(MODELPARAMS_FIXTURE),
+  })
+  assert.equal(result.identity.via, 'alias')
+  const nameGroup = groupOf(result.groups, 'name')
+  assert.ok(nameGroup.options.length > 0)
+  assert.ok(nameGroup.options.every((option) => option.evidence !== 'exact-channel-protocol'))
+  assert.ok(nameGroup.options.some((option) => option.evidence === 'model-identity' && /别名/.test(option.note ?? '')))
+  const reasoning = groupOf(result.groups, 'reasoningEfforts')
+  assert.ok((reasoning?.options ?? []).every((option) => option.evidence !== 'exact-channel-protocol'), 'same-channel wire cannot keep exact evidence under an alias identity')
+})
+
+test('query: exact ID never triggers an alias request, and unrecognized aliases are discarded', async () => {
+  const exactUrls = []
+  const exactCache = createMetadataCache({
+    fetcher: createSourceFetcher({
+      transport: async (url) => {
+        exactUrls.push(url)
+        if (url.includes('modelparams')) return { status: 200, headers: { etag: 'm' }, body: JSON.stringify(MODELPARAMS_FIXTURE) }
+        return { status: 200, headers: { etag: 'o' }, body: JSON.stringify(OPENROUTER_FIXTURE) }
+      },
+    }),
+  })
+  const exact = await querySmartFill({
+    mode: 'on',
+    target: { channel: '', api: '', modelId: 'shared', modelOnly: true },
+    piIndex: buildPiEvidence(PI_FIXTURE),
+    cache: exactCache,
+  })
+  assert.equal(exact.identity.via, 'exact')
+  assert.equal(exactUrls.filter((url) => url.includes('openrouter.ai')).length, 1, 'exact identity asks OpenRouter once')
+
+  const guessUrls = []
+  const guessCache = createMetadataCache({
+    fetcher: createSourceFetcher({
+      transport: async (url) => {
+        guessUrls.push(url)
+        if (url.includes('modelparams')) return { status: 200, headers: { etag: 'm' }, body: JSON.stringify(MODELPARAMS_FIXTURE) }
+        return { status: 200, headers: { etag: 'o' }, body: JSON.stringify({ data: [] }) }
+      },
+    }),
+  })
+  const guessed = await querySmartFill({
+    mode: 'on',
+    target: { channel: '', api: '', modelId: 'cw:never-heard-of-it', modelOnly: true },
+    piIndex: buildPiEvidence(PI_FIXTURE),
+    cache: guessCache,
+  })
+  // 唯一候选也没有任何来源命中 ⇒ 放弃别名，退回精确身份，不产出猜测建议
+  assert.equal(guessed.identity.via, 'exact')
+  assert.equal(guessed.identity.modelId, 'cw:never-heard-of-it')
+  assert.equal(guessUrls.filter((url) => url.includes('openrouter.ai')).length, 2, 'at most one fallback request')
+  assert.equal(groupOf(guessed.groups, 'name').options.length, 0)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -388,6 +388,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             el('b', { style: { fontSize: '12px' } }, tr('models.smart.suggestedValues')),
             el(Button, { id: 'model-smart-auto-fill', 'data-testid': 'model-smart-auto-fill', style: svcButtonStyle('primary'), onClick: () => setFillPlan(suggestions) }, tr('models.smart.fillAll'))) : null,
           suggestions.length === 0 ? el('p', { role: 'status', 'data-testid': 'model-smart-empty', style: { ...muted, margin: 0 } }, tr('models.smart.noSuggestions')) : el(SuggestionGroups, { groups: suggestions, draft }),
+          // 别名归一提示：原始 ID 在固定来源无记录、改按规范化别名查询时明示，避免误当成精确身份。
+          result.identity?.via === 'alias' ? el('p', { role: 'status', 'data-testid': 'model-smart-alias', style: { ...muted, margin: '10px 0 0', lineHeight: '18px', overflowWrap: 'anywhere' } }, tr('models.smart.aliasIdentity').replace('{requested}', String(result.identity.requestedModelId ?? '')).replace('{matched}', String(result.identity.modelId ?? ''))) : null,
           !suggestions.some((group) => group.field === 'reasoningEfforts') ? el('p', { role: 'status', 'data-testid': 'model-smart-reasoning-empty', style: { ...muted, margin: '10px 0 0' } }, tr(result.reasoningSupported ? 'models.smart.reasoningSupportedNoLevels' : 'models.smart.noReasoningSuggestions')) : null,
         ) : null
       ) : null,

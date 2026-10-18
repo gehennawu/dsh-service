@@ -42,7 +42,7 @@ test('custom provider creation filters long candidate lists instead of making us
 })
 test('homepage copy is localized in both languages', () => {
   const locale = readFileSync(new URL('../src/client/model-config-i18n.js', import.meta.url), 'utf8')
-  for (const key of ['homeTitle', 'homeDescription', 'providers', 'customProviders', 'refreshProviders', 'modelList', 'noModels', 'noSearchMatch']) {
+  for (const key of ['homeTitle', 'homeDescription', 'providers', 'customProviders', 'refreshProviders', 'modelList', 'noModels', 'noSearchMatch', 'aliasIdentity']) {
     assert.equal((locale.match(new RegExp(`'models.smart.${key}':`, 'g')) ?? []).length, 2)
   }
 })

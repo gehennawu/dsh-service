@@ -258,6 +258,21 @@ test('new Profile editor: reference alias is never treated as exact channel evid
   assert.equal((await env.call('models3-fill', { route: 'relay', modelId: 'one', referenceModelId: 'vendor/alias' })).ok, true)
   assert.equal(queried.modelId, 'vendor/alias'); assert.equal(queried.channel, ''); assert.equal(env.calls.length, 0)
 })
+test('new Profile editor: smart-fill forwards a bounded identity witness for alias lookups', async () => {
+  const env = host({ smartFill: async () => ({ groups: [], sources: [], identity: { requestedModelId: 'cn:one', modelId: 'one', via: 'alias', kind: 'scope-prefix', recognizedBy: ['pi-ai', 'modelparams', 'nonsense', 42], openRouterFallback: { secret: 'must-not-cross' } } }) })
+  const filled = await env.call('models3-fill', { route: 'relay', modelId: 'one' })
+  assert.equal(filled.ok, true, filled.error)
+  assert.deepEqual(filled.value.identity, {
+    requestedModelId: 'cn:one',
+    modelId: 'one',
+    via: 'alias',
+    kind: 'scope-prefix',
+    recognizedBy: ['pi-ai', 'modelparams'],
+  }, 'only bounded identity fields cross the RPC; unknown entries and fallback internals do not')
+  // 桩不提供 identity 时字段缺席（旧宿主/旧桩兼容），不伪造精确身份。
+  const plain = host({ smartFill: async () => ({ groups: [], sources: [] }) })
+  assert.equal((await plain.call('models3-fill', { route: 'relay', modelId: 'one' })).value.identity, undefined)
+})
 test('new Profile editor: smart-fill queries never write draft/config and read-only candidates cannot be promoted', async () => {
   let queries = 0
   const env = host({ smartFill: async () => { queries++; return { groups: [{ field: 'contextWindow', options: [{ candidateId: 'cap', value: 128000, source: 'pi-ai', adoptable: true }] }, { field: 'reasoningEfforts', options: [{ candidateId: 'foreign', value: { high: 'not-for-this-channel' }, source: 'pi-ai', adoptable: false, readOnly: true }] }], sources: [] } } })

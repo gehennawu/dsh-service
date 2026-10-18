@@ -220,7 +220,21 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       const queryId = remember(queries, { kind: 'source', route: payload.route, api, modelId: payload.modelId, referenceModelId, identity: sourceIdentity, sourceCandidates })
       if (selectedSource) for (const group of groups) group.candidates = group.candidates.filter((x) => profileFingerprint(x.source) === selectedSource)
       for (const group of groups) group.candidates = group.candidates.filter((x) => !containsSensitive(x.value))
-      return { reasoningSupported: result.groups?.find((group) => group.field === 'reasoningEfforts')?.supported === true, groups: groups.filter((x) => x.candidates.length), readonly: redactSensitive(readonly), candidates: sourceCandidates, queryId, selectedSource: selectedSource ?? '', bindingNeedsReview, sources: (result.sources ?? []).map((x) => ({ ...x, id: x.sourceId ?? x.id })), mode: 'on' }
+      // 身份留证（只回传有界字符串）：别名归一是否发生、命中哪个候选、哪些来源认出它。
+      // 只影响提示文案；采纳仍走候选 ID，原始模型 ID 与写入面都不变。
+      const rawIdentity = result.identity
+      const identity = rawIdentity === null || typeof rawIdentity !== 'object'
+        ? undefined
+        : {
+            requestedModelId: String(rawIdentity.requestedModelId ?? referenceModelId).slice(0, 512),
+            modelId: String(rawIdentity.modelId ?? referenceModelId).slice(0, 512),
+            via: rawIdentity.via === 'alias' ? 'alias' : 'exact',
+            kind: typeof rawIdentity.kind === 'string' ? rawIdentity.kind.slice(0, 64) : '',
+            recognizedBy: Array.isArray(rawIdentity.recognizedBy)
+              ? rawIdentity.recognizedBy.filter((item) => typeof item === 'string' && ['pi-ai', 'modelparams', 'openrouter'].includes(item)).slice(0, 4)
+              : [],
+          }
+      return { reasoningSupported: result.groups?.find((group) => group.field === 'reasoningEfforts')?.supported === true, groups: groups.filter((x) => x.candidates.length), readonly: redactSensitive(readonly), candidates: sourceCandidates, queryId, selectedSource: selectedSource ?? '', bindingNeedsReview, sources: (result.sources ?? []).map((x) => ({ ...x, id: x.sourceId ?? x.id })), mode: 'on', ...(identity !== undefined ? { identity } : {}) }
     }),
     'models3-bind-source': route(async ({ queryId, sourceId }) => {
       const query = get(queries, queryId)

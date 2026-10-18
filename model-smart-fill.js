@@ -104,6 +104,25 @@ export const MAX_OPENROUTER_MATCHES = 20
 export const MODELPARAMS_EFFORT_PATHS = Object.freeze(['reasoning_effort', 'output_config.effort', 'reasoning.effort'])
 
 /**
+ * 别名归一允许剥离的「思考档后缀」受控词表（`gemini-3.8-flash-high` 这类渠道约定）。
+ * 只取档位词、且排除 `off`：通用剥 `-fast`/`-pro`/`-flashx` 会把独立型号并成基座，禁止。
+ */
+const ALIAS_THINKING_SUFFIXES = Object.freeze(
+  [...THINKING_LEVELS_SET].filter((level) => level !== 'off').sort((a, b) => b.length - a.length),
+)
+
+/** scope 前缀只认字母（`cn:`/`us:`/`openai:` 这类渠道/区域约定）；带数字/连字符的前段视为型号本体。 */
+const ALIAS_SCOPE_PREFIX_RE = /^([a-z]{2,8}):(.+)$/
+/**
+ * 变体词黑名单：防止 `foo:free` 被反向拆成候选 `free`（OpenRouter `q=free` 会命中
+ * `openrouter/free`「Free Models Router」，属语义级误配）。这些词只可能是变体/档位，不是型号。
+ */
+const ALIAS_VARIANT_WORDS = Object.freeze([
+  'free', 'batch', 'beta', 'extended', 'thinking', 'preview', 'high', 'low', 'medium', 'minimal',
+  'xhigh', 'max', 'off', 'on', 'auto', 'latest',
+])
+
+/**
  * 固定来源白名单。三重匹配：origin host + 路径（精确或前缀）+ 允许的查询键。
  * `paths` 与 `pathPrefixes` 互斥使用；前缀必须在 `length > prefix.length` 时才算命中
  * （`/api/v1/model/` 后面必须还有段）。
@@ -1158,6 +1177,160 @@ export function openRouterReference(match) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 模型 ID 别名归一：只在原始 ID 于固定来源无记录时回退，且永不宣称精确身份
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 渠道配置里的模型 ID 可能带渠道自己的前缀/变体（真机实例：`workbuddy` 的
+ * `cn:deepseek-v4.1-flash`、`cline` 的 `cline-pass/deepseek-v4.1-flash`、
+ * OpenRouter 风格的 `...:free`）。固定来源只认规范化 ID，因此原始 ID 精确查不到时
+ * 按下面的形态给出**别名候选**（顺序即优先级，去重、有界）：
+ *   - scope-prefix  ：`cn:deepseek-v4.1-flash` → `deepseek-v4.1-flash`（渠道/区域前缀）
+ *   - variant-suffix：`inclusionai/ling-3.1-flash:free` → `inclusionai/ling-3.1-flash`（变体后缀）
+ *   - provider-slug ：`cline-pass/deepseek-v4.1-flash` → `deepseek-v4.1-flash`（中转渠道前缀）
+ *   - 组合形态：对一级结果再剥离另一类（如 `provider:author/slug:variant`）。
+ *
+ * 保守约束（宁可漏认，不可误拆）：
+ *   - scope 前缀段只允许 2–8 位**纯字母**，因此 Bedrock 的 `amazon.nova-2-lite-v1:0`、
+ *     `anthropic.claude-...-v1:0` 这类**真正带冒号**的 ID 不会被拆；`gpt-4o:free` 也不会被
+ *     反向拆出 `free`（变体词黑名单再次兜底，避免撞上 `openrouter/free` 这类语义完全不同的条目）；
+ *   - variant 后缀必须以字母开头且 ≤16 位，且基段要有分隔结构（`-`/`.`/`/` 或 ≥8 字符）；
+ *   - provider slug 必须是最后一段、长度 ≥6 且含 `-`/`.`（拒绝 `free` 这类短词）。
+ * 候选只作**来源查询键**：不自动采纳、不生成 wire/compat、不宣称与原始 ID 同一身份。
+ */
+export function modelIdAliasCandidates(modelId) {
+  const id = str(modelId)
+  if (id === '' || id.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(id)) return []
+  const MAX_ALIAS_CANDIDATES = 6
+  const out = []
+  const seen = new Set([id])
+  const take = (value, kind) => {
+    const next = str(value)
+    if (next === '' || next.length > MAX_MODEL_ID_LENGTH || !MODEL_ID_RE.test(next) || seen.has(next)) return ''
+    // 任何一条剥离路径都不许把「变体词」当成型号候选：`free-high` 剥档位后是 `free`、
+    // `foo:free` 反过来是 `free`——它们会命中 `openrouter/free`（Free Models Router）这类
+    // 语义完全不同的条目，属比漏认更糟的误配。
+    if (ALIAS_VARIANT_WORDS.includes(next.toLowerCase())) return ''
+    seen.add(next)
+    out.push({ id: next, kind })
+    return next
+  }
+  const scopeOf = (value) => {
+    const match = ALIAS_SCOPE_PREFIX_RE.exec(value)
+    if (match === null) return ''
+    const rest = match[2]
+    // `foo:free` 的 `free` 是变体词，不是型号：拒绝该方向，交给 variant-suffix 处理。
+    return ALIAS_VARIANT_WORDS.includes(rest.toLowerCase()) ? '' : rest
+  }
+  const suffixOf = (value) => {
+    const match = /^(.+):([a-z][a-z0-9_-]{0,15})$/.exec(value)
+    if (match === null) return ''
+    const base = match[1]
+    return base.includes('-') || base.includes('.') || base.includes('/') || base.length >= 8 ? base : ''
+  }
+  const tailOf = (value) => {
+    const slash = value.lastIndexOf('/')
+    if (slash < 0 || slash === value.length - 1) return ''
+    const tail = value.slice(slash + 1)
+    return tail.length >= 6 && (tail.includes('-') || tail.includes('.')) ? tail : ''
+  }
+  // 思考档后缀是**受控词表**（`gemini-3.8-flash-high` 这类渠道约定），只剥档位词，
+  // 绝不通用剥 `-fast`/`-pro`/`-flashx` 等兄弟型号（真机证据：它们是独立型号/定价）。
+  const thinkingOf = (value) => {
+    for (const level of ALIAS_THINKING_SUFFIXES) {
+      if (!value.endsWith('-' + level)) continue
+      const base = value.slice(0, -(level.length + 1))
+      if (base.length >= 3) return base
+    }
+    return ''
+  }
+  const first = []
+  for (const [kind, value] of [['scope-prefix', scopeOf(id)], ['variant-suffix', suffixOf(id)], ['provider-slug', tailOf(id)], ['thinking-suffix', thinkingOf(id)]]) {
+    if (value === '') continue
+    const added = take(value, kind)
+    if (added !== '') first.push([kind, added])
+  }
+  for (const [kind, base] of first) {
+    for (const [nextKind, value] of [['scope-prefix', scopeOf(base)], ['variant-suffix', suffixOf(base)], ['provider-slug', tailOf(base)], ['thinking-suffix', thinkingOf(base)]]) {
+      if (out.length >= MAX_ALIAS_CANDIDATES) return out
+      if (value !== '' && value !== base) take(value, kind + '+' + nextKind)
+    }
+  }
+  return out
+}
+
+/**
+ * 目标模型 ID 的「来源身份」：**精确 ID 永远优先**。
+ * 只有精确 ID 在本地来源（pi-ai 目录 / modelparams 索引）没有任何记录、且 OpenRouter
+ * 精确查询也没有命中时，才按 `modelIdAliasCandidates` 的顺序挑候选：
+ *   - 优先挑**被本地来源认出**的第一个候选（`recognizedBy` 留证）；
+ *   - 都认不出时暂取第一个候选（`recognizedBy:[]`），由调用方在 OpenRouter 回退命中后
+ *     补认；仍无命中则调用方会退回精确身份，不用猜测值出建议。
+ * 返回 `via:'exact'` 时 `modelId` 与 `requestedModelId` 相同。
+ */
+export function resolveSmartFillIdentity(modelId, { piIndex, modelParamsIndex, openRouterMatchesCount = 0 } = {}) {
+  const requested = str(modelId)
+  const countFor = (index, value) => index?.byModelId?.get(value)?.length ?? 0
+  const exactPi = countFor(piIndex, requested)
+  const exactModelParams = countFor(modelParamsIndex, requested)
+  const recognized = []
+  if (exactPi > 0) recognized.push('pi-ai')
+  if (exactModelParams > 0) recognized.push('modelparams')
+  if (openRouterMatchesCount > 0) recognized.push('openrouter')
+  if (requested === '' || recognized.length > 0) {
+    return { requestedModelId: requested, modelId: requested, via: 'exact', kind: '', recognizedBy: recognized }
+  }
+  const candidates = modelIdAliasCandidates(requested)
+  if (candidates.length === 0) {
+    return { requestedModelId: requested, modelId: requested, via: 'exact', kind: '', recognizedBy: [] }
+  }
+  let chosen = candidates[0]
+  const recognizedBy = []
+  for (const candidate of candidates) {
+    const pi = countFor(piIndex, candidate.id)
+    const modelParams = countFor(modelParamsIndex, candidate.id)
+    if (pi === 0 && modelParams === 0) continue
+    chosen = candidate
+    if (pi > 0) recognizedBy.push('pi-ai')
+    if (modelParams > 0) recognizedBy.push('modelparams')
+    break
+  }
+  return { requestedModelId: requested, modelId: chosen.id, via: 'alias', kind: chosen.kind, recognizedBy }
+}
+
+/**
+ * 两次 OpenRouter 读取（原始 ID + 别名回退）合并成一条来源状态：客户端只显示一条
+ * `openrouter`，`identityFallback` 留证哪次生效、另一次的状态码是什么。
+ */
+function mergeOpenRouterFallback(sources, detail) {
+  const indices = []
+  for (let index = 0; index < sources.length; index += 1) {
+    if (sources[index].sourceId === 'openrouter') indices.push(index)
+  }
+  if (indices.length === 0) return
+  if (indices.length === 1) {
+    sources[indices[0]].identityFallback = detail
+    return
+  }
+  const exact = sources[indices[0]]
+  const fallback = sources[indices[1]]
+  const usable = (entry) => entry.status === 'ok' || entry.status === 'cached' || entry.status === 'provided'
+  const chosen = usable(fallback) ? fallback : exact
+  const merged = {
+    ...chosen,
+    identityFallback: {
+      ...detail,
+      exactStatus: exact.status,
+      exactError: exact.error ?? null,
+      fallbackStatus: fallback.status,
+      fallbackError: fallback.error ?? null,
+    },
+  }
+  for (const index of [...indices].sort((a, b) => b - a)) sources.splice(index, 1)
+  sources.push(merged)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 运行时：只解释生效投影，不从 effort ID 捏造 wire
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2157,7 +2330,8 @@ export async function querySmartFill(options = {}) {
     }
   }
 
-  // 3) OpenRouter：直接载荷优先，否则走缓存条件请求
+  // 3) OpenRouter：先用**原始 ID**查询（精确身份优先）；仅在原始 ID 于本地来源无记录、
+  //    且精确查询也没有命中时，按别名候选回退**一次**（不级联，最多多一次请求）。
   let openRouterPayload = null
   if (options.openRouterPayload !== undefined) {
     openRouterPayload = options.openRouterPayload
@@ -2176,18 +2350,49 @@ export async function querySmartFill(options = {}) {
   } else {
     sources.push({ sourceId: 'openrouter', status: 'skipped', network: false, error: 'no-source' })
   }
+  const exactMatches = openRouterPayload !== null ? openRouterMatches(target.modelId, openRouterPayload) : undefined
+  let identity = resolveSmartFillIdentity(target.modelId, {
+    piIndex,
+    modelParamsIndex,
+    openRouterMatchesCount: exactMatches?.matches?.length ?? 0,
+  })
+  let matches = exactMatches
+  let identityFallback = null
+  if (identity.via === 'alias' && options.cache !== undefined) {
+    attemptedNetwork = true
+    const request = openRouterRequest(identity.modelId)
+    const fallbackPayload = await readViaCache(options.cache, {
+      sourceId: request.sourceId,
+      url: request.url,
+      force: Boolean(options.forceRefresh),
+      parse: parseOpenRouterPayload,
+      sources,
+      label: 'openrouter',
+    })
+    mergeOpenRouterFallback(sources, { requestedModelId: identity.requestedModelId, matchedModelId: identity.modelId, kind: identity.kind })
+    matches = fallbackPayload !== null ? openRouterMatches(identity.modelId, fallbackPayload) : undefined
+    identityFallback = { attempted: true, modelId: identity.modelId, kind: identity.kind, matched: matches?.matches?.length ?? 0 }
+    if (matches !== undefined && matches.matches.length > 0) {
+      identity.recognizedBy = [...new Set([...identity.recognizedBy, 'openrouter'])]
+    }
+  }
+  // 别名只有在至少一个来源真的认出它时才启用；纯猜测不产生任何建议，退回精确身份。
+  if (identity.via === 'alias' && identity.recognizedBy.length === 0) {
+    identity = { requestedModelId: identity.requestedModelId, modelId: identity.requestedModelId, via: 'exact', kind: '', recognizedBy: [] }
+    matches = exactMatches
+  }
+  const effectiveTarget = identity.via === 'alias' ? { ...target, modelId: identity.modelId } : target
 
   // 4) 运行时（本地投影，不触网、不发推理）
   const runtime = options.runtimeInfo !== undefined ? runtimeReference(options.runtimeInfo) : undefined
   sources.push({ sourceId: 'runtime', status: runtime === undefined ? 'unavailable' : 'ok', network: false, error: null })
 
-  const modelParams = modelParamsIndex !== null ? modelParamsReference(modelParamsIndex, target.modelId) : undefined
-  const matches = openRouterPayload !== null ? openRouterMatches(target.modelId, openRouterPayload) : undefined
+  const modelParams = modelParamsIndex !== null ? modelParamsReference(modelParamsIndex, effectiveTarget.modelId) : undefined
   const references = matches !== undefined
     ? matches.matches.map((match) => openRouterReference(match)).filter((reference) => reference !== undefined)
     : []
   const built = buildSmartFillGroups({
-    target,
+    target: effectiveTarget,
     piIndex,
     modelParams,
     openRouter: matches !== undefined ? { matches: matches.matches, ambiguous: matches.ambiguous, references } : undefined,
@@ -2195,6 +2400,22 @@ export async function querySmartFill(options = {}) {
   })
 
   if (matches !== undefined && matches.ambiguous) notes.push('OpenRouter 命中多个同名条目：保留全部候选，由用户选择')
+  if (identity.via === 'alias') {
+    // 别名只用于取资料：证据一律降级为「模型身份参考」。models3-fill 恒传 modelOnly，
+    // buildSmartFillGroups 已降级过一遍；这里再兜底其它调用方，避免别名身份冒充精确渠道证据。
+    for (const group of built.groups) {
+      for (const option of group.options ?? []) {
+        if (option.evidence === 'exact-channel-protocol') {
+          option.evidence = 'model-identity'
+          option.confidence = 'reference'
+        }
+        if (option.evidence === 'model-identity') {
+          option.note = '用于查询的 ID「' + identity.requestedModelId.slice(0, 128) + '」无来源记录；按别名「' + identity.modelId.slice(0, 128) + '」匹配，仅作模型身份参考'
+        }
+      }
+    }
+    notes.push('用于查询的模型 ID 在固定来源没有记录：已按别名查询，建议仅作模型身份参考，需逐项确认')
+  }
   return {
     mode: 'on',
     network: attemptedNetwork,
@@ -2202,5 +2423,14 @@ export async function querySmartFill(options = {}) {
     sources,
     runtime: runtime ?? null,
     notes: [...notes, ...built.notes],
+    // 身份留证：客户端据此提示「按别名查询」，原始 ID 与匹配 ID 都返回但不作任何写入默认。
+    identity: {
+      requestedModelId: identity.requestedModelId,
+      modelId: identity.modelId,
+      via: identity.via,
+      kind: identity.kind,
+      recognizedBy: [...identity.recognizedBy],
+      ...(identityFallback !== null ? { openRouterFallback: identityFallback } : {}),
+    },
   }
 }

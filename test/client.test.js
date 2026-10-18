@@ -16143,6 +16143,41 @@ test('models page smart fill stays off until toggled, fills all through one conf
   assert.equal('output' in saves[0].payload.patch, false, 'out-of-scope suggestions never leak into the write payload')
 })
 
+test('models page smart fill states an alias lookup without changing the adoption path', async () => {
+  const groups = [{ key: 'contextWindow', field: 'contextWindow', path: ['contextWindow'], candidates: [{ id: 'c1', value: 256000, source: 'modelparams' }] }]
+  const fill = (identity) => ({ ok: true, value: { mode: 'on', network: true, reasoningSupported: true, groups, sources: [], readonly: [], identity } })
+  const aliasFixture = models3Fixture({
+    'models3-fill': () => fill({ requestedModelId: 'cn:one', modelId: 'one', via: 'alias', kind: 'scope-prefix', recognizedBy: ['pi-ai', 'modelparams'] }),
+  })
+  const renderer = createRenderer(aliasFixture.rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  renderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(renderer)
+  const note = renderer.findByTestId('model-smart-alias')
+  assert.match(nodeText(note), /cn:one/)
+  assert.match(nodeText(note), /「one」/)
+  assert.match(nodeText(note), /模型身份参考/)
+  // 别名提示不改变采纳路径：仍需一键填入 + 二次确认。
+  assert.equal(byAria(renderer, '上下文容量').props.value, '131072')
+  renderer.findByTestId('model-smart-auto-fill').props.onClick()
+  await settle(renderer)
+  assert.match(deepText(renderer), /将以下建议值填入对应输入框/)
+  deepFindId(renderer, 'model-smart-fill-confirm').props.onClick()
+  await settle(renderer)
+  assert.equal(byAria(renderer, '上下文容量').props.value, '256000')
+  // 精确身份（无 identity）不显示别名提示。
+  const exactFixture = models3Fixture({ 'models3-fill': () => fill(undefined) })
+  const exactRenderer = createRenderer(exactFixture.rpc)
+  await exactRenderer.load()
+  await openModelsRoute(exactRenderer, 'cpa')
+  await openModelsModel(exactRenderer, 'm1')
+  exactRenderer.findByTestId('model-smart-toggle').props.onClick()
+  await settle(exactRenderer)
+  assert.equal(exactRenderer.hasTest('model-smart-alias'), false)
+})
+
 test('models page smart fill distinguishes supported reasoning with no levels from missing metadata', async () => {
   let supported = true
   const { calls, rpc } = models3Fixture({
