@@ -5,7 +5,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
-import { prepareQuotaAdapterConfig, quotaAdapterUsageUrl } from './quota-adapters.js'
+import { prepareQuotaAdapterConfig, quotaAdapterRealmCaps, quotaAdapterUsageUrl, sanitizeRealmCaps } from './quota-adapters.js'
 
 export function createQuotaRoutes({
   ctx,
@@ -113,6 +113,12 @@ export function createQuotaRoutes({
             credentialEntryKey: adapter.credentialPolicy(profile).entryKey,
             // 官网用户页余额网址由具体 Adapter 持有（宿主常量白名单；无则缺省）。
             ...(typeof quotaAdapterUsageUrl(adapter) === 'string' && quotaAdapterUsageUrl(adapter) !== '' ? { usageUrl: quotaAdapterUsageUrl(adapter) } : {}),
+            // 油表分母（默认 + 配置覆盖）：只有声明了默认值的 Adapter 才有，客户端据此渲染
+            // 「每日模型量」输入框；未声明的渠道不下发，UI 自然不出现这块。
+            ...(() => {
+              const caps = quotaAdapterRealmCaps(adapter, config?.realmCaps?.[profile.name])
+              return caps === undefined ? {} : { realmCaps: caps }
+            })(),
           })
         }
         return { ok: true, value: { providers: rows, serverTime: Date.now() } }
@@ -178,6 +184,35 @@ export function createQuotaRoutes({
           // 适配变更即清闸（v0.29 用户反馈：填完凭据/改完类型就该立刻重试，不继承旧失败的退避）。
           quotaThrottle.resetGates(providerName)
           return { value: { ok: true } }
+        })
+      } catch (error) {
+        return rpcTechnicalFailure(error)
+      }
+
+    } },
+    'quota-realm-caps': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
+      try {
+        // 油表分母的 provider 级覆盖：{provider, caps:{realm: tokens}} 写入，{clear:true} 恢复默认。
+        // 只接受已适配且**声明了默认分母**的 Adapter（目前是 workbuddy）——其它渠道写进来
+        // 也没有消费者，反而会污染配置文件。provider 必须来自宿主自己的渠道清单。
+        const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
+        const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)
+        if (profileForProvider === undefined) return { ok: false, error: 'unknown-provider' }
+        const config = await refreshQuotaConfigCache()
+        const { adapter } = resolveQuotaKind(config, profileForProvider)
+        if (adapter === undefined) return { ok: false, error: 'not-adapted' }
+        if (quotaAdapterRealmCaps(adapter, {}) === undefined) return { ok: false, error: 'realm-caps-unsupported' }
+        let nextCaps = {}
+        if (payload?.clear !== true) {
+          nextCaps = sanitizeRealmCaps(payload?.caps)
+          if (Object.keys(nextCaps).length === 0) return { ok: false, error: 'invalid-caps' }
+        }
+        return await serializeQuotaConfigWrite(async (draft) => {
+          if (Object.keys(nextCaps).length === 0) delete draft.realmCaps[providerName]
+          else draft.realmCaps[providerName] = nextCaps
+          // 分母变了，缓存里的窗口还是旧口径：清闸让客户端随后那次手动刷新真的打上游重算。
+          quotaThrottle.resetGates(providerName)
+          return { value: { ok: true, value: { realmCaps: nextCaps } } }
         })
       } catch (error) {
         return rpcTechnicalFailure(error)

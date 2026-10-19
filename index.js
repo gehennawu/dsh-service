@@ -85,8 +85,11 @@ import {
   normalizeStepFunStepPlanUsage as normalizeStepFunStepPlanUsageAdapter,
   normalizeXiaomiTokenPlanUsage as normalizeXiaomiTokenPlanUsageAdapter,
   normalizeZaiCodingUsage as normalizeZaiCodingUsageAdapter,
+  MAX_QUOTA_REALM_CAPS,
   prepareQuotaAdapterConfig,
+  sanitizeRealmCaps,
   quotaAdapterEndpoints,
+  quotaAdapterRealmCaps,
   quotaAdapterUsageUrl,
   quotaErrorCode as quotaAdapterErrorCode,
   quotaErrorDetailFromText as quotaErrorDetailFromTextAdapter,
@@ -1500,7 +1503,7 @@ async function saveUsageIndex(dshHome, index) {
 // ── 远端额度（v0.18）：kind 映射存取、方言解析、节流状态机 ─────────────
 
 function createEmptyQuotaConfig() {
-  return { version: QUOTA_CONFIG_VERSION, kinds: {}, resetCards: [], allowedHosts: {} }
+  return { version: QUOTA_CONFIG_VERSION, kinds: {}, resetCards: [], allowedHosts: {}, realmCaps: {} }
 }
 
 /** 钉住表主机名归一：小写、去尾点；拒绝 IP 字面量与非法形状。合法返回归一值，否则 undefined。 */
@@ -1536,6 +1539,26 @@ function normalizeQuotaAllowedHosts(raw) {
       out[provider] = normalized
       count += 1
     }
+  }
+  return out
+}
+
+// realmCaps 解析：油表分母的 provider 级覆盖（`{provider: {realm: tokens}}`）。
+// 区的键只允许 `[a-z0-9_-]{1,32}`（它是上游区域码，不是文案）；值必须是正整数 tokens，
+// 每分钟上限 1e12 防手滑多打个零。非法条目整键丢弃——坏配置只能让油表回落默认/文字行，
+// 绝不能让 fetch 抛错把整行打成错误态。
+function normalizeQuotaRealmCaps(raw) {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
+  const out = {}
+  let providerCount = 0
+  for (const [provider, caps] of Object.entries(raw)) {
+    if (providerCount >= MAX_QUOTA_PROVIDERS) break
+    if (typeof provider !== 'string' || provider.length === 0 || provider.length > MAX_QUOTA_PROVIDER_NAME) continue
+    // 单 provider 的条目归一只维护在 quota-adapters（RPC 写路径共用同一份校验）。
+    const normalized = sanitizeRealmCaps(caps, MAX_QUOTA_REALM_CAPS)
+    if (Object.keys(normalized).length === 0) continue
+    out[provider] = normalized
+    providerCount += 1
   }
   return out
 }
@@ -1708,7 +1731,7 @@ function parseQuotaConfigText(text) {
       kindCount += 1
     }
   }
-  return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards), allowedHosts: normalizeQuotaAllowedHosts(parsed.allowedHosts) }
+  return { version: QUOTA_CONFIG_VERSION, kinds, resetCards: normalizeResetCards(parsed.resetCards), allowedHosts: normalizeQuotaAllowedHosts(parsed.allowedHosts), realmCaps: normalizeQuotaRealmCaps(parsed.realmCaps) }
 }
 
 async function loadQuotaConfig(dshHome) {
@@ -1739,11 +1762,16 @@ function copyQuotaConfig(config) {
   for (const [provider, hosts] of Object.entries(config?.allowedHosts ?? {})) {
     allowedHosts[provider] = Array.isArray(hosts) ? [...hosts] : []
   }
+  const realmCaps = {}
+  for (const [provider, caps] of Object.entries(config?.realmCaps ?? {})) {
+    realmCaps[provider] = { ...(caps ?? {}) }
+  }
   return {
     version: QUOTA_CONFIG_VERSION,
     kinds: { ...(config?.kinds ?? {}) },
     resetCards: Array.isArray(config?.resetCards) ? config.resetCards.map((card) => ({ ...card })) : [],
     allowedHosts,
+    realmCaps,
   }
 }
 
@@ -5864,6 +5892,10 @@ function apply(ctx, featureConfig) {
             kinds: Object.freeze({ ...(config?.kinds ?? {}) }),
             allowedHosts: Object.freeze(Object.fromEntries(
               Object.entries(config?.allowedHosts ?? {}).map(([provider, hosts]) => [provider, Object.freeze([...(hosts ?? [])])]),
+            )),
+            // 油表分母的 provider 级覆盖：Adapter 只读，绝不回写。
+            realmCaps: Object.freeze(Object.fromEntries(
+              Object.entries(config?.realmCaps ?? {}).map(([provider, caps]) => [provider, Object.freeze({ ...(caps ?? {}) })]),
             )),
           }),
           signal: controller.signal,

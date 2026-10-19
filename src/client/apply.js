@@ -1,3 +1,9 @@
+    // 额度页「设置每日模型量」入口（油表分母编辑器）的展示开关。
+    // 2026-10-18 用户要求暂时下线：先按默认分母观察几天，确认油表口径无误后再恢复。
+    // **恢复 = 改 true**；宿主侧 RPC `quota-realm-caps`、配置区块 `realmCaps` 与快照下发
+    // 全部保留不动，所以恢复时只需翻这一个开关（无数据迁移、无宿主改动）。
+    const QUOTA_REALM_CAP_EDITOR_VISIBLE = false
+
     function apply(ctx) {
       const { useState, useEffect, useRef } = React
       // v1.4.x（白屏修复）：宿主对 ok:false 一律回 rpcErrorSchema 枚举对象
@@ -383,7 +389,7 @@
 
       // ── 额度核心：已整段抽至 src/client/quota-core.js（工厂作用域分片，清单见
       // scripts/client-source.mjs）。返回值解构回原名供 RemoteQuotaCard/峰谷时段等消费。
-      const { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
+      const { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowPartsText, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot } = createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount })
       createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS })
 
       // ─── 峰谷时段（v0.25 deepseek，v1.3.1 起扩表到 zai-coding-cn）─────────────
@@ -735,7 +741,9 @@
             }, translate('quota.resetIn', { time: humanizeDuration(at - Date.now(), translate) }))
           }
         }
-        if (typeof window.text === 'string') {
+        // 文本窗口：单值 text（余额/套餐名）或 parts 多段汇总（Workbuddy 网关的账号/区域用量）。
+        const partsText = typeof window.text === 'string' ? null : quotaWindowPartsText(window, translate)
+        if (typeof window.text === 'string' || partsText !== null) {
           return React.createElement('div', {
             key: window.id,
             ...(inCard ? { 'data-testid': `quota-card-window-${provider}-${window.id}` } : {}),
@@ -745,7 +753,7 @@
             React.createElement('span', {
               'data-testid': inCard ? `quota-card-text-${provider}-${window.id}` : `quota-text-${window.id}`,
               style: valueStyle,
-            }, window.text)),
+            }, typeof window.text === 'string' ? window.text : partsText)),
           resetNode)
         }
         return React.createElement('div', {
@@ -807,6 +815,15 @@
         if (m.includes('gemini')) return 'gemini'
         if (m.includes('codex') || m.includes('gpt') || m.includes('chatgpt') || /(?:^|[-_/])o[134](?:[-_/]|$)/.test(m)) return 'codex'
         return null
+      }
+
+      /** 模型 id 的区域前缀：中转网关用 `<realm>:<model>`（如 `cn:deepseek-v4.1-flash`）标记走哪个区域。
+       * 圆环据此挑「当前模型所在区域」的油表——否则跨区域渠道里 100% 的 global 会一直压过正在用的 cn。
+       * 只解析前缀、不猜内容；没有前缀返回 null（回退到「最紧窗口」口径，老行为不变）。 */
+      function inferModelRealm(modelId) {
+        if (typeof modelId !== 'string') return null
+        const match = modelId.trim().match(/^([A-Za-z][A-Za-z0-9_-]{0,31})\s*[:/]/)
+        return match === null ? null : match[1].toLowerCase()
       }
 
       const CPA_FAMILIES = ['gemini', 'claude', 'codex']
@@ -1129,7 +1146,17 @@
         const matchedWindows = family !== null ? allWindows.filter((w) => windowMatchesFamily(w, family)) : allWindows
         const activeWindows = (matchedWindows.length > 0 && !showAll) ? matchedWindows : allWindows
 
-        const percentWindows = (matchedWindows.length > 0 ? matchedWindows : allWindows).filter((window) => typeof window.percent === 'number')
+        // 区域油表（Workbuddy 一类跨区域渠道）：当前模型的 `<realm>:` 前缀命中某个区域行时，
+        // 圆环只读该区域（否则另一区 100% 会把正在用的区域盖掉）；命中不到就维持原「最紧窗口」口径。
+        const modelRealm = inferModelRealm(currentModel)
+        const realmWindows = modelRealm === null
+          ? []
+          : allWindows.filter((window) => window.kindKey === 'realm-daily-tokens' && String(window.label ?? '').trim().toLowerCase() === modelRealm)
+        const displayWindows = realmWindows.length === 0
+          ? activeWindows
+          : [...realmWindows, ...activeWindows.filter((window) => realmWindows.indexOf(window) === -1)]
+
+        const percentWindows = (realmWindows.length > 0 ? realmWindows : (matchedWindows.length > 0 ? matchedWindows : allWindows)).filter((window) => typeof window.percent === 'number')
         // 最紧约束：已用口径取最高占用；剩余口径取最低余量。两种口径并存时按压力值（贴近耗尽程度）比较。
         const pressureOf = (window) => (window.remaining === true ? 100 - window.percent : window.percent)
         const tightest = percentWindows.length > 0 ? percentWindows.reduce((best, current) => (pressureOf(current) > pressureOf(best) ? current : best), percentWindows[0]) : null
@@ -1219,6 +1246,10 @@
           }
         }, [open, centered])
         if (row === undefined || row === null) return null
+        // 纯用量统计（Workbuddy 网关）：既无百分比窗口也无余额金额，圆环没有可表达的量纲——
+        // 不画空环、不显示假「剩余」。数据仍在设置页额度卡里完整展示。
+        // 必须放在全部 hook 声明之后：提前 return 会让两次渲染的 hook 数不等，真实 React 直接抛错。
+        if (allWindows.length > 0 && tightest === null && balanceInfo === null) return null
         const percent = tightest === null ? 0 : tightest.percent
         // 纯文本窗口（余额类：DeepSeek/Kimi/硅基流动）没有百分比可「已用」，头部按剩余口径显示；
         // 百分比窗口仍按方言的 remaining 标记切换已用/剩余。
@@ -1231,7 +1262,10 @@
         const radius = 5.5
         const circumference = 2 * Math.PI * radius
         const providerDisplayName = row?.displayName || provider
-        const providerTag = familyLabel ? `${providerDisplayName} · ${familyLabel}` : providerDisplayName
+        // 区域命中时把区域码也带上（「Workbuddy · cn」）：圆环没有文字，弹层头部要能说明读的是哪一区。
+        const providerTag = [providerDisplayName, familyLabel, realmWindows.length > 0 ? modelRealm : null]
+          .filter((part) => typeof part === 'string' && part !== '')
+          .join(' · ')
         const ariaText = hasPercentWindow
           ? `${translate('quota.ring.label')} · ${providerTag} · ${usedWord} ${percent}%`
           : `${translate('quota.ring.label')} · ${providerTag}`
@@ -1359,7 +1393,7 @@
                   group.windows.map((window) => renderQuotaWindowRow(window, translate, null))
                 ))
               }
-              return activeWindows.map((window) => renderQuotaWindowRow(window, translate, null))
+              return displayWindows.map((window) => renderQuotaWindowRow(window, translate, null))
             })()),
           allWindows.length > matchedWindows.length && matchedWindows.length > 0
             ? React.createElement('div', { style: { marginTop: '6px', textAlign: 'center' } },
@@ -4119,6 +4153,68 @@
         const adaptProvider = (providerName, kind) => requestQuotaConfig({ provider: providerName, kind })
         // 删掉手动覆盖键，回退 baseURL 自动推断。
         const clearAdaptedKind = (providerName) => requestQuotaConfig({ provider: providerName, clear: true })
+        // 油表分母（每日模型量）在额度页配置：输入框按 M tokens 展示（用户口径「200M」），
+        // 提交前乘 1e6 换成绝对值——宿主侧只认 tokens，不认单位字符串。
+        const [realmCapDraft, setRealmCapDraft] = useState(null)
+        const [realmCapSaving, setRealmCapSaving] = useState(false)
+        const openRealmCapEditor = (row) => {
+          const caps = row?.realmCaps !== null && typeof row?.realmCaps === 'object' ? row.realmCaps : {}
+          const values = {}
+          for (const [realm, value] of Object.entries(caps)) {
+            const millions = Number(value) / 1e6
+            values[realm] = Number.isFinite(millions) && millions > 0 ? String(Math.round(millions * 100) / 100) : ''
+          }
+          setRealmCapDraft({ provider: row.provider, values })
+          setConfigError('')
+        }
+        const realmCapPayload = () => {
+          const caps = {}
+          for (const [realm, text] of Object.entries(realmCapDraft?.values ?? {})) {
+            const millions = Number(String(text).trim())
+            if (!Number.isFinite(millions) || millions <= 0) continue
+            caps[realm] = Math.round(millions * 1e6)
+          }
+          return caps
+        }
+        const saveRealmCaps = async () => {
+          if (realmCapDraft === null) return
+          const providerName = realmCapDraft.provider
+          const caps = realmCapPayload()
+          if (Object.keys(caps).length === 0) {
+            setConfigError(translate('quota.realmCap.invalid'))
+            return
+          }
+          setRealmCapSaving(true)
+          setConfigError('')
+          try {
+            const res = await rpcCall('quota-realm-caps', { provider: providerName, caps })
+            if (res?.ok !== true) {
+              setConfigError(translate('quota.saveFailed', { error: String(res?.error ?? '') }))
+              return
+            }
+            setRealmCapDraft(null)
+            // 分母变了：宿主节流里缓存的是旧口径窗口，必须再打一次上游才会按新分母归一。
+            await refreshProvider(providerName)
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          } finally {
+            setRealmCapSaving(false)
+          }
+        }
+        const resetRealmCaps = async (providerName) => {
+          setConfigError('')
+          try {
+            const res = await rpcCall('quota-realm-caps', { provider: providerName, clear: true })
+            if (res?.ok !== true) {
+              setConfigError(translate('quota.saveFailed', { error: String(res?.error ?? '') }))
+              return
+            }
+            setRealmCapDraft(null)
+            await refreshProvider(providerName)
+          } catch (_) {
+            setConfigError(translate('quota.saveFailed', { error: 'network' }))
+          }
+        }
         // 卡片排序与显隐：localStorage 名单驱动展示序，后端统一配置多端同步；
         // 新供应商自然排末尾。管理界面照搬「设置栏标签」的列表形态（拖拽 + ↑↓ + 显隐开关）。
         const [cardOrder, setCardOrder] = useState(readQuotaCardOrder())
@@ -4706,6 +4802,59 @@
                       QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`))),
                       React.createElement('option', { value: '__auto__' }, translate('quota.followAuto')),
                       React.createElement('option', { value: '' }, translate('quota.disable')))),
+                    // 油表分母（每日模型量）：只有宿主下发 realmCaps 的渠道才有这块（workbuddy）。
+                    // 平时是一个入口按钮，点开后给每个区域一个 M tokens 输入框 + 保存/恢复默认。
+                    ...(isAdvanced && QUOTA_REALM_CAP_EDITOR_VISIBLE && row.realmCaps !== null && typeof row.realmCaps === 'object'
+                      ? (() => {
+                          const editing = realmCapDraft !== null && realmCapDraft.provider === row.provider
+                          if (!editing) {
+                            return [React.createElement('div', { key: 'realm-cap-entry', style: { display: 'flex' } },
+                              React.createElement('button', {
+                                type: 'button',
+                                'data-testid': `quota-realm-cap-edit-${row.provider}`,
+                                onClick: () => openRealmCapEditor(row),
+                                style: { fontSize: '12px', lineHeight: '20px', padding: '4px 14px', ...fullRound(999), border: '1px solid var(--dsh-svc-border-strong)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', width: 'auto', minWidth: 0, overflow: 'visible', flex: '0 0 auto', whiteSpace: 'nowrap' },
+                              }, translate('quota.realmCap.edit')))]
+                          }
+                          const realms = Object.keys(row.realmCaps)
+                          return [React.createElement('div', {
+                            key: 'realm-cap-editor',
+                            'data-testid': `quota-realm-cap-editor-${row.provider}`,
+                            style: { display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsh-svc-raised-bg)' },
+                          },
+                          ...realms.map((realm) => React.createElement('label', { key: `realm-${realm}`, style: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
+                            `${realm} · ${translate('quota.realmCap.unit')}`,
+                            React.createElement('input', {
+                              type: 'number',
+                              min: '0.01',
+                              step: '1',
+                              'data-testid': `quota-realm-cap-input-${row.provider}-${realm}`,
+                              value: realmCapDraft.values[realm] ?? '',
+                              onChange: (event) => setRealmCapDraft({ ...realmCapDraft, values: { ...realmCapDraft.values, [realm]: event.target.value } }),
+                              style: inputStyle,
+                            }))),
+                          React.createElement('button', {
+                            type: 'button',
+                            'data-testid': `quota-realm-cap-save-${row.provider}`,
+                            disabled: realmCapSaving,
+                            onClick: saveRealmCaps,
+                            style: { minHeight: '28px', padding: '4px 12px', borderRadius: 'var(--dsh-svc-radius-control)', border: '1px solid var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsh-svc-brand-text)', cursor: realmCapSaving ? 'default' : 'pointer', fontSize: '12px', opacity: realmCapSaving ? 0.6 : 1 },
+                          }, translate('quota.realmCap.save')),
+                          React.createElement('button', {
+                            type: 'button',
+                            'data-testid': `quota-realm-cap-reset-${row.provider}`,
+                            onClick: () => resetRealmCaps(row.provider),
+                            style: svcRowActionStyle(),
+                          }, translate('quota.realmCap.reset')),
+                          React.createElement('button', {
+                            type: 'button',
+                            'data-testid': `quota-realm-cap-cancel-${row.provider}`,
+                            onClick: () => setRealmCapDraft(null),
+                            style: svcRowActionStyle(),
+                          }, translate('quota.resetCard.cancel')),
+                          React.createElement('div', { style: { flexBasis: '100%', fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('quota.realmCap.hint')))]
+                        })()
+                      : []),
                     // provider 级重置卡录入仅智谱（zai-coding-cn）保留；CLIProxyAPI 的卡按账号走
                     // codex 账号块内的「添加重置卡」，故这里不再给它一个语义不清的整体入口。
                     ...(row.kind === 'zai-coding-cn' ? [React.createElement('div', { key: 'reset-add-row', style: { display: 'flex' } },

@@ -66,6 +66,7 @@ const CATEGORIES = [
       'amazon-bedrock', 'azure-openai-responses', 'together', 'fireworks', 'baseten',
       'cerebras', 'groq', 'perplexity', 'deepinfra', 'sambanova', 'novita', 'hyperbolic',
       'targon', 'parasail', 'lambda', 'fal', 'replicate',
+      'workbuddy2api-panel', 'workbuddy2api', 'workbuddy',
     ],
   },
   {

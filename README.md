@@ -137,9 +137,15 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 | StepFun Step Plan | 控制台 BFF 订阅额度（Oasis-Token 登录令牌；5 小时/周窗口与 Credit 月池自动识别） |
 | 小米 MiMo Token Plan | 控制台同源套餐额度（网页登录态 Cookie） |
 | Command Code（command-goat） | 官方账号额度面 `api.commandcode.ai/alpha/*`（同 key 复用：余额 + 本周期花费 + 套餐 + 5 小时/周窗口） |
+| workbuddy2api panel 用量（workbuddy） | **只对接 [workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 这个 Go 面板项目**（其他 workbuddy2api 系网关接口不同，不适用）；**手动适配**（baseURL 是中转地址，不参与自动识别）；端点取所选渠道 baseURL 同源的 `GET /panel/api/usage?hours=24`（网关 API Key）：**按区域（cn / global）的每日模型量油表**、按账号汇总的用量（含剩余积分），以及同源 `GET /panel/api/overview` 的**限流台账**（被限流的模型 + 上游重置墙钟、账号级冷却的恢复时刻） |
 | CLIProxyAPI 部署 | 各 OAuth 上游账号官方剩余额度 |
 
 - 凭据写入 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，热生效）：普通适配填 API key，CLIProxyAPI 填管理密钥，小米填控制台 Cookie，StepFun Step Plan 填控制台令牌（Oasis-Token，`Oasis-Webid` 由令牌自动派生无需手填）；Command Code 额度面与推理面同一把 key，无需另配
+- WorkBuddy2API 是**用量统计**而非套餐额度：卡片顶部改成**限流台账**——按区域列出被限流的模型与**上游重置时间**（`reset_at`，由上游 6004 带回的墙钟，客户端按浏览器时区显示），账号级冷却显示原因与恢复时刻；没有限流时显示「限流状态 —」。**总量统计（请求/错误/Token/积分/延迟/缓存命中率）不再上卡**（面板网页可见），保留按账号汇总的用量（最多 6 个，按 Token 降序）。**账号行显示请求 / Token / 剩余积分**：余额取面板 `overview` 的 `credits` / `credits_total`（形如 `1205 / 1305`，按 uid 与用量行对齐）；余额台账不可用（旧面板/无权限/该账号无余额字段）时回落为本窗口消耗积分，不把未知渲染成 0。
+- **限流台账的边界**：来自面板 `/panel/api/overview` 的 `rate_limited_models` / 账号 `cooling`，只在**正在限流**时存在（面板 `soft_rate_max` 默认 2h，到期条目连同重置时间一起消失，不是历史台账）；旧面板没有该端点或无权限时静默降级——卡片不出限流行，用量与油表照常显示。
+- **区域油表**：cn / global 两行按**每日模型量**画成百分比窗口（默认分母 cn 200M、global 100M tokens；超上限时百分比截 100、仍显示真实用量），额度卡带进度条；**对话圆环按当前所选模型的区域前缀（如 `cn:deepseek-v4.1-flash`）读该区域的油表**（弹层头部标出区域码、所选区域行排在最前），模型不带前缀时才回退「最紧区域」；未登记上限的区域只出文字行，不编分母。
+- **分母目前只读**：额度页的「设置每日模型量」入口暂时下线（先按默认分母观察几天），需要调整时改 `$DSH_HOME/dsh-service-quota.json` 的 `realmCaps` 区块或代码里的默认常量；宿主 RPC 与配置链路保留，恢复入口只需打开一个开关。
+- 时间窗取**近 24 小时（`hours=24`）**：面板默认档是 72h，但实测两边口径仍有出入，按用户要求用 24h（窗口是单一常量，改档只动 `WORKBUDDY_USAGE_PATH`）。该类型只走**手动适配**（中转 baseURL 不参与自动识别），面板端点取所选渠道 baseURL 的同源根路径（推理 `…/v1`、面板 `/panel/api/usage`），换中转域名无需改代码
 - **凭据可随时修改**：每张已适配卡片的「配置」区常驻凭据入口——未配置时显示各渠道的填写文案，已配置后显示「修改凭据（已配置）」，可直接覆盖（密钥轮换、换账号、填错想改）或清除已存值；凭据值只随保存请求发出，绝不回显
 - 防风控：结果缓存 60 秒、瞬时网络错误指数退避（30 秒 ×2、封顶 15 分钟）；**确定性失败转手动**——凭据类、4xx、套餐失效、管理面未启用、响应格式异常等「换配置才可能恢复」的错误，宿主停止自动重试（错误行改报「自动重试已暂停，请手动重试」），只有点刷新手动重连（带 5 秒冷却）且成功后，才回到自动模式；查询为纯手动——打开额度页/展开圆环/点刷新才拉取，客户端不排任何周期轮询（上游节流仍全部在宿主侧）
 - **CLIProxyAPI 管理面封禁有专属提示**：管理面对同一 IP 连续认证失败 5 次封 30 分钟，被封时卡片显示「已被 CLIProxyAPI 暂时封禁」+ 上游原话（含剩余时间）；该状态不提供重填密钥的入口（密钥没错），等封禁解除或更换出口 IP 后点「重试连接」即可；封禁只作用于管理面，走该 CPA 的模型推理不受影响
@@ -256,6 +262,7 @@ DSH Web 服务控制与运维插件：安全重启、版本管理与一键升级
 - 名称无法识别时，可按额度页**手动选择的适配类型**匹配；名称匹配优先，CLIProxyAPI 图标需手动适配后显示。
 - 图标内置，离线可用，不向第三方发送渠道名称；开关在插件配置 → 交互，默认开启。
 - 来源：[LobeHub Icons](https://github.com/lobehub/lobe-icons)（MIT）与 [Simple Icons](https://github.com/simple-icons/simple-icons)（CC0）。品牌图形归各厂商所有。
+- WorkBuddy2API 一类中转网关没有自家品牌资产，其图标取自上游产品 WorkBuddy 的官方标（`workbuddy.cn` 站点 favicon 的矢量版，本地手绘入库）；渠道名 `workbuddy2api-panel` / `workbuddy2api` / `workbuddy` 均命中，也可在额度页把渠道手动适配成该类型后按类型取图标。
 - 全部图标与渠道匹配规则见[图标目录](docs/model-icons.html)。
 
 ### 右栏文件编辑

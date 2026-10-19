@@ -5,7 +5,7 @@
 function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, sessionActivity, createSectionBackendSync, SETTINGS_NAV_MAX_ITEMS, formatCompactCount }) {
   const { useState, useEffect } = React
       // 适配类型下拉选项：与宿主 QUOTA_KINDS 白名单保持一致（词典键 quota.kind.<kind>）。
-      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway']
+      const QUOTA_KIND_OPTIONS = ['opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'workbuddy', 'poe', 'clinepass', 'vercel-ai-gateway']
       const QUOTA_CARD_ORDER_KEY = 'dsh-service-quota-card-order'
       const QUOTA_CARD_HIDDEN_KEY = 'dsh-service-quota-card-hidden'
       // 供应商名由 settings / llm 渠道清单派生，可能含中文、空格、`@`（用户自定义键），
@@ -230,6 +230,29 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         }
         return `${percent} · ${formatCompactCount(used, { billions: true })} / ${formatCompactCount(limit, { billions: true })}`
       }
+      /** 多段数值文本（Workbuddy 网关的账号/区域汇总）：parts 是「标签键 + 数值文本」数组，
+       * 标签由客户端词典本地化、数值文本由宿主给出（K/M/B、s、% 等语言中立单位），客户端只负责
+       * 用「 · 」连接——宿主不拼用户可见句子（双语教义）。无可用段时返回 null（调用方退回其它形态）。
+       * 段可以只带 `iso`（时间点）：时区格式化必须在浏览器侧做（宿主时区可能是 UTC），
+       * 这里统一成「MM-DD HH:mm」，配合段标签就是「重置 10-20 10:00」。 */
+      function quotaWindowPartsText(window, translate) {
+        const parts = Array.isArray(window?.parts) ? window.parts : []
+        const segments = []
+        for (const part of parts) {
+          if (part === null || typeof part !== 'object') continue
+          let text = typeof part.text === 'string' ? part.text.trim() : ''
+          if (text === '' && typeof part.iso === 'string') {
+            const at = Date.parse(part.iso)
+            if (Number.isFinite(at)) text = `${formatMonthDay(at)} ${formatClockTime(at)}`
+          }
+          if (text === '') continue
+          const key = typeof part.kindKey === 'string' && part.kindKey !== '' ? part.kindKey : ''
+          const label = key === '' ? '' : translate(`quota.part.${key}`)
+          const shown = label === '' || label === `quota.part.${key}` ? key : label
+          segments.push(shown === '' ? text : `${shown} ${text}`)
+        }
+        return segments.length > 0 ? segments.join(' · ') : null
+      }
       function humanizeDuration(ms, translate) {
         // 官网口径：取最显着的两个非零单位（28 天 22 小时 / 4 小时 1 分钟），不足 1 分钟显示 0 分钟。
         const totalMinutes = Math.max(0, Math.floor(ms / 60000))
@@ -254,6 +277,13 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
         const date = new Date(timestamp)
         const digits = (value) => String(value).padStart(2, '0')
         return `${date.getFullYear()}-${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
+      }
+
+      /** 月-日（两位）：给「重置 10-20 10:00」这类同年时间点用，年份节流掉。 */
+      function formatMonthDay(timestamp) {
+        const date = new Date(timestamp)
+        const digits = (value) => String(value).padStart(2, '0')
+        return `${digits(date.getMonth() + 1)}-${digits(date.getDate())}`
       }
 
       // ─── 余额型油表基准管理与状态计算（#todo-77）───────────────
@@ -391,5 +421,5 @@ function createQuotaCore({ ctx, rpcCall, featureEnabled, getModelDirectories, se
 
         return { ratio, gear, color, needleAngle, baseline: safeBaseline, isExtremeLow, isComfortableHigh }
       }
-  return { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot }
+  return { QUOTA_KIND_OPTIONS, acquireQuotaLoop, applyQuotaCardOrder, formatClockTime, formatShortDate, humanizeDuration, subscribeQuotaCards, commitQuotaCards, resetQuotaCards, ensureQuotaCardsSynced, quotaWindowDisplayLabel, quotaWindowPartsText, quotaWindowValueText, readQuotaCardHidden, readQuotaCardOrder, releaseQuotaLoop, quotaExtractBalance, resolveBalanceBaseline, setManualBalanceBaseline, computeBalanceGaugeState, fetchQuotaSnapshot }
 }

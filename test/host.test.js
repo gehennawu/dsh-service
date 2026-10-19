@@ -3661,13 +3661,22 @@ test('opencode-go parser maps percent-only windows and tolerates missing fields'
 })
 
 test('quota config parsing falls back safely on corruption and drops unknown kinds', () => {
-  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
-  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [], allowedHosts: {} })
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {} })
+  assert.deepEqual(parseQuotaConfigText('not json'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {}, realmCaps: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":99,"kinds":{"p":"opencode-go"}}'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {}, realmCaps: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":"mystery","q":"opencode-go"}}'), { version: 1, kinds: { q: 'opencode-go' }, resetCards: [], allowedHosts: {}, realmCaps: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":[] }'), { version: 1, kinds: {}, resetCards: [], allowedHosts: {}, realmCaps: {} })
   // null = 显式停用，必须原样保留。
-  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [], allowedHosts: {} })
+  assert.deepEqual(parseQuotaConfigText('{"version":1,"kinds":{"p":null,"q":"opencode-go"}}'), { version: 1, kinds: { p: null, q: 'opencode-go' }, resetCards: [], allowedHosts: {}, realmCaps: {} })
   // resetCards（v0.20 免次数）：provider 必填，label/expiresAt 可选，remaining 不再保留；id 缺失按原始位置合成。
+  // realmCaps（油表分母覆盖）：合法条目保留、非法条目整条丢弃，且不影响其它区块。
+  const withRealmCaps = parseQuotaConfigText(JSON.stringify({
+    version: 1,
+    kinds: { wb: 'workbuddy' },
+    realmCaps: { wb: { cn: 300000000, global: '150000000', bad: -1, 'no space': 5 }, other: 'nope', ghost: {} },
+  }))
+  assert.deepEqual(withRealmCaps.realmCaps, { wb: { cn: 300000000, global: 150000000 } })
+  assert.deepEqual(withRealmCaps.kinds, { wb: 'workbuddy' })
+  assert.deepEqual(parseQuotaConfigText(JSON.stringify({ version: 1, kinds: {}, realmCaps: [1, 2] })).realmCaps, {})
   const withCards = parseQuotaConfigText(JSON.stringify({
     version: 1,
     kinds: {},
@@ -4947,7 +4956,7 @@ test('quota RPC auto-adapts built-in channels that only carry an API key', async
   // 则报 no-base-url。内置渠道必须自动适配，opencode-go 走 Adapter 自带的注册表默认端点。
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-quota-builtin-home-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
-  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: {}, resetCards: [], allowedHosts: {} }))
+  await writeFile(join(dshHome, 'dsh-service-quota.json'), JSON.stringify({ version: 1, kinds: {}, resetCards: [], allowedHosts: {}, realmCaps: {} }))
   const requests = []
   const originalGet = https.get
   https.get = (url, options, callback) => {
