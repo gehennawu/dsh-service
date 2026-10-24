@@ -153,7 +153,12 @@ const FeatureSettingsSchema = buildFeatureSettingsSchema(volatileField)
  * 「所有开关变灰、点不动，且与 settings.yaml 里的实际值不符」）。故本协议另建普通 schema。 */
 const FeatureSettingsSectionSchema = buildFeatureSettingsSchema((schema) => schema)
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
-const MAX_NPM_RESPONSE_BYTES = 256 * 1024
+// registry 两个数据源的响应上界分开设：dist-tags 路由只该回几百字节（实测 67 B），保留原
+// 256 KiB 已经极宽；完整 packument 是兜底路由、天生大——@deepseek-ai/dsh 2026-10-24 已
+// 267,842 B，若与 dist-tags 共用 256 KiB，这条兜底对 DSH 永远走不通、等于死代码。按实测
+// ~11 KB/版本的增长，4 MiB 够再用两年以上，同时仍是硬边界（内存占用与 10s 超时都有界）。
+const MAX_NPM_DIST_TAGS_BYTES = 256 * 1024
+const MAX_NPM_PACKUMENT_BYTES = 4 * 1024 * 1024
 // 「本次更新内容」：release 正文由宿主抓取后按纯文本下发，客户端就地渲染。
 // 目标仓库与路径段是宿主常量（浏览器不参与拼装），版本段只接受 semver 字符集——
 // GitHub 对 HTML 响应统一 `x-frame-options: deny`，iframe 载体（官方右栏浏览器 tab）
@@ -453,12 +458,27 @@ function atLeastSemver(current, target) {
 }
 
 // 只请求固定的 npm registry 包元数据：不接受来自浏览器的 URL 或包名，避免 SSRF。
-function fetchPublishedVersions(packageName) {
+// 检查更新只需要三个 tag，因此优先读 `/-/package/<pkg>/dist-tags`（实测 67 B）；完整
+// packument（全部版本清单）只作兜底——它的体积随上游发版单调增长，本插件曾因
+// @deepseek-ai/dsh 在 0.2.1-rc.3 发布后达到 267,842 B、越过当时的 256 KiB 共享上限，导致
+// 「检查更新」整条失败。dist-tags 路由不可用或回执不可解析时才退回 packument：scoped
+// 包缺失时 dist-tags 回 401、packument 回 404，后者才是判「未发布」的可靠信号。
+// 传输类失败（断网/超时/响应超限）不换路重试：换条路一样失败，只会把等待翻倍。
+function npmDistTagsUrl(packageName) {
+  return `${NPM_REGISTRY}-/package/${encodeURIComponent(packageName)}/dist-tags`
+}
+
+function npmPackumentUrl(packageName) {
+  return NPM_REGISTRY + encodeURIComponent(packageName)
+}
+
+function requestNpmRegistryJson(url, maxBytes) {
   return new Promise((resolve, reject) => {
     let settled = false
-    const fail = (error) => {
+    const fail = (error, retryable = false) => {
       if (settled) return
       settled = true
+      if (retryable) error.registryRetryable = true
       reject(error)
     }
     const succeed = (value) => {
@@ -467,7 +487,6 @@ function fetchPublishedVersions(packageName) {
       resolve(value)
     }
 
-    const url = NPM_REGISTRY + encodeURIComponent(packageName)
     const request = https.get(url, {
       timeout: 10000,
       headers: {
@@ -478,7 +497,8 @@ function fetchPublishedVersions(packageName) {
       const status = response.statusCode || 0
       if (status < 200 || status >= 300) {
         response.resume()
-        fail(new Error(`npm registry 返回 HTTP ${status}`))
+        // 路由缺失/包缺失（含 scoped 包在 dist-tags 路由上的 401）都换 packument 再判一次。
+        fail(new Error(`npm registry 返回 HTTP ${status}`), true)
         return
       }
 
@@ -487,7 +507,7 @@ function fetchPublishedVersions(packageName) {
       response.setEncoding('utf8')
       response.on('data', (chunk) => {
         bytes += Buffer.byteLength(chunk)
-        if (bytes > MAX_NPM_RESPONSE_BYTES) {
+        if (bytes > maxBytes) {
           fail(new Error('npm registry 响应过大'))
           request.destroy()
           return
@@ -497,28 +517,14 @@ function fetchPublishedVersions(packageName) {
       response.on('error', fail)
       response.on('end', () => {
         if (settled) return
+        let data
         try {
-          const data = JSON.parse(body)
-          const distTags = data?.['dist-tags'] || {}
-          const normalizeTag = (value) => {
-            const version = typeof value === 'string' ? value.trim() : ''
-            return parseSemver(version) === null ? null : version
-          }
-          const tags = {
-            latest: normalizeTag(distTags.latest),
-            next: normalizeTag(distTags.next),
-            alpha: normalizeTag(distTags.alpha),
-          }
-          const versions = [tags.latest, tags.next, tags.alpha].filter((version) => parseSemver(version) !== null)
-          if (versions.length === 0) {
-            fail(new Error('npm 响应中没有有效的 latest、next 或 alpha 版本'))
-            return
-          }
-          const latest = versions.reduce((selected, version) => compareSemver(version, selected) > 0 ? version : selected)
-          succeed({ latest, tags })
+          data = JSON.parse(body)
         } catch (_) {
-          fail(new Error('解析 npm 响应失败'))
+          fail(new Error('解析 npm 响应失败'), true)
+          return
         }
+        succeed(data)
       })
     })
     request.on('error', fail)
@@ -527,6 +533,40 @@ function fetchPublishedVersions(packageName) {
       fail(new Error('请求 npm registry 超时'))
     })
   })
+}
+
+// dist-tags 路由直接回 `{ latest, next, alpha, ... }`；packument 把它们放在 `dist-tags`
+// 键下。两个来源共用这一份归一：非 semver 的 tag 丢弃，取三者中最高者作为「可用新版本」。
+function publishedVersionsFromTags(distTags) {
+  const source = distTags !== null && typeof distTags === 'object' ? distTags : {}
+  const normalizeTag = (value) => {
+    const version = typeof value === 'string' ? value.trim() : ''
+    return parseSemver(version) === null ? null : version
+  }
+  const tags = {
+    latest: normalizeTag(source.latest),
+    next: normalizeTag(source.next),
+    alpha: normalizeTag(source.alpha),
+  }
+  const versions = [tags.latest, tags.next, tags.alpha].filter((version) => parseSemver(version) !== null)
+  if (versions.length === 0) {
+    // 回执形状不对也值得换 packument 再判一次（镜像改写/路由回错页）。
+    const error = new Error('npm 响应中没有有效的 latest、next 或 alpha 版本')
+    error.registryRetryable = true
+    throw error
+  }
+  const latest = versions.reduce((selected, version) => compareSemver(version, selected) > 0 ? version : selected)
+  return { latest, tags }
+}
+
+async function fetchPublishedVersions(packageName) {
+  try {
+    return publishedVersionsFromTags(await requestNpmRegistryJson(npmDistTagsUrl(packageName), MAX_NPM_DIST_TAGS_BYTES))
+  } catch (error) {
+    if (error?.registryRetryable !== true) throw error
+    // 兜底路由天生大（packument 含全部版本清单），用单独的上界；dist-tags 那条保持 256 KiB。
+    return publishedVersionsFromTags((await requestNpmRegistryJson(npmPackumentUrl(packageName), MAX_NPM_PACKUMENT_BYTES))?.['dist-tags'])
+  }
 }
 
 // 「本次更新内容」的 GitHub release 正文抓取。与 fetchPublishedVersions 同规：

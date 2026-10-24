@@ -2771,7 +2771,9 @@ test('update RPC checks DSH and plugin versions once and reuses the successful c
     process.nextTick(() => {
       callback(response)
       const isDsh = String(url).includes('%40deepseek-ai%2Fdsh')
-      response.emit('data', JSON.stringify({ 'dist-tags': isDsh ? { latest: '0.1.0-rc.7', next: '0.2.0-rc.1', alpha: '0.3.0-alpha.1' } : { latest: '0.10.1', next: '0.11.0', alpha: '0.12.0-alpha.1' } }))
+      const tags = isDsh ? { latest: '0.1.0-rc.7', next: '0.2.0-rc.1', alpha: '0.3.0-alpha.1' } : { latest: '0.10.1', next: '0.11.0', alpha: '0.12.0-alpha.1' }
+      // dist-tags 路由直接回 tag 表；packument 兜底把同一份数据放在 `dist-tags` 键下。
+      response.emit('data', JSON.stringify(String(url).includes('/-/package/') ? tags : { 'dist-tags': tags }))
       response.emit('end')
     })
     return request
@@ -2806,7 +2808,8 @@ test('update RPC preserves the DSH result when the unpublished plugin package re
     process.nextTick(() => {
       callback(response)
       if (response.statusCode === 200) {
-        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '0.1.0-rc.7', next: '0.1.0-rc.7' } }))
+        const tags = { latest: '0.1.0-rc.7', next: '0.1.0-rc.7' }
+        response.emit('data', JSON.stringify(String(url).includes('/-/package/') ? tags : { 'dist-tags': tags }))
         response.emit('end')
       }
     })
@@ -2820,6 +2823,204 @@ test('update RPC preserves the DSH result when the unpublished plugin package re
   assert.equal(result.value.plugin.status, 'unpublished')
   assert.equal(result.value.plugin.current, pluginVersion)
   assert.equal(result.value.plugin.latest, null)
+})
+
+test('check-update reads only the registry dist-tags routes and never downloads the packument', async (t) => {
+  // 回归：2026-10-23 @deepseek-ai/dsh 的 packument 长到 267,842 B、越过当时的 256 KiB
+  // 共享上限后，检查更新整条失败（版本卡显示「暂时无法检查最新版本」）。检查更新只需要
+  // 三个 tag，数据源必须是 dist-tags 路由；一旦有人改回 packument，这个用例的 URL 断言就红。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    const target = String(url)
+    requests.push(target)
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (!target.includes('/-/package/')) {
+        // 兜底路由一旦被请求，就回一个超过 4 MiB 兜底上限的正文——本用例必须完全不碰它。
+        response.emit('data', 'x'.repeat(4 * 1024 * 1024 + 1))
+        response.emit('end')
+        return
+      }
+      const tags = target.includes('%40deepseek-ai%2Fdsh')
+        ? { latest: '0.2.1-rc.2', next: '0.2.1-rc.3', alpha: '0.2.1-alpha.5' }
+        : { latest: '9.9.9', next: '9.9.9' }
+      response.emit('data', JSON.stringify(tags))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.dsh.status, 'available')
+  assert.equal(result.value.dsh.latest, '0.2.1-rc.3', 'the highest of latest/next/alpha wins, as before')
+  assert.deepEqual(requests.sort(), [
+    'https://registry.npmjs.org/-/package/%40deepseek-ai%2Fdsh/dist-tags',
+    'https://registry.npmjs.org/-/package/%40gehennawu%2Fdsh-service/dist-tags',
+  ])
+})
+
+test('a failing dist-tags route falls back to the packument', async (t) => {
+  // 两个互不相同的失败面：DSH 的路由回 404（镜像未实现该路由），插件的回执不是 JSON。
+  // 兜底后两包都恢复可用；scoped 包缺失时 dist-tags 回 401、packument 回 404，
+  // 因此「未发布」判定仍然走 packument 那条路（见上一个用例）。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    const target = String(url)
+    requests.push(target)
+    const isDistTags = target.includes('/-/package/')
+    const isDsh = target.includes('%40deepseek-ai%2Fdsh')
+    const response = new EventEmitter()
+    response.statusCode = isDistTags && isDsh ? 404 : 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (response.statusCode === 200) {
+        const tags = { latest: '0.2.1-rc.2', next: '0.2.1-rc.2' }
+        response.emit('data', isDistTags ? 'not json' : JSON.stringify({ 'dist-tags': tags }))
+        response.emit('end')
+      }
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.dsh.status, 'available')
+  assert.equal(result.value.dsh.latest, '0.2.1-rc.2')
+  assert.equal(result.value.plugin.status, 'available')
+  assert.equal(result.value.plugin.latest, '0.2.1-rc.2')
+  assert.equal(requests.filter((url) => url.includes('/-/package/')).length, 2)
+  assert.deepEqual(requests.filter((url) => !url.includes('/-/package/')).sort(), [
+    'https://registry.npmjs.org/%40deepseek-ai%2Fdsh',
+    'https://registry.npmjs.org/%40gehennawu%2Fdsh-service',
+  ])
+})
+
+test('registry transport failures fail fast without a packument retry', async (t) => {
+  // 断网/超时换条路一样失败；再打一次 packument 只会把面板等待翻倍（10s → 20s）。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => { request.emit('error', new Error('registry unreachable')) })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, false)
+  assert.equal(requests.length, 2, 'one request per package; transport failures must not double the wait')
+})
+
+test('the npm response size cap still bounds the dist-tags route at 256 KiB', async (t) => {
+  // 上限是防上游超大正文吃内存的安全护栏：dist-tags 路由保留原 256 KiB；超限也不换路重试。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    requests.push(String(url))
+    const response = new EventEmitter()
+    response.statusCode = 200
+    response.setEncoding = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      response.emit('data', 'x'.repeat(300 * 1024))
+      response.emit('end')
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, false)
+  assert.equal(requests.length, 2, 'an oversized response fails fast instead of retrying the fallback route')
+})
+
+test('the packument fallback accepts a DSH-sized body that the old 256 KiB bound rejected', async (t) => {
+  // 兜底路由的独立上界必须高于 DSH 当前 packument 体积（2026-10-24 实测 267,842 B），
+  // 否则「dist-tags 路由失败 → 退回 packument」对 DSH 是死代码；同时它也只是兜底，
+  // 不该把 4 MiB 级正文常态化下载（主路仍是 67 B 的 dist-tags）。
+  const originalGet = https.get
+  const requests = []
+  const dshPackument = JSON.stringify({
+    'dist-tags': { latest: '0.2.1-rc.2', next: '0.2.1-rc.3', alpha: null },
+    padding: 'x'.repeat(270 * 1024),
+  })
+  assert.ok(Buffer.byteLength(dshPackument) > 256 * 1024, 'the body must exceed the old shared cap')
+  assert.ok(Buffer.byteLength(dshPackument) < 4 * 1024 * 1024, 'and stay under the dedicated fallback cap')
+  https.get = (url, options, callback) => {
+    const target = String(url)
+    requests.push(target)
+    const isDistTags = target.includes('/-/package/')
+    const response = new EventEmitter()
+    response.statusCode = isDistTags ? 404 : 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (response.statusCode === 200) {
+        response.emit('data', target.includes('%40deepseek-ai%2Fdsh') ? dshPackument : JSON.stringify({ 'dist-tags': { latest: '9.9.9' } }))
+        response.emit('end')
+      }
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, true)
+  assert.equal(result.value.dsh.latest, '0.2.1-rc.3')
+  assert.equal(result.value.plugin.latest, '9.9.9')
+  assert.equal(requests.filter((url) => url.includes('/-/package/')).length, 2)
+  assert.equal(requests.filter((url) => !url.includes('/-/package/')).length, 2)
+})
+
+test('the packument fallback keeps its own 4 MiB hard bound', async (t) => {
+  // 提高上界不等于取消上界：兜底路由同样是硬边界，超限快速失败且不再换路。
+  const originalGet = https.get
+  const requests = []
+  https.get = (url, options, callback) => {
+    const target = String(url)
+    requests.push(target)
+    const isDistTags = target.includes('/-/package/')
+    const response = new EventEmitter()
+    response.statusCode = isDistTags ? 404 : 200
+    response.setEncoding = () => {}
+    response.resume = () => {}
+    const request = new EventEmitter()
+    request.destroy = () => {}
+    process.nextTick(() => {
+      callback(response)
+      if (response.statusCode === 200) {
+        response.emit('data', 'x'.repeat(4 * 1024 * 1024 + 1))
+        response.emit('end')
+      }
+    })
+    return request
+  }
+  t.after(() => { https.get = originalGet })
+  const { handler } = createHost()
+  const result = await handler('check-update', {})
+  assert.equal(result.ok, false)
+  assert.equal(requests.length, 4, 'two dist-tags + two packument requests; no further retry after exceeding the bound')
 })
 
 test('version and restart responses expose one stable process instance id', async () => {
@@ -3024,7 +3225,8 @@ test('release-notes-latest resolves the available new version on the host side a
       callback(response)
       if (isNpm) {
         npmRequests.push(target)
-        response.emit('data', JSON.stringify({ 'dist-tags': { latest: '1.9.9', next: '1.9.9' } }))
+        const tags = { latest: '1.9.9', next: '1.9.9' }
+        response.emit('data', JSON.stringify(target.includes('/-/package/') ? tags : { 'dist-tags': tags }))
         response.emit('end')
         return
       }
@@ -3197,7 +3399,8 @@ function mockPluginRegistry(t, latest = '9.9.9') {
     request.destroy = () => {}
     process.nextTick(() => {
       callback(response)
-      response.emit('data', JSON.stringify({ 'dist-tags': { latest, next: latest } }))
+      const tags = { latest, next: latest }
+      response.emit('data', JSON.stringify(String(url).includes('/-/package/') ? tags : { 'dist-tags': tags }))
       response.emit('end')
     })
     return request
