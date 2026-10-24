@@ -24,7 +24,7 @@ const README_EN = read('README.en.md')
 
 const declared = manifest.engines?.dsh
 const FLOOR = '0.1.1-rc.2'
-const VERIFIED = '0.2.1-rc.2'
+const VERIFIED = '0.2.1-rc.3'
 
 // —— 供本测试自证的最小 semver 子集 ——
 // 只覆盖本插件声明用到的形态（`>=<version>` 单下界）。语义与宿主门禁所用
@@ -91,7 +91,7 @@ test('the open range rejects versions below the floor and admits every later one
   }
   for (const version of [
     '0.1.1-rc.2', '0.1.1', '0.1.5-rc.2', '0.1.7-rc.2', '0.2.0-rc.1', '0.2.0',
-    '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.2', '0.2.1', '0.3.0-beta.1',
+    '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1', '0.3.0-beta.1',
     '0.3.0', '1.0.0', '2.5.7',
   ]) {
     assert.equal(satisfiesOpenFloor(version), true, `${version} is at or above the floor and must be admitted`)
@@ -115,6 +115,7 @@ const EXPECTED = new Map([
   ['0.2.1-alpha.4', true],
   ['0.2.1-alpha.5', true],
   ['0.2.1-rc.2', true],
+  ['0.2.1-rc.3', true],
   ['0.2.1', true],
   ['0.3.0-beta.1', true],
   ['0.3.0', true],
