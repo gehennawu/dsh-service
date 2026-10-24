@@ -169,6 +169,7 @@
           '[data-testid^="sessions-project-header-"]:hover{background:var(--dsw-alias-bg-layer-3,#f2f3f5)}',
           '[data-testid^="sessions-row-"]:hover{background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,0.03))}',
           '[data-testid^="sessions-title-"]:hover{color:var(--dsw-alias-brand-primary,#4e68f3)}',
+          '[data-testid^="backup-row-"]:hover{background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,0.03))}',
           // 主导航条：单行连续分段条；激活段=文字反色块（tab-active 别名）。
           '[data-dshsvc-root] .dshsvc-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;width:100%;box-sizing:border-box;border:0.5px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);overflow:hidden}',
           '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
@@ -6513,142 +6514,182 @@
         const backupBlock = React.createElement('div', { key: 'backup-section' },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
-          React.createElement('p', { style: hint }, translate('backup.description')),
-          React.createElement('div', { style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } },
-            React.createElement('button', { style: Object.assign({}, secondary, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }), 'data-variant': 'brandGhost', onClick: createBackup, disabled: backupBusy }, translate(backupBusy ? 'backup.creating' : 'backup.create')),
-            React.createElement('label', { style: Object.assign({}, neutral, { flex: 1, minWidth: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', cursor: backupImportBusy ? 'default' : 'pointer' }) },
-              translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
-              React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } }))),
-          backupBusy && backupProgress?.active === true
-            ? React.createElement('div', { 'data-testid': 'backup-progress', style: { marginTop: '10px' } },
-                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } },
-                  React.createElement('span', null, translate('backup.progress.' + backupProgressPhase, { current: backupProgressStep, total: 4 })),
-                  React.createElement('span', null, backupProgressDetail)),
-                React.createElement('div', { style: { marginTop: '5px', height: '6px', ...fullRound('999px'), background: 'var(--dsh-svc-raised-bg)', border: '1px solid var(--dsw-alias-border-l1)', overflow: 'hidden' } },
-                  React.createElement('div', { style: { height: '100%', width: backupProgressPercent + '%', background: 'var(--dsw-alias-brand-primary)', transition: 'width 240ms ease' } })))
-            : null,
-          React.createElement('p', { style: hint }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
-          backupManualRestart ? React.createElement('div', { 'data-testid': 'backup-manual-restart', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
-            React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartTitleDesktop' : 'backup.manualRestartTitle')),
-            React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartBodyDesktop' : 'backup.manualRestartBody'))) : null,
-          backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
-          backups.items.length === 0
-            ? React.createElement('p', { style: hint }, translate('backup.empty'))
-            : backups.items.length > 10
-              ? React.createElement('button', { style: Object.assign({}, ghost, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
-              : null,
-          backups.items.length > 0 && (backups.items.length <= 10 || backupDetails)
-            ? React.createElement('div', { style: { marginTop: '10px', display: 'grid', gap: '8px' } },
-                backups.items.map((item) => React.createElement('div', {
-                  key: item.id,
-                  // v0.39 轻行：分隔线代替独立卡片底；主行=文件名，次行=体积 · 时间，行尾上下文操作。
-                  style: { padding: '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', color: 'var(--dsw-alias-label-primary)' },
+            // 现代化操作工具条：说明、体积统计与操作按钮整合
+            React.createElement('div', {
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                flexWrap: 'wrap',
+                padding: '12px 14px',
+                borderRadius: '8px',
+                background: 'var(--dsw-alias-bg-layer-2)',
+                border: '1px solid var(--dsw-alias-border-l1)',
+                marginBottom: '10px',
+              },
+            },
+              React.createElement('div', { style: { minWidth: '200px', flex: '1 1 auto' } },
+                React.createElement('p', { style: Object.assign({}, hint, { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }) }, translate('backup.description')),
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
+                  React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
+                  backups.items.length > 0 ? React.createElement('span', { style: Object.assign({}, svcBadgeStyle('neutral'), { fontSize: '10.5px', padding: '1px 6px' }) }, `${backups.items.length} 份`) : null)),
+              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
+                React.createElement('button', {
+                  type: 'button',
+                  style: Object.assign({}, svcButtonStyle('primary'), { minHeight: '32px', padding: '5px 14px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }),
+                  'data-variant': 'brandGhost',
+                  onClick: createBackup,
+                  disabled: backupBusy,
                 },
-                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' } },
-                  React.createElement('div', null,
-                    React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12px', overflowWrap: 'anywhere' } }, item.name),
-                    // 备份时的 DSH 版本：宿主随每条记录下发 dshVersion，老归档给 null，
-                    // 此时完全不渲染这一节，不给用户看「未知」这种噪声。
-                    item.dshVersion ? React.createElement('div', { 'data-testid': `backup-row-version-${item.id}`, style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, translate('backup.row.version', { version: item.dshVersion })) : null,
-                    React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', marginTop: '3px' } }, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`)),
-                  React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
-                    backupDeleteId === item.id || backupRestoreId === item.id
-                      ? null
-                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
-                    backupDeleteId === item.id || backupRestoreId === item.id
-                      ? null
-                      : React.createElement('button', { style: svcRowActionStyle(), disabled: backupBusy, onClick: () => prepareBackupRestore(item.id) }, translate(backupBusy && backupRestoreId === item.id ? 'backup.inspecting' : 'backup.restore')),
-                    backupDeleteId === item.id || backupRestoreId === item.id
-                      ? null
-                      : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'dangerGhost', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
-                  )),
-                backupDeleteId === item.id
-                  ? React.createElement('div', { style: { marginTop: '8px' } },
-                      React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)', margin: '0 0 6px' }) }, translate('backup.confirmHint')),
-                      React.createElement('div', { style: { display: 'flex', gap: '8px' } },
-                        React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
-                        React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
-                  : backupRestoreId === item.id
-                    ? React.createElement('div', { 'data-testid': 'backup-restore-preflight', style: { marginTop: '8px', padding: '10px', borderRadius: '8px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsh-svc-raised-bg)' } },
-                        backupBusy && backupRestoreReport === null
-                          ? React.createElement('p', { style: hint }, translate('backup.inspecting'))
-                          : backupRestoreReport !== null
-                            ? React.createElement('div', null,
-                                React.createElement('div', { style: { fontWeight: 650, color: backupRestoreReport.validForRestore ? 'var(--dsh-svc-success)' : 'var(--dsh-svc-danger)' } }, translate(backupRestoreReport.validForRestore ? 'backup.integrity.ok' : 'backup.integrity.invalid')),
-                                React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate('backup.integrity.summary', {
-                                  entries: backupRestoreReport.archive?.entryCount || 0,
-                                  size: formatSize(backupRestoreReport.archive?.logicalBytes || 0),
-                                  sessions: backupRestoreReport.sections?.sessions?.files || 0,
-                                  config: backupRestoreReport.sections?.config?.files?.length || 0,
-                                  profiles: backupRestoreReport.sections?.profiles?.count || 0,
-                                })),
-                                // 归档格式标签：v1（旧版所出、不含 Profile 补丁层）与 v2 在恢复语义上
-                                // 不同——旧归档不覆盖现有 patch，界面必须讲清楚，避免误判「恢复了但没生效」。
-                                React.createElement('p', { 'data-testid': 'backup-archive-format', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.format', { format: translate(backupRestoreReport.archiveFormat === 'v2' ? 'backup.format.v2' : 'backup.format.v1') })),
-                                // 备份时的 DSH 版本：恢复是不可逆动作，确认前必须知道这份快照出自哪个版本
-                                // （跨版本降级恢复读不动新格式会话）。元数据缺席（旧插件所出归档）时退回
-                                // 文件名里的版本段；两处都没有就不渲染这一行，而不是显示「未知版本」。
-                                (backupRestoreReport.dshVersion ?? backupRestorePlan?.reportSummary?.dshVersion)
-                                  ? React.createElement('p', { 'data-testid': 'backup-source-version', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.sourceVersion', { version: backupRestoreReport.dshVersion ?? backupRestorePlan.reportSummary.dshVersion }))
-                                  : null,
-                                backupRestoreReport.validForRestore !== true
-                                  ? React.createElement('ul', { style: Object.assign({}, hint, { margin: '6px 0 0', paddingLeft: '18px', color: 'var(--dsh-svc-danger)' }) }, (backupRestoreReport.issues || []).map((issue, index) => React.createElement('li', { key: index }, mapBackupRestoreError(issue.code))))
-                                  : null)
-                            : null,
-                        backupRestorePlan !== null ? React.createElement('div', { style: { marginTop: '8px' } },
-                          // 跨平台提示（只读）：优先用计划里的（按映射后路径重算），没有计划时退回报告版。
-                          (backupRestorePlan.notices?.length || backupRestoreReport?.notices?.length)
-                            ? React.createElement('ul', { 'data-testid': 'backup-restore-notices', style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px', color: 'var(--dsw-alias-state-warn-primary)' }) },
-                                (backupRestorePlan.notices?.length ? backupRestorePlan.notices : backupRestoreReport.notices).map((notice, index) => React.createElement('li', { key: `${notice.code}-${index}`, 'data-notice': notice.code }, translate(`backup.notice.${notice.code}`, { detail: notice.detail || '' }))))
-                            : null,
-                          // profile 映射（P1）：源 profile → 本机目标 profile。目标候选只有
-                          // 「宿主清单」与「与源同名」两种；改动即让宿主按新映射重算计划。
-                          (backupRestorePlan.targets?.profiles?.mapping?.length || 0) > 0
-                            ? React.createElement('div', { 'data-testid': 'backup-restore-mapping', style: { margin: '0 0 8px' } },
-                                React.createElement('div', { style: Object.assign({}, hint, { margin: '0 0 4px' }) }, translate('backup.plan.mappingHint')),
-                                backupRestorePlan.targets.profiles.mapping.map((entry) => {
-                                  const choice = backupProfileChoice[entry.source] ?? { target: entry.target, manifest: entry.manifest === true }
-                                  const candidates = [...new Set([entry.source, ...(backupTargetProfiles?.profiles ?? []).map((profile) => profile.name)])].sort()
-                                  const change = (next) => changeBackupRestoreMapping(backupRestoreId, Object.assign({}, backupProfileChoice, { [entry.source]: next }))
-                                  return React.createElement('div', { key: entry.source, style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '2px 0' } },
-                                    React.createElement('span', { style: { fontFamily: 'monospace', fontSize: '11px' } }, entry.source),
-                                    React.createElement('span', { style: hint }, '→'),
-                                    React.createElement('select', {
-                                      'data-testid': `backup-mapping-target-${entry.source}`,
-                                      'aria-label': translate('backup.plan.mappingHint'),
-                                      value: choice.target,
-                                      disabled: backupBusy,
-                                      onChange: (event) => change({ target: event.target.value, manifest: choice.manifest === true }),
-                                      style: { fontSize: '11px', padding: '2px 4px' },
-                                    }, candidates.map((candidate) => React.createElement('option', { key: candidate, value: candidate }, candidate))),
-                                    React.createElement('label', { style: Object.assign({}, hint, { display: 'inline-flex', alignItems: 'center', gap: '4px' }) },
-                                      React.createElement('input', {
-                                        type: 'checkbox',
-                                        'data-testid': `backup-mapping-manifest-${entry.source}`,
-                                        checked: choice.manifest === true,
+                  React.createElement('svg', { width: '13', height: '13', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2.4', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                    React.createElement('path', { d: 'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z' }),
+                    React.createElement('polyline', { points: '17 21 17 13 7 13 7 21' }),
+                    React.createElement('polyline', { points: '7 3 7 8 15 8' })),
+                  translate(backupBusy ? 'backup.creating' : 'backup.create')),
+                React.createElement('label', {
+                  style: Object.assign({}, svcButtonStyle('neutral'), { minHeight: '32px', padding: '5px 14px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: backupImportBusy ? 'default' : 'pointer' }),
+                },
+                  React.createElement('svg', { width: '13', height: '13', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2.4', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                    React.createElement('path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }),
+                    React.createElement('polyline', { points: '17 8 12 3 7 8' }),
+                    React.createElement('line', { x1: '12', y1: '3', x2: '12', y2: '15' })),
+                  translate(backupImportBusy ? 'backup.importing' : 'backup.import'),
+                  React.createElement('input', { type: 'file', accept: '.tar.gz,application/gzip', disabled: backupImportBusy, onChange: importBackup, style: { display: 'none' } })))),
+            backupBusy && backupProgress?.active === true
+              ? React.createElement('div', { 'data-testid': 'backup-progress', style: { marginBottom: '12px', padding: '10px 12px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)' } },
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', fontWeight: 550 } },
+                    React.createElement('span', null, translate('backup.progress.' + backupProgressPhase, { current: backupProgressStep, total: 4 })),
+                    React.createElement('span', { style: { color: 'var(--dsw-alias-brand-primary)' } }, backupProgressDetail)),
+                  React.createElement('div', { style: { marginTop: '6px', height: '6px', ...fullRound('999px'), background: 'var(--dsw-alias-bg-layer-3)', border: '1px solid var(--dsw-alias-border-l1)', overflow: 'hidden' } },
+                    React.createElement('div', { style: { height: '100%', width: backupProgressPercent + '%', background: 'var(--dsw-alias-brand-primary)', transition: 'width 240ms ease' } })))
+              : null,
+            backupManualRestart ? React.createElement('div', { 'data-testid': 'backup-manual-restart', style: { marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
+              React.createElement('div', { style: { fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartTitleDesktop' : 'backup.manualRestartTitle')),
+              React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate(runtimeEnv !== null && runtimeEnv.electronShell === true ? 'backup.manualRestartBodyDesktop' : 'backup.manualRestartBody'))) : null,
+            backupError ? React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-error-primary)' }) }, backupError) : null,
+            backups.items.length === 0
+              ? React.createElement('p', { style: hint }, translate('backup.empty'))
+              : backups.items.length > 10
+                ? React.createElement('button', { style: Object.assign({}, ghost, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
+                : null,
+            backups.items.length > 0 && (backups.items.length <= 10 || backupDetails)
+              ? React.createElement('div', { style: { marginTop: '8px', display: 'grid', gap: '6px' } },
+                  backups.items.map((item) => React.createElement('div', {
+                    key: item.id,
+                    'data-testid': `backup-row-${item.id}`,
+                    style: { padding: '10px 8px', borderRadius: '6px', borderBottom: '1px solid var(--dsh-svc-border)', color: 'var(--dsw-alias-label-primary)' },
+                  },
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 auto' } },
+                      React.createElement('div', { style: { width: '32px', height: '32px', borderRadius: '6px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' } },
+                        React.createElement('svg', { width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                          React.createElement('polyline', { points: '21 8 21 21 3 21 3 8' }),
+                          React.createElement('rect', { x: '1', y: '3', width: '22', height: '5' }),
+                          React.createElement('line', { x1: '10', y1: '12', x2: '14', y2: '12' }))),
+                      React.createElement('div', { style: { minWidth: 0 } },
+                        React.createElement('div', { style: { fontFamily: 'monospace', fontSize: '12.5px', fontWeight: 600, overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary)' } }, item.name),
+                        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '3px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
+                          React.createElement('span', null, `${formatSize(item.sizeBytes)} · ${new Date(item.createdAt).toLocaleString()}`),
+                          item.dshVersion ? React.createElement('span', { 'data-testid': `backup-row-version-${item.id}`, style: { display: 'inline-flex', alignItems: 'center', padding: '0 6px', borderRadius: '4px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-secondary)', fontSize: '10.5px' } }, translate('backup.row.version', { version: item.dshVersion })) : null))),
+                    React.createElement('div', { style: { display: 'flex', gap: '6px', flexShrink: 0 } },
+                      backupDeleteId === item.id || backupRestoreId === item.id
+                        ? null
+                        : React.createElement('button', { style: svcRowActionStyle(), disabled: backupExportBusy || backupBusy, onClick: () => exportBackup(item.id) }, translate(backupExportBusy ? 'backup.exporting' : 'backup.export')),
+                      backupDeleteId === item.id || backupRestoreId === item.id
+                        ? null
+                        : React.createElement('button', { style: svcRowActionStyle(), disabled: backupBusy, onClick: () => prepareBackupRestore(item.id) }, translate(backupBusy && backupRestoreId === item.id ? 'backup.inspecting' : 'backup.restore')),
+                      backupDeleteId === item.id || backupRestoreId === item.id
+                        ? null
+                        : React.createElement('button', { style: Object.assign({}, dangerGhost, { minHeight: '28px', padding: '4px 9px' }), 'data-variant': 'dangerGhost', disabled: backupBusy, onClick: () => setBackupDeleteId(item.id) }, translate('backup.delete')),
+                    )),
+                  backupDeleteId === item.id
+                    ? React.createElement('div', { style: { marginTop: '8px', padding: '9px 12px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-error-primary)', background: 'rgba(235, 71, 71, 0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' } },
+                        React.createElement('p', { style: { margin: 0, fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)', fontWeight: 550 } }, translate('backup.confirmHint')),
+                        React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                          React.createElement('button', { style: danger, disabled: backupBusy, onClick: () => deleteBackup(item.id) }, translate('backup.confirm')),
+                          React.createElement('button', { style: ghost, disabled: backupBusy, onClick: () => setBackupDeleteId(null) }, translate('backup.cancel'))))
+                    : backupRestoreId === item.id
+                      ? React.createElement('div', { 'data-testid': 'backup-restore-preflight', style: { marginTop: '8px', padding: '12px', borderRadius: '8px', border: '1px solid var(--dsh-svc-border)', background: 'var(--dsw-alias-bg-layer-2)' } },
+                          backupBusy && backupRestoreReport === null
+                            ? React.createElement('p', { style: hint }, translate('backup.inspecting'))
+                            : backupRestoreReport !== null
+                              ? React.createElement('div', null,
+                                  React.createElement('div', { style: { fontWeight: 650, color: backupRestoreReport.validForRestore ? 'var(--dsh-svc-success)' : 'var(--dsh-svc-danger)' } }, translate(backupRestoreReport.validForRestore ? 'backup.integrity.ok' : 'backup.integrity.invalid')),
+                                  React.createElement('p', { style: Object.assign({}, hint, { margin: '4px 0 0' }) }, translate('backup.integrity.summary', {
+                                    entries: backupRestoreReport.archive?.entryCount || 0,
+                                    size: formatSize(backupRestoreReport.archive?.logicalBytes || 0),
+                                    sessions: backupRestoreReport.sections?.sessions?.files || 0,
+                                    config: backupRestoreReport.sections?.config?.files?.length || 0,
+                                    profiles: backupRestoreReport.sections?.profiles?.count || 0,
+                                  })),
+                                  // 归档格式标签：v1（旧版所出、不含 Profile 补丁层）与 v2 在恢复语义上
+                                  // 不同——旧归档不覆盖现有 patch，界面必须讲清楚，避免误判「恢复了但没生效」。
+                                  React.createElement('p', { 'data-testid': 'backup-archive-format', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.format', { format: translate(backupRestoreReport.archiveFormat === 'v2' ? 'backup.format.v2' : 'backup.format.v1') })),
+                                  // 备份时的 DSH 版本：恢复是不可逆动作，确认前必须知道这份快照出自哪个版本
+                                  // （跨版本降级恢复读不动新格式会话）。元数据缺席（旧插件所出归档）时退回
+                                  // 文件名里的版本段；两处都没有就不渲染这一行，而不是显示「未知版本」。
+                                  (backupRestoreReport.dshVersion ?? backupRestorePlan?.reportSummary?.dshVersion)
+                                    ? React.createElement('p', { 'data-testid': 'backup-source-version', style: Object.assign({}, hint, { margin: '2px 0 0' }) }, translate('backup.integrity.sourceVersion', { version: backupRestoreReport.dshVersion ?? backupRestorePlan.reportSummary.dshVersion }))
+                                    : null,
+                                  backupRestoreReport.validForRestore !== true
+                                    ? React.createElement('ul', { style: Object.assign({}, hint, { margin: '6px 0 0', paddingLeft: '18px', color: 'var(--dsh-svc-danger)' }) }, (backupRestoreReport.issues || []).map((issue, index) => React.createElement('li', { key: index }, mapBackupRestoreError(issue.code))))
+                                    : null)
+                              : null,
+                          backupRestorePlan !== null ? React.createElement('div', { style: { marginTop: '8px' } },
+                            // 跨平台提示（只读）：优先用计划里的（按映射后路径重算），没有计划时退回报告版。
+                            (backupRestorePlan.notices?.length || backupRestoreReport?.notices?.length)
+                              ? React.createElement('ul', { 'data-testid': 'backup-restore-notices', style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px', color: 'var(--dsw-alias-state-warn-primary)' }) },
+                                  (backupRestorePlan.notices?.length ? backupRestorePlan.notices : backupRestoreReport.notices).map((notice, index) => React.createElement('li', { key: `${notice.code}-${index}`, 'data-notice': notice.code }, translate(`backup.notice.${notice.code}`, { detail: notice.detail || '' }))))
+                              : null,
+                            // profile 映射（P1）：源 profile → 本机目标 profile。目标候选只有
+                            // 「宿主清单」与「与源同名」两种；改动即让宿主按新映射重算计划。
+                            (backupRestorePlan.targets?.profiles?.mapping?.length || 0) > 0
+                              ? React.createElement('div', { 'data-testid': 'backup-restore-mapping', style: { margin: '0 0 8px' } },
+                                  React.createElement('div', { style: Object.assign({}, hint, { margin: '0 0 4px' }) }, translate('backup.plan.mappingHint')),
+                                  backupRestorePlan.targets.profiles.mapping.map((entry) => {
+                                    const choice = backupProfileChoice[entry.source] ?? { target: entry.target, manifest: entry.manifest === true }
+                                    const candidates = [...new Set([entry.source, ...(backupTargetProfiles?.profiles ?? []).map((profile) => profile.name)])].sort()
+                                    const change = (next) => changeBackupRestoreMapping(backupRestoreId, Object.assign({}, backupProfileChoice, { [entry.source]: next }))
+                                    return React.createElement('div', { key: entry.source, style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '2px 0' } },
+                                      React.createElement('span', { style: { fontFamily: 'monospace', fontSize: '11px' } }, entry.source),
+                                      React.createElement('span', { style: hint }, '→'),
+                                      React.createElement('select', {
+                                        'data-testid': `backup-mapping-target-${entry.source}`,
+                                        'aria-label': translate('backup.plan.mappingHint'),
+                                        value: choice.target,
                                         disabled: backupBusy,
-                                        onChange: (event) => change({ target: choice.target, manifest: event.target.checked }),
-                                      }),
-                                      translate('backup.plan.manifest')))
-                                }))
-                            : null,
-                          React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
-                          React.createElement('ul', { style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px' }) },
-                            React.createElement('li', null, translate('backup.plan.sessions')),
-                            React.createElement('li', null, translate('backup.plan.config', { replace: backupRestorePlan.targets?.config?.replace?.length || 0, remove: backupRestorePlan.targets?.config?.remove?.length || 0 })),
-                            React.createElement('li', null, translate('backup.plan.profiles', { count: backupRestorePlan.targets?.profiles?.upsert?.length || 0 })),
-                            // 补丁层单独一行：为 0 时用「旧归档不覆盖现有配置」的说明替代，不能让
-                            // 用户以为 patch 也被回滚了（实际是刻意保留）。
-                            React.createElement('li', { 'data-testid': 'backup-plan-profile-patches' }, (backupRestorePlan.targets?.profiles?.patches?.length || 0) > 0
-                              ? translate('backup.plan.profilePatches', { count: backupRestorePlan.targets.profiles.patches.length })
-                              : translate('backup.plan.profilePatchesAbsent'))),
-                          React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('backup.plan.expires', { time: new Date(backupRestorePlan.expiresAt).toLocaleTimeString() })),
-                          React.createElement('div', { style: { display: 'flex', gap: '8px' } },
-                            React.createElement('button', { style: danger, disabled: backupBusy, onClick: commitBackupRestore }, translate('backup.restoreConfirm')),
-                            React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel'))))
-                          : React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel')))
-                    : null)))
-            : null))
+                                        onChange: (event) => change({ target: event.target.value, manifest: choice.manifest === true }),
+                                        style: { fontSize: '11px', padding: '2px 4px' },
+                                      }, candidates.map((candidate) => React.createElement('option', { key: candidate, value: candidate }, candidate))),
+                                      React.createElement('label', { style: Object.assign({}, hint, { display: 'inline-flex', alignItems: 'center', gap: '4px' }) },
+                                        React.createElement('input', {
+                                          type: 'checkbox',
+                                          'data-testid': `backup-mapping-manifest-${entry.source}`,
+                                          checked: choice.manifest === true,
+                                          disabled: backupBusy,
+                                          onChange: (event) => change({ target: choice.target, manifest: event.target.checked }),
+                                        }),
+                                        translate('backup.plan.manifest')))
+                                  }))
+                              : null,
+                            React.createElement('p', { style: Object.assign({}, hint, { color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 6px' }) }, translate('backup.restoreHint')),
+                            React.createElement('ul', { style: Object.assign({}, hint, { margin: '0 0 8px', paddingLeft: '18px' }) },
+                              React.createElement('li', null, translate('backup.plan.sessions')),
+                              React.createElement('li', null, translate('backup.plan.config', { replace: backupRestorePlan.targets?.config?.replace?.length || 0, remove: backupRestorePlan.targets?.config?.remove?.length || 0 })),
+                              React.createElement('li', null, translate('backup.plan.profiles', { count: backupRestorePlan.targets?.profiles?.upsert?.length || 0 })),
+                              // 补丁层单独一行：为 0 时用「旧归档不覆盖现有配置」的说明替代，不能让
+                              // 用户以为 patch 也被回滚了（实际是刻意保留）。
+                              React.createElement('li', { 'data-testid': 'backup-plan-profile-patches' }, (backupRestorePlan.targets?.profiles?.patches?.length || 0) > 0
+                                ? translate('backup.plan.profilePatches', { count: backupRestorePlan.targets.profiles.patches.length })
+                                : translate('backup.plan.profilePatchesAbsent'))),
+                            React.createElement('p', { style: Object.assign({}, hint, { margin: '0 0 8px' }) }, translate('backup.plan.expires', { time: new Date(backupRestorePlan.expiresAt).toLocaleTimeString() })),
+                            React.createElement('div', { style: { display: 'flex', gap: '8px' } },
+                              React.createElement('button', { style: danger, disabled: backupBusy, onClick: commitBackupRestore }, translate('backup.restoreConfirm')),
+                              React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel'))))
+                            : React.createElement('button', { style: ghost, disabled: backupBusy, onClick: cancelBackupRestore }, translate('backup.cancel')))
+                      : null)))
+              : null))
 
         // 有更新时状态文本本身可点击：小三角 + 「有新版本：…」整体切换新版 release 内容的展开/收起。
         const chevronIcon = (open) => React.createElement('svg', { xmlns: 'http://www.w3.org/2000/svg', width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round', style: { display: 'block', transition: 'transform 150ms ease', transform: open ? 'rotate(90deg)' : 'none' } },
