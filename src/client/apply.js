@@ -167,6 +167,8 @@
           // v1.4.x：按项目分区头可点击——hover 背景提示可展开/收起。
           '[data-testid^="sessions-project-header-"]{transition:background var(--dsh-svc-dur-fast,120ms)}',
           '[data-testid^="sessions-project-header-"]:hover{background:var(--dsw-alias-bg-layer-3,#f2f3f5)}',
+          '[data-testid^="sessions-row-"]:hover{background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,0.03))}',
+          '[data-testid^="sessions-title-"]:hover{color:var(--dsw-alias-brand-primary,#4e68f3)}',
           // 主导航条：单行连续分段条；激活段=文字反色块（tab-active 别名）。
           '[data-dshsvc-root] .dshsvc-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:2px;width:100%;box-sizing:border-box;border:0.5px solid var(--dsh-svc-border);border-radius:var(--dsh-svc-radius-card);overflow:hidden}',
           '[data-dshsvc-root] .dshsvc-tab{position:relative;display:inline-flex;align-items:center;gap:5px;padding:8px 12px;margin:0;border:0;border-radius:0;background:transparent;color:var(--dsh-svc-text-muted);font:inherit;font-size:12px;font-weight:550;line-height:16px;cursor:pointer;transition:color var(--dsh-svc-dur-fast) ease,background var(--dsh-svc-dur-fast) ease}',
@@ -2969,6 +2971,8 @@
         // v0.39 按钮语义（安全教义）：删除初次出现 = 危险描边，实底红只留给最终确认。
         const dangerOutlineButton = Object.assign({}, chipButton, { background: 'transparent', borderColor: 'var(--dsw-alias-state-error-primary)', color: 'var(--dsw-alias-state-error-primary)' })
         const dangerSolidButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-state-error-primary)', borderColor: 'transparent', color: 'var(--dsh-svc-brand-text)' })
+        const batchActionActiveButton = Object.assign({}, chipButton, { background: 'var(--dsw-alias-bg-layer-2)', borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-primary)', fontWeight: 600 })
+        const batchDangerActiveButton = Object.assign({}, dangerOutlineButton, { fontWeight: 650, background: 'rgba(235, 71, 71, 0.08)', borderColor: 'var(--dsw-alias-state-error-primary)' })
         const inputStyle = { fontSize: '12px', padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', width: '100%', boxSizing: 'border-box' }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
 
@@ -3671,7 +3675,8 @@
             live ? translate('sessions.row.live') : (archived ? translate('sessions.row.archived') : null),
             isDeleted ? translate('sessions.row.deleted') : null,
             item.cwd ? translate('sessions.detail.cwd', { cwd: item.cwd }) : null,
-            isDeleted ? (item.deletedAt ? formatSessionTime(item.deletedAt, translate) : null) : sizeBit,
+            sizeBit,
+            isDeleted ? (item.deletedAt ? formatSessionTime(item.deletedAt, translate) : null) : (item.createdAt ? formatSessionTime(item.createdAt, translate) : null),
           ].filter(Boolean)
           const actions = []
           if (!isDeleted) {
@@ -3694,7 +3699,7 @@
             'data-testid': 'sessions-row-' + id,
             'data-selected': batchMode && selected ? 'true' : undefined,
             onClick: batchMode ? () => toggleSelected(id) : undefined,
-            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 2px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '4px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none', cursor: batchMode ? 'pointer' : 'default' },
+            style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 8px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '6px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none', cursor: batchMode ? 'pointer' : 'default' },
           },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: '1 1 auto' } },
               batchMode ? React.createElement('input', {
@@ -3708,26 +3713,44 @@
               }) : null,
               React.createElement('div', { style: { minWidth: 0 } },
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' } },
-                  React.createElement('span', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+                  React.createElement('span', {
+                    'data-testid': 'sessions-title-' + id,
+                    onClick: !batchMode && !isDeleted ? (event) => { event.stopPropagation(); openDetail(id, 'events', null, event) } : undefined,
+                    style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: !batchMode && !isDeleted ? 'pointer' : 'default', transition: 'color var(--dsh-svc-dur-fast, 120ms)' },
+                  }, title),
                   live ? React.createElement('span', { 'data-testid': 'sessions-tag-live-' + id, style: svcBadgeStyle('success') }, translate('sessions.row.live')) : null,
                   archived ? React.createElement('span', { 'data-testid': 'sessions-tag-archived-' + id, style: svcBadgeStyle('warning') }, translate('sessions.row.archived')) : null,
                   isDeleted ? React.createElement('span', { style: svcBadgeStyle('danger') }, translate('sessions.row.deleted')) : null,
                   !isDeleted && item.subagent === true ? React.createElement('span', { 'data-testid': 'sessions-tag-subagent-' + id, style: svcBadgeStyle('info') }, translate('sessions.row.subagent')) : null),
                 React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · ')))),
-            !batchMode ? React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...actions) : null)
+            !batchMode ? React.createElement('div', {
+              onClick: (event) => event.stopPropagation(),
+              style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' },
+            }, ...actions) : null)
         }
 
         const eventCard = (event, index) => {
           const noise = event.noise === true
+          const hasText = typeof event.text === 'string' && event.text !== ''
           // v0.36 用户点名：正文用官方 MarkdownText 渲染（与官方聊天观感一致、主题 token 同源、
           // 默认拒原始 HTML/危险链接）；官方 seed 缺席的老外壳自动回落纯文本（pre-wrap）。
-          const body = typeof event.text === 'string' && event.text !== ''
+          const body = hasText
             ? React.createElement('div', { 'data-testid': 'sessions-event-text-' + event.seq, style: { marginTop: '4px' } },
                 sessionMarkdownText !== null
                   ? React.createElement(sessionMarkdownText, { text: event.text, labels: sessionMarkdownLabels(translate) })
                   : React.createElement('div', { style: { fontSize: '12px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, event.text))
             : null
-          return React.createElement('div', { key: String(event.seq), 'data-testid': 'sessions-event-' + event.seq, style: { padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)', marginBottom: '5px' } },
+          return React.createElement('div', {
+            key: String(event.seq),
+            'data-testid': 'sessions-event-' + event.seq,
+            style: {
+              padding: hasText ? '8px 10px' : '5px 9px',
+              borderRadius: '8px',
+              border: '1px solid var(--dsw-alias-border-l1)',
+              background: noise ? 'transparent' : 'var(--dsw-alias-bg-layer-3)',
+              marginBottom: hasText ? '6px' : '4px',
+            },
+          },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } },
               React.createElement('span', { 'data-testid': 'sessions-event-type-' + event.seq, style: { fontWeight: 600, color: noise ? 'inherit' : 'var(--dsw-alias-label-secondary)' } }, noise ? translate('sessions.detail.noise') : event.type),
               event.time ? React.createElement('span', null, formatSessionTime(event.time, translate)) : null),
@@ -3768,7 +3791,31 @@
             if (group === null) groups.push({ project, items: [item] })
             else group.items.push(item)
           }
-          return groups.map((group, index) => {
+          const allProjectNames = groups.map((g) => g.project)
+          const allProjectsExpanded = allProjectNames.length > 0 && allProjectNames.every((p) => expandedProjects.includes(p))
+          const toggleAllProjects = () => {
+            if (allProjectsExpanded) setExpandedProjects([])
+            else setExpandedProjects(allProjectNames)
+          }
+          const toggleAllHeader = groups.length > 1 ? React.createElement('div', {
+            style: { display: 'flex', justifyContent: 'flex-end', margin: '0 4px 6px' },
+          },
+            React.createElement('button', {
+              type: 'button',
+              'data-testid': 'sessions-project-toggle-all',
+              onClick: toggleAllProjects,
+              style: {
+                border: 0,
+                background: 'transparent',
+                color: 'var(--dsw-alias-label-secondary)',
+                fontSize: '11.5px',
+                cursor: 'pointer',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                transition: 'color var(--dsh-svc-dur-fast, 120ms)',
+              },
+            }, translate(allProjectsExpanded ? 'sessions.projectGroup.collapseAll' : 'sessions.projectGroup.expandAll'))) : null
+          const groupNodes = groups.map((group, index) => {
             const collapsed = !expandedProjects.includes(group.project)
             return React.createElement('div', {
               key: 'project-group-' + (group.project === '' ? '__none__' : group.project),
@@ -3782,13 +3829,14 @@
                 role: 'button',
                 'aria-expanded': String(!collapsed),
                 onClick: () => toggleProjectExpanded(group.project),
-                style: { display: 'flex', alignItems: 'baseline', gap: '8px', margin: '0 2px 4px', padding: '2px 5px', borderRadius: '6px', cursor: 'pointer', userSelect: 'none' },
+                style: { display: 'flex', alignItems: 'center', gap: '8px', margin: '0 2px 4px', padding: '4px 6px', borderRadius: '6px', cursor: 'pointer', userSelect: 'none', background: collapsed ? 'transparent' : 'var(--dsw-alias-bg-layer-2)' },
               },
-                React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flex: 'none' } }, translate(collapsed ? 'sessions.glyph.expand' : 'sessions.glyph.collapse')),
-                React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 650, color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.project === '' ? translate('sessions.projectGroup.noCwd') : group.project),
+                React.createElement('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flex: 'none', width: '12px', textAlign: 'center' } }, translate(collapsed ? 'sessions.glyph.expand' : 'sessions.glyph.collapse')),
+                React.createElement('span', { style: { fontSize: '12px', fontWeight: 650, color: 'var(--dsw-alias-label-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto' } }, group.project === '' ? translate('sessions.projectGroup.noCwd') : group.project),
                 React.createElement('span', { 'data-testid': 'sessions-project-count-' + index, style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 } }, group.items.length === 1 ? translate('sessions.projectGroup.countOne') : translate('sessions.projectGroup.countMany', { count: group.items.length }))),
               collapsed ? null : group.items.map(listRow))
           })
+          return toggleAllHeader !== null ? [toggleAllHeader, ...groupNodes] : groupNodes
         }
 
         const renderDetail = () => {
@@ -3846,10 +3894,13 @@
           }
           return React.createElement('div', { 'data-testid': 'sessions-detail' },
             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' } },
-              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.detail.back')),
-              React.createElement('span', { style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0 } }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
-              !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: chipButton, onClick: () => { try { (ctx.get?.('uiWorkspace')?.openSession ?? ctx.sessions?.open)?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, translate('sessions.detail.archiveDisabled')),
-              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: chipButton, disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-back', style: Object.assign({}, chipButton, { flexShrink: 0 }), onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.detail.back')),
+              React.createElement('span', {
+                title: targetTitle,
+                style: { fontSize: '14px', fontWeight: 700, color: 'var(--dsw-alias-label-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto' },
+              }, targetTitle !== '' ? targetTitle : translate('sessions.row.noTitle')),
+              !mineRow?.archived ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-open', style: Object.assign({}, chipButton, { flexShrink: 0 }), onClick: () => { try { (ctx.get?.('uiWorkspace')?.openSession ?? ctx.sessions?.open)?.(detail.sessionId) } catch (_) {} } }, translate('sessions.detail.open')) : React.createElement('span', { title: translate('sessions.detail.archiveDisabled'), style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', flexShrink: 0 } }, translate('sessions.detail.archiveDisabled')),
+              React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-export', style: Object.assign({}, chipButton, { flexShrink: 0 }), disabled: exportingId === detail.sessionId, onClick: () => void doExport(detail.sessionId) }, exportingId === detail.sessionId ? translate('sessions.detail.exporting') : translate('sessions.detail.exportAll'))),
             detail.view === 'search' && detail.hitItems !== null ? React.createElement('div', { 'data-testid': 'sessions-jump-view', style: { marginBottom: '10px' } },
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' } },
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-detail-return-search', style: chipButton, onClick: () => setDetail(null) }, translate('sessions.glyph.back') + ' ' + translate('sessions.hit.return')),
@@ -3946,23 +3997,43 @@
             React.createElement('button', { type: 'button', 'data-testid': 'sessions-select-all', style: chipButton, disabled: visibleSelectableIds.length === 0 || batchWorking !== '' || deleting || clearing, onClick: toggleSelectAll }, translate(allVisibleSelected ? 'sessions.batch.clearAll' : 'sessions.batch.selectAll')),
             // 收纳：仅在可见子代理 > 0 时出现（隐藏代替禁用，零子代理视图少一个按钮）。
             filter !== 'deleted' && visibleSubagentIds.length > 0 ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-select-subagents', style: chipButton, disabled: batchWorking !== '' || deleting || clearing, onClick: selectSubagents }, translate('sessions.batch.selectSubagents')) : null,
-            React.createElement('span', { 'data-testid': 'sessions-selected-count', style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginRight: 'auto' } }, translate('sessions.batch.selected', { count: selectedIds.length })),
+            React.createElement('span', { 'data-testid': 'sessions-selected-count', style: { fontSize: '12px', color: selectedIds.length > 0 ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)', fontWeight: selectedIds.length > 0 ? 600 : 400, marginRight: 'auto' } }, translate('sessions.batch.selected', { count: selectedIds.length })),
             filter === 'deleted'
-              ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-clear', style: dangerOutlineButton, disabled: batchClearItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchClear() }, translate('sessions.batch.clear', { count: batchClearItems.length }))
+              ? React.createElement('button', { type: 'button', 'data-testid': 'sessions-batch-clear', style: batchClearItems.length > 0 ? batchDangerActiveButton : dangerOutlineButton, disabled: batchClearItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchClear() }, translate('sessions.batch.clear', { count: batchClearItems.length }))
               : [
-                  React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-batch-export', style: chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
-                  React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-batch-archive', style: chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
-                  list?.canUnarchive !== false ? React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-batch-unarchive', style: chipButton, disabled: batchUnarchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchUnarchive() }, batchWorking === 'unarchive' ? translate('sessions.status.working') : translate('sessions.batch.unarchive', { count: batchUnarchiveItems.length })) : null,
-                  React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
+                  React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-batch-export', style: batchExportItems.length > 0 ? batchActionActiveButton : chipButton, disabled: batchExportItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchExport() }, batchWorking === 'export' ? translate('sessions.status.working') : translate('sessions.batch.export', { count: batchExportItems.length })),
+                  React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-batch-archive', style: batchArchiveItems.length > 0 ? batchActionActiveButton : chipButton, disabled: batchArchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchArchive() }, batchWorking === 'archive' ? translate('sessions.status.working') : translate('sessions.batch.archive', { count: batchArchiveItems.length })),
+                  list?.canUnarchive !== false ? React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-batch-unarchive', style: batchUnarchiveItems.length > 0 ? batchActionActiveButton : chipButton, disabled: batchUnarchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchUnarchive() }, batchWorking === 'unarchive' ? translate('sessions.status.working') : translate('sessions.batch.unarchive', { count: batchUnarchiveItems.length })) : null,
+                  React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: batchDeleteItems.length > 0 ? batchDangerActiveButton : dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
                 ]) : null,
           detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' } },
-            React.createElement('input', { 'data-testid': 'sessions-search-input', type: 'text', placeholder: translate('sessions.search.placeholder'), value: search, onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) }, style: inputStyle }),
-            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
+            React.createElement('div', { style: { position: 'relative', flex: '1 1 200px', minWidth: '160px', display: 'flex', alignItems: 'center' } },
+              React.createElement('span', { style: { position: 'absolute', left: '9px', display: 'flex', alignItems: 'center', pointerEvents: 'none', color: 'var(--dsw-alias-label-tertiary)' } },
+                React.createElement('svg', { width: '13', height: '13', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2.2', strokeLinecap: 'round', strokeLinejoin: 'round' },
+                  React.createElement('circle', { cx: '11', cy: '11', r: '8' }),
+                  React.createElement('line', { x1: '21', y1: '21', x2: '16.65', y2: '16.65' }))),
+              React.createElement('input', {
+                'data-testid': 'sessions-search-input',
+                type: 'text',
+                placeholder: translate('sessions.search.placeholder'),
+                value: search,
+                onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) },
+                style: Object.assign({}, inputStyle, { paddingLeft: '28px', paddingRight: search !== '' ? '28px' : '10px' }),
+              }),
+              search !== '' ? React.createElement('button', {
+                type: 'button',
+                'data-testid': 'sessions-search-clear',
+                title: translate('sessions.search.clear'),
+                'aria-label': translate('sessions.search.clear'),
+                onClick: () => { setSearch(''); setSearchResult(null) },
+                style: { position: 'absolute', right: '7px', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 0, borderRadius: '50%', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', lineHeight: 1, cursor: 'pointer' },
+              }, '×') : null),
+            filter === 'all' ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', userSelect: 'none', cursor: 'pointer' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
-              translate('sessions.search.archivedOnly')),
+              translate('sessions.search.archivedOnly')) : null,
             // 仅子代理：与「仅搜归档」同款复选框（收纳：两个「仅…」限定条件归一行、同一控件语言）；
             // 正交于 scope，批量态可用且不退出批量；已删除视图整行隐藏（墓碑记录无该标志）。
-            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' } },
+            React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', userSelect: 'none', cursor: 'pointer' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-filter-subagent', checked: subagentOnly, onChange: (event) => setSubagentOnly(event.target.checked) }),
               translate('sessions.filter.subagent'))) : null,
           archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + (list?.canUnarchive !== false ? '' : (' · ' + translate('sessions.oneWayHint')))) : null,

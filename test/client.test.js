@@ -12555,6 +12555,77 @@ test('session manager detail survives a fenced code block in event text: Markdow
   assert.ok(typeof copyLabel === 'string' && copyLabel !== '', 'labels.code.copyLabel was passed to MarkdownText')
 })
 
+test('session manager interactive ux: title click opens detail, search clear button resets query, project toggle-all expands and collapses', async () => {
+  const rpcMock = createSessionRpcMock({
+    'sessions-list': () => ({
+      ok: true,
+      value: {
+        canUnarchive: true,
+        items: [
+          { id: 'session-alpha', title: 'Alpha Session', cwd: '/workspace/proj-a', createdAt: 1729738000000, bytes: 2048, live: false, archived: true },
+          { id: 'session-beta', title: 'Beta Session', cwd: '/workspace/proj-b', createdAt: 1729739000000, bytes: 4096, live: false, archived: true },
+        ],
+        deleted: [],
+      },
+    }),
+    'sessions-view': () => ({
+      ok: true,
+      value: {
+        session: { id: 'session-alpha', title: 'Alpha Session' },
+        items: [{ seq: 0, type: 'user/message', time: 1729738000000, text: 'Hello', noise: false }],
+        nextCursor: undefined,
+        total: 1,
+      },
+    }),
+  })
+  const renderer = sessionManagerRenderer(rpcMock)
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+
+  // 1. 点击标题直接进入详情
+  assert.equal(renderer.hasTest('sessions-title-session-alpha'), true)
+  const stopProp = () => {}
+  await renderer.findByTestId('sessions-title-session-alpha').props.onClick({ stopPropagation: stopProp })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), true, 'clicking title opens session detail')
+  // 返回列表
+  await renderer.findByTestId('sessions-detail-back').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-detail'), false, 'back returns to list')
+
+  // 2. 搜索框内输入出现清空按钮，点击清空
+  assert.equal(renderer.hasTest('sessions-search-clear'), false, 'clear button absent when query empty')
+  await renderer.findByTestId('sessions-search-input').props.onChange({ target: { value: 'Alpha' } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-search-clear'), true, 'clear button appears when query is non-empty')
+  await renderer.findByTestId('sessions-search-clear').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-search-input').props.value, '', 'clicking clear resets search value')
+  assert.equal(renderer.hasTest('sessions-search-clear'), false)
+
+  // 3. 切到「按项目」排序，测试一键全部展开/收起
+  await renderer.findByTestId('sessions-sort').props.onChange({ target: { value: 'project' } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-project-toggle-all'), true, 'project toggle-all button appears for multiple projects')
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-collapsed'], 'true')
+  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-collapsed'], 'true')
+  // 点击全部展开
+  await renderer.findByTestId('sessions-project-toggle-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-collapsed'], 'false')
+  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-collapsed'], 'false')
+  // 点击全部折叠
+  await renderer.findByTestId('sessions-project-toggle-all').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('sessions-project-header-0').props['data-collapsed'], 'true')
+  assert.equal(renderer.findByTestId('sessions-project-header-1').props['data-collapsed'], 'true')
+})
+
 // ── 官方右栏文件编辑（v1.6 用户点名）：渲染器档位注册 + 编辑正文交互 ──────────────
 // 槽主（官方文档预览）在真实运行里注入 owner props（resourceAddress/content/wrap），
 // 测试用 mountOnly + slotProps 提供同一形态；documentPreviews 走 options.services 的替身。
