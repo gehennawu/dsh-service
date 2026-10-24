@@ -9427,16 +9427,17 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*width: 28px !important/s)
     assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*max-width: none !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*right: 16px !important/s)
-    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*width: 34px !important/s)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*width: auto !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \[class\*="ZKlsPq_separator"\] \{ display: none !important; \}/)
-    // 两种形态：任务=纯图标 28、子代理=图标+数字 34；箭头/圆点隐藏、::before 画 mask 图标
+    // 两种形态：任务=纯图标 28、子代理=图标+自适应数字；箭头/圆点隐藏、::before 画 mask 图标
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] \{ width: 28px !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] \{ width: 34px !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] \{ width: auto !important; min-width: 28px !important; \}/)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] > svg,\s*html\[data-dshsvc-mobile\] \[class\*="QsffPG_trigger"\] > \[class\*="QsffPG_triggerDot"\]/)
-    // 任务芯片不显示数量；子代理只显示前导 1~2 位数字（无「×」）
+    // 任务芯片不显示数量；子代理官方文本隐藏，数字由 JS 抽到 data-dshsvc-count 后仅画数字
     assert.match(parkingGroup[0], /\[class\*="QsffPG_count"\] \{ display: none !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] > span:not\(\[class\]\) \{[\s\S]*?max-width: 2\.2ch !important/s)
-    assert.doesNotMatch(parkingGroup[0], /content: "×"/, '子代理数字前不再加乘号')
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] > span:not\(\[class\]\) \{ display: none !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]\[data-dshsvc-count\]::after \{[\s\S]*?content: attr\(data-dshsvc-count\)/s)
+    assert.doesNotMatch(parkingGroup[0], /content: "×"/, '子代理数字前不加乘号')
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before,[\s\S]*?\[class\*="ZKlsPq_trigger"\]::before \{[\s\S]*?mask-size: 14px 14px/s)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before \{[^}]*-webkit-mask-image: url\("data:image\/svg\+xml,/)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]::before \{[^}]*-webkit-mask-image: url\("data:image\/svg\+xml,/)

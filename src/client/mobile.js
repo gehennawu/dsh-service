@@ -427,7 +427,8 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      重叠 484px²、More 中心 elementFromPoint 命中芯片；第三个 View 标签也被压。
    · rc.3 起 ≤560 改为紧凑图标态（两种芯片形态不同）：
      任务芯片 = **纯图标 28×28**（计数文字整体隐藏，完整数量仍在 aria-label）；
-     子代理芯片 = **图标 + 数字 34×28**（去掉「×」，只留前导 1~2 位数字）。
+     子代理芯片 = **图标 + 数字**（宽自适应，数字由 JS 抽到 data-dshsvc-count、
+     CSS ::after 只画数字——不裁官方文本，避免「个」字被裁成半个）。
      右锚 54px / 16px；图标用 mask 绘制，箭头/圆点隐藏；
      运行中**只让图标在 business（蓝紫）与 label-secondary（灰）之间闪烁**
      （不加光点、不染色数字），代替被隐藏的 spinner 圆点。
@@ -463,7 +464,7 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
   }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     right: 16px !important;
-    width: 34px !important;
+    width: auto !important;
   }
   /* 分隔符只作用于已泊出的子代理根；带 lineage 切换器而留在 crumbs 里的根
      （:has 守卫排除的那支）保持官方形态不受影响。 */
@@ -485,25 +486,22 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
   }
   /* 任务=纯图标（28）、子代理=图标+数字（34）：箭头与运行圆点统一隐藏 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] { width: 28px !important; }
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: 34px !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: auto !important; min-width: 28px !important; }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg,
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_triggerDot"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > [class*="ZKlsPq_activitySlot"] { display: none !important; }
-  /* 任务芯片不显示数量（纯图标）；子代理只显示前导 1~2 位数字（无「×」）。
-     子代理 count span 无类，用 :not([class]) 定位。 */
+  /* 任务芯片不显示数量（纯图标）；子代理的官方文本整段隐藏，
+     数字由 JS 抽到 data-dshsvc-count、由 ::after 只画数字（不会出现半个「个」）。 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_count"] { display: none !important; }
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > span:not([class]) {
-    display: inline-block !important;
-    flex: none !important;
-    max-width: 2.2ch !important;
-    margin: 0 !important;
-    overflow: hidden !important;
-    white-space: nowrap !important;
-    text-overflow: clip !important;
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > span:not([class]) { display: none !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"][data-dshsvc-count]::after {
+    content: attr(data-dshsvc-count);
+    margin-left: 3px;
     font-size: 11px !important;
     line-height: 1 !important;
-    color: inherit !important;
+    font-variant-numeric: tabular-nums;
+    color: inherit;
   }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before {
@@ -756,6 +754,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
             state.backdrop.style.display = backdropNext
           }
           if (state.debugEnabled && state.debugChip !== null) updateDebugChip()
+          decorateHeaderChips()
         }
 
         /** body 级监听的节流入口：同帧多次变更合并为一次读改（脏标记 + 单发调度），
@@ -893,6 +892,34 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
           return null
         }
 
+        /**
+         * 窄屏计数芯片取数：把「N 个子智能体」里的数字抽到 data-dshsvc-count。
+         * 图标态下官方 count span 整段隐藏、CSS 用 ::after + attr() 只画数字——
+         * 这样不会把「个」字裁成半个（4.5 轮真机目视反馈）。
+         * React 重渲染只覆盖它自己管理的文本/属性，不认 data-*，因此每轮同步幂等重打；
+         * 值不变就不写，避免 body 级观察器自激。
+         * 任务芯片（QsffPG_trigger）是纯图标，不写数字。
+         */
+        const decorateHeaderChips = () => {
+          const header = state.headerEl !== null && state.headerEl.isConnected
+            ? state.headerEl
+            : (() => { try { return document.querySelector('[data-dshsvc-chat-header]') } catch (_) { return null } })()
+          if (header === null || typeof header.querySelectorAll !== 'function') return
+          let nodes = []
+          try { nodes = header.querySelectorAll('[class*="ZKlsPq_trigger"]') } catch (_) { return }
+          for (const el of nodes) {
+            const cls = typeof el.className === 'string' ? el.className : ''
+            if (/ZKlsPq_switcherTrigger/.test(cls)) continue
+            const label = typeof el.getAttribute === 'function' ? el.getAttribute('aria-label') : null
+            const text = typeof el.textContent === 'string' ? el.textContent : ''
+            const match = /(\d+)/.exec(label || '') || /(\d+)/.exec(text)
+            if (match === null) continue
+            const count = match[1]
+            if (typeof el.getAttribute === 'function' && el.getAttribute('data-dshsvc-count') === count) continue
+            try { el.setAttribute('data-dshsvc-count', count) } catch (_) {}
+          }
+        }
+
         /** 头部高度测量 → --dshsvc-header-h。无 ResizeObserver 的环境保持 CSS 常量兜底。 */
         const measureChatHeader = (headerEl) => {
           if (typeof ResizeObserver !== 'function') return
@@ -1025,6 +1052,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
           let available = false
           if (ctx !== null && ctx.phase === 'active') {
             tagChatHeader(ctx)
+            decorateHeaderChips()
             const seat = (() => { try { return document.querySelector('[data-composer-seat]') } catch (_) { return null } })()
             if (seat !== null && nodeContains(ctx.scroller, seat)) {
               let scrollTop = NaN; let scrollHeight = NaN; let clientHeight = NaN
@@ -1833,6 +1861,9 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
           state.resizeHandler = null
           for (const el of [state.styleTag, state.backdrop, state.fab, state.debugChip]) {
             if (el !== null && el.isConnected) el.remove()
+          }
+          for (const el of document.querySelectorAll('[data-dshsvc-count]')) {
+            try { el.removeAttribute('data-dshsvc-count') } catch (_) {}
           }
           for (const el of document.querySelectorAll('[data-dshsvc-frame],[data-dshsvc-sidebar],[data-dshsvc-center],[data-dshsvc-details],[data-dshsvc-rightbar],[data-dshsvc-chat-header]')) {
             el.removeAttribute('data-dshsvc-frame')
