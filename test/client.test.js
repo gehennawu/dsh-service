@@ -9422,21 +9422,26 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     const jobChip = '[class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"])'
     assert.ok(parkingGroup[0].includes(`${jobChip} {`), '任务泊位需越过官方 slot 包装并命中旧新版任务 div')
     assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] > div:has\(> button\[class\*="QsffPG_trigger"\]\)/)
-    // 紧凑态几何：任务 right:54 / 28px、子代理 right:16 / 34px，More 永远在图标带左侧
-    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*right: 54px !important/s)
-    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*width: 28px !important/s)
+    // 紧凑态几何：任务 right:58、子代理 right:16，两枚都宽度自适应，More 永远在图标带左侧
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*right: 58px !important/s)
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*width: auto !important/s)
     assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*max-width: none !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*right: 16px !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*width: auto !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \[class\*="ZKlsPq_separator"\] \{ display: none !important; \}/)
-    // 两种形态：任务=纯图标 28、子代理=图标+自适应数字；箭头/圆点隐藏、::before 画 mask 图标
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] \{ width: 28px !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] \{ width: auto !important; min-width: 28px !important; \}/)
+    // 两枚同形态：图标 + 数字胶囊（宽度自适应、7px 左右内边距）；同一底色/描边，箭头/圆点隐藏
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] \{ width: auto !important; min-width: 28px !important; padding: 0 7px !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] \{ width: auto !important; min-width: 28px !important; padding: 0 7px !important; \}/)
+    // 胶囊外观：2px 图标/数字间距、999px 圆角、bg-layer-2 底 + border-l1 内描边
+    assert.match(parkingGroup[0], /gap: 2px !important;/)
+    assert.match(parkingGroup[0], /border-radius: 999px !important;/)
+    assert.match(parkingGroup[0], /background: var\(--dsw-alias-bg-layer-2,/)
+    assert.match(parkingGroup[0], /box-shadow: inset 0 0 0 1px var\(--dsw-alias-border-l1,/)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] > svg,\s*html\[data-dshsvc-mobile\] \[class\*="QsffPG_trigger"\] > \[class\*="QsffPG_triggerDot"\]/)
-    // 任务芯片不显示数量；子代理官方文本隐藏，数字由 JS 抽到 data-dshsvc-count 后仅画数字
+    // 两枚芯片的官方计数文本都隐藏，数字由 JS 抽到 data-dshsvc-count 后 ::after 只画数字
     assert.match(parkingGroup[0], /\[class\*="QsffPG_count"\] \{ display: none !important; \}/)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] > span:not\(\[class\]\) \{ display: none !important; \}/)
-    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]\[data-dshsvc-count\]::after \{[\s\S]*?content: attr\(data-dshsvc-count\)/s)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]\[data-dshsvc-count\]::after,[\s\S]*?content: attr\(data-dshsvc-count\);[\s\S]*?margin-left: 0;/s)
     assert.doesNotMatch(parkingGroup[0], /content: "×"/, '子代理数字前不加乘号')
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before,[\s\S]*?\[class\*="ZKlsPq_trigger"\]::before \{[\s\S]*?mask-size: 14px 14px/s)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before \{[^}]*-webkit-mask-image: url\("data:image\/svg\+xml,/)
@@ -9445,12 +9450,16 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(parkingGroup[0], /animation: dshsvc-chip-in 180ms ease-out;/)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]:has\(\[class\*="QsffPG_triggerDot"\]\)::before,[\s\S]*?animation: dshsvc-chip-blink 1200ms ease-in-out infinite/s)
     assert.doesNotMatch(parkingGroup[0], /::after \{[^}]*dshsvc-chip/, '运行信号只用图标闪烁，不加光点')
+    // 胶囊底色与图标同节奏闪烁（1200ms），reduced-motion 下同被关闭
+    assert.match(parkingGroup[0], /animation: dshsvc-chip-in 180ms ease-out, dshsvc-chip-pill-blink 1200ms ease-in-out infinite;/)
+    assert.match(styleTag.textContent, /@keyframes dshsvc-chip-pill-blink \{/)
+    assert.match(styleTag.textContent, /color-mix\(in srgb, var\(--dsw-alias-state-business-primary/)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]:has\(\[class\*="ZKlsPq_activitySlot"\]\)::before/)
     assert.match(styleTag.textContent, /@keyframes dshsvc-chip-in \{/)
     assert.match(styleTag.textContent, /@keyframes dshsvc-chip-blink \{/)
     assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation: none !important;/)
     // 防 More 反压：viewTabs 封顶，长标签 + 多 tab 时 More 不会进入右侧 82px 图标带
-    assert.match(parkingGroup[0], /\[class\*="wSkVaW_viewTabs"\] \{ max-width: calc\(100vw - 190px\) !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="wSkVaW_viewTabs"\] \{ max-width: calc\(100vw - 215px\) !important; \}/)
     // 预设芯片右靠贴住更多钮：margin-left:auto 把富余收到标题与动作组之间
     assert.match(parkingGroup[0], /header:not\(\[class\*="wSkVaW_headerBlank"\]\) \[class\*="wSkVaW_headerActions"\] \{ margin-left: auto !important; \}/)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] > \[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*left: auto !important/s)

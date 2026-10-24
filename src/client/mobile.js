@@ -425,15 +425,16 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      计数长文案）在 rc.3 会撞上官方新增的 22px「更多会话视图」钮：
      390px 实测任务芯片 172–280 × 43–71 覆盖 More（216–238 × 47–69），
      重叠 484px²、More 中心 elementFromPoint 命中芯片；第三个 View 标签也被压。
-   · rc.3 起 ≤560 改为紧凑图标态（两种芯片形态不同）：
-     任务芯片 = **纯图标 28×28**（计数文字整体隐藏，完整数量仍在 aria-label）；
-     子代理芯片 = **图标 + 数字**（宽自适应，数字由 JS 抽到 data-dshsvc-count、
-     CSS ::after 只画数字——不裁官方文本，避免「个」字被裁成半个）。
-     右锚 54px / 16px；图标用 mask 绘制，箭头/圆点隐藏；
-     运行中**只让图标在 business（蓝紫）与 label-secondary（灰）之间闪烁**
-     （不加光点、不染色数字），代替被隐藏的 spinner 圆点。
-     图标带最左 = 视口 − 82px，More 永不落入；同时给 viewTabs 封顶
-     calc(100vw − 190px)，避免长标签 + 三枚可见 tab 时 More 反向压到图标带。
+   · rc.3 起 ≤560 改为「图标 + 数字」胶囊（两枚同形态）：
+     官方计数文本整段隐藏，数字由 JS 抽到 data-dshsvc-count、CSS ::after 只画数字
+     ——不裁官方文本，避免「个」字被裁成半个；完整文案仍在 aria-label。
+     胶囊 = bg-layer-2 底 + border-l1 内描边、999px 圆角、图标/数字间距 2px；
+     任务右锚 58px、子代理 16px，宽度自适应；图标用 mask 绘制，箭头/圆点隐藏。
+     运行中**图标与胶囊底色同节奏闪烁**（business 蓝紫 ↔ label-secondary 灰，
+     1200ms），不加光点、不染色数字；胶囊底色的动画必须依赖非 !important 的
+     background（!important 声明会压过 keyframes）。
+     图标带最左 = 视口 − ~110px，More 永不落入；同时给 viewTabs 封顶
+     calc(100vw − 215px)，避免长标签 + 三枚可见 tab 时 More 反向压到图标带。
    · 计数定位：任务为 QsffPG_count 类；子代理的 count span 没有类
      （官方映射表无 count 项）⇒ 用 > span:not([class]) 定位。
    · 旧宿主/新版菜单锚定不变：两枚芯片的下拉菜单改右锚展开并按视口封顶
@@ -455,11 +456,11 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     bottom: 4px !important;
     z-index: 2;
   }
-  /* 图标带只在右侧 82px 内：viewTabs 封顶，长标签也不会把 More 推进来 */
-  html[data-dshsvc-mobile] [class*="wSkVaW_viewTabs"] { max-width: calc(100vw - 190px) !important; }
+  /* 图标带只在右侧 ~110px 内：viewTabs 封顶，长标签也不会把 More 推进来 */
+  html[data-dshsvc-mobile] [class*="wSkVaW_viewTabs"] { max-width: calc(100vw - 215px) !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]) {
-    right: 54px !important;
-    width: 28px !important;
+    right: 58px !important;
+    width: auto !important;
     max-width: none !important;
   }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
@@ -472,32 +473,35 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] {
     position: relative !important;
+    box-sizing: border-box !important;
     height: 28px !important;
     min-width: 0 !important;
     min-height: 28px !important;
     max-width: 100% !important;
-    padding: 0 3px !important;
-    gap: 3px !important;
+    gap: 2px !important;
     justify-content: center !important;
-    border-radius: var(--dsw-radius-md, 8px) !important;
+    border-radius: 999px !important;
+    background: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, 0.12));
+    box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.18)) !important;
     color: var(--dsw-alias-label-secondary) !important;
     transition: background-color 150ms ease, color 150ms ease !important;
     animation: dshsvc-chip-in 180ms ease-out;
   }
-  /* 任务=纯图标（28）、子代理=图标+数字（34）：箭头与运行圆点统一隐藏 */
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] { width: 28px !important; }
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: auto !important; min-width: 28px !important; }
+  /* 两枚芯片同形态：图标 + 数字胶囊（任务=脉冲折线、子代理=人形），同一底色/描边 */
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] { width: auto !important; min-width: 28px !important; padding: 0 7px !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: auto !important; min-width: 28px !important; padding: 0 7px !important; }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg,
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_triggerDot"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > [class*="ZKlsPq_activitySlot"] { display: none !important; }
-  /* 任务芯片不显示数量（纯图标）；子代理的官方文本整段隐藏，
-     数字由 JS 抽到 data-dshsvc-count、由 ::after 只画数字（不会出现半个「个」）。 */
+  /* 两枚芯片的官方计数文本整段隐藏，数字由 JS 抽到 data-dshsvc-count、::after 只画数字
+     （不裁文本 ⇒ 不会出现半个「个」）。 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_count"] { display: none !important; }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > span:not([class]) { display: none !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"][data-dshsvc-count]::after,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"][data-dshsvc-count]::after {
     content: attr(data-dshsvc-count);
-    margin-left: 3px;
+    margin-left: 0;
     font-size: 11px !important;
     line-height: 1 !important;
     font-variant-numeric: tabular-nums;
@@ -527,11 +531,15 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.5'/%3E%3Cpath d='M4.5 20c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5'/%3E%3C/svg%3E");
   }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:hover,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:hover { background: var(--dsw-alias-interactive-bg-hover) !important; }
-  /* 运行中：只有图标在蓝紫与灰之间闪烁（不加光点、不染色数字） */
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
+  /* 运行中：图标与胶囊底色用同一节奏闪烁（蓝紫 ↔ 灰），不加光点、不染色数字 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_triggerDot"])::before,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:has([class*="ZKlsPq_activitySlot"])::before {
     animation: dshsvc-chip-blink 1200ms ease-in-out infinite;
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_triggerDot"]),
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:has([class*="ZKlsPq_activitySlot"]) {
+    animation: dshsvc-chip-in 180ms ease-out, dshsvc-chip-pill-blink 1200ms ease-in-out infinite;
   }
   html[data-dshsvc-mobile] [class*="QsffPG_root"] > [class*="QsffPG_menu"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_menu"] {
@@ -552,6 +560,10 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
 @keyframes dshsvc-chip-blink {
   0%, 100% { background-color: var(--dsw-alias-state-business-primary, #b48df5); }
   50% { background-color: var(--dsw-alias-label-secondary, #8a8a8a); }
+}
+@keyframes dshsvc-chip-pill-blink {
+  0%, 100% { background-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #b48df5) 18%, var(--dsw-alias-bg-layer-2, #222)); }
+  50% { background-color: color-mix(in srgb, var(--dsw-alias-label-secondary, #8a8a8a) 10%, var(--dsw-alias-bg-layer-2, #222)); }
 }
 @media (prefers-reduced-motion: reduce) {
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
@@ -893,12 +905,11 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
         }
 
         /**
-         * 窄屏计数芯片取数：把「N 个子智能体」里的数字抽到 data-dshsvc-count。
-         * 图标态下官方 count span 整段隐藏、CSS 用 ::after + attr() 只画数字——
-         * 这样不会把「个」字裁成半个（4.5 轮真机目视反馈）。
+         * 窄屏计数芯片取数：把「N 个子智能体」/「N 个后台任务…」里的数字抽到
+         * data-dshsvc-count。图标态下官方 count span 整段隐藏、CSS 用 ::after + attr()
+         * 只画数字——这样不会把「个」字裁成半个（真机目视反馈）。
          * React 重渲染只覆盖它自己管理的文本/属性，不认 data-*，因此每轮同步幂等重打；
          * 值不变就不写，避免 body 级观察器自激。
-         * 任务芯片（QsffPG_trigger）是纯图标，不写数字。
          */
         const decorateHeaderChips = () => {
           const header = state.headerEl !== null && state.headerEl.isConnected
@@ -906,7 +917,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
             : (() => { try { return document.querySelector('[data-dshsvc-chat-header]') } catch (_) { return null } })()
           if (header === null || typeof header.querySelectorAll !== 'function') return
           let nodes = []
-          try { nodes = header.querySelectorAll('[class*="ZKlsPq_trigger"]') } catch (_) { return }
+          try { nodes = header.querySelectorAll('[class*="ZKlsPq_trigger"], [class*="QsffPG_trigger"]') } catch (_) { return }
           for (const el of nodes) {
             const cls = typeof el.className === 'string' ? el.className : ''
             if (/ZKlsPq_switcherTrigger/.test(cls)) continue
