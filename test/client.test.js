@@ -9406,10 +9406,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 无条件在场（老宿主没有该元素，不命中即无副作用），且同时收窄间距与允许收缩。
     assert.match(styleTag.textContent, /\[class\*="uV2eYG_standardControls"\] \{ gap: 6px !important; min-width: 0 !important; flex: 0 1 auto !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{ flex: none !important; \}/)
-    // 动作芯片泊位 v2（方案二，2026-09-19 用户定稿）：模式回标题行（headerActions
-    // 保持官方在流不泊），子代理+任务两枚计数芯片 ≤560 右锚泊入标签行成对
-    // （任务 right:110 让出右侧 94px 给子代理 right:16，间隔 ≥0.5px；箭头保留），标签行 gap 36→20，
-    // 箭头/分隔符隐藏、菜单右锚、计数可省略；>560 保持官方在流
+    // 动作芯片泊位 v5（2026-10-24 rc.3 紧凑图标态）：模式回标题行（headerActions
+    // 保持官方在流不泊），子代理+任务两枚计数芯片 ≤560 右锚泊入标签行成对。
+    // rc.3 起官方在标签行右端新增 22px More 钮；rc.2 的「任务 right:110 + 长文案」
+    // 会把它完全盖住（390 实测重叠 484px²），故改为：任务=纯图标 28×28、
+    // 子代理=图标+数字 34×28；右锚 54/16px、箭头/圆点隐藏、mask 图标、
+    // 运行中图标蓝/灰闪烁（无光点）、aria-label 保留完整文案；>560 官方在流
     const parkingGroup = styleTag.textContent.match(
       /@media \(max-width: 560px\) \{\s*html\[data-dshsvc-mobile\] \[data-dshsvc-frame\] > :nth-child\(2\) header:not\(\[class\*="wSkVaW_headerBlank"\]\) \{ position: relative !important; \}[\s\S]*?\n\}/,
     )
@@ -9420,14 +9422,34 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     const jobChip = '[class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"])'
     assert.ok(parkingGroup[0].includes(`${jobChip} {`), '任务泊位需越过官方 slot 包装并命中旧新版任务 div')
     assert.doesNotMatch(parkingGroup[0], /wSkVaW_headerActions"\] > div:has\(> button\[class\*="QsffPG_trigger"\]\)/)
-    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*right: 110px !important/s)
-    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*max-width: calc\(100vw - 282px\) !important/s)
+    // 紧凑态几何：任务 right:54 / 28px、子代理 right:16 / 34px，More 永远在图标带左侧
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*right: 54px !important/s)
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*width: 28px !important/s)
+    assert.match(parkingGroup[0], /div:has\(> button\[class\*="QsffPG_trigger"\]\) \{[^}]*max-width: none !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*right: 16px !important/s)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{[^}]*width: 34px !important/s)
     assert.match(parkingGroup[0], /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \[class\*="ZKlsPq_separator"\] \{ display: none !important; \}/)
-    // 下拉箭头保留（用户点名恢复），仅钉 flex:none 防被压
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] > svg:last-child,\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \[class\*="ZKlsPq_trigger"\] > svg:last-child \{ flex: none !important; \}/)
-    assert.doesNotMatch(parkingGroup[0], /svg:last-child \{ display: none !important; \}/, 'chevrons must stay visible on the parked chips')
-    assert.match(parkingGroup[0], /\[class\*="QsffPG_count"\] \{[^}]*text-overflow: ellipsis !important/s)
+    // 两种形态：任务=纯图标 28、子代理=图标+数字 34；箭头/圆点隐藏、::before 画 mask 图标
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] \{ width: 28px !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] \{ width: 34px !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\] > svg,\s*html\[data-dshsvc-mobile\] \[class\*="QsffPG_trigger"\] > \[class\*="QsffPG_triggerDot"\]/)
+    // 任务芯片不显示数量；子代理只显示前导 1~2 位数字（无「×」）
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_count"\] \{ display: none !important; \}/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\] > span:not\(\[class\]\) \{[\s\S]*?max-width: 2\.2ch !important/s)
+    assert.doesNotMatch(parkingGroup[0], /content: "×"/, '子代理数字前不再加乘号')
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before,[\s\S]*?\[class\*="ZKlsPq_trigger"\]::before \{[\s\S]*?mask-size: 14px 14px/s)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]::before \{[^}]*-webkit-mask-image: url\("data:image\/svg\+xml,/)
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]::before \{[^}]*-webkit-mask-image: url\("data:image\/svg\+xml,/)
+    // 动效：进场 + 运行图标蓝/灰闪烁（:has 能命中被隐藏的 StateDot/activitySlot）
+    assert.match(parkingGroup[0], /animation: dshsvc-chip-in 180ms ease-out;/)
+    assert.match(parkingGroup[0], /\[class\*="QsffPG_trigger"\]:has\(\[class\*="QsffPG_triggerDot"\]\)::before,[\s\S]*?animation: dshsvc-chip-blink 1200ms ease-in-out infinite/s)
+    assert.doesNotMatch(parkingGroup[0], /::after \{[^}]*dshsvc-chip/, '运行信号只用图标闪烁，不加光点')
+    assert.match(parkingGroup[0], /\[class\*="ZKlsPq_trigger"\]:has\(\[class\*="ZKlsPq_activitySlot"\]\)::before/)
+    assert.match(styleTag.textContent, /@keyframes dshsvc-chip-in \{/)
+    assert.match(styleTag.textContent, /@keyframes dshsvc-chip-blink \{/)
+    assert.match(styleTag.textContent, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation: none !important;/)
+    // 防 More 反压：viewTabs 封顶，长标签 + 多 tab 时 More 不会进入右侧 82px 图标带
+    assert.match(parkingGroup[0], /\[class\*="wSkVaW_viewTabs"\] \{ max-width: calc\(100vw - 190px\) !important; \}/)
     // 预设芯片右靠贴住更多钮：margin-left:auto 把富余收到标题与动作组之间
     assert.match(parkingGroup[0], /header:not\(\[class\*="wSkVaW_headerBlank"\]\) \[class\*="wSkVaW_headerActions"\] \{ margin-left: auto !important; \}/)
     assert.match(parkingGroup[0], /\[class\*="QsffPG_root"\] > \[class\*="QsffPG_menu"\],\s*html\[data-dshsvc-mobile\] \[class\*="ZKlsPq_menu"\] \{[^}]*left: auto !important/s)

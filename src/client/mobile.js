@@ -419,28 +419,32 @@ html[data-dshsvc-mobile] [class*="wSkVaW_headerUtilities"] { margin-left: 4px !i
 html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 6px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
-/* 动作芯片泊位 v2（模式回标题行，子代理+任务下标签行
+/* 动作芯片泊位 v4（rc.3 图标+数量态；模式回标题行，子代理+任务下标签行
    右锚成对；官方标签行没有第三方挂载点，泊位=自有 CSS absolute 定位）：
-   · 标签行官方 gap 36→20，标签内容尾按含 SSH 时 ≈172px；
-   · 任务芯片（headerActions 内任务 div:has(> QsffPG_trigger)，alpha.2 无 QsffPG_root 类；运行中带箭头自然宽 ~151.5px）right:110 —— 右侧 94px
-     让给子代理芯片（本次会话实测宽 93.5px，任务与子代理间隔至少 0.5px），右锚成
-     「[任务][子代理]」两枚一排（第三方插件将来若也泊到此带，右缘 16px 起排不受影响）；
-     max-width calc(100vw − 282px) 封顶（右距 110 + 含 SSH 的标签尾约 172），
-     ≤390 档计数文字省略，320 档可用宽仅 38px；
-   · 子代理芯片（ZKlsPq_root）right:16 最贴右；泊离标题后分隔符「/」失去对象，隐藏；
-   · 计数文字 nowrap+ellipsis 可省；下拉箭头保留；
-     320 档任务文字宽 0，但 spinner/箭头可见，完整 aria-label 保留；
-   · 旧宿主两枚芯片的下拉菜单（锚在各自 root 上 top:100%+5、left:0）改右锚展开并按
-     视口封顶（旧版 max-width 100vw−122 沿用既有菜单预算），否则贴右泊位时
-     336px 菜单会越出屏幕（旧宿主 390 档实测左越 46px）；alpha.2 任务菜单 portal
-      至 body 后按触发器位置算 fixed 坐标，不能覆盖其 left/right；
-   · 预设芯片（SVAs4q_label）不再泊动——随官方 headerActions 留在标题行
-     （「模式=会话身份」与标题同级），第三方动作芯片同样留官方原位不受泊位管辖；
-     子代理计数离开 crumbs 后标题吃满整行（390 档 198px）；
+   · rc.2 标定（任务 right:110 + max-width calc(100vw−282px)、子代理 right:16、
+     计数长文案）在 rc.3 会撞上官方新增的 22px「更多会话视图」钮：
+     390px 实测任务芯片 172–280 × 43–71 覆盖 More（216–238 × 47–69），
+     重叠 484px²、More 中心 elementFromPoint 命中芯片；第三个 View 标签也被压。
+   · rc.3 起 ≤560 改为紧凑图标态（两种芯片形态不同）：
+     任务芯片 = **纯图标 28×28**（计数文字整体隐藏，完整数量仍在 aria-label）；
+     子代理芯片 = **图标 + 数字 34×28**（去掉「×」，只留前导 1~2 位数字）。
+     右锚 54px / 16px；图标用 mask 绘制，箭头/圆点隐藏；
+     运行中**只让图标在 business（蓝紫）与 label-secondary（灰）之间闪烁**
+     （不加光点、不染色数字），代替被隐藏的 spinner 圆点。
+     图标带最左 = 视口 − 82px，More 永不落入；同时给 viewTabs 封顶
+     calc(100vw − 190px)，避免长标签 + 三枚可见 tab 时 More 反向压到图标带。
+   · 计数定位：任务为 QsffPG_count 类；子代理的 count span 没有类
+     （官方映射表无 count 项）⇒ 用 > span:not([class]) 定位。
+   · 旧宿主/新版菜单锚定不变：两枚芯片的下拉菜单改右锚展开并按视口封顶
+     （旧版 max-width 100vw−122）；alpha.2 任务菜单 portal 至 body 后按触发器
+     位置算 fixed 坐标，不能覆盖其 left/right；
+   · 预设芯片（SVAs4q_label）随官方 headerActions 留在标题行，不泊动；
    · ≤560 门：561~1023 行宽足够（标题 ≥115px），保持官方在流。blank 空头部
-     :not 守卫不泊。类哈希 QsffPG_ 取自 dsh-client-ui-jobs JobListAction.module.css
-     （旧版仍有根类；新版仅有触发按钮）。结构化锚只匹配 headerActions 子树中直属包含任务按钮的 div（alpha.2 中间多一层 data-slot 包装），
-      :has 不支持时回落官方布局；未来版本仍须复核哈希。 */
+     :not 守卫不泊。类哈希 QsffPG_ 取自 dsh-client-ui-jobs JobListAction.module.css、
+     ZKlsPq_ 取自 dsh-client-ui-subagent SubagentHeaderLineage.module.css（rc.3 复核
+     结构：任务 trigger = [StateDot?][.count][IconChevron]；子代理 trigger =
+     [activitySlot?][count(no class)][IconChevron]）。:has 不支持时回落官方布局；
+     未来版本仍须复核哈希。 */
 @media (max-width: 560px) {
   html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
@@ -450,27 +454,86 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     bottom: 4px !important;
     z-index: 2;
   }
+  /* 图标带只在右侧 82px 内：viewTabs 封顶，长标签也不会把 More 推进来 */
+  html[data-dshsvc-mobile] [class*="wSkVaW_viewTabs"] { max-width: calc(100vw - 190px) !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]) {
-    right: 110px !important;
-    max-width: calc(100vw - 282px) !important;
+    right: 54px !important;
+    width: 28px !important;
+    max-width: none !important;
   }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     right: 16px !important;
+    width: 34px !important;
   }
-  /* 分隔符/箭头/收缩只作用于已泊出的子代理根；带 lineage 切换器而留在
-     crumbs 里的根（:has 守卫排除的那支）保持官方形态不受影响。 */
+  /* 分隔符只作用于已泊出的子代理根；带 lineage 切换器而留在 crumbs 里的根
+     （:has 守卫排除的那支）保持官方形态不受影响。 */
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_separator"] { display: none !important; }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { min-width: 0 !important; max-width: 100% !important; }
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg:last-child,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg:last-child { flex: none !important; }
-  html[data-dshsvc-mobile] [class*="QsffPG_count"] {
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] {
+    position: relative !important;
+    height: 28px !important;
     min-width: 0 !important;
-    flex: 0 1 auto !important;
-    margin: 0 2px !important;
-    white-space: nowrap !important;
+    min-height: 28px !important;
+    max-width: 100% !important;
+    padding: 0 3px !important;
+    gap: 3px !important;
+    justify-content: center !important;
+    border-radius: var(--dsw-radius-md, 8px) !important;
+    color: var(--dsw-alias-label-secondary) !important;
+    transition: background-color 150ms ease, color 150ms ease !important;
+    animation: dshsvc-chip-in 180ms ease-out;
+  }
+  /* 任务=纯图标（28）、子代理=图标+数字（34）：箭头与运行圆点统一隐藏 */
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] { width: 28px !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: 34px !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg,
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_triggerDot"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > [class*="ZKlsPq_activitySlot"] { display: none !important; }
+  /* 任务芯片不显示数量（纯图标）；子代理只显示前导 1~2 位数字（无「×」）。
+     子代理 count span 无类，用 :not([class]) 定位。 */
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_count"] { display: none !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > span:not([class]) {
+    display: inline-block !important;
+    flex: none !important;
+    max-width: 2.2ch !important;
+    margin: 0 !important;
     overflow: hidden !important;
-    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    text-overflow: clip !important;
+    font-size: 11px !important;
+    line-height: 1 !important;
+    color: inherit !important;
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before {
+    content: "";
+    display: block;
+    width: 14px;
+    height: 14px;
+    flex: none;
+    background: currentColor;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: 14px 14px;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: 14px 14px;
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before {
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5 5.5L14 6l2.5 6H21'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5 5.5L14 6l2.5 6H21'/%3E%3C/svg%3E");
+  }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before {
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.5'/%3E%3Cpath d='M4.5 20c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.5'/%3E%3Cpath d='M4.5 20c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5'/%3E%3C/svg%3E");
+  }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:hover,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:hover { background: var(--dsw-alias-interactive-bg-hover) !important; }
+  /* 运行中：只有图标在蓝紫与灰之间闪烁（不加光点、不染色数字） */
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_triggerDot"])::before,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:has([class*="ZKlsPq_activitySlot"])::before {
+    animation: dshsvc-chip-blink 1200ms ease-in-out infinite;
   }
   html[data-dshsvc-mobile] [class*="QsffPG_root"] > [class*="QsffPG_menu"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_menu"] {
@@ -482,6 +545,21 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      动作组之间的全部富余收到中间——标题贴左、模式芯片贴住更多钮（间距 4px），
      标题长短变化时芯片位置稳定不飘。 */
   html[data-dshsvc-mobile] header:not([class*="wSkVaW_headerBlank"]) [class*="wSkVaW_headerActions"] { margin-left: auto !important; }
+}
+/* 计数芯片图标态的进场与运行闪烁（≤560 泊位专用；reduced-motion 下关闭） */
+@keyframes dshsvc-chip-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes dshsvc-chip-blink {
+  0%, 100% { background-color: var(--dsw-alias-state-business-primary, #b48df5); }
+  50% { background-color: var(--dsw-alias-label-secondary, #8a8a8a); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { animation: none !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before { animation: none !important; }
 }
 /* 模式芯片（创造/默认等预设名）恢复可见 —— 官方 0.1.7-rc.1 起的窄屏隐藏语义
    与移动端「模式=会话身份」的定稿冲突（todo-82 方案二：模式芯片留标题行）。
