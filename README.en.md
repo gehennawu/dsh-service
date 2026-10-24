@@ -9,7 +9,7 @@
   <em>DeepSeek Harness (DSH) Web 服务控制与运维插件。</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.0-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.1-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
 [![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20no%20upper%20bound-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
@@ -325,7 +325,7 @@ Key contracts:
 1. Open the **Plugins** page in the left sidebar.
 2. Click the **+ Add plugin** button in the top-right corner.
 3. In the dialog, fill in **one of the three** source forms (the same field accepts all three, and the hint below it follows what you type):
-   - **npm package name (recommended)**: `@gehennawu/dsh-service@2.1.0` — **include the exact version** (written as `package@version`);
+   - **npm package name (recommended)**: `@gehennawu/dsh-service@2.1.1` — **include the exact version** (written as `package@version`);
    - **GitHub repository URL**: `https://github.com/gehennawu/dsh-service` (public repository, no token needed; the shorthand `github:gehennawu/dsh-service` works too);
    - **Local plugin directory**: an absolute path on this machine, e.g. `/path/to/dsh-service` (for your own or pre-downloaded plugins).
 4. Pick the **install source** for your network: the default **official npm registry**, or the **China mainland mirror** if fetching from npm is restricted there (it affects package-name installs only; GitHub URLs and local directories are unaffected).
@@ -336,17 +336,17 @@ Key contracts:
 
 > Tip: all three forms go through the official installation path — no manual profile edits; entering a GitHub URL in the dialog is equivalent to the `github:` prefix on the command line.
 
-> **Why the npm form wants a version**: pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes). **Without a version** (including `@latest`), a release published less than the cooldown period ago is not installed automatically, so the package manager falls back to the newest version that has cleared it — which is why the plugin page may report that it installed x.y.z instead of the latest a.b.c. Writing an **exact version** (e.g. `@gehennawu/dsh-service@2.1.0`) installs exactly the release you name. The cooldown is a supply-chain safety policy, not a sign that the new release is broken; if you are not in a hurry, installing without a version after the 24 hours have passed also reaches the new release.
+> **Why the npm form wants a version**: pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes). **Without a version** (including `@latest`), a release published less than the cooldown period ago is not installed automatically, so the package manager falls back to the newest version that has cleared it — which is why the plugin page may report that it installed x.y.z instead of the latest a.b.c. Writing an **exact version** (e.g. `@gehennawu/dsh-service@2.1.1`) installs exactly the release you name. The cooldown is a supply-chain safety policy, not a sign that the new release is broken; if you are not in a hurry, installing without a version after the 24 hours have passed also reaches the new release.
 
 ### Option 2: Command line
 
 | Method | Command |
 | --- | --- |
-| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.0` |
+| npm (recommended) | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.1` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | Local development | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
-The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above. The npm method is subject to the same pnpm release cooldown: without a version it installs the newest release that has cleared the cooldown, while an exact version (`@gehennawu/dsh-service@2.1.0`) installs that release (see the note under Option 1).
+The command line uses the default npm / pnpm registry; if you need a mirror, point npm / pnpm's registry at one the usual way first, then run the command above. The npm method is subject to the same pnpm release cooldown: without a version it installs the newest release that has cleared the cooldown, while an exact version (`@gehennawu/dsh-service@2.1.1`) installs that release (see the note under Option 1).
 
 Restart DSH Web after installing or updating:
 
@@ -491,7 +491,7 @@ Concurrency protection kicked in: SKILL.md was just modified by an external edit
 <details>
 <summary><strong>The plugin page installed the plugin, but the version is an older one?</strong></summary>
 
-pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes): **installing without a version** (including `@latest`) only selects the newest release that has already cleared the cooldown, so a freshly published release is skipped and the official plugin page reports that it installed x.y.z instead of the latest a.b.c. To get the new version right away: uninstall it in the plugin page and reinstall with `package@version` (e.g. `@gehennawu/dsh-service@2.1.0`), or use this plugin's **Service Control → Upgrade** — it installs an exact version and is not subject to the cooldown. The cooldown is a supply-chain policy (a fresh release may contain defects that are not known yet); after the 24 hours have passed, installing without a version also reaches the new release.
+pnpm 11 enables a supply-chain release cooldown by default (`minimumReleaseAge`, 1440 minutes): **installing without a version** (including `@latest`) only selects the newest release that has already cleared the cooldown, so a freshly published release is skipped and the official plugin page reports that it installed x.y.z instead of the latest a.b.c. To get the new version right away: uninstall it in the plugin page and reinstall with `package@version` (e.g. `@gehennawu/dsh-service@2.1.1`), or use this plugin's **Service Control → Upgrade** — it installs an exact version and is not subject to the cooldown. The cooldown is a supply-chain policy (a fresh release may contain defects that are not known yet); after the 24 hours have passed, installing without a version also reaches the new release.
 </details>
 
 <details>
