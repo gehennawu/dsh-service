@@ -6511,6 +6511,22 @@
             ? `${formatSize(backupProgress.copiedBytes)} / ${formatSize(backupProgress.totalBytes)}`
             : (backupProgress.archiveBytes > 0 ? formatSize(backupProgress.archiveBytes) : '')
 
+        const backupBtnBase = {
+          boxSizing: 'border-box',
+          height: '32px',
+          minHeight: '32px',
+          maxHeight: '32px',
+          padding: '5px 14px',
+          fontSize: '12px',
+          lineHeight: '20px',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '6px',
+          borderRadius: 'var(--dsh-svc-radius-control, 8px)',
+          verticalAlign: 'middle',
+        }
+
         const backupBlock = React.createElement('div', { key: 'backup-section' },
           React.createElement('div', { style: sectionTitle }, translate('backup.title')),
           React.createElement('div', { style: Object.assign({}, displaySurface, { marginTop: '4px' }) },
@@ -6537,7 +6553,7 @@
               React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
                 React.createElement('button', {
                   type: 'button',
-                  style: Object.assign({}, secondary, { minHeight: '32px', padding: '5px 14px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }),
+                  style: Object.assign({}, secondary, backupBtnBase),
                   'data-variant': 'brandGhost',
                   onClick: createBackup,
                   disabled: backupBusy,
@@ -6548,7 +6564,7 @@
                     React.createElement('polyline', { points: '7 3 7 8 15 8' })),
                   translate(backupBusy ? 'backup.creating' : 'backup.create')),
                 React.createElement('label', {
-                  style: Object.assign({}, neutral, { minHeight: '32px', padding: '5px 14px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: backupImportBusy ? 'default' : 'pointer' }),
+                  style: Object.assign({}, neutral, backupBtnBase, { background: 'transparent', cursor: backupImportBusy ? 'default' : 'pointer' }),
                 },
                   React.createElement('svg', { width: '13', height: '13', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2.4', strokeLinecap: 'round', strokeLinejoin: 'round' },
                     React.createElement('path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }),
