@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   createQuotaAdapterCatalog,
   fetchCommandCodeQuota,
+  fetchCliproxyUsage,
   findQuotaAdapter,
   normalizeCommandCodeQuota,
   quotaAdapterRealmCaps,
@@ -13,6 +14,72 @@ import {
   quotaAdapterUsageUrl,
   recognizeQuotaAdapter,
 } from '../quota-adapters.js'
+
+const antigravitySummary = (family) => ({ groups: [{ displayName: family, buckets: [
+  { window: '5h', remainingFraction: 1, resetTime: '2026-10-24T09:27:04Z' },
+  { window: 'weekly', remainingFraction: 0.9, resetTime: '2026-10-31T04:27:04Z' },
+] }] })
+
+async function fetchAntigravityFixture(summary, supplement) {
+  const calls = []
+  const windows = await fetchCliproxyUsage({
+    profile: { name: 'cpa', baseURL: 'https://cpa.example/v1' },
+    config: { allowedHosts: { cpa: ['cpa.example'] } },
+    credential: 'test-management-key',
+    requestJson: async (url, options) => {
+      if (url.endsWith('/auth-files')) return { files: [{ auth_index: 'ag', provider: 'antigravity', email: 'ag@example.com' }] }
+      const call = JSON.parse(options.body)
+      assert.equal(new URL(call.url).hostname, 'daily-cloudcode-pa.googleapis.com')
+      calls.push(call.url.split(':').at(-1))
+      if (calls.length === 1) return { status_code: 200, body: summary }
+      if (supplement instanceof Error) throw supplement
+      return supplement
+    },
+  })
+  return { windows, calls }
+}
+
+test('Antigravity partial summary supplements missing Gemini without replacing Claude summary', async () => {
+  const { windows, calls } = await fetchAntigravityFixture(antigravitySummary('Claude and GPT models'), {
+    status_code: 200, body: { models: {
+      'gemini-2.5-pro': { quotaInfo: { remainingFraction: 0.76961774, resetTime: '2026-10-24T07:44:14Z' } },
+      'claude-sonnet-4-6': { quotaInfo: { remainingFraction: 0.5 } },
+      'gpt-oss-120b-medium': { quotaInfo: { remainingFraction: 0.5 } },
+      'tab_flash_lite_preview': { quotaInfo: { remainingFraction: 1 } },
+      'gemini-internal': { isInternal: true, quotaInfo: { remainingFraction: 1 } },
+    } },
+  })
+  assert.deepEqual(windows.map((w) => [w.kindKey, w.percent]), [['claude-5h', 0], ['claude-week', 10], ['gemini-2.5-pro', 23]])
+  assert.equal(windows[2].resetsAt, '2026-10-24T07:44:14.000Z')
+  assert.deepEqual(calls, ['retrieveUserQuotaSummary', 'fetchAvailableModels'])
+})
+
+test('Antigravity Gemini-only summary supplements missing Claude/GPT models without duplicating Gemini', async () => {
+  const { windows } = await fetchAntigravityFixture(antigravitySummary('Gemini models'), {
+    status_code: 200, body: { models: {
+      'gemini-2.5-pro': { quotaInfo: { remainingFraction: 0.5 } },
+      'claude-sonnet-4-6': { quotaInfo: { remainingFraction: 0.75 } },
+      'gpt-oss-120b-medium': { quotaInfo: { remainingFraction: 0.8 } },
+    } },
+  })
+  assert.deepEqual(windows.map((w) => w.kindKey), ['gemini-5h', 'gemini-week', 'claude-sonnet-4-6', 'gpt-oss-120b-medium'])
+})
+
+test('Antigravity complete summary needs no supplemental request', async () => {
+  const { windows, calls } = await fetchAntigravityFixture({ groups: [
+    ...antigravitySummary('Gemini models').groups, ...antigravitySummary('Claude and GPT models').groups,
+  ] })
+  assert.equal(windows.length, 4)
+  assert.deepEqual(calls, ['retrieveUserQuotaSummary'])
+})
+
+test('Antigravity supplemental failures keep successful summary windows', async () => {
+  for (const supplement of [new Error('timeout'), { status_code: 503, body: {} }, { status_code: 200, body: {} },
+    { status_code: 200, body: { models: { 'claude-sonnet': { quotaInfo: { remainingFraction: 0.5 } } } } }]) {
+    const { windows } = await fetchAntigravityFixture(antigravitySummary('Claude and GPT models'), supplement)
+    assert.deepEqual(windows.map((w) => w.kindKey), ['claude-5h', 'claude-week'])
+  }
+})
 
 test('Vercel USD balance preserves decimal text without inventing a lifetime-spend denominator', () => {
   const adapter = findQuotaAdapter(createCatalog(), 'vercel-ai-gateway')

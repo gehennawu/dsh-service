@@ -1101,6 +1101,15 @@ function buildCliproxyAccountPlan(entry) {
   }
 }
 
+// Summary windows cover model families, not individual model IDs. Only fill families absent
+// from a successful summary; model-level resets must not be relabelled as 5h/week windows.
+function antigravityQuotaFamily(kindKey) {
+  const key = String(kindKey ?? '').toLowerCase()
+  if (key.startsWith('gemini-')) return 'gemini'
+  if (key.startsWith('claude-') || key.startsWith('gpt-oss-')) return 'claude'
+  return undefined
+}
+
 function parseCliproxyUpstream(provider, payload) {
   if (provider === 'codex') return normalizeCodexRateLimit(payload?.rate_limit)
   if (provider === 'antigravity') {
@@ -1184,6 +1193,7 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
     failures.push({ index: accountIndex, code, ...(label !== undefined ? { account: label } : {}), ...extra })
   }
   const runAccount = async (account, accountIndex) => {
+    let summaryFamilies
     for (const call of account.calls) {
       if (callBudget <= 0 || signal?.aborted === true) return
       callBudget -= 1
@@ -1211,7 +1221,20 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
       const { statusCode, payload } = unwrapCliproxyApiCallEnvelope(envelope)
       const parsed = statusCode === 200 && payload !== null ? parseCliproxyUpstream(account.provider, payload) : []
       if (parsed.length > 0) {
+        if (summaryFamilies !== undefined) {
+          const missing = parsed.filter((window) => {
+            const family = antigravityQuotaFamily(window.kindKey)
+            return family !== undefined && !summaryFamilies.has(family)
+          })
+          if (missing.length === 0) continue
+          accountResults.set(accountIndex, [...accountResults.get(accountIndex), ...missing])
+          return
+        }
         accountResults.set(accountIndex, parsed)
+        if (account.provider === 'antigravity' && Array.isArray(payload?.groups)) {
+          summaryFamilies = new Set(parsed.map((window) => antigravityQuotaFamily(window.kindKey)))
+          if (!summaryFamilies.has('gemini') || !summaryFamilies.has('claude')) continue
+        }
         return
       }
       // 官方额度接口的错误原话（payload 里的 message/error.message 等）随失败条目带上，
@@ -1227,11 +1250,8 @@ async function fetchCliproxyUsage({ profile, config, credential, signal, request
         return
       }
     }
-    const fallback = cliproxFallbackWindows(account)
-    if (fallback.length > 0) {
-      accountResults.set(accountIndex, fallback)
-    } else {
-      accountResults.set(accountIndex, [])
+    if (!accountResults.has(accountIndex)) {
+      accountResults.set(accountIndex, cliproxFallbackWindows(account))
     }
   }
   const queue = accounts.map((account, index) => ({ account, index }))
