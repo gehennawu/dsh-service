@@ -1303,279 +1303,7 @@ function normalizeClinePassUsage(payload) {
   return { windows }
 }
 
-// ─── WorkBuddy2API 面板（workbuddy）用量 API ───────────────────────────────
-// 查询面是网关自己的**面板用量 API**（不是 OpenAI 标准 /usage，/status 是账号池状态也不查）：
-//   GET <渠道 baseURL 同源>/panel/api/usage?hours=24
-//   Authorization: Bearer <网关 API Key>
-// 返回 totals（请求/错误/输入输出总 Token/积分/缓存/平均延迟）+ by_realm + by_account + by_model
-// + series（小时桶）。`hours` 同时收窄全部汇总（2026-10-18 真 key 实测：hours=1 时 totals、
-// by_realm、by_account、by_model 同步变成 1 小时口径），缺省即 24h，这里显式钉住。
-//
-// **本渠道只能手动适配**：渠道 baseURL 是中转地址，主机名不构成服务身份（同一个中转域名可以
-// 代理任何上游），自动识别会把「恰好指向该主机的任意渠道」错误认领——故 Adapter 不声明
-// hosts/routeIds，用户在额度页「手动适配」里显式选择本类型。端点取所选渠道 baseURL 的
-// **同源**（中转网关与面板 API 同域：推理是 `…/v1`，面板在根路径 `/panel/api/usage`），
-// 换中转域名无需改代码；baseURL 为空/非法时如实报错，绝不回退到写死的主机。
-//
-// 面板用量只回答「用了多少」，没有剩余额度/套餐窗口；本卡片的百分比只来自区域油表（分母是
-// 每日模型量），其余行按文本窗口下发（宿主只出数字与 K/M/B、s、% 这类语言中立单位）。
-// 总量统计（请求/错误/输入输出 Token/积分/延迟/缓存命中率）不上卡：面板网页就看得到，卡片
-// 顶部改为**限流台账**——`GET <同源>/panel/api/overview` 的
-// `accounts[].rate_limited_models[]`（模型级 6004；`reset_at` 是上游原始重置墙钟，`until` 是
-// 网关自己的路由解锁时刻）与账号级 `cooling`/`until`/`reason`。限流台账是附加信息：拉不到
-// （旧面板没有该端点/权限不足）就不出限流行，绝不影响用量与油表。
-// 时间窗：面板「用量」默认档是 72h（`TRANGE_DEFAULT = '72'`），但用户实测 72h 与面板
-// 账号表仍有出入（面板侧可能另有口径），**明确要求改回 24 小时**。窗口是单一常量，
-// 改档只动这里；服务端对流式窗口按整点对齐（24h 覆盖「当前整点−23h」到此刻）。
-const WORKBUDDY_USAGE_PATH = '/panel/api/usage?hours=24'
-const WORKBUDDY_OVERVIEW_PATH = '/panel/api/overview'
-const MAX_WORKBUDDY_REALMS = 4
-const MAX_WORKBUDDY_ACCOUNTS = 6
-const MAX_WORKBUDDY_LIMIT_REALMS = 4
-const MAX_WORKBUDDY_LIMIT_MODELS = 2
-const MAX_WORKBUDDY_COOLING_ACCOUNTS = 2
-const WORKBUDDY_USAGE_WINDOW_LABEL = '24h'
-// 两个区的**每日模型量**上限（CodeBuddy 账号口径，用户提供）：cn 200M / global 100M。
-// 这两个数是画油表唯一需要的分母——面板 API 本身只回用量、不回上限。
-// **可在额度页的「配置」区按 provider 覆盖**（写进 `$DSH_HOME/dsh-service-quota.json` 的
-// `realmCaps` 区块）；这里是未配置时的默认值。未登记上限的区只出文字行、不画进度（不编分母）。
-const WORKBUDDY_DEFAULT_REALM_CAPS = Object.freeze({ cn: 200000000, global: 100000000 })
 const MAX_QUOTA_REALM_CAPS = 8
-
-/** 非负有限数；其它（null/布尔/空串/负数/NaN）一律 undefined，不猜 0。
- * 注意 Number(null)/Number('')/Number(false) 都是 0——必须先按类型拒掉，否则「缺失」
- * 会被渲染成「0 请求 / 0 Token」的假数据。 */
-function workbuddyNumber(value) {
-  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : undefined
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value)
-    return Number.isFinite(n) && n >= 0 ? n : undefined
-  }
-  return undefined
-}
-
-/** 与客户端 formatCompactCount 同一套 K/M/B 档位（语言中立单位，宿主可安全拼进文本）。 */
-function workbuddyCompactCount(value) {
-  if (value >= 1e9) return `${Math.round(value / 1e8) / 10}B`
-  if (value >= 1e6) return `${Math.round(value / 1e5) / 10}M`
-  if (value >= 1e3) return `${Math.round(value / 1e2) / 10}K`
-  return String(Math.round(value))
-}
-
-/** 积分等小数量：两位小数（与面板同口径），不引入本地化千分位。 */
-function workbuddyDecimalText(value) {
-  return (Math.round(value * 100) / 100).toFixed(2)
-}
-
-/** 面板时间（`reset_at`/`until`）归一成 ISO：只有可解析的字符串才收，其余 undefined。
- * 归一化阶段**不按「现在」过滤**（宿主时钟/浏览器时钟差不该让台账凭空消失），
- * 倒计时是否显示由客户端按自己的时钟判断。 */
-function workbuddyIsoTime(value) {
-  if (typeof value !== 'string' || value.trim() === '') return undefined
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined
-}
-
-/** 账号/区域标签是纯数据：去控制字符、压空白、限长；空值返回 undefined（不造占位文案）。 */
-function workbuddyLabel(value, maxLength) {
-  if (typeof value !== 'string') return undefined
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return cleaned === '' ? undefined : cleaned.slice(0, maxLength)
-}
-
-/** 汇总行的「请求 / Token / 积分」三段：缺哪段就少哪段，全缺返回空数组（调用方跳过整行）。 */
-function workbuddyUsageParts(row) {
-  const parts = []
-  const requests = workbuddyNumber(row?.requests)
-  if (requests !== undefined) parts.push({ kindKey: 'requests', text: String(Math.round(requests)) })
-  const tokens = workbuddyNumber(row?.total_tokens)
-  if (tokens !== undefined) parts.push({ kindKey: 'tokens', text: workbuddyCompactCount(tokens) })
-  const credits = workbuddyNumber(row?.credits)
-  if (credits !== undefined) parts.push({ kindKey: 'credits', text: workbuddyDecimalText(credits) })
-  return parts
-}
-
-/** 面板余额台账（`/panel/api/overview` 的 `accounts[].credits` / `credits_total`）：
- *  key = 账号 uid，与用量 `by_account[].key` 同值（2026-10-19 真机核对）。返回
- *  `Map<uid, {credits, total}>`；没有余额字段的账号不进表——宁可回落「本窗口消耗积分」，
- *  也不把未知余额渲染成 0。 */
-function workbuddyCreditBalances(limits) {
-  const balances = new Map()
-  if (limits === null || typeof limits !== 'object' || Array.isArray(limits) || !Array.isArray(limits.accounts)) return balances
-  for (const account of limits.accounts) {
-    if (account === null || typeof account !== 'object' || Array.isArray(account)) continue
-    const uid = workbuddyLabel(account.uid, 64)
-    const credits = workbuddyNumber(account.credits)
-    if (uid === undefined || credits === undefined) continue
-    balances.set(uid, { credits, total: workbuddyNumber(account.credits_total) })
-  }
-  return balances
-}
-
-/** 剩余积分文本：面板积分是整数；有总额度时给「剩余 / 总额」，否则只给剩余。 */
-function workbuddyCreditBalanceText(balance) {
-  const credits = String(Math.round(balance.credits))
-  return balance.total !== undefined && balance.total > 0 ? `${credits} / ${String(Math.round(balance.total))}` : credits
-}
-
-/** 限流行：把面板限流台账（`/panel/api/overview`）转成文字窗口。
- *  - 模型级（上游 6004）：按域一行，段 = 模型 + 上游重置时刻（`reset_at`；缺失退 `until`）；
- *  - 账号级冷却（429/5xx 等）：每号一行（≤2），段 = 原因 + 恢复时刻；
- *  - 台账可用但当前无锁 → 一行「—」明确「现在是通的」；台账不可用（null）→ 不出行。
- * 时间一律下发 ISO（part 的 `iso` 字段），由客户端按浏览器时区格式化——宿主时区可能是
- * UTC，直接拼「HH:mm」会让用户看到错的时间。 */
-function workbuddyLimitWindows(limits, realmOrder) {
-  if (limits === null || typeof limits !== 'object' || Array.isArray(limits) || !Array.isArray(limits.accounts)) return []
-  const accounts = limits.accounts
-  const byRealm = new Map()
-  const cooling = []
-  for (const account of accounts) {
-    if (account === null || typeof account !== 'object' || Array.isArray(account)) continue
-    const realm = workbuddyLabel(account.realm, 32)
-    const listed = Array.isArray(account.rate_limited_models) ? account.rate_limited_models : []
-    for (const entry of listed) {
-      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
-      // 只收「配额限流」：11102 model_unavailable 是模型不存在/不可用，不是额度，重试时间也不该
-      // 被读成「配额重置」。
-      if (typeof entry.kind === 'string' && entry.kind !== '' && entry.kind !== 'rate_limit') continue
-      const model = workbuddyLabel(entry.model, 64)
-      if (model === undefined) continue
-      const at = workbuddyIsoTime(entry.reset_at) ?? workbuddyIsoTime(entry.until)
-      const key = realm ?? ''
-      if (!byRealm.has(key)) byRealm.set(key, new Map())
-      const bucket = byRealm.get(key)
-      const previous = bucket.get(model)
-      // 同一模型可能挂在多个账号上：取最早的重置时刻（先恢复的那个）。
-      if (previous === undefined || (at !== undefined && (previous === undefined || Date.parse(at) < Date.parse(previous)))) bucket.set(model, at)
-    }
-    if (account.cooling === true) {
-      const parts = []
-      const reason = workbuddyLabel(account.reason, 48)
-      if (reason !== undefined) parts.push({ kindKey: 'reason', text: reason })
-      const until = workbuddyIsoTime(account.until)
-      if (until !== undefined) parts.push({ kindKey: 'reset-at', iso: until })
-      if (parts.length === 0) continue
-      const label = workbuddyLabel(account.nickname, 48) ?? realm
-      cooling.push({ ...(label !== undefined ? { label } : {}), parts, ...(until !== undefined ? { resetsAt: until } : {}) })
-    }
-  }
-  const windows = []
-  const rank = (key) => {
-    const index = realmOrder.indexOf(key)
-    return index === -1 ? realmOrder.length : index
-  }
-  const keys = [...byRealm.keys()].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_WORKBUDDY_LIMIT_REALMS)
-  for (const key of keys) {
-    const parts = []
-    let shown = 0
-    let hidden = 0
-    let earliest
-    for (const [model, at] of byRealm.get(key)) {
-      if (shown >= MAX_WORKBUDDY_LIMIT_MODELS) { hidden += 1; continue }
-      shown += 1
-      parts.push({ kindKey: '', text: model })
-      if (at !== undefined) {
-        parts.push({ kindKey: 'reset-at', iso: at })
-        if (earliest === undefined || Date.parse(at) < Date.parse(earliest)) earliest = at
-      }
-    }
-    if (hidden > 0) parts.push({ kindKey: '', text: `+${hidden}` })
-    windows.push({
-      id: key === '' ? `limit-${windows.length}` : `limit-${key}`,
-      kindKey: 'limit-models',
-      ...(key === '' ? {} : { label: key }),
-      parts,
-      ...(earliest !== undefined ? { resetsAt: earliest } : {}),
-    })
-  }
-  for (const entry of cooling.slice(0, MAX_WORKBUDDY_COOLING_ACCOUNTS)) {
-    windows.push({ id: `cooling-${windows.length}`, kindKey: 'account-cooling', ...entry })
-  }
-  if (windows.length === 0) windows.push({ id: 'limit', kindKey: 'rate-limits', text: '—' })
-  return windows
-}
-
-function normalizeWorkbuddyUsage(payload, realmCaps, limits) {
-  const caps = realmCaps !== null && typeof realmCaps === 'object' && !Array.isArray(realmCaps) ? realmCaps : WORKBUDDY_DEFAULT_REALM_CAPS
-  const windows = []
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return { windows }
-  const totals = payload.totals
-  const hasTotals = totals !== null && typeof totals === 'object' && !Array.isArray(totals)
-  const realms = (Array.isArray(payload.by_realm) ? payload.by_realm : [])
-    .filter((realm) => realm !== null && typeof realm === 'object' && !Array.isArray(realm))
-    .slice(0, MAX_WORKBUDDY_REALMS)
-  const accounts = (Array.isArray(payload.by_account) ? payload.by_account : [])
-    .filter((account) => account !== null && typeof account === 'object' && !Array.isArray(account))
-    .sort((a, b) => (workbuddyNumber(b.total_tokens) ?? 0) - (workbuddyNumber(a.total_tokens) ?? 0))
-    .slice(0, MAX_WORKBUDDY_ACCOUNTS)
-  // 面板返回既没有 totals 也没有任何汇总 → 形状不认识（fetcher 转 bad-payload:shape，不谎报成功）。
-  if (!hasTotals && realms.length === 0 && accounts.length === 0) return { windows }
-  // 统计口径行：下面区域油表与账号行都是这个滚动窗口内的数字。
-  windows.push({ id: 'usage-window', kindKey: 'usage-window', text: WORKBUDDY_USAGE_WINDOW_LABEL })
-  // 限流台账（用户要求：卡片顶部只展示限流相关信息，总量统计不再上卡）。
-  const realmOrder = realms.map((realm) => workbuddyLabel(realm.key, 32)).filter((key) => key !== undefined)
-  windows.push(...workbuddyLimitWindows(limits, realmOrder))
-
-  // 区域行画成**百分比窗口**（油表/进度条）：分母 = 该区每日模型量上限。这是本渠道唯一
-  // 有真实分母的量——账号行没有上限，只能出文字行（不编分母）。
-  // percent 截到 100，`used`/`limit` 原值下发，客户端显示「100% · 200.7M / 200M」
-  // （超上限时仍看得见真实用量，不是假的刚好 100%）。
-  for (const realm of realms) {
-    const key = workbuddyLabel(realm.key, 32)
-    if (key === undefined) continue
-    const cap = Object.prototype.hasOwnProperty.call(caps, key) ? Number(caps[key]) : undefined
-    const tokens = workbuddyNumber(realm.total_tokens)
-    if (cap === undefined || tokens === undefined || cap <= 0) {
-      // 没上限的区退回文字行（请求 / Token / 积分），不画进度。
-      const parts = workbuddyUsageParts(realm)
-      if (parts.length > 0) windows.push({ id: `realm-${key}`, kindKey: 'realm-usage', label: key, parts })
-      continue
-    }
-    windows.push({
-      id: `realm-${key}`,
-      kindKey: 'realm-daily-tokens',
-      label: key,
-      percent: Math.min(100, Math.round((tokens / cap) * 100)),
-      used: tokens,
-      limit: cap,
-    })
-  }
-
-  const balances = workbuddyCreditBalances(limits)
-  accounts.forEach((account, index) => {
-    const parts = workbuddyUsageParts(account)
-    if (parts.length === 0) return
-    // 剩余积分优先用面板余额台账（`credits` 是余额，用量行的 `credits` 是本窗口消耗）：
-    // 同一段里替换掉「消耗」，否则一行放不下两个积分口径。台账缺失（旧面板/无权限）就
-    // 保留窗口消耗，与改版前一致。
-    const uid = workbuddyLabel(account.key, 64)
-    const balance = uid === undefined ? undefined : balances.get(uid)
-    if (balance !== undefined) {
-      const part = { kindKey: 'credit-balance', text: workbuddyCreditBalanceText(balance) }
-      const at = parts.findIndex((entry) => entry.kindKey === 'credits')
-      if (at === -1) parts.push(part)
-      else parts[at] = part
-    }
-    // 标签优先级：账号昵称/邮箱（数据）→ 区域码 → 截断的账号键；全缺就不带标签。
-    const label = workbuddyLabel(account.extra, 128) ?? workbuddyLabel(account.realm, 32) ?? workbuddyLabel(account.key, 32)
-    windows.push({ id: `account-${index}`, kindKey: 'account-usage', ...(label !== undefined ? { label } : {}), parts })
-  })
-  return { windows }
-}
-
-/**
- * 面板端点 = 所选渠道 baseURL 的同源 + 固定路径（中转网关与面板 API 同域）。
- * 只接受 HTTPS、无 userinfo、默认端口；空/非法 baseURL 如实报错，不猜、不回退写死主机。
- */
-function workbuddyPanelUrl(profile) {
-  const declared = String(profile?.baseURL ?? '').trim()
-  if (declared === '') return { error: 'no-base-url' }
-  let parsed
-  try { parsed = new URL(declared) } catch (_) { return { error: 'unsafe-provider-endpoint' } }
-  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return { error: 'unsafe-provider-endpoint' }
-  if (parsed.port !== '' && parsed.port !== '443') return { error: 'unsafe-provider-endpoint' }
-  return { url: `${parsed.origin}${WORKBUDDY_USAGE_PATH}` }
-}
 
 /**
  * 单个 provider 的 realmCaps 归一：区键 `[A-Za-z0-9_-]{1,32}`、值正整数 tokens ≤1e12，
@@ -1597,11 +1325,6 @@ function sanitizeRealmCaps(raw, maxRealms = MAX_QUOTA_REALM_CAPS) {
   return out
 }
 
-/** 配置覆盖合并到默认上限：只接受正整数，其它条目忽略（坏配置不得让油表变成乱码）。 */
-function mergeWorkbuddyRealmCaps(providerCaps) {
-  return { ...WORKBUDDY_DEFAULT_REALM_CAPS, ...sanitizeRealmCaps(providerCaps) }
-}
-
 /**
  * 有效上限（默认 + provider 覆盖），供额度快照下发给客户端渲染输入框。
  * 没有默认值的 Adapter（不画油表的渠道）返回 undefined。
@@ -1609,47 +1332,7 @@ function mergeWorkbuddyRealmCaps(providerCaps) {
 function quotaAdapterRealmCaps(adapter, providerCaps) {
   const metadata = ADAPTER_METADATA.get(adapter)
   if (metadata === undefined || metadata.realmCaps === undefined) return undefined
-  return mergeWorkbuddyRealmCaps(providerCaps)
-}
-
-async function fetchWorkbuddyUsage({ profile, config, credential, signal, requestJson }) {
-  if (typeof requestJson !== 'function') throw new Error('transport-unavailable')
-  const endpoint = workbuddyPanelUrl(profile)
-  if (endpoint.error !== undefined) throw new Error(endpoint.error)
-  const raw = String(credential ?? '').trim()
-  if (raw === '') throw new Error('credential-missing')
-  // 发现链已按 policy.format 加了 Bearer；粘贴带回的 `Authorization: Bearer x` 整头也容错。
-  const token = raw.replace(/^authorization:\s*/i, '').replace(/^bearer\s+/i, '')
-  if (token === '') throw new Error('credential-missing')
-  let payload
-  try {
-    payload = await requestJson(endpoint.url, { authorization: `Bearer ${token}`, signal })
-  } catch (error) {
-    if (error?.message === 'http-status:401' || error?.message === 'http-status:403') {
-      const rejected = new Error('credential-rejected')
-      if (typeof error?.detail === 'string' && error.detail !== '') rejected.detail = error.detail
-      throw rejected
-    }
-    throw error
-  }
-  // 限流台账是**附加信息**：同源的 /panel/api/overview 拿账号池状态（含 6004 的 reset_at）。
-  // 旧面板没有该端点、或该 key 无权读面板面 → 静默降级（limits = null，卡片不出限流行），
-  // 绝不让附加查询的失败把「用量」本身打成错误。
-  let limits = null
-  try {
-    const origin = new URL(endpoint.url).origin
-    const overview = await requestJson(`${origin}${WORKBUDDY_OVERVIEW_PATH}`, { authorization: `Bearer ${token}`, signal })
-    if (overview !== null && typeof overview === 'object' && Array.isArray(overview.accounts)) limits = overview
-  } catch (error) {
-    if (signal?.aborted === true) throw error
-    limits = null
-  }
-  const providerCaps = config?.realmCaps !== null && typeof config?.realmCaps === 'object'
-    ? config.realmCaps[String(profile?.name ?? '')]
-    : undefined
-  const windows = normalizeWorkbuddyUsage(payload, mergeWorkbuddyRealmCaps(providerCaps), limits).windows
-  if (windows.length === 0) throw new Error('bad-payload:shape')
-  return windows
+  return { ...metadata.realmCaps, ...sanitizeRealmCaps(providerCaps) }
 }
 
 function createQuotaAdapterCatalog() {
@@ -1799,16 +1482,6 @@ function createQuotaAdapterCatalog() {
       routeIds: ['command-goat'],
       usageUrl: 'https://commandcode.ai/settings/usage',
     }),
-    createComposedAdapter({
-      kind: 'workbuddy',
-      fetch: fetchWorkbuddyUsage,
-      keyHints: ['WORKBUDDY_API_KEY'],
-      // 只走手动适配：baseURL 是中转地址，主机名不构成服务身份（见上方分节注释）。
-      // 不声明 hosts/routeIds ⇒ recognize() 恒 false，绝不自动认领任何渠道。
-      // 不设 usageUrl：中转域名随部署而变，静态外链会指错（面板就在所选渠道同源根路径）。
-      // realmCaps：油表分母的默认值（额度页可按 provider 覆盖，写进 quota 配置的 realmCaps）。
-      realmCaps: WORKBUDDY_DEFAULT_REALM_CAPS,
-    }),
   ])
 }
 
@@ -1848,10 +1521,7 @@ export {
   fetchCliproxyUsage,
   fetchCommandCodeQuota,
   fetchStepFunStepPlanUsage,
-  fetchWorkbuddyUsage,
   MAX_QUOTA_REALM_CAPS,
-  WORKBUDDY_DEFAULT_REALM_CAPS,
-  workbuddyPanelUrl,
   fetchXiaomiTokenPlanUsage,
   findQuotaAdapter,
   normalizeAntigravityModels,
@@ -1866,8 +1536,6 @@ export {
   normalizeSiliconFlowInfo,
   normalizeStepfunBalance,
   normalizeStepFunStepPlanUsage,
-  mergeWorkbuddyRealmCaps,
-  normalizeWorkbuddyUsage,
   normalizeXiaomiTokenPlanUsage,
   normalizeZaiCodingUsage,
   prepareQuotaAdapterConfig,

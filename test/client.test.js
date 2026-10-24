@@ -6293,7 +6293,7 @@ test('quota kind dropdown offers command-goat alongside every other built-in ada
   await renderer.findButton('额度查询').props.onClick()
   await renderer.flush()
   const kinds = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(kinds, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'workbuddy', 'poe', 'clinepass', 'vercel-ai-gateway'])
+  assert.deepEqual(kinds, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway'])
   const labels = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.children).flat(Infinity)
   assert.ok(labels.includes('Command Code 账号额度'), `kind dropdown labels missing command-goat: ${JSON.stringify(labels)}`)
   assert.ok(labels.includes('Vercel AI Gateway 余额'))
@@ -6399,7 +6399,7 @@ test('remote quota card lists providers, saves kind via whitelist RPC, and persi
   const candidateValues = renderer.findByTestId('quota-add-provider').children.flat(Infinity).map((option) => option.props.value)
   assert.deepEqual(candidateValues, ['', 'opencode-go', 'zai-coding-cn'])
   const addKindValues = renderer.findByTestId('quota-add-kind').children.flat(Infinity).map((option) => option.props.value)
-  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'workbuddy', 'poe', 'clinepass', 'vercel-ai-gateway'])
+  assert.deepEqual(addKindValues, ['', 'opencode-go', 'zai-coding-cn', 'openrouter', 'kimi', 'siliconflow', 'deepseek', 'stepfun', 'stepfun-step-plan', 'xiaomi-token-plan-cn', 'cliproxy', 'command-goat', 'poe', 'clinepass', 'vercel-ai-gateway'])
   assert.match(text, /智谱 GLM Coding Plan/)
   assert.equal(renderer.findByTestId('quota-add-submit').props.disabled, true)
   // 「配置」未展开时重置卡行不挂「移除」钮；展开后才出现（平时不出现破坏性按钮）。
@@ -13764,8 +13764,7 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.ok(cpaSpec.m.includes('stroke="currentColor"') || cpaSpec.m.includes('stroke='), 'cliproxy mark must carry outer diamond stroke')
 
   // ③c2 WorkBuddy / WorkBuddy2API 中转网关：官方 WorkBuddy 品牌标（workbuddy.cn favicon
-  // 的 40×40 矢量版，本地 CUSTOM_SVG）。渠道名 workbuddy2api-panel 是用户实际使用的
-  // 手动适配渠道名；workbuddy2api / workbuddy 作别名与前缀。
+  // 的 40×40 矢量版，本地 CUSTOM_SVG），按渠道名称、别名与前缀匹配。
   for (const name of ['workbuddy2api-panel', 'workbuddy2api', 'workbuddy', 'WorkBuddy2API-Panel']) {
     assert.equal(icons.resolve(name).slug, 'workbuddy', `${name} must resolve to the WorkBuddy mark`)
   }
@@ -13774,8 +13773,7 @@ test('model provider icons: exact table, prefix aliases, segment fallback, and u
   assert.equal(workbuddySpec.c, 1, 'WorkBuddy mark must be color tier (official green gradient plate)')
   assert.ok(workbuddySpec.m.includes('url(#paint0_linear'), 'WorkBuddy mark must keep the official gradient plate')
   assert.ok(workbuddySpec.m.includes('#0EC8A9') && workbuddySpec.m.includes('#01C886'), 'WorkBuddy mark must keep the official brand gradient stops')
-  // 手动适配兜底：渠道名认不出时按适配类型取图形（中转网关的通用路径）。
-  assert.equal(icons.resolve('my-wb-relay', { quotaKind: 'workbuddy' }).slug, 'workbuddy')
+  assert.equal(icons.resolve('my-wb-relay', { quotaKind: 'workbuddy' }), null, 'removed quota kind provides no icon fallback')
 
   // 判定是否显示在对话框的条件是用户在余额查询里手动适配过 CLIProxyAPI：
   // 未在余额查询中手动适配时，cpa 渠道解析为 null（不显示）；显式标记已适配时解析为 cliproxy
@@ -17160,137 +17158,4 @@ test('settings entry: rail mode is icon-only and keeps the accessible label', as
   assert.equal(button.props['data-collapsed'], 'true')
   assert.equal(button.props['aria-label'], '设置')
   assert.equal(renderer.text('sidebar.footer.action'), '', 'the collapsed rail renders the icon without the visible label')
-})
-
-test('workbuddy card shows the rate-limit ledger, realm gauges and account rollups (totals stay off-card)', async () => {
-  const storeListeners = new Set()
-  const store = {
-    snapshot: { current: { provider: 'workbuddy', model: 'cn:deepseek-v4.1-flash' } },
-    subscribe(fn) { storeListeners.add(fn); return () => storeListeners.delete(fn) },
-    getSnapshot() { return this.snapshot },
-  }
-  const modelDirectories = {
-    directoryFor() {
-      return { store, load: () => Promise.resolve() }
-    },
-  }
-  const realmCapCalls = []
-  // 限流行的上游重置时刻：用动态未来时刻（倒计时行只在未来才渲染；断言按浏览器本地时区算期望值）。
-  const resetAt = new Date(Date.now() + 3 * 3600_000).toISOString()
-  const renderer = quotaRingRenderer(async (channel, endpoint, payload) => {
-    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
-    if (endpoint === 'usage') return { ok: true, value: { indexedSessions: 0, projects: [], days: [], models: [], totals: {}, errors: [] } }
-    if (endpoint === 'quota-realm-caps') { realmCapCalls.push(payload); return { ok: true, value: { realmCaps: payload.caps ?? {} } } }
-    if (endpoint === 'quota-refresh') return { ok: true }
-    if (endpoint === 'quota') {
-      return {
-        ok: true,
-        value: {
-          serverTime: Date.now(),
-          providers: [{
-            provider: 'workbuddy',
-            displayName: 'Workbuddy',
-            adapted: true,
-            kind: 'workbuddy',
-            kindSource: 'auto',
-            refreshing: false,
-            status: 'ok',
-            fetchedAt: Date.now(),
-            // 宿主下发的油表分母（默认 + provider 覆盖）：客户端据此渲染「设置每日模型量」入口。
-            realmCaps: { cn: 200000000, global: 100000000 },
-            // 宿主归一化后的形状：统计口径 + 限流台账（限流模型 + 上游重置墙钟）+ 账号文本窗口；
-            // 区域是百分比窗口。
-            windows: [
-              { id: 'usage-window', kindKey: 'usage-window', text: '24h' },
-              { id: 'limit-cn', kindKey: 'limit-models', label: 'cn', parts: [
-                { kindKey: '', text: 'glm-5.3' },
-                { kindKey: 'reset-at', iso: resetAt },
-                { kindKey: '', text: 'kimi-k3' },
-                { kindKey: '', text: '+1' },
-              ], resetsAt: resetAt },
-              // 区域行是百分比窗口：分母 = 每日模型量上限（宿主常量），超上限 percent 截 100。
-              { id: 'realm-cn', kindKey: 'realm-daily-tokens', label: 'cn', percent: 100, used: 200702562, limit: 200000000 },
-              { id: 'realm-global', kindKey: 'realm-daily-tokens', label: 'global', percent: 57, used: 57320630, limit: 100000000 },
-              { id: 'account-0', kindKey: 'account-usage', label: '神经蛙', parts: [
-                { kindKey: 'requests', text: '749' }, { kindKey: 'tokens', text: '200.7M' }, { kindKey: 'credit-balance', text: '1205 / 1305' },
-              ] },
-            ],
-          }],
-        },
-      }
-    }
-    return { ok: false, error: 'fixture' }
-  }, modelDirectories)
-  await renderer.load()
-  await renderer.flush()
-  await renderer.flush()
-
-  // 区域行有真实分母（每日模型量）⇒ 圆环出现；当前模型是 `cn:` 前缀 → 圆环读 cn 行（100%），
-  // 弹层/提示里带上区域码，不再被另一区的高占用盖掉。
-  const ring = renderer.findByTestId('quota-ring-trigger')
-  assert.ok(ring, 'the ring renders now that a percent window exists')
-  assert.match(String(ring.props['aria-label']), /已用 100%/)
-  assert.match(String(ring.props['aria-label']), /cn ·/)
-  // 切到 global 模型 → 圆环改读 global 行（57%）；去掉前缀 → 回退「最紧窗口」（100%）。
-  const setSessionModel = async (model) => {
-    store.snapshot = { current: { provider: 'workbuddy', model } }
-    for (const fn of [...storeListeners]) fn()
-    await renderer.flush()
-  }
-  await setSessionModel('global:gpt-5.6-sol')
-  assert.match(String(renderer.findByTestId('quota-ring-trigger').props['aria-label']), /global · 已用 57%/)
-  await setSessionModel('deepseek-v4.1-flash')
-  assert.match(String(renderer.findByTestId('quota-ring-trigger').props['aria-label']), /已用 100%/)
-  assert.equal(String(renderer.findByTestId('quota-ring-trigger').props['aria-label']).includes(' · cn · '), false, 'no realm prefix → no realm tag')
-  await setSessionModel('cn:deepseek-v4.1-flash')
-
-  // 设置页额度卡：限流行（模型 + 上游重置时刻，时间由客户端按浏览器时区格式化）+
-  // 账号 parts + 区域油表，标签走客户端词典（宿主只给数字/ISO）。
-  await renderer.findButton('额度查询').props.onClick()
-  await renderer.flush()
-  const textOf = (id) => renderer.findByTestId(`quota-card-text-workbuddy-${id}`).children.join('')
-  assert.equal(textOf('usage-window'), '24h')
-  // 重置时刻：ISO 由宿主下发，这里按浏览器本地时区算期望值（测试环境时区无关）。
-  const resetStamp = (() => {
-    const date = new Date(resetAt)
-    const pad = (value) => String(value).padStart(2, '0')
-    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-  })()
-  assert.equal(textOf('limit-cn'), `glm-5.3 · 重置 ${resetStamp} · kimi-k3 · +1`)
-  // 限流行带 resetsAt（未来）→ 出现倒计时行。
-  assert.ok(renderer.findByTestId('quota-card-reset-workbuddy-limit-cn'), 'limit row shows the reset countdown')
-  // 总量统计已从卡片移除：红框里的 8 个窗口一个都不应再出现。
-  for (const id of ['requests', 'errors', 'prompt-tokens', 'completion-tokens', 'total-tokens', 'usage-credits', 'avg-latency', 'cache-hit-rate']) {
-    assert.equal(renderer.hasTest(`quota-card-window-workbuddy-${id}`), false, `${id} must no longer be on the card`)
-  }
-  // 区域：百分比 + 已用/上限（超上限时仍显示真实 used，不是假的刚好 100%）。
-  // 百分比窗口的数值走 span（无独立 testid），整行文本在窗口节点上。
-  const realmRowText = JSON.stringify(renderer.findByTestId('quota-card-window-workbuddy-realm-cn'))
-  assert.match(realmRowText, /100% · 200\.7M \/ 200M/)
-  assert.equal(renderer.findByTestId('quota-card-bar-workbuddy-realm-cn').children[0].props.style.width, '100%')
-  assert.equal(textOf('account-0'), '请求 749 · Token 200.7M · 剩余积分 1205 / 1305')
-  assert.match(renderer.text(), /cn · 限流模型/)
-  assert.match(renderer.text(), /cn · 每日模型量/)
-  assert.match(renderer.text(), /神经蛙 · 账号用量/)
-  // 每个窗口都有独立行（卡内 testid 带 provider 前缀）。
-  assert.ok(renderer.findByTestId('quota-card-window-workbuddy-account-0'))
-
-  // 英文词典同键：parts 标签与窗口标签随界面语言切换。
-  renderer.setLocale('en')
-  assert.equal(renderer.findByTestId('quota-card-text-workbuddy-account-0').children.join(''), 'requests 749 · tokens 200.7M · credits left 1205 / 1305')
-  assert.equal(renderer.findByTestId('quota-card-text-workbuddy-limit-cn').children.join(''), `glm-5.3 · resets ${resetStamp} · kimi-k3 · +1`)
-  assert.match(renderer.text(), /cn · Limited models/)
-  assert.match(renderer.text(), /cn · Daily volume/)
-
-  // 分母编辑器暂时下线（用户要求先按默认分母观察几天）：配置区**不应**再出现入口，
-  // 但宿主下发 `realmCaps` 与油表本身照常工作。恢复展示 = 把
-  // `QUOTA_REALM_CAP_EDITOR_VISIBLE` 改回 true，本段断言随之恢复「保存/恢复默认」两个调用。
-  renderer.setLocale('zh')
-  renderer.findByTestId('quota-advanced-toggle-workbuddy').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.hasTest('quota-realm-cap-edit-workbuddy'), false, 'the caps editor is hidden while the flag is off')
-  assert.equal(renderer.hasTest('quota-realm-cap-editor-workbuddy'), false)
-  // 油表仍按宿主下发的默认分母画（配置区入口没有也照常出百分比）。
-  assert.match(renderer.text(), /cn · 每日模型量/)
-  assert.deepEqual(realmCapCalls, [], 'no caps RPC is issued while the editor is hidden')
 })

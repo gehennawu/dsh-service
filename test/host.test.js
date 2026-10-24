@@ -3878,7 +3878,7 @@ test('quota config parsing falls back safely on corruption and drops unknown kin
     realmCaps: { wb: { cn: 300000000, global: '150000000', bad: -1, 'no space': 5 }, other: 'nope', ghost: {} },
   }))
   assert.deepEqual(withRealmCaps.realmCaps, { wb: { cn: 300000000, global: 150000000 } })
-  assert.deepEqual(withRealmCaps.kinds, { wb: 'workbuddy' })
+  assert.deepEqual(withRealmCaps.kinds, {}, 'removed WorkBuddy adaptation is ignored without changing legacy caps')
   assert.deepEqual(parseQuotaConfigText(JSON.stringify({ version: 1, kinds: {}, realmCaps: [1, 2] })).realmCaps, {})
   const withCards = parseQuotaConfigText(JSON.stringify({
     version: 1,

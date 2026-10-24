@@ -4802,7 +4802,7 @@
                       QUOTA_KIND_OPTIONS.map((kind) => React.createElement('option', { key: kind, value: kind }, translate(`quota.kind.${kind}`))),
                       React.createElement('option', { value: '__auto__' }, translate('quota.followAuto')),
                       React.createElement('option', { value: '' }, translate('quota.disable')))),
-                    // 油表分母（每日模型量）：只有宿主下发 realmCaps 的渠道才有这块（workbuddy）。
+                    // 油表分母（每日模型量）：只有宿主下发 realmCaps 的渠道才有这块。
                     // 平时是一个入口按钮，点开后给每个区域一个 M tokens 输入框 + 保存/恢复默认。
                     ...(isAdvanced && QUOTA_REALM_CAP_EDITOR_VISIBLE && row.realmCaps !== null && typeof row.realmCaps === 'object'
                       ? (() => {

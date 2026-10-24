@@ -193,7 +193,7 @@ export function createQuotaRoutes({
     'quota-realm-caps': { feature: 'quotaLookup', audit: true, handle: async (payload, rpcEndpoint) => {
       try {
         // 油表分母的 provider 级覆盖：{provider, caps:{realm: tokens}} 写入，{clear:true} 恢复默认。
-        // 只接受已适配且**声明了默认分母**的 Adapter（目前是 workbuddy）——其它渠道写进来
+        // 只接受已适配且**声明了默认分母**的 Adapter——其它渠道写进来
         // 也没有消费者，反而会污染配置文件。provider 必须来自宿主自己的渠道清单。
         const providerName = typeof payload?.provider === 'string' ? payload.provider : ''
         const profileForProvider = readQuotaProfiles(ctx.get('settings'), ctx.get('llm')).find((candidate) => candidate.name === providerName)

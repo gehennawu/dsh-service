@@ -4,11 +4,8 @@ import test from 'node:test'
 import {
   createQuotaAdapterCatalog,
   fetchCommandCodeQuota,
-  fetchWorkbuddyUsage,
   findQuotaAdapter,
-  mergeWorkbuddyRealmCaps,
   normalizeCommandCodeQuota,
-  normalizeWorkbuddyUsage,
   quotaAdapterRealmCaps,
   sanitizeRealmCaps,
   prepareQuotaAdapterConfig,
@@ -98,7 +95,7 @@ function createCatalog() {
 test('quota Adapter catalog exposes one exact five-method interface per unique kind', () => {
   const adapters = createCatalog()
   const expectedInterface = ['credentialPolicy', 'fetchUsage', 'kind', 'normalize', 'recognize']
-  assert.equal(adapters.length, 15)
+  assert.equal(adapters.length, 14)
   assert.equal(new Set(adapters.map((adapter) => adapter.kind)).size, adapters.length)
   for (const adapter of adapters) {
     assert.deepEqual(Object.keys(adapter).sort(), expectedInterface)
@@ -413,333 +410,19 @@ test('Command Code adapter claims the api host and exposes the fixed usage page'
   assert.equal(policy.entryKey, 'edit')
 })
 
-// ─── Workbuddy 网关（workbuddy）面板用量 API ────────────────────────────────
-// 真实形状来自 2026-10-18 真 key 实测（/panel/api/usage?hours=24）：totals + by_realm + by_account
-// + by_model + series；hours 收窄全部汇总。这里只固定归一化与传输契约。
-const WORKBUDDY_FIXTURE = {
-  totals: {
-    requests: 1077, errors: 13,
-    prompt_tokens: 257200000, completion_tokens: 734600, total_tokens: 257934600,
-    credits: 99.97, cache_hit_rate: 99.54, avg_latency_ms: 5670,
-  },
-  by_realm: [
-    { key: 'cn', requests: 749, total_tokens: 200702562, credits: 99.97 },
-    { key: 'global', requests: 328, total_tokens: 57320630, credits: 0 },
-  ],
-  by_account: [
-    { key: 'acct-b', realm: 'global', extra: 'user@example.com', requests: 328, total_tokens: 57320630, credits: 0 },
-    { key: 'acct-a', realm: 'cn', extra: '神经蛙', requests: 749, total_tokens: 200702562, credits: 99.97 },
-  ],
-}
-
-// /panel/api/overview 的限流台账（2026-10-19 真机形状）：账号级 cooling/until/reason +
-// 模型级 rate_limited_models（reset_at 是上游原始重置墙钟，until 是网关自己的解锁时刻）；
-// accounts[].credits / credits_total 是**剩余积分 / 总额度**（与用量行的 credits=窗口消耗不同名不同义），
-// uid 与用量 by_account[].key 同值，用来把余额挂回账号行。
-const WORKBUDDY_OVERVIEW = {
-  accounts: [
-    {
-      uid: 'acct-a', nickname: '神经蛙', realm: 'cn', cooling: false, credits: 1205, credits_total: 1305,
-      rate_limited_models: [
-        { model: 'glm-5.3', kind: 'rate_limit', until: '2026-10-19T11:40:00+08:00', reset_at: '2026-10-20T10:00:00+08:00' },
-        { model: 'kimi-k3', kind: 'rate_limit', until: '2026-10-19T11:10:00+08:00', reset_at: '2026-10-19T12:00:00+08:00' },
-        { model: 'minimax-m3', kind: 'rate_limit', reset_at: '2026-10-20T09:00:00+08:00' },
-      ],
-    },
-    { uid: 'acct-b', nickname: 'user@example.com', realm: 'global', cooling: true, until: '2026-10-19T12:30:00+08:00', reason: '429 rate limit', credits: 350, credits_total: 350 },
-  ],
-}
-
-test('Workbuddy usage normalizes per-realm daily-volume gauges and account rollups (totals stay off-card)', () => {
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE), { windows: [
-    { id: 'usage-window', kindKey: 'usage-window', text: '24h' },
-    // 区域行 = 百分比窗口（油表/进度条）：分母是每日模型量上限 cn 200M / global 100M。
-    // 超上限时 percent 截 100，used 仍是真实用量（cn 200,702,562 > 200M → 100%）。
-    { id: 'realm-cn', kindKey: 'realm-daily-tokens', label: 'cn', percent: 100, used: 200702562, limit: 200000000 },
-    { id: 'realm-global', kindKey: 'realm-daily-tokens', label: 'global', percent: 57, used: 57320630, limit: 100000000 },
-    // 账号按 total_tokens 降序（面板原序不保证），昵称/邮箱是纯数据标签。
-    { id: 'account-0', kindKey: 'account-usage', label: '神经蛙', parts: [
-      { kindKey: 'requests', text: '749' }, { kindKey: 'tokens', text: '200.7M' }, { kindKey: 'credits', text: '99.97' },
-    ] },
-    { id: 'account-1', kindKey: 'account-usage', label: 'user@example.com', parts: [
-      { kindKey: 'requests', text: '328' }, { kindKey: 'tokens', text: '57.3M' }, { kindKey: 'credits', text: '0.00' },
-    ] },
-  ] })
-
-  // 总量统计（请求/错误/输入输出 Token/积分/延迟/缓存命中）不再上卡：给了 totals 也只出统计口径行。
-  assert.deepEqual(normalizeWorkbuddyUsage({ totals: { requests: 1, errors: 3, total_tokens: 5 } }).windows,
-    [{ id: 'usage-window', kindKey: 'usage-window', text: '24h' }])
-
-  // 面板返回既没有 totals 也没有汇总 → 空窗口（fetcher 转 bad-payload:shape，不谎报成功）。
-  for (const payload of [null, 'nope', {}, { totals: null }, { totals: [] }, { by_realm: 'x', by_account: 3 }]) {
-    assert.deepEqual(normalizeWorkbuddyUsage(payload).windows, [])
-  }
-
-  // 缺段容错：区域缺 total_tokens（画不了油表）→ 回落「请求/Token/积分」文字行；
-  // 空 key / 非对象整行跳过；账号缺任何段就不出该行。
-  assert.deepEqual(normalizeWorkbuddyUsage({
-    totals: { requests: 1 },
-    by_realm: [{ key: 'cn', requests: 2 }, { key: '', requests: 3 }, { key: 'global' }, null, 'x'],
-    by_account: [{ key: 'a', requests: 4 }, { key: 'b' }, { key: 'c', total_tokens: 10 }],
-  }).windows.map((window) => window.id), ['usage-window', 'realm-cn', 'account-0', 'account-1'])
-  // 未登记上限的区域同样回落文字行（不编分母）。
-  const unknownRealm = normalizeWorkbuddyUsage({ totals: { requests: 1 }, by_realm: [{ key: 'sgp', requests: 2, total_tokens: 5 }] }).windows
-  assert.deepEqual(unknownRealm.filter((window) => window.kindKey === 'realm-usage').map((window) => window.label), ['sgp'])
-  assert.equal(unknownRealm.some((window) => window.kindKey === 'realm-daily-tokens'), false)
-
-  // 上限：区域 ≤4、账号 ≤6；账号标签回退顺序 昵称 → 区域码 → 账号键（截断 32）。
-  const manyRealms = Array.from({ length: 8 }, (_, index) => ({ key: `r${index}`, requests: index + 1 }))
-  const manyAccounts = Array.from({ length: 10 }, (_, index) => ({ key: `k${index}`, realm: 'cn', requests: index + 1 }))
-  const capped = normalizeWorkbuddyUsage({ totals: { requests: 1 }, by_realm: manyRealms, by_account: manyAccounts }).windows
-  // 八个未登记上限的区域都回落文字行，仍受 ≤4 截断。
-  assert.deepEqual(capped.filter((window) => window.kindKey === 'realm-usage').map((window) => window.label), ['r0', 'r1', 'r2', 'r3'])
-  const cappedAccounts = capped.filter((window) => window.kindKey === 'account-usage')
-  assert.equal(cappedAccounts.length, 6)
-  // 无昵称 → 回退区域码 'cn'。
-  assert.ok(cappedAccounts.every((window) => window.label === 'cn'))
-
-  // 标签清洗：控制字符压成空格、超长截断（128）；区域码截断 32。
-  const dirty = normalizeWorkbuddyUsage({
-    totals: { requests: 1 },
-    by_realm: [{ key: 'c\nn', requests: 1 }],
-    by_account: [{ key: 'k', realm: 'cn', extra: `bad\u0000name ${'x'.repeat(200)}`, requests: 1 }],
-  }).windows
-  assert.equal(dirty.find((window) => window.kindKey === 'realm-usage').label, 'c n')
-  const accountLabel = dirty.find((window) => window.kindKey === 'account-usage').label
-  assert.equal(accountLabel.length, 128)
-  assert.ok(!accountLabel.includes('\u0000'))
-})
-
-test('Workbuddy limit ledger replaces the totals block: per-realm models + upstream reset wall clock', () => {
-  const windows = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, WORKBUDDY_OVERVIEW).windows
-  // 限流行紧跟在统计口径行之后（油表之前），总量统计已不再出现。
-  assert.deepEqual(windows.slice(0, 3), [
-    { id: 'usage-window', kindKey: 'usage-window', text: '24h' },
-    {
-      id: 'limit-cn',
-      kindKey: 'limit-models',
-      label: 'cn',
-      // 每域最多两个模型；时间只下发 ISO（客户端按浏览器时区格式化），第三个模型折叠成 +1。
-      parts: [
-        { kindKey: '', text: 'glm-5.3' },
-        { kindKey: 'reset-at', iso: '2026-10-20T02:00:00.000Z' },
-        { kindKey: '', text: 'kimi-k3' },
-        { kindKey: 'reset-at', iso: '2026-10-19T04:00:00.000Z' },
-        { kindKey: '', text: '+1' },
-      ],
-      resetsAt: '2026-10-19T04:00:00.000Z',
-    },
-    {
-      id: 'cooling-1',
-      kindKey: 'account-cooling',
-      label: 'user@example.com',
-      parts: [
-        { kindKey: 'reason', text: '429 rate limit' },
-        { kindKey: 'reset-at', iso: '2026-10-19T04:30:00.000Z' },
-      ],
-      resetsAt: '2026-10-19T04:30:00.000Z',
-    },
-  ])
-  // 后面仍是油表与账号行（顺序不变）。
-  assert.deepEqual(windows.map((window) => window.id), ['usage-window', 'limit-cn', 'cooling-1', 'realm-cn', 'realm-global', 'account-0', 'account-1'])
-
-  // 账号行用面板余额台账的「剩余积分」（credits 余额 / credits_total 总额）替换窗口消耗——
-  // 段落逐个对：uid 与用量 key 对上才算数（acct-a=cn、acct-b=global）。
-  assert.deepEqual(windows.filter((window) => window.kindKey === 'account-usage').map((window) => window.parts), [
-    [{ kindKey: 'requests', text: '749' }, { kindKey: 'tokens', text: '200.7M' }, { kindKey: 'credit-balance', text: '1205 / 1305' }],
-    [{ kindKey: 'requests', text: '328' }, { kindKey: 'tokens', text: '57.3M' }, { kindKey: 'credit-balance', text: '350 / 350' }],
-  ])
-  // 余额缺失（旧面板/坏数据）→ 保留窗口消耗，不把未知渲染成 0。
-  const withoutBalances = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: [{ uid: 'acct-a' }] }).windows
-  assert.deepEqual(withoutBalances.find((window) => window.id === 'account-0').parts[2], { kindKey: 'credits', text: '99.97' })
-  // credits_total 缺失/0（未知总额度）→ 只显示剩余，不拼「/ 0」。
-  const withoutTotal = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: [{ uid: 'acct-a', credits: 42, credits_total: 0 }] }).windows
-  assert.deepEqual(withoutTotal.find((window) => window.id === 'account-0').parts[2], { kindKey: 'credit-balance', text: '42' })
-  // 余额是 0 也要显示（0 不等于未知）。
-  const zero = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: [{ uid: 'acct-a', credits: 0 }] }).windows
-  assert.deepEqual(zero.find((window) => window.id === 'account-0').parts[2], { kindKey: 'credit-balance', text: '0' })
-
-  // 台账可用但当前无锁 → 一行「—」；台账不可用（null/坏形状）→ 不出行（未知 ≠ 无限流）。
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: [] }).windows[1],
-    { id: 'limit', kindKey: 'rate-limits', text: '—' })
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, null).windows[1].id, 'realm-cn')
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: 'x' }).windows[1].id, 'realm-cn')
-
-  // 坏条目静默跳过：缺模型名、非对象、时间不可解析都不该造行；11102（模型不可用）不是额度限流，
-  // 它的重试时间不能冒充「配额重置」。
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, {
-    accounts: [
-      { realm: 'cn', rate_limited_models: [
-        { model: '' }, null, 'x',
-        { model: 'glm-5.3', reset_at: 'not-a-date' },
-        { model: 'ghost-model', kind: 'model_unavailable', until: '2026-10-19T12:00:00+08:00' },
-      ] },
-      null,
-      'x',
-    ],
-  }).windows[1], { id: 'limit-cn', kindKey: 'limit-models', label: 'cn', parts: [{ kindKey: '', text: 'glm-5.3' }] })
-
-  // 账号级冷却缺原因又缺时间 → 整行跳过（不能渲染成空百分比行）。
-  assert.deepEqual(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, { accounts: [{ realm: 'cn', cooling: true }] }).windows[1],
-    { id: 'limit', kindKey: 'rate-limits', text: '—' })
-
-  // 域行上限 4，账号冷却行上限 2。
-  const many = { accounts: [0, 1, 2, 3, 4].map((index) => ({ realm: `r${index}`, rate_limited_models: [{ model: `m${index}` }] })) }
-  assert.equal(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, many).windows.filter((window) => window.kindKey === 'limit-models').length, 4)
-  const coolingMany = { accounts: [0, 1, 2, 3].map((index) => ({ realm: 'cn', cooling: true, reason: `r${index}` })) }
-  assert.equal(normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, undefined, coolingMany).windows.filter((window) => window.kindKey === 'account-cooling').length, 2)
-})
-
-test('Workbuddy fetchUsage derives the panel endpoint from the relay baseURL and classifies failures', async () => {
-  const requests = []
-  const requestJson = async (endpoint, options) => {
-    requests.push({ endpoint, authorization: options.authorization })
-    return endpoint.includes('/panel/api/overview') ? { accounts: [] } : WORKBUDDY_FIXTURE
-  }
-  const profile = { name: 'workbuddy', baseURL: 'https://relay.example/v1' }
-  const windows = await fetchWorkbuddyUsage({ profile, credential: 'Bearer gateway-key', signal: undefined, requestJson })
-  // 用量 5 窗口（统计口径 + 2 油表 + 2 账号）+ 1 行「限流 —」（overview 可用但当前无锁）。
-  assert.equal(windows.length, 6)
-  // 端点 = 所选渠道 baseURL 同源 + 面板固定路径（中转网关与面板 API 同域）；限流台账同源。
-  assert.deepEqual(requests, [
-    { endpoint: 'https://relay.example/panel/api/usage?hours=24', authorization: 'Bearer gateway-key' },
-    { endpoint: 'https://relay.example/panel/api/overview', authorization: 'Bearer gateway-key' },
-  ])
-
-  // 裸 key 与整头粘贴都容错成同一个 Bearer；默认端口与无端口写法同源。
-  requests.length = 0
-  await fetchWorkbuddyUsage({ profile, credential: 'gateway-key', signal: undefined, requestJson })
-  await fetchWorkbuddyUsage({ profile, credential: 'Authorization: Bearer gateway-key', signal: undefined, requestJson })
-  await fetchWorkbuddyUsage({ profile: { baseURL: 'https://relay.example:443/v1' }, credential: 'k', signal: undefined, requestJson })
-  assert.deepEqual(requests.map((entry) => entry.endpoint), [
-    'https://relay.example/panel/api/usage?hours=24',
-    'https://relay.example/panel/api/overview',
-    'https://relay.example/panel/api/usage?hours=24',
-    'https://relay.example/panel/api/overview',
-    'https://relay.example/panel/api/usage?hours=24',
-    'https://relay.example/panel/api/overview',
-  ])
-  assert.deepEqual(requests.map((entry) => entry.authorization), [
-    'Bearer gateway-key', 'Bearer gateway-key',
-    'Bearer gateway-key', 'Bearer gateway-key',
-    'Bearer k', 'Bearer k',
-  ])
-
-  // baseURL 是查询面的唯一来源：空/非法一律如实报错，绝不回退写死主机。
-  for (const baseURL of ['', '   ', 'relay.example/v1', 'http://relay.example/v1', 'https://user@relay.example/v1', 'https://relay.example:8443/v1']) {
-    await assert.rejects(fetchWorkbuddyUsage({ profile: { baseURL }, credential: 'k', signal: undefined, requestJson }),
-      (error) => error.message === (String(baseURL).trim() === '' ? 'no-base-url' : 'unsafe-provider-endpoint'))
-  }
-
-  await assert.rejects(fetchWorkbuddyUsage({ profile, credential: '', signal: undefined, requestJson }),
-    (error) => error.message === 'credential-missing')
-  await assert.rejects(fetchWorkbuddyUsage({ profile, credential: 'k', signal: undefined, requestJson: undefined }),
-    (error) => error.message === 'transport-unavailable')
-
-  // 401/403 → credential-rejected（行回 unconfigured 以便就地重填），上游原话随 detail 透出。
-  for (const status of [401, 403]) {
-    await assert.rejects(fetchWorkbuddyUsage({
-      profile, credential: 'k', signal: undefined,
-      requestJson: async () => { const error = new Error(`http-status:${status}`); error.detail = 'invalid key'; throw error },
-    }), (error) => error.message === 'credential-rejected' && error.detail === 'invalid key')
-  }
-  // 其余传输错误原样抛出（状态码后缀保留）。
-  await assert.rejects(fetchWorkbuddyUsage({
-    profile, credential: 'k', signal: undefined,
-    requestJson: async () => { throw new Error('http-status:503') },
-  }), (error) => error.message === 'http-status:503')
-  // 200 但形状不认识 → bad-payload:shape。
-  await assert.rejects(fetchWorkbuddyUsage({ profile, credential: 'k', signal: undefined, requestJson: async () => ({}) }),
-    (error) => error.message === 'bad-payload:shape')
-})
-
-test('Workbuddy limit ledger degrades independently of the usage windows', async () => {
-  const profile = { name: 'workbuddy', baseURL: 'https://relay.example/v1' }
-  // overview 不可用（旧面板 404 / 该 key 无面板面权限）→ 用量窗口照常返回，只是没有限流行。
-  for (const failure of ['http-status:404', 'http-status:401', 'bad-payload:json', 'network']) {
-    const windows = await fetchWorkbuddyUsage({
-      profile, credential: 'k', signal: undefined,
-      requestJson: async (endpoint) => {
-        if (endpoint.includes('/panel/api/overview')) throw new Error(failure)
-        return WORKBUDDY_FIXTURE
-      },
-    })
-    assert.equal(windows.length, 5)
-    assert.equal(windows.some((window) => String(window.kindKey).startsWith('limit') || window.kindKey === 'account-cooling'), false)
-  }
-  // overview 形状不对（不是 {accounts: [...]}）→ 同样按「台账不可用」处理，不误报「无限流」。
-  const windows = await fetchWorkbuddyUsage({
-    profile, credential: 'k', signal: undefined,
-    requestJson: async (endpoint) => (endpoint.includes('/panel/api/overview') ? { accounts: {} } : WORKBUDDY_FIXTURE),
-  })
-  assert.equal(windows.some((window) => window.kindKey === 'rate-limits'), false)
-
-  // 台账可用 → 限流行出现，且使用 reset_at（上游墙钟）而不是 until（网关解锁）。
-  const withLedger = await fetchWorkbuddyUsage({
-    profile, credential: 'k', signal: undefined,
-    requestJson: async (endpoint) => (endpoint.includes('/panel/api/overview') ? WORKBUDDY_OVERVIEW : WORKBUDDY_FIXTURE),
-  })
-  assert.deepEqual(withLedger.slice(0, 3).map((window) => window.id), ['usage-window', 'limit-cn', 'cooling-1'])
-})
-
-test('Workbuddy adapter is manual-only: it never claims a relay host or route id', () => {
+test('removed WorkBuddy quota kind cannot be selected or recognized', () => {
   const adapters = createCatalog()
-  const adapter = findQuotaAdapter(adapters, 'workbuddy')
-  // baseURL 是中转地址，主机名不构成服务身份：真实中转域名与同名路由都不自动认领。
-  assert.equal(recognizeQuotaAdapter(adapters, { name: 'workbuddy', baseURL: 'https://wb.woodyair.dpdns.org/v1' }), undefined)
-  assert.equal(recognizeQuotaAdapter(adapters, { name: 'workbuddy', baseURL: '' }), undefined)
-  assert.equal(adapter.recognize({ name: 'workbuddy', baseURL: 'https://wb.woodyair.dpdns.org/v1' }), false)
-  // 手动适配入口：类型可保存（不要求自动识别通过）；端点不参与兼容导出，也不给静态外链。
-  assert.deepEqual(prepareQuotaAdapterConfig(adapter, { baseURL: 'https://wb.woodyair.dpdns.org/v1' }), { ok: true })
-  assert.deepEqual(prepareQuotaAdapterConfig(adapter, { baseURL: '' }), { ok: true })
-  assert.deepEqual(quotaAdapterEndpoints(adapter, { baseURL: 'https://wb.woodyair.dpdns.org/v1' }), [])
-  assert.equal(quotaAdapterUsageUrl(adapter), undefined)
-  const policy = adapter.credentialPolicy({ apiKeyEnv: 'WORKBUDDY_API_KEY_abc' })
-  assert.deepEqual([...policy.hints], ['WORKBUDDY_API_KEY_abc', 'WORKBUDDY_API_KEY'])
-  assert.equal(policy.format('gateway-key'), 'Bearer gateway-key')
-  assert.equal(policy.entryKey, 'edit')
+  assert.equal(findQuotaAdapter(adapters, 'workbuddy'), undefined)
+  assert.deepEqual(prepareQuotaAdapterConfig(undefined, {}), { ok: false, error: 'unknown-kind' })
+  for (const name of ['workbuddy', 'workbuddy2api-panel']) {
+    assert.equal(recognizeQuotaAdapter(adapters, { name, baseURL: 'https://relay.example/v1' }), undefined)
+    assert.equal(recognizeQuotaAdapter(adapters, { name, baseURL: '' }), undefined)
+  }
+  for (const adapter of adapters) assert.equal(quotaAdapterRealmCaps(adapter, {}), undefined)
 })
 
-test('Workbuddy realm caps are configurable: sanitizer + provider override + adapter merge', () => {
-  // 归一：只认合法区键与正整数 tokens；坏条目静默丢弃（坏配置只能让油表回落，不能让整行报错）。
+test('legacy realm caps remain safely parseable without an active adapter', () => {
   assert.deepEqual(sanitizeRealmCaps({ cn: 2e8, global: '1e8', bad: -1, 'no space': 5, x: 'abc' }), { cn: 200000000, global: 100000000 })
-  assert.deepEqual(sanitizeRealmCaps(null), {})
-  assert.deepEqual(sanitizeRealmCaps([1, 2]), {})
-  // 上界 1e12（防手滑多打零）：越界值整条丢弃，不截断成「看似合法」的数。
-  assert.deepEqual(sanitizeRealmCaps({ cn: 2e13 }), {})
-  // 条数上限 8。
+  for (const raw of [null, [1, 2], { cn: 2e13 }]) assert.deepEqual(sanitizeRealmCaps(raw), {})
   assert.equal(Object.keys(sanitizeRealmCaps(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`r${i}`, 1e6])))).length, 8)
-
-  // 默认值合并：覆盖只影响给出的区。
-  assert.deepEqual(mergeWorkbuddyRealmCaps(undefined), { cn: 200000000, global: 100000000 })
-  assert.deepEqual(mergeWorkbuddyRealmCaps({ cn: 300000000 }), { cn: 300000000, global: 100000000 })
-
-  // 归一化按传入分母计算：cn 100M 分母下 200.7M → 100%（截断）+ 真实 used。
-  const windows = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, { cn: 100000000, global: 100000000 }).windows
-  const cn = windows.find((window) => window.id === 'realm-cn')
-  assert.deepEqual(cn, { id: 'realm-cn', kindKey: 'realm-daily-tokens', label: 'cn', percent: 100, used: 200702562, limit: 100000000 })
-  // 分母调大 → 百分比下降（同一份用量换个分母就换读数）。
-  const loose = normalizeWorkbuddyUsage(WORKBUDDY_FIXTURE, { cn: 400000000, global: 100000000 }).windows.find((window) => window.id === 'realm-cn')
-  assert.equal(loose.percent, 50)
-
-  // Adapter 元数据暴露默认分母（客户端据此渲染输入框）；未声明的 Adapter 返回 undefined。
-  const adapters = createCatalog()
-  const adapter = findQuotaAdapter(adapters, 'workbuddy')
-  assert.deepEqual(quotaAdapterRealmCaps(adapter, undefined), { cn: 200000000, global: 100000000 })
-  assert.deepEqual(quotaAdapterRealmCaps(adapter, { cn: 250000000 }), { cn: 250000000, global: 100000000 })
-  assert.equal(quotaAdapterRealmCaps(findQuotaAdapter(adapters, 'openrouter'), {}), undefined)
 })
-
-test('Workbuddy fetchUsage applies the provider-level realm caps from quota config', async () => {
-  const requestJson = async () => WORKBUDDY_FIXTURE
-  const profile = { name: 'workbuddy2api-panel', baseURL: 'https://relay.example/v1' }
-  const withConfig = await fetchWorkbuddyUsage({ profile, config: { realmCaps: { 'workbuddy2api-panel': { cn: 100000000 } } }, credential: 'k', signal: undefined, requestJson })
-  const cn = withConfig.find((window) => window.id === 'realm-cn')
-  assert.equal(cn.limit, 100000000)
-  // 未配置该 provider → 回默认分母；配置值非法 → 保持默认（不把油表打成 NaN）。
-  const defaulted = await fetchWorkbuddyUsage({ profile, config: { realmCaps: {} }, credential: 'k', signal: undefined, requestJson })
-  assert.equal(defaulted.find((window) => window.id === 'realm-cn').limit, 200000000)
-  const bogus = await fetchWorkbuddyUsage({ profile, config: { realmCaps: { 'workbuddy2api-panel': { cn: -5 } } }, credential: 'k', signal: undefined, requestJson })
-  assert.equal(bogus.find((window) => window.id === 'realm-cn').limit, 200000000)
-})
-

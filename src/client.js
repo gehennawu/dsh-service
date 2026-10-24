@@ -132,8 +132,6 @@ window.__ModuleLoader__.load({
       'stepfun': 'stepfun',
       'stepfun-step-plan': 'stepfun',
       'command-goat': 'commandcode',
-      // 中转网关没有可识别的渠道名（手动适配）：用适配类型的厂家图形。
-      'workbuddy': 'workbuddy',
     }
 
     /**
@@ -1708,7 +1706,6 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'quota.kind.poe': 'Poe 积分',
       'quota.kind.clinepass': 'ClinePass 套餐额度',
       'quota.kind.vercel-ai-gateway': 'Vercel AI Gateway 余额',
-      'quota.kind.workbuddy': 'workbuddy2api panel 用量',
       'quota.window.points': '剩余积分',
       'quota.window.total_token': '套餐总额度',
       'quota.window.compensation_total_token': '补偿积分',
@@ -2984,7 +2981,6 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'quota.kind.poe': 'Poe points',
       'quota.kind.clinepass': 'ClinePass plan quota',
       'quota.kind.vercel-ai-gateway': 'Vercel AI Gateway balance',
-      'quota.kind.workbuddy': 'workbuddy2api panel usage',
       'quota.window.points': 'Remaining points',
       'quota.window.total_token': 'Plan total quota',
       'quota.window.compensation_total_token': 'Compensation credits',

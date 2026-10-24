@@ -434,7 +434,7 @@ const CUSTOM_SVG = {
    * WorkBuddy（腾讯 WorkBuddy / CodeBuddy 系）官方品牌标。
    *
    * 来源：workbuddy.cn 官方站点 favicon 的 40×40 矢量版（2026-10-18 取）。
-   * 用途：WorkBuddy2API 一类中转网关（余额查询里手动适配 workbuddy 类型）的渠道图标；
+   * 用途：按渠道名称识别 WorkBuddy2API 一类中转网关的图标；
    * 该网关本身没有品牌资产，上游产品 WorkBuddy 的官方标是唯一可追溯的品牌图形。
    *
    * 档位：彩色档（c: 1）——绿色渐变圆角板 + 白色 Buddy 面部 + 官方描边光效。圆角板是
