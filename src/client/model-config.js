@@ -396,7 +396,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
         ),
         el('div', null,
           el('label', { style: labelStyle }, tr('models.smart.field.name')),
-          el('input', { style: inputStyle, value: draft.name === '' ? resolvedModel.name || '' : draft.name, 'aria-label': tr('models.smart.field.name'), 'data-testid': 'model-field-name', placeholder: resolvedModel.name || tr('models.wb.edit.displayNamePlaceholder'), onChange: (e) => setDraft({ ...draft, name: e.target.value }) })
+          el('input', { style: inputStyle, value: draft.name ?? '', 'aria-label': tr('models.smart.field.name'), 'data-testid': 'model-field-name', placeholder: resolvedModel.name || tr('models.wb.edit.displayNamePlaceholder'), onChange: (e) => setDraft({ ...draft, name: e.target.value }) })
         )
       ),
 
@@ -1105,9 +1105,56 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const [selected, setSelected] = useState(null)
     const [creating, setCreating] = useState(false)
     const [restore, setRestore] = useState(null)
+    const [record, setRecord] = useState(null)
+    const [forget, setForget] = useState(null)
+    const [forgetBusy, setForgetBusy] = useState(false)
+    const [notice, setNotice] = useState('')
+    const selection = useRef(0)
 
     const reload = async () => { const res = await rpcCall('models3-snapshot', {}); if (!res.ok) setError(res.error); else { setSnapshot(res.value); setError('') } }
     useEffect(() => { let alive = true; rpcCall('models3-snapshot', {}).then((res) => { if (!alive) return; if (!res.ok) setError(res.error); else { setSnapshot(res.value); setError('') } }); return () => { alive = false } }, [])
+
+    // 最近删除记录有两种用途：恢复渠道，或只清除这条不可恢复的历史记录。
+    // 已占用 ID 时不能预览恢复，但删除记录仍然可用，且不触碰当前渠道与密钥。
+    const openRecord = async (row) => {
+      selection.current += 1
+      const token = selection.current
+      setRecord(row); setRestore(null); setForget(null); setNotice(''); setError('')
+      if (row.taken) return
+      try {
+        const res = await rpcCall('models3-restore-preview', { route: row.route })
+        if (token !== selection.current) return
+        if (!res.ok) setError(res.error); else setRestore(res.value)
+      } catch (_) { if (token === selection.current) setError('operation-failed') }
+    }
+    const startForget = async (row) => {
+      selection.current += 1
+      const token = selection.current
+      setError(''); setForgetBusy(true)
+      try {
+        const res = await rpcCall('models3-forget-preview', { route: row.route })
+        if (token !== selection.current) return
+        if (!res.ok) setError(res.error)
+        else {
+          const value = res.value && typeof res.value === 'object' ? res.value : {}
+          setForget({ ...value, route: value.route ?? row.route, displayName: value.displayName ?? row.displayName, taken: row.taken })
+        }
+      } catch (_) { if (token === selection.current) setError('operation-failed') } finally { setForgetBusy(false) }
+    }
+    const closeRecord = () => { selection.current += 1; setRecord(null); setRestore(null); setForget(null); setError('') }
+    const confirmForget = async () => {
+      if (!forget || typeof forget.planId !== 'string' || !forget.planId) { setError('operation-failed'); return }
+      setForgetBusy(true); setError('')
+      try {
+        const res = await rpcCall('models3-forget-commit', { planId: forget.planId })
+        if (!res.ok) { setError(res.error); setForget(null) }
+        else {
+          selection.current += 1
+          setForget(null); setRecord(null); setRestore(null); setNotice(tr('models.smart.forgetRecordDone'))
+          void reload()
+        }
+      } catch (_) { setForget(null); setError('operation-failed') } finally { setForgetBusy(false) }
+    }
 
     if (creating) return el(CreateRoute, { onBack: () => setCreating(false), onCreated: (route) => { setCreating(false); setSelected({ route, displayName: route }); void reload() }, templates: snapshot?.templates ?? [] })
     const routes = snapshot?.routes ?? []
@@ -1140,6 +1187,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       ),
 
       el(ErrorText, { error }),
+      notice ? el('p', { role: 'status', 'data-testid': 'model-config-notice', style: { color: 'var(--dsw-alias-state-success-primary)', fontSize: '13px', margin: '8px 0', overflowWrap: 'anywhere' } }, notice) : null,
       snapshot === null && !error ? el('p', { style: muted }, tr('models.smart.loading')) : null,
       routes.length === 0 && snapshot !== null && !error ? el('p', { style: { ...muted, padding: '16px 0', textAlign: 'center' }, 'data-testid': 'models-empty-notice' }, tr('models.smart.noProviders')) : null,
 
@@ -1169,18 +1217,45 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       // Removed routes section
       (snapshot?.removedRoutes ?? []).length ? el('section', { 'data-testid': 'model-removed-routes', style: { marginTop: '16px', borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: '12px' } },
         el('h4', { style: { margin: '0 0 8px 0', fontSize: '13px' } }, tr('models.smart.deleted')),
-        ...snapshot.removedRoutes.map((row) => el(Button, { key: row.route, id: 'model-removed-' + row.route, disabled: row.taken, style: { marginRight: '6px' }, onClick: async () => { const res = await rpcCall('models3-restore-preview', { route: row.route }); if (!res.ok) setError(res.error); else setRestore(res.value) } }, row.displayName))
+        ...snapshot.removedRoutes.map((row) => el(Button, {
+          key: row.route, id: 'model-removed-' + row.route, style: { marginRight: '6px' },
+          title: row.taken ? tr('models.smart.forgetRecordTaken').replace('{route}', row.route) : undefined,
+          onClick: () => void openRecord(row),
+        }, row.displayName))
       ) : null,
 
-      restore ? el('section', { style: { ...subCard, marginTop: '12px' } },
+      record ? el('section', { style: { ...subCard, marginTop: '12px' }, 'data-testid': 'model-removed-record' },
         el('h4', { style: { margin: '0 0 6px 0', fontSize: '13px' } }, tr('models.smart.consequences')),
-        el('p', { style: { ...muted, overflowWrap: 'anywhere' } }, restore.restore?.route || ''),
-        el('p', { style: muted }, tr('models.smart.credentialRetained')),
+        el('p', { style: { ...muted, overflowWrap: 'anywhere' } }, record.displayName || record.route),
+        el('code', { style: { display: 'block', fontSize: '12px', marginBottom: '8px', overflowWrap: 'anywhere' } }, record.route),
+        record.taken ? el('p', { role: 'alert', 'data-testid': 'model-removed-taken', style: { ...muted, color: 'var(--dsw-alias-state-warn-primary)', margin: '0 0 8px' } }, tr('models.smart.forgetRecordTaken').replace('{route}', record.route)) : null,
+        restore ? el('p', { style: muted }, tr('models.smart.credentialRetained')) : null,
         el('div', { style: actions },
-          el(Button, { id: 'model-restore-confirm', style: svcButtonStyle('primary'), onClick: async () => { const res = await rpcCall('models3-restore-commit', { planId: restore.planId }); if (!res.ok) setError(res.error); else { setRestore(null); void reload() } } }, tr('models.smart.confirm')),
-          el(Button, { onClick: () => setRestore(null) }, tr('models.smart.cancel'))
+          restore ? el(Button, { id: 'model-restore-confirm', style: svcButtonStyle('primary'), disabled: forgetBusy, onClick: async () => {
+            const res = await rpcCall('models3-restore-commit', { planId: restore.planId })
+            if (!res.ok) setError(res.error)
+            else { selection.current += 1; setRestore(null); setRecord(null); void reload() }
+          } }, tr('models.smart.confirm')) : null,
+          el(Button, { id: 'model-forget-open', danger: true, disabled: forgetBusy, onClick: () => void startForget(record) }, tr('models.smart.forgetRecordOpen')),
+          el(Button, { disabled: forgetBusy, onClick: closeRecord }, tr('models.smart.cancel'))
         )
-      ) : null
+      ) : null,
+
+      forget ? el(Modal, {
+        open: true,
+        title: tr('models.smart.forgetRecordTitle'),
+        closeLabel: tr('models.smart.cancel'),
+        onClose: () => { if (!forgetBusy) setForget(null) },
+        footer: [
+          el(Button, { disabled: forgetBusy, onClick: () => setForget(null) }, tr('models.smart.cancel')),
+          el(Button, { id: 'model-forget-confirm', danger: true, disabled: forgetBusy, onClick: () => void confirmForget() }, tr('models.smart.forgetRecordConfirm')),
+        ],
+      }, el('div', { 'data-testid': 'model-forget-dialog' },
+        el('p', { style: { margin: '0 0 8px', fontSize: '13px', overflowWrap: 'anywhere' } }, tr('models.smart.forgetRecordPrompt').replace('{name}', forget.displayName || forget.route)),
+        el('code', { style: { display: 'block', fontSize: '12px', marginBottom: '8px', overflowWrap: 'anywhere' } }, forget.route),
+        el('p', { role: 'alert', style: { ...muted, color: 'var(--dsw-alias-state-error-primary)', margin: '8px 0' } }, tr('models.smart.forgetRecordBoundary')),
+        forget.taken ? el('p', { 'data-testid': 'model-forget-taken', style: { ...muted, margin: '8px 0' } }, tr('models.smart.forgetRecordTaken').replace('{route}', forget.route)) : null
+      )) : null
     )
   }
 

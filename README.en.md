@@ -183,7 +183,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Smart fill starts disabled**. It queries local pi-ai, modelparams.dev and OpenRouter metadata by model ID, without provider discovery, inference or automatic saving. Suggestions are per parameter; confirming Fill all changes only the draft and still requires Save.
 - **Check reasoning levels against the API**: selectable levels differ from the effort selected for a call. Missing metadata does not mean unsupported; unconfigured values inherit or use API defaults. Manually supplied mappings require verification.
 - **Deletion checks references** to the main-chat default, subagent primary and fallback models, blocking deletion when referenced. A custom provider cannot lose its final model.
-- **Restore and credentials**: provider deletion snapshots configuration and keeps credential references. Restore recovers configuration, never old key values. Replacement defaults to an independent reference; shared replacement first lists users.
+- **Restore and credentials**: provider deletion snapshots configuration and keeps credential references. Restore recovers configuration, never old key values. Recently deleted records can be removed individually after confirmation; removing a record prevents restoration from it but does not affect existing providers or credentials. Replacement defaults to an independent reference; shared replacement first lists users.
 - **Draft and concurrency protection**: failed saves retain drafts; after a dropped connection or host restart the action resets so it can be retried, leaving unsaved edits warns, and external changes prevent overwrite until reviewed again. Drafts do not persist across reloads.
 
 #### URL and credential safety

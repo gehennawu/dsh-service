@@ -142,6 +142,14 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     try { await workbenchStore.mutate((state) => { const row = (next === undefined ? state.removed : state.providers)?.[session.route]; if (row?.token === backup.token) row.status = 'applied' }) } catch (_) { recoveryRecorded = false }
     return { route: session.route, saved: true, undoable: true, recoveryRecorded, credentialValueRestored: false }
   })
+  // A forgettable record is exactly the sidecar's route-scoped removal snapshot:
+  // no channel snapshot, no transaction (undo) snapshot, no credential data.
+  const forgettable = (state, target) => {
+    const row = own(state.removed, target)
+    if (!object(row) || row.kind !== 'removed' || typeof row.token !== 'string' || row.token.length === 0) return undefined
+    if (!object(row.before)) return undefined
+    return row
+  }
   const route = (handle) => ({ feature: 'modelCatalog', handle: async (payload = {}) => {
     try {
       if (Object.hasOwn(payload, 'route') && !validRoute(payload.route)) error('bad-route')
@@ -489,6 +497,45 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       plans.delete(planId)
       return result
     }),
+    // Recently removed channel records can be forgotten one at a time. This only
+    // deletes the exact removal snapshot; it never touches channels, credentials or
+    // any other route's record. The plan pins the record token, and the commit
+    // rechecks it inside the serialized sidecar write, so a concurrent re-removal
+    // (which replaces the record with a new token) cannot be deleted by mistake.
+    'models3-forget-preview': route(async (payload) => {
+      const id = payload.route
+      if (!validRoute(id)) error('bad-route')
+      const state = await storeLoad()
+      const record = forgettable(state, id)
+      if (!record) error('nothing-to-forget')
+      const before = record.before
+      const planId = remember(plans, { kind: 'forget', route: id, recordToken: record.token })
+      return {
+        planId,
+        route: id,
+        displayName: typeof before.displayName === 'string' && before.displayName.trim() ? before.displayName.slice(0, 128) : id,
+        removedAt: Number.isFinite(record.at) ? record.at : null,
+        modelCount: Array.isArray(before.models) ? before.models.length : 0,
+        irreversible: true,
+        channelRetained: true,
+        credentialRetained: true,
+        otherRemovedRecordsRetained: true,
+      }
+    }),
+    'models3-forget-commit': route(async ({ planId }) => serialize(async () => {
+      // Read the handle inside the write gate: a replayed or cross-kind plan can
+      // never borrow another operation's critical section.
+      const plan = get(plans, planId)
+      if (plan.kind !== 'forget' || !validRoute(plan.route) || typeof plan.recordToken !== 'string') error('unknown-plan')
+      if (!workbenchStore) error('snapshot-unavailable')
+      await workbenchStore.mutate((state) => {
+        const record = forgettable(state, plan.route)
+        if (!record || record.token !== plan.recordToken) error('forget-conflict')
+        delete state.removed[plan.route]
+      })
+      plans.delete(planId)
+      return { route: plan.route, forgotten: true, channelRetained: true, credentialRetained: true, otherRemovedRecordsRetained: true }
+    })),
     'models3-create-preview': route(async ({ route: id, profile, key }) => {
       if (!MODELS_ROUTE_RE.test(id ?? '') || (id?.length ?? 0) > 64) error('bad-route')
       const access = modelSettingsFor(ctx)

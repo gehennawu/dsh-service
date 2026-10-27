@@ -15662,9 +15662,11 @@ test('models page offers template dropdown, candidate models unchecked by defaul
   // 1. 左列快捷入口胶囊开关存在并能切换
   assert.equal(renderer.hasTest('models-nav-switch'), true)
   assert.equal(renderer.findByTestId('models-nav-switch').props['aria-checked'], 'false')
+  const navVersionBefore = renderer.slots.getVersion('settings.section')
   renderer.findByTestId('models-nav-switch').props.onClick()
   await settle(renderer)
   assert.equal(renderer.findByTestId('models-nav-switch').props['aria-checked'], 'true')
+  assert.ok(renderer.slots.getVersion('settings.section') > navVersionBefore, 'turning on the left-nav entry still registers the section')
 
   // 2. 添加渠道：模板下拉框带出身份与候选模型
   renderer.findByTestId('model-route-create').props.onClick()
@@ -16024,6 +16026,40 @@ test('models page add panel discovers on demand with search and multi-select', a
   const batch = models3Calls(calls, 'models3-add-models')
   assert.equal(batch.length, 1)
   assert.deepEqual(batch[0].payload, { sessionId: 's-cpa', modelIds: ['m2'] })
+  assert.equal(renderer.hasTest('model-route-detail'), true, 'adding discovered models keeps the channel detail open')
+  assert.equal(renderer.hasTest('model-providers'), true)
+})
+
+test('adding discovered models keeps the channel page across an unchanged feature notification', async () => {
+  // 复现：独立左栏「模型配置」入口下，添加模型会写配置；宿主设置面随写更新再次通知
+  // feature 订阅（值未变）。导航入口的 sync 不得因此注销/重注册整个设置区块，否则
+  // Providers 的本地选中态被卸载，页面会从渠道详情退回模型配置首页。
+  const { calls, rpc } = models3Fixture({
+    'models3-discover': () => ({ ok: true, value: { route: 'cpa', usedCredential: true, candidates: [{ id: 'm3', name: 'Third' }] } }),
+    'models3-add-models': () => ({ ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }),
+  })
+  const renderer = createRenderer(rpc, { initialStorage: { 'dsh-service-shortcut-models': 'true' } })
+  await renderer.load()
+  await openModelsPage(renderer)
+  assert.equal(renderer.hasTest('models-page'), true, 'the independent settings entry renders the models section')
+  renderer.findByTestId('model-route-open-cpa').props.onClick()
+  await settle(renderer)
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], true)
+  renderer.findByTestId('model-discover').props.onClick()
+  await settle(renderer)
+  assert.ok(deepFindId(renderer, 'model-discovery'), 'the discovery modal renders')
+  deepFindId(renderer, 'model-add-batch').props.onClick()
+  await settle(renderer)
+  assert.equal(models3Calls(calls, 'models3-add-models').length, 1)
+  assert.equal(renderer.hasTest('model-route-detail'), true, 'a successful add keeps the channel detail')
+  // 功能订阅在无关配置写入后仍会回调；值未变时不得注销/重注册整个设置区块。
+  const versionBefore = renderer.slots.getVersion('settings.section')
+  await renderer.setFeature('modelCatalog', true)
+  await settle(renderer)
+  assert.equal(renderer.slots.getVersion('settings.section'), versionBefore, 'an unchanged feature value never re-registers the settings section')
+  assert.equal(renderer.hasTest('models-page'), true)
+  assert.equal(renderer.findByTestId('model-route-open-cpa').props['aria-expanded'], true, 'the channel accordion stays open across the notification')
+  assert.equal(renderer.hasTest('model-route-detail'), true, 'the channel page is not replaced by the models home')
 })
 
 test('models page adds a new model, defaulting smart fill off, and saves it with add:true', async () => {
@@ -16169,6 +16205,63 @@ test('models page edits an existing model ID and sends the original id as origin
     patch: { name: 'Renamed' },
     unset: [],
   }, 'renaming sends the new id plus the original baseline id, never re-adding the model')
+})
+
+test('models page lets a saved model name be cleared to empty and saved as unset', async () => {
+  // 回归：名称曾按「草稿为空就回填解析值」渲染，导致已保存名称清空后又被填回，
+  // 再次编辑永远无法留空。刷新后的第二次打开证明空名称确实持久化。
+  let savedName = 'One'
+  const openCpa = () => ({
+    ok: true,
+    value: {
+      ...MODELS3_OPEN_CPA,
+      profile: {
+        ...MODELS3_OPEN_CPA.profile,
+        models: MODELS3_OPEN_CPA.profile.models.map((model) => model.id === 'm1' ? { ...model, ...(savedName === undefined ? { name: undefined } : { name: savedName }) } : model),
+      },
+      effective: {
+        ...MODELS3_OPEN_CPA.effective,
+        models: [{ id: 'm1', ...(savedName === undefined ? {} : { name: savedName }) }],
+      },
+    },
+  })
+  const { calls, rpc } = models3Fixture({
+    'models3-open': (payload) => payload.route === 'cpa' ? openCpa() : { ok: false, error: 'unknown-route' },
+    'models3-save-model': (payload) => {
+      if (payload.unset?.includes('name')) savedName = undefined
+      else if (Object.hasOwn(payload.patch ?? {}, 'name')) savedName = payload.patch.name
+      return { ok: true, value: { route: 'cpa', saved: true, undoable: true, recoveryRecorded: true, credentialValueRestored: false } }
+    },
+  })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, 'm1')
+  assert.equal(byAria(renderer, '模型显示名称').props.value, 'One', 'the saved name is shown when editing')
+  byAria(renderer, '模型显示名称').props.onChange({ target: { value: '' } })
+  await settle(renderer)
+  const empty = byAria(renderer, '模型显示名称')
+  assert.equal(empty.props.value, '', 'an emptied name stays empty instead of restoring the saved value')
+  assert.equal(empty.props.placeholder, 'One', 'the saved name remains available as a placeholder hint')
+  renderer.findByTestId('model-detail-save').props.onClick()
+  await settle(renderer)
+  const saves = models3Calls(calls, 'models3-save-model')
+  assert.equal(saves.length, 1)
+  assert.deepEqual(saves[0].payload, {
+    sessionId: 's-cpa',
+    modelId: 'm1',
+    originalModelId: 'm1',
+    add: false,
+    patch: {},
+    unset: ['name'],
+  }, 'clearing the name sends an explicit unset rather than the old value')
+
+  // 再次进入编辑（独立渲染，模拟重新打开页面）：空名称仍为空，不会回填。
+  const reopened = createRenderer(rpc)
+  await reopened.load()
+  await openModelsRoute(reopened, 'cpa')
+  await openModelsModel(reopened, 'm1')
+  assert.equal(byAria(reopened, '模型显示名称').props.value, '', 'the cleared name survives reopening')
 })
 
 test('models page renders reasoning level labels in English rather than localized names', async () => {

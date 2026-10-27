@@ -331,10 +331,17 @@
           enabled = raw === 'true'
         } catch (_) {}
         let dispose = null
+        // 当前区块是否已注册。feature 订阅在宿主设置面每次变更后都会回调（包括与本功能
+        // 无关的配置写入），只有可见性真正变化时才允许注销/重注册：重建 settings.section
+        // 会卸载页面组件、丢掉页内导航状态（例如渠道详情被退回模型配置首页）。
+        let registered = false
         const listeners = new Set()
         const sync = () => {
+          const visible = enabled && (feature === undefined || featureEnabled(feature))
+          if (visible === registered) return
           if (dispose) { dispose(); dispose = null }
-          if (!enabled || (feature !== undefined && !featureEnabled(feature))) return
+          registered = visible
+          if (!visible) return
           dispose = ctx.slots.register(
             { name: 'settings.section', id: sectionId, order, label: () => t(labelKey) },
             renderContent,
@@ -359,6 +366,7 @@
         }
         const disposeEntry = () => {
           if (dispose) { dispose(); dispose = null }
+          registered = false
         }
         return { sync, setEnabled, useEnabled, disposeEntry }
       }
