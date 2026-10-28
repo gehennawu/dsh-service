@@ -16,6 +16,7 @@ export function createSubagentRoutes({
   SUBAGENT_ROUTE_MODES,
   listSubagentDispatches,
   listSubagentModels,
+  listRecentRouteFailures,
   rpcTechnicalFailure,
   providerAvailability,
 }) {
@@ -72,6 +73,8 @@ export function createSubagentRoutes({
             presets,
             models,
             ...(current !== undefined ? { current } : {}),
+            // 运行期失败短名单（0.2.2-alpha.2 重设计）：客户端据此给候选行标「临时跳过」。
+            ...(typeof listRecentRouteFailures === 'function' ? { recentFailures: listRecentRouteFailures() } : {}),
           },
         }
       } catch (error) {

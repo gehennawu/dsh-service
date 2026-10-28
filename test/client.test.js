@@ -8947,6 +8947,35 @@ test('subagent fallback list: load/add/move/remove rows and save ordered fallbac
   assert.deepEqual(state.saves[1], { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', fallbacks: [{ provider: 'cpa', model: 'gpt-5.6-sol' }] })
 })
 
+test('subagent recent failures: snapshot failures are summarized and only matching candidate rows are badged', async () => {
+  const route = {
+    available: true,
+    mode: 'custom',
+    provider: 'deepseek-official',
+    model: 'deepseek-v4-flash',
+    fallbacks: [
+      { provider: 'cpa', model: 'gpt-5.6-sol' },
+      { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+    ],
+    recentFailures: [
+      { provider: 'deepseek-official', model: 'deepseek-v4-flash', code: 'RATE_LIMIT', at: 1, remainingMs: 120000 },
+      { provider: 'cpa', model: 'gpt-5.6-sol', code: 'SERVER', at: 2, remainingMs: 60000 },
+    ],
+  }
+  const { renderer } = createSubagentRenderer({ route })
+  await renderer.load()
+  renderer.mount('settings.section')
+  await openSubagentPage(renderer)
+  // 顶部摘要按快照逐条渲染（0/1），不虚构第三条。
+  assert.equal(renderer.hasTest('subagent-recent-failures'), true)
+  assert.equal(renderer.hasTest('subagent-recent-failure-0'), true)
+  assert.equal(renderer.hasTest('subagent-recent-failure-1'), true)
+  assert.equal(renderer.hasTest('subagent-recent-failure-2'), false)
+  // 只有命中 provider/model 的候选行带「临时跳过」徽标；未命中的候选不误标。
+  assert.equal(renderer.hasTest('subagent-fallback-recent-failure-0'), true)
+  assert.equal(renderer.hasTest('subagent-fallback-recent-failure-1'), false)
+})
+
 test('subagent tab is feature-gated and renders host errors/unavailable status in localized text', async () => {
   const disabled = createSubagentRenderer({ featureSettings: { subagentRoute: false } }).renderer
   await disabled.load()
@@ -9417,6 +9446,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     )
     assert.notEqual(parkingGroup, null, 'header chip parking must be gated by the 560px media query')
     assert.match(parkingGroup[0], /\[class\*="wSkVaW_tabs"\] \{ gap: 20px !important; \}/)
+    // alpha.2 起官方给 titleCluster 加 overflow:clip + 右缘渐隐 mask；插件把两枚芯片
+    // 绝对定位到标题行下方的 tab 行（落在 cluster 盒外），会被整块裁掉（真机 390：
+    // 芯片 rect y43..71 vs cluster clip y7..43）。芯片在场时必须解除该层 clip/mask，
+    // 无芯片时保留官方渐隐。
+    assert.match(parkingGroup[0], /\[class\*="wSkVaW_titleCluster"\]:has\(\[class\*="ZKlsPq_root"\], \[class\*="QsffPG_trigger"\]\) \{[^}]*overflow: visible !important/s)
+    assert.match(parkingGroup[0], /\[class\*="wSkVaW_titleCluster"\]:has\([\s\S]*?mask: none !important/s)
     // alpha.2 真实 DOM 在 headerActions 与任务 div 之间还有 data-slot/display:contents 包装；
     // 任务 div 自身仍是 button 的直属父节点。不得要求它也是 headerActions 的直属子节点。
     const jobChip = '[class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"])'
@@ -9518,7 +9553,38 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-turn-tail\] > :last-child \{[^}]*min-width: 0 !important/s)
     assert.match(styleTag.textContent, /\[data-chat-flow-kind="turn-tail"\] \[data-turn-tail\] > :last-child > span:last-child \{[^}]*flex: 1 1 auto !important/s)
     assert.doesNotMatch(styleTag.textContent, /p-xYUq_/)
-    assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{ flex-direction: row/)
+    // alpha.2 触摸横滑修复：官方 navList 带 overflow-y:auto，横排后计算值 overflow-x=auto
+    // 会变成嵌套横滚容器并吃掉触摸手势；手机上必须把滚动语义交还给外层 nav。
+    assert.match(styleTag.textContent, /\[role="dialog"\] \[class\*="navList"\] \{[^}]*flex-direction: row !important;[^}]*overflow: visible !important/s)
+    // 移动端备份页：文件名/操作按钮不并排（文件名曾压到 ~120px 折 4 行）；
+    // 信息段整行、操作段整行三等分，工具栏创建/导入等宽；版本徽标不折行。
+    assert.match(styleTag.textContent, /\[data-testid="backup-toolbar-actions"\] \{[^}]*flex: 1 1 100% !important/s)
+    assert.match(styleTag.textContent, /\[data-testid\^="backup-row-"\] > div:first-child \{[^}]*flex-wrap: wrap !important/s)
+    assert.match(styleTag.textContent, /\[data-testid\^="backup-row-"\] > div:first-child > div:last-child > button \{[^}]*flex: 1 1 0 !important/s)
+    assert.match(styleTag.textContent, /\[data-testid\^="backup-row-version-"\] \{ white-space: nowrap !important; \}/)
+    // 移动端会话管理：一行放「标题 + 标签 + 操作钮」，meta 独占下一行整行。
+    // 行改 2×2 栅格，信息列 display:contents 把标题行与 meta 提升为栅格项；操作组
+    // 紧凑小钮贴右上角（不再拉通栏大条），标题单行省略、标签不缩、meta 任意断点。
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-row\] \{[^}]*display: grid !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-row\] \{[^}]*grid-template-areas: "title actions" "meta meta" !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-info\] \{ display: contents !important; \}/)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-info\] > div \{ display: contents !important; \}/)
+    assert.match(styleTag.textContent, /\[data-testid\^="sessions-title-"\] \{[^}]*text-overflow: ellipsis !important/s)
+    assert.match(styleTag.textContent, /\[data-testid\^="sessions-meta-"\] \{[^}]*grid-area: meta !important/s)
+    assert.match(styleTag.textContent, /\[data-testid\^="sessions-meta-"\] \{[^}]*overflow-wrap: anywhere !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-actions\] \{[^}]*grid-area: actions !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-actions\] > button \{[^}]*flex: 0 0 auto !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-actions\] > button \{[^}]*min-height: 26px !important/s)
+    assert.match(styleTag.textContent, /\[data-dshsvc-session-actions\] > button \{[^}]*font-size: 11.5px !important/s)
+    // ≤360px 操作组折成 2 列小网格（4 钮并排会把标题挤到 2 字）。
+    assert.match(styleTag.textContent, /@media \(max-width: 360px\) \{[^}]*\[data-dshsvc-session-actions\] \{[^}]*display: grid !important/s)
+    assert.match(styleTag.textContent, /\[data-testid="sessions-toolbar"\] \{[^}]*grid-template-columns: repeat\(6, minmax\(0, 1fr\)\) !important/s)
+    assert.match(styleTag.textContent, /\[data-testid="sessions-toolbar"\] > select \{[^}]*grid-column: span 3 !important/s)
+    // 320px 档单列 ~41px：刷新钮默认左右 10px 内边距把「刷新」挤成两行，收紧后单行。
+    assert.match(styleTag.textContent, /button\[data-testid="sessions-refresh"\] \{[^}]*padding-left: 6px !important/s)
+    assert.match(styleTag.textContent, /\[data-testid="sessions-search-row"\]:has\(> label:nth-of-type\(2\)\) > div\[data-testid="sessions-search-field"\] \{[^}]*flex: 1 1 100% !important/s)
+    // 设置页头行给右上角关闭钮留位（真机「打开配置文件」曾被 X 压住）。
+    assert.match(styleTag.textContent, /\[class\*="VOzbGW_header"\] \{\s*padding-right: 48px !important;\s*\}/)
     // 真机反馈第三轮：设置模态长在侧栏子树内（未 portal），抽屉隐藏禁用 transform
     // （transform 会造包含块把 fixed 模态锁进抽屉宽度），一律用 left/right 偏移。
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-(sidebar|details)\]\s*\{[^}]*transform/s)
@@ -11214,6 +11280,13 @@ test('session manager tab lists sessions with archive marks, size info, and dele
   const archivedMetaText = Array.isArray(archivedMeta.children) ? archivedMeta.children.join('') : String(archivedMeta.children)
   assert.equal(archivedMetaText.includes('—'), false, 'no dash placeholder for sizes')
   assert.ok(archivedMetaText.includes('1.0 KB'), 'lazy-loaded size appears after the bytes RPC resolves')
+  // 移动端布局钩子：手机断点把行改成「信息整行 + 操作整行」，靠这三个属性定位；
+  // 工具栏/搜索行同时是移动端栅格规则的锚点（没有 testid 时只能按结构猜，升降级易漂）。
+  assert.equal(renderer.findByTestId('sessions-toolbar').props['data-testid'], 'sessions-toolbar')
+  assert.equal(renderer.findByTestId('sessions-search-row').props['data-testid'], 'sessions-search-row')
+  assert.equal(renderer.findByTestId('sessions-row-session-archived').props['data-dshsvc-session-row'], 'true')
+  assert.ok(renderer.findNode((node) => node.props?.['data-dshsvc-session-info'] === 'true'), 'row info column is addressable')
+  assert.ok(renderer.findNode((node) => node.props?.['data-dshsvc-session-actions'] === 'true'), 'row action column is addressable')
 
   // 切到「全部」：全量拉取 → live/cold 行出现
   await renderer.findByTestId('sessions-filter-all').props.onClick()

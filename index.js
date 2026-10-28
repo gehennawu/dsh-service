@@ -313,6 +313,45 @@ const MAX_SUBAGENT_ROUTE_FIELD = 256
 // 子代理回退（v1.1）：候选上限；「额度态不可服务」的 lastError 码集——配置/凭据/上游 4xx 类
 // 「已知现在不能用」；network/timeout/5xx 等瞬态不在此列（回退要的是确定性故障而非一次抖动）。
 const SUBAGENT_ROUTE_FALLBACK_MAX = 10
+// 运行期失败短名单（0.2.2-alpha.2 起）：宿主把本步模型固定、agent/request 只读，运行期已无法
+// 换路由；改为把「可重试的模型请求失败」按 provider/model 记入短名单，后续派发优先避开 5 分钟。
+// 只记录可重试的模型失败（取消/参数/上下文超限等不记），避免把路由错误误判成渠道不健康。
+const SUBAGENT_ROUTE_FAILURE_TTL_MS = 5 * 60 * 1000
+const SUBAGENT_ROUTE_FAILURE_MAX = 64
+function subagentRouteFailureKey(provider, model) {
+  return `${provider}\u0000${model}`
+}
+function pruneSubagentRouteFailures(map, now = Date.now()) {
+  for (const [key, entry] of map) {
+    if (now - entry.at >= SUBAGENT_ROUTE_FAILURE_TTL_MS) map.delete(key)
+  }
+}
+function noteSubagentRouteFailure(map, provider, model, failure, now = Date.now()) {
+  if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') return
+  pruneSubagentRouteFailures(map, now)
+  const key = subagentRouteFailureKey(provider, model)
+  map.delete(key)
+  const code = typeof failure?.code === 'string' && failure.code !== ''
+    ? failure.code
+    : Number.isFinite(failure?.status) ? `HTTP ${failure.status}` : 'model-error'
+  map.set(key, { provider, model, code, at: now })
+  while (map.size > SUBAGENT_ROUTE_FAILURE_MAX) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+function subagentRouteFailureViews(map, now = Date.now()) {
+  pruneSubagentRouteFailures(map, now)
+  return [...map.values()].map((entry) => ({
+    provider: entry.provider,
+    model: entry.model,
+    code: entry.code,
+    at: entry.at,
+    remainingMs: Math.max(0, SUBAGENT_ROUTE_FAILURE_TTL_MS - (now - entry.at)),
+  }))
+}
+
 // 子代理派发记录（v1.2）：内存环形上限与端点单页上限。记录不落盘——宿主进程重启即清，
 // 页面刷新不丢（记录在宿主内存）；客户端按父会话聚合成输入框下方累计行。
 // 单页上限 = 环形容量：一次请求即可取回环内全部记录，客户端无需分页
@@ -4312,8 +4351,48 @@ function quotaProviderUnusable(view) {
 // 子代理派生注入（seam 核心，纯函数便于测试）：
 // - 请求已显式携带 provider/model → 不干预（显式永远赢，含预设钉死与其他插件注入）；
 // - custom → 候选序 = [配置路由, ...回退]；follow → [父会话最新路由, ...回退]；inherit → 无候选；
-// - 取第一个「llm 注册表可路由 且 额度态可用」的候选注入；全不可用 → undefined（回落原生继承，
-//   不让派生失败）。options.note 用于宿主侧记录跳过原因（main 日志调试用）。
+// - 候选全不可用 → undefined（回落原生继承，不让派生失败）。options.note 用于记录跳过原因。
+// 0.2.2-alpha.2 重设计：候选在选择前先按「额度健康 > 配置顺序」排序，并优先避开最近失败的
+// provider/model；全部候选都在失败短名单里时仍按优先级选一条（不让派生失败）。
+function subagentRouteOrderedCandidates(request, config, options = {}) {
+  const ordered = []
+  const seen = new Set()
+  for (const [index, candidate] of subagentRouteCandidates(request, config, options).entries()) {
+    const key = subagentRouteFailureKey(candidate.provider, candidate.model)
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider, candidate.model)) {
+      options.note?.(`${candidate.provider}/${candidate.model} skipped (not routable)`)
+      continue
+    }
+    const quotaHealth = typeof options.isQuotaHealthy === 'function' ? options.isQuotaHealthy(candidate.provider) : undefined
+    if (quotaHealth === false) {
+      options.note?.(`${candidate.provider}/${candidate.model} skipped (quota-unusable)`)
+      continue
+    }
+    ordered.push({ candidate, quotaRank: quotaHealth === true ? 0 : 1, index })
+  }
+  ordered.sort((left, right) => left.quotaRank - right.quotaRank || left.index - right.index)
+  return ordered.map((entry) => entry.candidate)
+}
+
+function pickSubagentCandidate(ordered, options = {}) {
+  if (!Array.isArray(ordered) || ordered.length === 0) return undefined
+  const now = typeof options.now === 'number' ? options.now : Date.now()
+  const isRecentlyFailed = typeof options.isRecentlyFailed === 'function' ? options.isRecentlyFailed : () => false
+  const fresh = ordered.filter((candidate) => !isRecentlyFailed(candidate.provider, candidate.model, now))
+  if (fresh.length === 0) {
+    options.note?.('all candidates are in the recent-failure list; falling back to priority order')
+  } else if (fresh.length < ordered.length) {
+    options.note?.(`${ordered.length - fresh.length} candidate(s) skipped (recent failure)`)
+  }
+  return (fresh.length > 0 ? fresh : ordered)[0]
+}
+
+function resolveSubagentInjection(request, config, options = {}) {
+  return pickSubagentCandidate(subagentRouteOrderedCandidates(request, config, options), options)
+}
+
 function subagentRouteCandidates(request, config, options = {}) {
   const agentOptions = request?.agentOptions
   const explicitProvider = typeof agentOptions?.provider === 'string' && agentOptions.provider !== ''
@@ -4347,21 +4426,6 @@ function subagentRouteCandidates(request, config, options = {}) {
     }
   }
   return candidates
-}
-
-function resolveSubagentInjection(request, config, options = {}) {
-  for (const candidate of subagentRouteCandidates(request, config, options)) {
-    if (options.isRoutable !== undefined && !options.isRoutable(candidate.provider, candidate.model)) {
-      options.note?.(`${candidate.provider}/${candidate.model} skipped (not routable)`)
-      continue
-    }
-    if (typeof options.isQuotaHealthy === 'function' && options.isQuotaHealthy(candidate.provider) === false) {
-      options.note?.(`${candidate.provider}/${candidate.model} skipped (quota-unusable)`)
-      continue
-    }
-    return candidate
-  }
-  return undefined
 }
 
 // ── 子代理派发记录（v1.2）：创建时「实际生效路由」快照 ────────────────────────
@@ -5556,6 +5620,9 @@ function apply(ctx, featureConfig) {
   const subagentSeamRef = { current: false }
   // 子代理派发记录环（v1.2）：apply 级持有，RPC 端点与 seam 共同读写（seam 写入、端点只读）。
   const dispatchRing = { order: [], byChild: new Map() }
+  // 运行期失败短名单（0.2.2-alpha.2 重设计）：seam 写入、派发路径只读、RPC 快照下发展示。
+  // 宿主把本步模型固定后无法在运行期换路由，改为让后续派发避开刚失败的 provider/model（TTL 5 分钟）。
+  const subagentRouteFailures = new Map()
   // 按宿主能力包装子代理启动入口：新版 startActivation，旧版 start/startContinuable。
   // 未显式指定模型的派生按配置注入 agentOptions，其余原样透传；Fiber 销毁时还原原方法。
   ctx.inject(['subagents'], (scope) => {
@@ -5574,17 +5641,22 @@ function apply(ctx, featureConfig) {
       }
     }
     const readParentHeader = (parent) => parent?.session?.requestHeader?.()?.config
-    // reasoningEffort 不属于 AgentOptions，不能塞进 subagents.start() 的 options。
+    // 0.2.2-alpha.2 起 reasoningEffort 属于 AgentOptions（rc.3 起即有该字段），可直接随
+    // provider/model 一并注入派发请求；旧宿主若在装配层剥掉它会回落 agent/request 补标。
     // 用 AsyncLocalStorage 把「本次创建上下文」带进同步派发的 agent/created 监听器（v1.2：
     // 载荷 = 注入路由（有则）+ 父 agent 引用；记录构建与既有 effort 绑定都从这里取）：
-    // - effort 绑定：WeakMap<agent, target> 绑定到该 child；agent/request waterfall 在最终
-    //   proposal 阶段补入。绑定是一次性的：首个请求结算后即消费（无论补标成功与否），之后交给
-    //   请求自身/会话内状态，避免官方模型选择装配层刻意剥离继承值后我们在后续请求上反复复活旧等级。
+    // - effort 绑定：WeakMap<agent, target> 绑定到该 child；新宿主经 AgentOptions 生效，
+    //   旧宿主由 agent/request waterfall 在最终 proposal 阶段补入。绑定是一次性的：首个请求
+    //   结算后即消费（无论补标成功与否），之后交给请求自身/会话内状态，避免官方模型选择装配层
+    //   刻意剥离继承值后我们在后续请求上反复复活旧等级。
     // - 派发记录：childId → {provider, model, reasoningEffort?, source, turn, at} 环形快照，
     //   供客户端对话页「子代理累计行」读取（subagent-dispatches 端点）。
     const pendingDispatchStorage = new AsyncLocalStorage()
     const managedEfforts = new WeakMap()
     const managedRoutes = new WeakMap()
+    // 经由本插件 seam 创建的 agent：运行期失败短名单只记录这些派生的请求失败（不污染主会话）。
+    const managedAgents = new WeakSet()
+    let fallbackUnavailableWarned = false
     const isSubagentManaged = (agent) => agent !== null && typeof agent === 'object' && (managedEfforts.has(agent) || managedRoutes.has(agent))
     // 运行时等级复审缓存：`${provider}\u0000${model}` → Promise<Set<supportedIds> | null>。
     // null 表示无法判定（resolveModelInfo 缺席/失败/中止），按 fail-open 放行保持原行为；
@@ -5614,23 +5686,27 @@ function apply(ctx, featureConfig) {
       if (view === undefined) return undefined
       return quotaProviderUnusable(view) === false
     }
-    const applyInjection = (request) => {
+    const applyInjection = async (request) => {
       const explicit = request?.agentOptions?.provider
       if (typeof explicit === 'string' && explicit) providerAvailability.assertEnabled(explicit, request?.agentOptions?.model)
       // 功能关闭：零记录（完全静默，与原生行为一致）——记录是 subagentRoute 功能的一部分。
       if (!featureEnabled('subagentRoute')) return { request, dispatch: undefined }
+      const now = Date.now()
       const routeOptions = {
         isRoutable,
         readParentHeader,
         isQuotaHealthy,
+        isRecentlyFailed: (provider, model, at) => {
+          pruneSubagentRouteFailures(subagentRouteFailures, at)
+          return subagentRouteFailures.has(subagentRouteFailureKey(provider, model))
+        },
+        now,
         note: (message) => ctx.logger?.info?.(`dsh-service: subagent route ${message}`),
       }
-      const injected = resolveSubagentInjection(request, subagentRouteRef.current, routeOptions)
-      const routeCandidates = injected === undefined ? [] : subagentRouteCandidates(request, subagentRouteRef.current, routeOptions)
-        .filter((candidate) => isRoutable(candidate.provider, candidate.model) && isQuotaHealthy(candidate.provider) !== false)
-        .filter((candidate, index, candidates) => candidates.findIndex((item) => item.provider === candidate.provider && item.model === candidate.model) === index)
-      const injectedIndex = routeCandidates.findIndex((candidate) => candidate.provider === injected?.provider && candidate.model === injected?.model)
-      const eligibleRoutes = injectedIndex < 0 ? [] : routeCandidates.slice(injectedIndex)
+      const orderedRoutes = subagentRouteOrderedCandidates(request, subagentRouteRef.current, routeOptions)
+      const injected = pickSubagentCandidate(orderedRoutes, routeOptions)
+      const injectedIndex = orderedRoutes.findIndex((candidate) => candidate.provider === injected?.provider && candidate.model === injected?.model)
+      const eligibleRoutes = injectedIndex < 0 ? [] : orderedRoutes.slice(injectedIndex)
       // 显式路由（本插件不干预的派生，如官方 subagent-model-selection 开启时 LLM 主动选的模型）
       // 也带进派发记录：source='explicit'，显示时不误标「继承」；显式携带的思考等级一并记录，
       // 否则累计行会漏掉 (effort)。
@@ -5647,8 +5723,26 @@ function apply(ctx, featureConfig) {
       if (injected.provider !== undefined && injected.model !== undefined) {
         ctx.logger?.info?.(`dsh-service: subagent route seam applied ${injected.provider}/${injected.model} to a subagent without an explicit route`)
       }
-      const decorated = { ...request, agentOptions: { ...(request?.agentOptions ?? {}), ...agentPatch } }
-      const effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
+      let effort = typeof reasoningEffort === 'string' && reasoningEffort !== '' ? reasoningEffort : undefined
+      // 0.2.2-alpha.2 起宿主在 agent/request 之后硬校验本步 provider/model/reasoningEffort 不可改
+      // （见 agent-loop prepareRequest 的 "use agent.model.select() before step preparation"）。
+      // 子代理请求的 AgentOptions.reasoningEffort 会直接进入本步 selection，是唯一受支持的
+      // 等级注入面；注入前按目标路由复审等级是否仍受支持（与旧 request 侧复审同口径）。
+      if (effort !== undefined && injected.provider !== undefined && injected.model !== undefined) {
+        const supported = await resolveSupportedEfforts(injected.provider, injected.model)
+        if (supported !== null && !supported.has(effort)) {
+          ctx.logger?.warn?.(`dsh-service: subagent route reasoning effort "${effort}" is not supported by ${injected.provider}/${injected.model}; dropped`)
+          effort = undefined
+        }
+      }
+      const decorated = {
+        ...request,
+        agentOptions: {
+          ...(request?.agentOptions ?? {}),
+          ...agentPatch,
+          ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+        },
+      }
       return { request: decorated, dispatch: { parent: request?.parent, provider: injected.provider, model: injected.model, ...(effort !== undefined ? { reasoningEffort: effort } : {}), routeCandidates: eligibleRoutes } }
     }
     // 独立 Agent 预设（v2.0.9）：官方 0.2.1-alpha.3 起 startActivation 的请求面新增
@@ -5700,7 +5794,7 @@ function apply(ctx, featureConfig) {
     if (hasActivation) {
       subagents.startActivation = async (spec) => {
         await providerAvailability.loading
-        const { request: decorated, dispatch } = applyInjection(spec.request)
+        const { request: decorated, dispatch } = await applyInjection(spec.request)
         if (dispatch === undefined) return originalStartActivation.call(subagents, spec)
         const preset = await resolvePresetForSpec(spec, decorated)
         const finalRequest = preset !== undefined ? { ...decorated, agentPreset: preset } : decorated
@@ -5710,21 +5804,22 @@ function apply(ctx, featureConfig) {
     } else {
       subagents.start = async (name, request) => {
         await providerAvailability.loading
-        const { request: decorated, dispatch } = applyInjection(request)
+        const { request: decorated, dispatch } = await applyInjection(request)
         return runWithDispatch(dispatch, () => originalStart.call(subagents, name, decorated))
       }
       subagents.startContinuable = async (spec) => {
         await providerAvailability.loading
-        const { request: decorated, dispatch } = applyInjection(spec.request)
+        const { request: decorated, dispatch } = await applyInjection(spec.request)
         return runWithDispatch(dispatch, () => originalStartContinuable.call(subagents, { ...spec, request: decorated }))
       }
     }
     // agent/created（0.1.6 起由 announce await ctx.serial 异步串行派发；0.1.5 及之前同步派发在创建栈内）：
     // 记录派发路由 + 绑定等级（仅当确有非空等级）。监听器内部全 try/catch 严格保证绝不抛错，
     // 避免 0.1.6 serial 派发失败时 reject 整个 Agent 创建。
-    // agent/request：最终 proposal 阶段补入 reasoningEffort；已建立的值（提案自带/其他插件）永不覆盖。
-    // 补标前按 proposal 实际 provider/model 复审等级仍受支持（适配器元数据漂移即丢弃并告警），
-    // 与 isRoutable 的「实时判定、不让派生失败」契约同 philosophy。绑定无论结果如何都消费一次。
+    // agent/request：旧宿主在最终 proposal 阶段补入 reasoningEffort；新宿主（以 agent.model.select
+    // 存在为判据）改为只读——等级已经由 applyInjection 写进 AgentOptions，任何 proposal 改动都会被
+    // 宿主硬校验 throw。补标前按 proposal 实际 provider/model 复审等级仍受支持（适配器元数据漂移
+    // 即丢弃并告警），与 isRoutable 的「实时判定、不让派生失败」契约同 philosophy。
     // 注册在插件根 ctx：任何作用域标记的 agent 事件都会被未打标的根监听器全局收到（dsh-scope filter）。
     const disposeCreated = typeof ctx.on === 'function' ? ctx.on('agent/created', ({ agent }) => {
       const dispatch = pendingDispatchStorage.getStore()
@@ -5748,6 +5843,7 @@ function apply(ctx, featureConfig) {
       } else if (agent?.session?.header?.parentSession && subagentRouteRef.current.mode !== 'inherit') {
         ctx.logger?.warn?.(`dsh-service: subagent "${agent?.id}" created without ALS dispatch context, subagent route skipped`)
       }
+      if (dispatch !== undefined && agent !== null && typeof agent === 'object') managedAgents.add(agent)
       const effort = dispatch?.reasoningEffort
       if (typeof effort === 'string' && effort !== '' && agent !== null && typeof agent === 'object') managedEfforts.set(agent, effort)
       if (Array.isArray(dispatch?.routeCandidates) && dispatch.routeCandidates.length > 1 && agent !== null && typeof agent === 'object') {
@@ -5758,6 +5854,15 @@ function apply(ctx, featureConfig) {
       const proposal = await next()
       const agent = payload?.agent
       if (!isSubagentManaged(agent)) return proposal
+      // 0.2.2-alpha.2 起 agent/request 只读：宿主在瀑布之后硬校验 provider/model/reasoningEffort
+      // 必须与 preStep 固定的 selection 一致，改动即 throw（且 throw 早于模型调用，
+      // agent/request-error 不会触发）。agent.model.select 是新宿主判据（rc.3/rc.4 无该服务）；
+      // 等级已由 applyInjection 写入 AgentOptions，这里不再修改 proposal。
+      if (typeof agent.model?.select === 'function') {
+        managedEfforts.delete(agent)
+        managedRoutes.delete(agent)
+        return proposal
+      }
       const effort = managedEfforts.get(agent)
       managedEfforts.delete(agent)
       if (!featureEnabled('subagentRoute')) return proposal
@@ -5783,8 +5888,36 @@ function apply(ctx, featureConfig) {
     }) : null
     const disposeRequestError = typeof ctx.on === 'function' ? ctx.on('agent/request-error', ({ agent, failure, provider, signal }, next) => {
       if (!featureEnabled('subagentRoute')) return next()
+      const modernHost = agent !== null && typeof agent === 'object' && typeof agent.model?.select === 'function'
+      const retryable = signal?.aborted !== true && isRetryableSubagentRouteFailure(failure, signal)
+      // 新宿主同一 step 的重试恒用 preStep 固定的 selection（"重试保留同一选择"），没有任何
+      // 受支持的换路由扩展点；继续按旧路径轮换只会在下一次 agent/request 触发硬校验。这里降级为
+      // 不轮换（保留首个可用路由），原错误上抛给上层。
+      if (modernHost) {
+        // 失败短名单（0.2.2-alpha.2 重设计）：运行期换不了路由，但把「刚失败的路由」记下来让
+        // 后续派发避开（TTL 5 分钟）。只记可重试的模型失败——取消、参数错误、上下文超限换路由
+        // 也修不好，记进去只会误伤健康渠道。旧宿主继续用运行期轮换，不写短名单。
+        if (retryable && managedAgents.has(agent)) {
+          let selection
+          try {
+            selection = typeof agent.model?.current === 'function' ? agent.model.current() : undefined
+          } catch (_) {
+            selection = undefined
+          }
+          const failedRouteState = managedRoutes.get(agent)
+          const failedProvider = typeof provider === 'string' && provider !== '' ? provider : selection?.provider
+          const failedModel = selection?.model ?? failedRouteState?.candidates?.[failedRouteState.index]?.model
+          noteSubagentRouteFailure(subagentRouteFailures, failedProvider, failedModel, failure)
+        }
+        if (managedRoutes.has(agent) && !fallbackUnavailableWarned) {
+          fallbackUnavailableWarned = true
+          ctx.logger?.warn?.('dsh-service: subagent route runtime fallback is unavailable on DSH >= 0.2.2-alpha.2; the failed route is recorded and skipped for 5 minutes on the next dispatch')
+        }
+        managedRoutes.delete(agent)
+        return next()
+      }
       const routeState = agent !== null && typeof agent === 'object' ? managedRoutes.get(agent) : undefined
-      if (signal?.aborted === true || routeState === undefined || !isRetryableSubagentRouteFailure(failure, signal)) return next()
+      if (!retryable || routeState === undefined) return next()
       if (routeState.index + 1 >= routeState.candidates.length) {
         ctx.logger?.info?.(`dsh-service: subagent route exhausted after ${failure?.code ?? failure?.status ?? 'model error'} at ${provider ?? 'unknown provider'}`)
         return next()
@@ -5806,6 +5939,7 @@ function apply(ctx, featureConfig) {
       if (typeof disposeRequest === 'function') disposeRequest()
       if (typeof disposeRequestError === 'function') disposeRequestError()
       effortSupportCache.clear()
+      subagentRouteFailures.clear()
       subagentSeamRef.current = false
     }, 'dsh-service subagent route seam teardown')
   })
@@ -6384,7 +6518,7 @@ function apply(ctx, featureConfig) {
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
-    createSubagentRoutes({ ctx, providerAvailability, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, rpcTechnicalFailure }),
+    createSubagentRoutes({ ctx, providerAvailability, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, listRecentRouteFailures: () => subagentRouteFailureViews(subagentRouteFailures), rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, listLocalProfiles, name, rpcFailure }),
     createModelConfigRoutes({
       ctx,
@@ -6498,6 +6632,12 @@ export {
   resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,
+  pickSubagentCandidate,
+  subagentRouteOrderedCandidates,
+  noteSubagentRouteFailure,
+  subagentRouteFailureViews,
+  SUBAGENT_ROUTE_FAILURE_TTL_MS,
+  SUBAGENT_ROUTE_FAILURE_MAX,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,
@@ -6633,6 +6773,12 @@ export default {
   resolveSessionForDelete,
   resolveSkillInvocationState,
   resolveSubagentInjection,
+  pickSubagentCandidate,
+  subagentRouteOrderedCandidates,
+  noteSubagentRouteFailure,
+  subagentRouteFailureViews,
+  SUBAGENT_ROUTE_FAILURE_TTL_MS,
+  SUBAGENT_ROUTE_FAILURE_MAX,
   runtimeEnvCheck,
   safeCliproxyOrigin,
   sanitizeSkillDraftText,

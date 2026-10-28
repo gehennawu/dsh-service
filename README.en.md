@@ -182,7 +182,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Basic call tests may incur charges**. Every test first shows the fixed content, token ceiling, timeout and billing notice, and only calls after confirmation. Tests use saved models and report elapsed time and sanitized errors; they do not verify images, capacity or every reasoning level, and failures never roll back configuration.
 - **Smart fill starts disabled**. It queries local pi-ai, modelparams.dev and OpenRouter metadata by model ID, without provider discovery, inference or automatic saving. Suggestions are per parameter; confirming Fill all changes only the draft and still requires Save.
 - **Check reasoning levels against the API**: selectable levels differ from the effort selected for a call. Missing metadata does not mean unsupported; unconfigured values inherit or use API defaults. Manually supplied mappings require verification.
-- **Deletion checks references** to the main-chat default, subagent primary and fallback models, blocking deletion when referenced. A custom provider cannot lose its final model.
+- **Deletion checks references** to the main-chat default, subagent primary and candidate-route models, blocking deletion when referenced. A custom provider cannot lose its final model.
 - **Restore and credentials**: provider deletion snapshots configuration and keeps credential references. Restore recovers configuration, never old key values. Recently deleted records can be removed individually after confirmation; removing a record prevents restoration from it but does not affect existing providers or credentials. Replacement defaults to an independent reference; shared replacement first lists users.
 - **Draft and concurrency protection**: failed saves retain drafts; after a dropped connection or host restart the action resets so it can be retried, leaving unsaved edits warns, and external changes prevent overwrite until reviewed again. Drafts do not persist across reloads.
 
@@ -199,10 +199,10 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - Three modes: **Default** (no override), **Follow main model** (the latest model actually used by the main chat), and **Custom**. Entry: Model configuration → Subagent routing.
 - Explicit provider/model values in a delegation always take priority.
 - Custom models with declared reasoning levels offer an effort selection; blank uses the target default. Models without declarations explain that selection is unavailable.
-- **Mode switching preserves configuration**: custom model, effort and fallback list remain saved when switching away and back.
-- **Ordered fallbacks** in Follow and Custom modes handle unavailable channels or quota. If all routes are unavailable, use native inheritance.
+- **Mode switching preserves configuration**: custom model, effort and the candidate-route list remain saved when switching away and back.
+- **Candidate routes** in Follow and Custom modes: one route is chosen at dispatch time by quota health first, then priority; routes that failed within the last 5 minutes are skipped, and native inheritance is used when none is available. Runtime route switching inside one subagent only exists on older DSH; newer hosts use recorded failures to improve the next dispatch.
 - **Independent Agent preset** (0.2.1-alpha.3+ hosts): give every spawned subagent one independent preset (role and tools together); leave empty to follow the parent, explicit presets win, and only backends that support independent presets are affected.
-- An optional composer line shows the models actually used by the session's subagents, including fallback and explicit routes. Records survive page reloads, not process restarts.
+- An optional composer line shows the models actually used by the session's subagents, including candidate-route hits and explicit routes. Records survive page reloads, not process restarts.
 - Configuration lives at `$DSH_HOME/dsh-service-subagent-route.json`, with one-click reset.
 
 ### Task notifications
@@ -396,9 +396,9 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 | DSH Desktop (macOS / Linux, Electron) | Not blocked by the code | Owned by the desktop app | Not verified |
 | Direct `dsh web` execution | Supported | Not supported | Expected behavior |
 
-Requirements: Node.js `>=22`, and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
+Requirements: Node.js `>=22` (DSH `0.2.2` and later require Node.js `>=24.9` on the host side), and a DSH Web installation capable of loading both Host and Client plugin halves. Update checks require access to `registry.npmjs.org`; network failures do not affect other features.
 
-**DSH compatibility**: `>=0.1.1-rc.2` (**no upper bound**), verified through `0.2.1-rc.3`. Why no upper bound: since `0.2.1-alpha.4` the host gates plugin compatibility on a declared `engines.dsh` alone, so any pinned ceiling blocks the whole plugin on each new DSH release (**and the plugin's own one-click upgrade is blocked by that same gate, leaving no self-recovery path**). An open range keeps the plugin loading on newer versions; individual features may lag, but nothing breaks and no release is needed just to move the ceiling. Older DSH cannot read newer session formats; **backups cannot be restored across a downgrade**.
+**DSH compatibility**: `>=0.1.1-rc.2` (**no upper bound**), verified through `0.2.2-alpha.2`. Why no upper bound: since `0.2.1-alpha.4` the host gates plugin compatibility on a declared `engines.dsh` alone, so any pinned ceiling blocks the whole plugin on each new DSH release (**and the plugin's own one-click upgrade is blocked by that same gate, leaving no self-recovery path**). An open range keeps the plugin loading on newer versions; individual features may lag, but nothing breaks and no release is needed just to move the ceiling. Older DSH cannot read newer session formats; **backups cannot be restored across a downgrade**.
 
 
 **DSH Desktop**: restart and post-restore restart require quitting and reopening the app; upgrade through its own plugin manager. Notifications require system permission, and clicking one may not restore a hidden window—use the tray. Other platforms are best-effort, without compatibility guarantees.

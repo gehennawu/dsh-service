@@ -54,6 +54,7 @@ scripts/diagnose-issue-2.mjs
 scripts/diagnose-issue-2-delete.mjs
 scripts/measure-icon-ink.mjs
 scripts/repro-nav-visibility.mjs
+scripts/mini-nav-touch.mjs
 scripts/reset-nav-order.mjs
 service-icon-options.html
 

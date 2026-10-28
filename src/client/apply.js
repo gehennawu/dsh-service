@@ -1928,6 +1928,9 @@
         const [fallbacks, setFallbacks] = useState(bootstrap !== null ? bootstrap.fallbacks : [])
         // 独立 Agent 预设（v2.0.9）：'' = 跟随父代；清单来自宿主 agentPresets（旧宿主为空 ⇒ 选择器禁用）。
         const [preset, setPreset] = useState(bootstrap !== null && typeof bootstrap.preset === 'string' ? bootstrap.preset : '')
+        // 0.2.2-alpha.2 重设计：运行期失败短名单（provider/model + code + remainingMs），
+        // 候选行据此标「临时跳过」，说明下一次派发会自动避开。
+        const [recentFailures, setRecentFailures] = useState(Array.isArray(bootstrap?.recentFailures) ? bootstrap.recentFailures : [])
         const [reorderMode, setReorderMode] = useState(false)
         const hintStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const selectStyle = { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', maxWidth: '100%' }
@@ -1946,6 +1949,7 @@
               if (typeof res.value.model === 'string') setModel(res.value.model)
               setReasoningEffort(typeof res.value.reasoningEffort === 'string' ? res.value.reasoningEffort : '')
               setPreset(typeof res.value.preset === 'string' ? res.value.preset : '')
+              setRecentFailures(Array.isArray(res.value.recentFailures) ? res.value.recentFailures : [])
               // 只缓存宿主确认过的状态（保存后同样经 load 回填），下次进入以此为初值。
               writeSubagentRouteCache(res.value)
               setError('')
@@ -2107,6 +2111,15 @@
         // 字段行标签（定宽对齐）：供应商 / 模型 / 思考等级。
         const fieldLabelStyle = { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', width: '88px', flexShrink: 0 }
 
+        // 失败短名单查询：候选行与顶部摘要共用（短名单只影响派发排序，不改变已保存的配置）。
+        const recentFailureFor = (candidateProvider, candidateModel) => {
+          if (!Array.isArray(recentFailures)) return undefined
+          return recentFailures.find((entry) => entry !== null && typeof entry === 'object' && entry.provider === candidateProvider && entry.model === candidateModel)
+        }
+        const recentFailureMinutes = (entry) => String(Math.max(1, Math.ceil((Number(entry?.remainingMs) || 0) / 60000)))
+        const recentFailureLabel = (entry) => translate('subagent.recentFailure.badge', { code: typeof entry?.code === 'string' && entry.code !== '' ? entry.code : 'model-error' })
+        const recentFailureSummary = Array.isArray(recentFailures) ? recentFailures.filter((entry) => entry !== null && typeof entry === 'object') : []
+
         return React.createElement('div', { 'data-testid': 'subagent-section', style: cardStyle },
           React.createElement('div', { style: { fontSize: '14px', fontWeight: 700 } }, translate('subagent.title')),
           React.createElement('p', { style: hintStyle }, translate('subagent.hint')),
@@ -2155,6 +2168,10 @@
           mode === 'custom' || mode === 'follow' ? React.createElement('div', { 'data-testid': 'subagent-fallback-block', style: { marginTop: '14px', borderTop: '1px solid var(--dsh-svc-border)', paddingTop: '12px' } },
             React.createElement('div', { style: { fontSize: '13px', fontWeight: 700 } }, translate('subagent.fallback.title')),
             React.createElement('p', { style: hintStyle }, translate('subagent.fallback.hint')),
+            recentFailureSummary.length > 0 ? React.createElement('div', { 'data-testid': 'subagent-recent-failures', style: { marginTop: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-state-warn-primary)', background: 'rgba(198,128,0,0.10)' } },
+              React.createElement('div', { style: { fontSize: '12px', fontWeight: 650, color: 'var(--dsw-alias-state-warn-primary)' } }, translate('subagent.recentFailure.heading')),
+              recentFailureSummary.map((entry, index) => React.createElement('p', { key: index, 'data-testid': 'subagent-recent-failure-' + index, style: { margin: '4px 0 0', fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)' } },
+                translate('subagent.recentFailure.item', { provider: String(entry.provider ?? ''), model: String(entry.model ?? ''), code: typeof entry.code === 'string' && entry.code !== '' ? entry.code : 'model-error', minutes: recentFailureMinutes(entry) })))) : null,
             fallbacks.length === 0 ? React.createElement('p', { 'data-testid': 'subagent-fallback-empty', style: { ...hintStyle, color: 'var(--dsw-alias-label-secondary)' } }, translate('subagent.fallback.empty')) : null,
             fallbacks.map((fallback, index) => {
               const rowKnownProvider = providers.includes(fallback.provider)
@@ -2166,6 +2183,7 @@
                 // 标题行：序号 + 右侧操作（移除 / 排序箭头）。
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' } },
                   React.createElement('span', { style: { fontSize: '12px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('subagent.fallback.item', { index: String(index + 1) })),
+                  (() => { const rowFailure = recentFailureFor(fallback.provider, fallback.model); return rowFailure === undefined ? null : React.createElement('span', { 'data-testid': 'subagent-fallback-recent-failure-' + index, title: translate('subagent.recentFailure.title', { minutes: recentFailureMinutes(rowFailure) }), style: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', border: '1px solid var(--dsw-alias-state-warn-primary)', color: 'var(--dsw-alias-state-warn-primary)' } }, recentFailureLabel(rowFailure)) })(),
                   React.createElement('span', { style: { marginLeft: 'auto' } }),
                   fallbackIconButton('subagent-fallback-remove-' + index, false, () => removeFallback(index), translate('subagent.fallback.remove'), true),
                   reorderMode ? fallbackArrowButton('subagent-fallback-up-' + index, index === 0, () => moveFallback(index, -1), '▲') : null,
@@ -3706,11 +3724,14 @@
           return React.createElement('div', {
             key: id,
             'data-testid': 'sessions-row-' + id,
+            // 移动端布局钩子（2026-10-28）：行内「信息 + 操作」并排时，长 cwd 会溢出
+            // 信息列被右侧按钮压住；手机断点按这两个属性把行改成上下两段。
+            'data-dshsvc-session-row': 'true',
             'data-selected': batchMode && selected ? 'true' : undefined,
             onClick: batchMode ? () => toggleSelected(id) : undefined,
             style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: batchMode ? '9px 2px 9px 8px' : '9px 8px', borderBottom: '1px solid var(--dsh-svc-border)', background: 'transparent', borderRadius: '6px', boxShadow: batchMode && selected ? 'inset 3px 0 0 var(--dsw-alias-brand-primary)' : 'none', cursor: batchMode ? 'pointer' : 'default' },
           },
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: '1 1 auto' } },
+            React.createElement('div', { 'data-dshsvc-session-info': 'true', style: { display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: '1 1 auto' } },
               batchMode ? React.createElement('input', {
                 type: 'checkbox',
                 'data-testid': 'sessions-select-' + id,
@@ -3734,6 +3755,7 @@
                 React.createElement('div', { 'data-testid': 'sessions-meta-' + id, style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '3px' } }, metaBits.join(' · ')))),
             !batchMode ? React.createElement('div', {
               onClick: (event) => event.stopPropagation(),
+              'data-dshsvc-session-actions': 'true',
               style: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' },
             }, ...actions) : null)
         }
@@ -3986,7 +4008,7 @@
                 onClick: () => setNavEnabled(!navEnabled),
                 style: { width: '34px', height: '20px', ...fullRound('10px'), padding: 0, flexShrink: 0, position: 'relative', border: `1px solid ${navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-border-l2)'}`, background: navEnabled ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-bg-layer-2)', cursor: 'pointer', lineHeight: 0 },
               }, React.createElement('span', { style: { position: 'absolute', top: '1px', left: navEnabled ? '15px' : '1px', width: '16px', height: '16px', ...fullRound('50%'), background: navEnabled ? '#fff' : 'var(--dsw-alias-label-tertiary)' } })))),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px' } },
+          React.createElement('div', { 'data-testid': 'sessions-toolbar', style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '0 0 10px' } },
             (['all', 'archived', 'deleted']).map((key) => React.createElement('button', { key, type: 'button', 'data-testid': 'sessions-filter-' + key, style: { ...chipButton, background: filter === key ? 'var(--dsh-svc-tab-active-bg)' : 'transparent', color: filter === key ? 'var(--dsh-svc-tab-active-text)' : 'var(--dsw-alias-label-primary)', fontWeight: filter === key ? 650 : 400 }, onClick: () => changeFilter(key) }, translate('sessions.filter.' + key))),
             React.createElement('select', { 'data-testid': 'sessions-sort', style: selectStyle, value: sort, onChange: (event) => setSort(event.target.value) },
               React.createElement('option', { value: 'createdDesc' }, translate('sessions.sort.createdDesc')),
@@ -4015,8 +4037,8 @@
                   list?.canUnarchive !== false ? React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-batch-unarchive', style: batchUnarchiveItems.length > 0 ? batchActionActiveButton : chipButton, disabled: batchUnarchiveItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void runBatchUnarchive() }, batchWorking === 'unarchive' ? translate('sessions.status.working') : translate('sessions.batch.unarchive', { count: batchUnarchiveItems.length })) : null,
                   React.createElement('button', { key: 'delete', type: 'button', 'data-testid': 'sessions-batch-delete', style: batchDeleteItems.length > 0 ? batchDangerActiveButton : dangerOutlineButton, disabled: batchDeleteItems.length === 0 || batchWorking !== '' || deleting || clearing, onClick: () => void requestBatchDelete() }, batchWorking === 'delete-plan' ? translate('sessions.status.working') : translate('sessions.batch.delete', { count: batchDeleteItems.length })),
                 ]) : null,
-          detail === null && filter !== 'deleted' ? React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' } },
-            React.createElement('div', { style: { position: 'relative', flex: '1 1 200px', minWidth: '160px', display: 'flex', alignItems: 'center' } },
+          detail === null && filter !== 'deleted' ? React.createElement('div', { 'data-testid': 'sessions-search-row', style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap' } },
+            React.createElement('div', { 'data-testid': 'sessions-search-field', style: { position: 'relative', flex: '1 1 200px', minWidth: '160px', display: 'flex', alignItems: 'center' } },
               React.createElement('span', { style: { position: 'absolute', left: '9px', display: 'flex', alignItems: 'center', pointerEvents: 'none', color: 'var(--dsw-alias-label-tertiary)' } },
                 React.createElement('svg', { width: '13', height: '13', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2.2', strokeLinecap: 'round', strokeLinejoin: 'round' },
                   React.createElement('circle', { cx: '11', cy: '11', r: '8' }),
@@ -6558,7 +6580,7 @@
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' } },
                   React.createElement('span', { style: { fontSize: '11.5px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, translate('backup.total', { size: formatSize(backups.totalBytes) })),
                   backups.items.length > 0 ? React.createElement('span', { style: Object.assign({}, svcBadgeStyle('neutral'), { fontSize: '10.5px', padding: '1px 6px' }) }, `${backups.items.length} 份`) : null)),
-              React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
+              React.createElement('div', { 'data-testid': 'backup-toolbar-actions', style: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 } },
                 React.createElement('button', {
                   type: 'button',
                   style: Object.assign({}, secondary, backupBtnBase),
@@ -6598,7 +6620,7 @@
                 ? React.createElement('button', { style: Object.assign({}, ghost, { marginTop: '8px' }), onClick: () => setBackupDetails((value) => !value) }, translate(backupDetails ? 'backup.hideRecords' : 'backup.showRecords'))
                 : null,
             backups.items.length > 0 && (backups.items.length <= 10 || backupDetails)
-              ? React.createElement('div', { style: { marginTop: '8px', display: 'grid', gap: '6px' } },
+              ? React.createElement('div', { 'data-testid': 'backup-list', style: { marginTop: '8px', display: 'grid', gap: '6px' } },
                   backups.items.map((item) => React.createElement('div', {
                     key: item.id,
                     'data-testid': `backup-row-${item.id}`,

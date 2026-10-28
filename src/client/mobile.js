@@ -124,7 +124,16 @@ html[data-dshsvc-mobile] [role="dialog"] nav {
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
 html[data-dshsvc-mobile] [role="dialog"] nav > div { flex: none !important; }
-html[data-dshsvc-mobile] [role="dialog"] [class*="navList"] { flex-direction: row !important; }
+/* 0.2.2-alpha.2 触摸横滑修复：官方 .navList 自带 overflow-y:auto；插件改成横排后，
+   浏览器把「visible 轴」提升为 auto ⇒ navList 自己也成了横滚容器（scrollW==clientW）。
+   触摸手势会被这个不能滚的嵌套容器吃掉，表现为 nav 可程序化滚动、手指拖不动。
+   手机上把 navList 的滚动语义交还给外层 nav（nav 才是唯一横滚容器）。 */
+html[data-dshsvc-mobile] [role="dialog"] [class*="navList"] {
+  flex-direction: row !important;
+  overflow: visible !important;
+  overflow-x: visible !important;
+  overflow-y: visible !important;
+}
 html[data-dshsvc-mobile] [role="dialog"] [class*="navCell"] { white-space: nowrap !important; flex: none !important; }
 /* 关闭钮钉到设置页右上角并压到面板顶层（原生在内容区头行、导航条下方，
    会被横滑条/内容重叠遮挡——用户点名要顶层）；加不透明圆形底衬保证任何
@@ -148,6 +157,163 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_clos
    两个 span 在窄卡会被 flex 按比例收缩成 40~70px 盒子导致短标签折行
    （2026-09-18 真机 360/390px 实测），nowrap 后装不下时值列省略兜底。 */
 html[data-dshsvc-mobile] [class*="VOzbGW_options"] { padding: 0 14px 18px !important; }
+/* 设置页头行给钉在右上角的关闭钮留位：官方 actions（「打开配置文件」等）原本贴到
+   right:14px，被 28px 关闭钮压住（真机截图文字被 X 盖住）。 */
+html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] [class*="VOzbGW_header"] {
+  padding-right: 48px !important;
+}
+/* 备份页（维护 → 备份维护）：手机上行内「文件名 + 导出/恢复/删除」并排会把文件名
+   压到 ~120px（overflow-wrap:anywhere 折成 4 行）。改为上下两段：信息整行、操作
+   整行三等分；版本徽标不折行；工具栏的创建/导入也等宽铺满。 */
+html[data-dshsvc-mobile] [data-testid="backup-toolbar-actions"] {
+  flex: 1 1 100% !important;
+  min-width: 0 !important;
+}
+html[data-dshsvc-mobile] [data-testid="backup-toolbar-actions"] > button,
+html[data-dshsvc-mobile] [data-testid="backup-toolbar-actions"] > label {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  justify-content: center !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child {
+  flex-wrap: wrap !important;
+  row-gap: 8px !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child > div:first-child {
+  flex: 1 1 100% !important;
+  align-items: flex-start !important;
+  min-width: 0 !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child > div:first-child > div:first-child {
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child > div:last-child {
+  flex: 1 1 100% !important;
+  display: flex !important;
+  gap: 8px !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child > div:last-child:empty { display: none !important; }
+html[data-dshsvc-mobile] [data-testid^="backup-row-"] > div:first-child > div:last-child > button {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  min-height: 32px !important;
+  justify-content: center !important;
+}
+html[data-dshsvc-mobile] [data-testid^="backup-row-version-"] { white-space: nowrap !important; }
+/* 会话管理（维护 → 会话管理）条目行：一行放「标题 + 标签 + 操作钮」，meta 独占
+   下一行整行。此前左右两栏并排会把信息列压到 126px（已归档行 4 个钮），长 cwd 溢出
+   到按钮底下；改成通栏等宽大按钮又太重。做法：行改 2×2 栅格（title|actions /
+   meta 跨两列），信息列 display:contents 把标题行与 meta 提升为栅格项；操作组紧凑
+   （11.5px / 26px 高）贴右上角；标题单行省略、标签不缩；meta 任意断点整行展示。
+   工具栏 6 列栅格：筛选三枚各占 2 列（等于分段控件），排序 + 刷新 + 批量选择一行；
+   批量按钮缺席（详情/搜索态）时排序与刷新按 4:2 铺满，不留下空格。 */
+html[data-dshsvc-mobile] [data-dshsvc-session-row] {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  grid-template-areas: "title actions" "meta meta" !important;
+  column-gap: 8px !important;
+  row-gap: 2px !important;
+  align-items: center !important;
+  padding: 9px 8px !important;
+}
+/* 批量态：行首勾选框独占一列（跨两行），标题/meta 让到右侧；操作组不存在。 */
+html[data-dshsvc-mobile] [data-dshsvc-session-row]:has([data-testid^="sessions-select-"]) {
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  grid-template-areas: "check title" "check meta" !important;
+}
+html[data-dshsvc-mobile] [data-dshsvc-session-info] { display: contents !important; }
+html[data-dshsvc-mobile] [data-dshsvc-session-info] > div { display: contents !important; }
+/* 标题行（标题 + 标签）：单行、标题可省略、标签保持原宽。 */
+html[data-dshsvc-mobile] [data-dshsvc-session-info] > div > div:first-child {
+  grid-area: title !important;
+  flex-wrap: nowrap !important;
+  min-width: 0 !important;
+}
+html[data-dshsvc-mobile] [data-dshsvc-session-info] > div > div:first-child > span:not([data-testid^="sessions-title-"]) { flex: 0 0 auto !important; }
+html[data-dshsvc-mobile] [data-testid^="sessions-title-"] {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  line-height: 1.35 !important;
+}
+html[data-dshsvc-mobile] [data-testid^="sessions-meta-"] {
+  grid-area: meta !important;
+  margin-top: 0 !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  white-space: normal !important;
+  line-height: 1.5 !important;
+  max-width: 100% !important;
+}
+/* 操作组：紧凑小钮、贴右上角（栅格第一行右列），不拉通栏。 */
+html[data-dshsvc-mobile] [data-dshsvc-session-actions] {
+  grid-area: actions !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  flex-wrap: nowrap !important;
+  align-self: center !important;
+  justify-content: flex-end !important;
+  gap: 4px !important;
+}
+html[data-dshsvc-mobile] [data-dshsvc-session-actions] > button {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  min-height: 26px !important;
+  padding: 2px 8px !important;
+  font-size: 11.5px !important;
+  line-height: 1.2 !important;
+  justify-content: center !important;
+  white-space: nowrap !important;
+}
+html[data-dshsvc-mobile] [data-dshsvc-session-info] > [data-testid^="sessions-select-"] {
+  grid-area: check !important;
+  align-self: center !important;
+}
+/* ≤360px：四个钮并排会把标题挤到 2 字；操作组改成 2 列小网格（2×2 / 2+1），
+   宽度固定为两钮宽，把剩余宽度留给标题与标签。 */
+@media (max-width: 360px) {
+  html[data-dshsvc-mobile] [data-dshsvc-session-actions] {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, auto)) !important;
+    flex-wrap: nowrap !important;
+  }
+  /* 操作组两行时行内改顶部对齐：标题/标签与第一行按钮同顶，不被居中到两行之间。 */
+  html[data-dshsvc-mobile] [data-dshsvc-session-row] { align-items: start !important; }
+}
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] {
+  display: grid !important;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  align-items: center !important;
+}
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] > button[data-testid^="sessions-filter-"] { grid-column: span 2 !important; }
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] > select { grid-column: span 3 !important; width: 100% !important; min-width: 0 !important; }
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] > button[data-testid="sessions-refresh"] { grid-column: span 1 !important; }
+/* 320px 档栅格单列只剩 ~41px，刷新钮默认左右 10px 内边距会把「刷新」挤成两行
+   （真机截图确认），收紧内边距并禁折行。 */
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] > button[data-testid="sessions-refresh"] {
+  padding-left: 6px !important;
+  padding-right: 6px !important;
+  white-space: nowrap !important;
+}
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"] > button[data-testid="sessions-batch-toggle"] { grid-column: span 2 !important; }
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"]:not(:has(> [data-testid="sessions-batch-toggle"])) > select { grid-column: span 4 !important; }
+html[data-dshsvc-mobile] [data-testid="sessions-toolbar"]:not(:has(> [data-testid="sessions-batch-toggle"])) > button[data-testid="sessions-refresh"] { grid-column: span 2 !important; }
+html[data-dshsvc-mobile] [data-testid="sessions-search-row"] > div[data-testid="sessions-search-field"] {
+  flex: 1 1 200px !important;
+  min-width: 0 !important;
+}
+html[data-dshsvc-mobile] [data-testid="sessions-search-row"] > label { flex: 0 0 auto !important; }
+/* 窄屏（≤430px）：两个「仅…」限定并排时搜索框独占一行——否则第二个限定会
+   单独掉到下一行左对齐，看起来像漏排。只有一个限定时（已归档视图）保持同排，
+   避免多出一行只有一个复选框。 */
+@media (max-width: 430px) {
+  html[data-dshsvc-mobile] [data-testid="sessions-search-row"]:has(> label:nth-of-type(2)) > div[data-testid="sessions-search-field"] { flex: 1 1 100% !important; }
+}
 html[data-dshsvc-mobile] [data-testid="usage-statistics-region"] { padding: 8px !important; }
 html[data-dshsvc-mobile] [data-testid="usage-chart"] { padding: 8px 8px 2px !important; }
 html[data-dshsvc-mobile] [data-testid^="usage-summary-"] { column-gap: 8px !important; }
@@ -391,7 +557,14 @@ html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header[data-dshsvc-
    按钮文案 nowrap 是第二道保险（任何容器宽度下都不许在胶囊内折行）。
    data-plugin-panel / data-window-drag 为官方稳定钩子；类哈希 X_2TxG_ 取自
    dsh-client-ui-plugin-manager PluginManagerPage.module.css（0.2.0-rc.1），
-   升级需复核（与 uV2eYG_ 等同规）。 */
+   升级需复核（与 uV2eYG_ 等同规）。
+   0.2.2-alpha.2 分界：页头被包进 div[data-plugin-body] > div[data-plugin-bar]，
+   上面的直子选择器在**新宿主**上不再命中（旧宿主 ≤0.2.1-rc.4 仍需它们，故保留）。
+   新宿主的 pageBar 自带 sticky / 测量态（data-measuring / data-natural）与
+   --plugin-header-rest-height 裁剪，官方 CSS 在 390px 下已自行换行（实测
+   header 342×128、addButton 32×32 nowrap、scrollW=clientW=390、子项相交 0），
+   因此**故意不把规则改成后代选择器**：对带测量态的粘性页头强加 flex-wrap
+   可能与官方折叠/裁剪冲突。若未来新版再次出现挤压，再按 pageBar 结构单独适配。 */
 html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] { flex-wrap: wrap !important; }
 html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] > :first-child { min-width: 0 !important; }
 html[data-dshsvc-mobile] [data-plugin-panel] > [data-window-drag] > [class*="X_2TxG_toolbar"] {
@@ -450,6 +623,19 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
 @media (max-width: 560px) {
   html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
+  /* 0.2.2-alpha.2：titleCluster 新增 overflow:clip + 右缘渐隐 mask（官方窄栏「溢出的头部
+     状态入口渐隐」）。插件把任务/子代理芯片绝对定位到标题行下方的 tab 行（bottom:4px），
+     落在 cluster 盒外 ⇒ 被整块裁掉（真机 390：芯片 rect y43..71 vs cluster clip y7..43）。
+     芯片在场时解除该层 clip/mask，让既有泊位重新可见；无芯片时保留官方渐隐。 */
+  html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"]:has([class*="ZKlsPq_root"], [class*="QsffPG_trigger"]) {
+    overflow: visible !important;
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+  }
   html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]),
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     position: absolute !important;

@@ -17,7 +17,7 @@ import fsPromises from 'node:fs/promises'
 
 import pluginDefault from '../index.js'
 import { collectPlatformNotices, normalizeProfileMapping, restoreFailureCode } from '../backup-integrity.js'
-import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, titleRevisionKey, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
+import { apply, appendVaryToken, assistantMessageCarriesOnlyToolCalls, buildCliproxyAccountPlan, buildSubagentDispatchRecord, cliproxyFetchGuard, cliproxyPinHostFromBaseURL, cliproxyProjectFor, createQuotaThrottle, DEFAULT_FEATURE_SETTINGS, detectRuntimeEnv, ensureMobileResponseCompression, evaluateSkillFile, extractSkillDraftJson, fetchCliproxyUsage, fetchProviderUsage, fetchStepFunStepPlanUsage, fetchXiaomiTokenPlanUsage, fileEditorErrorCode, inferQuotaKind, installMobileResponseCompression, isCompressibleJsonType, lastSubagentTurn, listSubagentDispatches, listSubagentModels, loadUnifiedConfig, name, parseSessionFileAddress, normalizeAntigravityModels, normalizeAntigravityQuotaSummary, normalizeCodexRateLimit, normalizeCommandCodeQuota, normalizeDeepseekBalance, normalizeGeminiBuckets, normalizeKimiBalance, normalizeOpenRouterCredits, normalizeOpencodeUsage, normalizeSiliconFlowInfo, normalizeStepfunBalance, normalizeStepFunStepPlanUsage, normalizeXiaomiTokenPlanUsage, normalizeZaiCodingUsage, parseQuotaConfigText, isResetCardExpired, pruneExpiredResetCards, resetCardExpiryMs, parseSubagentRouteText, pickCompressionEncoding, publicSubagentReasoning, pushSubagentDispatchRecord, quotaCredentialConfigured, quotaCredentialHintNames, quotaEndpointFor, quotaErrorCode, quotaProviderUnusable, readLlmProviders, readLlmProvidersFromDescribe, titleRevisionKey, usageSessionFailure, resolveFileEditorTarget, resolveSubagentInjection, pickSubagentCandidate, subagentRouteOrderedCandidates, noteSubagentRouteFailure, subagentRouteFailureViews, SUBAGENT_ROUTE_FAILURE_TTL_MS, SUBAGENT_ROUTE_FAILURE_MAX, runtimeEnvCheck, safeCliproxyOrigin, sessionEventCollapseKind, sessionEventText, stepfunWebIdFromToken, unwrapCliproxyApiCallEnvelope, unwrapXiaomiConsoleEnvelope, updateUnifiedConfigSection } from '../index.js'
 
 // 插件 Config（0.1.7-alpha.1 起的宿主配置面）：schema 契约在下面直接断言。
 const pluginConfig = pluginDefault.Config
@@ -7672,6 +7672,51 @@ test('resolveSubagentInjection：显式路由永远赢、follow 读父会话 hea
   assert.equal(resolveSubagentInjection({}, null, {}), undefined)
 })
 
+test('subagent-route 派发打分：额度健康优先于配置顺序，最近失败的路由被跳过，全失败仍按优先级兜底', () => {
+  const config = { mode: 'custom', provider: 'a', model: 'm1', fallbacks: [{ provider: 'b', model: 'm2' }, { provider: 'c', model: 'm3' }] }
+  // 额度健康 true 的候选排在 unknown 之前（b 虽在配置里靠后）。
+  assert.deepEqual(
+    resolveSubagentInjection({}, config, { isRoutable: () => true, isQuotaHealthy: (provider) => (provider === 'b' ? true : undefined) }),
+    { provider: 'b', model: 'm2' },
+  )
+  // 主路由最近失败 → 跳过，选下一条。
+  const failed = new Set(['a\u0000m1'])
+  assert.deepEqual(
+    resolveSubagentInjection({}, config, { isRoutable: () => true, isRecentlyFailed: (provider, model) => failed.has(provider + '\u0000' + model) }),
+    { provider: 'b', model: 'm2' },
+  )
+  // 全部都在失败短名单里 → 不让派生失败，仍按优先级选第一条。
+  assert.deepEqual(
+    resolveSubagentInjection({}, config, { isRoutable: () => true, isRecentlyFailed: () => true }),
+    { provider: 'a', model: 'm1' },
+  )
+  // 显式路由永远不参与打分。
+  assert.equal(resolveSubagentInjection({ agentOptions: { provider: 'x', model: 'y' } }, config, { isRoutable: () => true }), undefined)
+})
+
+test('subagent-route 失败短名单：TTL 到期淘汰、重复失败刷新时间、容量有界', () => {
+  const map = new Map()
+  noteSubagentRouteFailure(map, 'p', 'm', { code: 'RATE_LIMIT' }, 0)
+  assert.equal(subagentRouteFailureViews(map, 0).length, 1)
+  assert.equal(subagentRouteFailureViews(map, 0)[0].remainingMs, SUBAGENT_ROUTE_FAILURE_TTL_MS)
+  // 距 TTL 差 1ms 仍有效，到点即淘汰。
+  assert.equal(subagentRouteFailureViews(map, SUBAGENT_ROUTE_FAILURE_TTL_MS - 1).length, 1)
+  assert.equal(subagentRouteFailureViews(map, SUBAGENT_ROUTE_FAILURE_TTL_MS).length, 0)
+  // 重复失败刷新 at（同一 key 不重复计数）。
+  noteSubagentRouteFailure(map, 'p', 'm', { code: 'SERVER' }, 0)
+  noteSubagentRouteFailure(map, 'p', 'm', { code: 'RATE_LIMIT', status: 429 }, 1000)
+  assert.equal(subagentRouteFailureViews(map, 1000).length, 1)
+  assert.equal(subagentRouteFailureViews(map, 1000)[0].code, 'RATE_LIMIT')
+  assert.equal(subagentRouteFailureViews(map, 1000 + SUBAGENT_ROUTE_FAILURE_TTL_MS - 1).length, 1)
+  assert.equal(subagentRouteFailureViews(map, 1000 + SUBAGENT_ROUTE_FAILURE_TTL_MS).length, 0)
+  // 容量上限：超出后淘汰最旧条目。
+  const capped = new Map()
+  for (let index = 0; index < SUBAGENT_ROUTE_FAILURE_MAX + 8; index += 1) {
+    noteSubagentRouteFailure(capped, 'p' + index, 'm', { code: 'SERVER' }, index)
+  }
+  assert.equal(capped.size, SUBAGENT_ROUTE_FAILURE_MAX)
+})
+
 test('subagent-route seam：包装 start/startContinuable 注入未显式路由的派生，disposer 还原原方法', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-seam-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -7770,7 +7815,7 @@ test('subagent-route seam：新版 startActivation 注入并记录派发，保�
   assert.equal(explicit.value.records[0].source, 'explicit')
   await host.handler('subagent-route-save', { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high', fallbacks: [{ provider: 'fallback', model: 'm2' }] })
   await registry.startActivation({ ...spec, request: { ...spec.request } })
-  assert.deepEqual(calls[2].request.agentOptions, { provider: 'cpa', model: 'gpt-5.6-sol' })
+  assert.deepEqual(calls[2].request.agentOptions, { provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high' })
   const effort = await host.fire('agent/request', { agent: createdAgents[2], signal }, async () => ({ provider: 'cpa', model: 'gpt-5.6-sol' }))
   assert.deepEqual(effort, { provider: 'cpa', model: 'gpt-5.6-sol', reasoningEffort: 'high' }, '新入口的首次请求补入思考等级')
   await host.updateFeatureSettings({ subagentRoute: false })
@@ -7989,6 +8034,103 @@ test('subagent-route runtime fallback：retryable model errors rotate, while can
   assert.equal(exhaustedAction, undefined, 'the configured candidates are attempted at most once')
   const exhaustedRequest = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
   assert.deepEqual(exhaustedRequest, { provider: 'quota', model: 'm8' }, 'exhaustion cannot rotate back to a previously failed candidate')
+  host.dispose()
+})
+
+test('subagent-route：新宿主（agent.model.select）上 agent/request 只读，等级经 AgentOptions 生效', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-readonly-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']]])
+  llm.setModelInfo('primary', 'm1', { id: 'm1', name: 'M1', reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } })
+  let emitCreated
+  const { registry, createdAgents } = fakeSubagents((agent) => emitCreated?.(agent))
+  const host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  emitCreated = (agent) => { void host.fire('agent/created', { agent }) }
+  await host.handler('subagent-route-save', {
+    mode: 'custom', provider: 'primary', model: 'm1', reasoningEffort: 'high',
+    fallbacks: [{ provider: 'fallback', model: 'm2' }],
+  })
+  await registry.start('spawn', { label: 'a', parent: {} })
+  const agent = createdAgents[0]
+  // 等级随 AgentOptions 一并下发：新宿主 preStep 的 selection 直接读到它。
+  assert.deepEqual(agent.options, { provider: 'primary', model: 'm1', reasoningEffort: 'high' })
+
+  // 新宿主判据（rc.3/rc.4 无 agent.model）：即使 proposal 缺 effort / 需要换路由，
+  // 也不再修改 proposal —— 宿主会在瀑布之后硬校验并 throw。
+  agent.model = { select: () => {} }
+  const bare = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+  assert.deepEqual(bare, { provider: 'primary', model: 'm1' }, 'proposal must stay untouched after the fixed selection')
+  const rotated = await host.fire('agent/request', { agent }, async () => ({ provider: 'fallback', model: 'm2' }))
+  assert.deepEqual(rotated, { provider: 'fallback', model: 'm2' }, 'proposal must stay untouched after a fallback selection')
+  host.dispose()
+})
+
+test('subagent-route：新宿主上 request-error 不轮换路由（同 step 选择固定），降级为首个可用路由', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-norotate-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']]])
+  let host
+  const { registry, createdAgents } = fakeSubagents((agent) => host.emit('agent/created', { agent }))
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  await host.handler('subagent-route-save', {
+    mode: 'custom', provider: 'primary', model: 'm1',
+    fallbacks: [{ provider: 'fallback', model: 'm2' }],
+  })
+  await registry.start('spawn', { label: 'a', parent: {} })
+  const agent = createdAgents[0]
+  agent.model = { select: () => {} }
+  const action = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'RATE_LIMIT', status: 429, message: 'rate limited' },
+    signal: new AbortController().signal,
+  }, async () => undefined)
+  assert.equal(action, undefined, 'fallback rotation is disabled on the new host contract')
+  const request = await host.fire('agent/request', { agent }, async () => ({ provider: 'primary', model: 'm1' }))
+  assert.deepEqual(request, { provider: 'primary', model: 'm1' }, 'the first eligible route stays selected')
+  host.dispose()
+})
+
+test('subagent-route：新宿主记录可重试失败，下一次派发自动跳过该路由并下发给客户端', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-ledger-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']]])
+  let host
+  const { registry, createdAgents } = fakeSubagents((agent) => host.emit('agent/created', { agent }))
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  await host.handler('subagent-route-save', {
+    mode: 'custom', provider: 'primary', model: 'm1',
+    fallbacks: [{ provider: 'fallback', model: 'm2' }],
+  })
+  await registry.start('spawn', { label: 'a', parent: {} })
+  const agent = createdAgents[0]
+  // 新宿主判据 + 选择来源：fail 记录按 current() 的 provider/model 归因。
+  agent.model = { select: () => {}, current: () => ({ provider: 'primary', model: 'm1' }) }
+  const action = await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'primary',
+    failure: { code: 'RATE_LIMIT', status: 429, message: 'rate limited' },
+    signal: new AbortController().signal,
+  }, async () => undefined)
+  assert.equal(action, undefined, '新宿主不在同一步重试换路由')
+  const snapshot = await host.handler('subagent-route', {})
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.value.recentFailures.length, 1)
+  assert.deepEqual(
+    { provider: snapshot.value.recentFailures[0].provider, model: snapshot.value.recentFailures[0].model, code: snapshot.value.recentFailures[0].code },
+    { provider: 'primary', model: 'm1', code: 'RATE_LIMIT' },
+  )
+  assert.equal(snapshot.value.recentFailures[0].remainingMs > 0, true)
+  // 下一次派发：primary 在失败短名单里 → 自动选 fallback。
+  await registry.start('spawn', { label: 'b', parent: {} })
+  assert.deepEqual(createdAgents[1].options, { provider: 'fallback', model: 'm2' })
+  // 不可重试失败（参数错误）不写短名单。
+  const before = (await host.handler('subagent-route', {})).value.recentFailures.length
+  agent.model = { select: () => {}, current: () => ({ provider: 'fallback', model: 'm2' }) }
+  await host.fire('agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'fallback',
+    failure: { code: 'INVALID_ARGS', status: 400, message: 'invalid' },
+    signal: new AbortController().signal,
+  }, async () => undefined)
+  assert.equal((await host.handler('subagent-route', {})).value.recentFailures.length, before, 'non-retryable failures never mark a route unhealthy')
   host.dispose()
 })
 
@@ -8357,7 +8499,7 @@ test('subagent-route seam：回退链路——follow 父路由不可路由落到
 
   // custom：主路由与首回退均不可路由 → 顺序落到第二回退（effort 由候选透传，绑定路径与主路由同）。
   await registry.start('spawn', { label: 'a', parent: {} })
-  assert.deepEqual(calls[0].request.agentOptions, { provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+  assert.deepEqual(calls[0].request.agentOptions, { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'high' })
 
   // follow + 回退：父路由的渠道已卸载 → 注入回退[0]。
   await host.handler('subagent-route-save', { mode: 'follow', fallbacks: [{ provider: 'deepseek-official', model: 'deepseek-v4-flash' }] })
@@ -8475,9 +8617,10 @@ test('subagent-route：Custom 把 reasoningEffort 注入首个 agent/request，�
 
   await host.handler('subagent-route-save', { mode: 'custom', provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
 
-  // 普通派生（无显式 provider/model）：先注入 provider/model，再在首请求补入 reasoningEffort。
+  // 普通派生（无显式 provider/model）：provider/model/reasoningEffort 一并写进 AgentOptions
+  // （0.2.2-alpha.2 起这是唯一受支持的等级注入面；旧宿主仍由首请求 waterfall 补标兜底）。
   await registry.start('spawn', { label: 'a', parent: {} })
-  assert.deepEqual(createdAgents[0].options, { provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  assert.deepEqual(createdAgents[0].options, { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
   const proposal = await host.fire('agent/request', { agent: createdAgents[0] }, async () => ({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }))
   assert.deepEqual(proposal, { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
 
