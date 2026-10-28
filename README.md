@@ -9,7 +9,7 @@
   <em>A service-control &amp; operations plugin for DeepSeek Harness (DSH) Web.</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.1-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.2-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
 [![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E6%97%A0%E4%B8%8A%E7%95%8C-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
@@ -327,7 +327,7 @@ flowchart TB
 1. 打开左侧边栏的「**插件**」页。
 2. 点右上角的「**+ 添加插件**」按钮。
 3. 在弹窗里按来源**三选一**填写（同一个输入框接受三种形式，底部提示会随填写内容变化）：
-   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.1.1`——**带上精确版本号**（写法 `包名@版本号`）；
+   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.1.2`——**带上精确版本号**（写法 `包名@版本号`）；
    - **GitHub 仓库地址**：`https://github.com/gehennawu/dsh-service`（公开仓库，无需令牌；`github:gehennawu/dsh-service` 简写同样可用）；
    - **本地插件目录**：本机上的绝对路径，例如 `/path/to/dsh-service`（自研或已下载的插件）。
 4. 「**安装源**」按网络情况选择：默认「**npm 官方源**」；国内网络拉取受限时可选「**中国大陆镜像源**」（影响走包名安装时的拉取源，GitHub 地址与本地目录不受其影响）。
@@ -338,17 +338,17 @@ flowchart TB
 
 > 提示：三种形式都走官方安装链路，无需手动改 profile 文件；图形界面填 GitHub 地址与命令行 `github:` 前缀等价。
 
-> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.1.1`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
+> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.1.2`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
 
 ### 方式二：命令行
 
 | 方式 | 命令 |
 | --- | --- |
-| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.1` |
+| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.2` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | 本地开发 | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
-命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.1.1`）才会装该版（原因见「方式一」的提示）。
+命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.1.2`）才会装该版（原因见「方式一」的提示）。
 
 安装或更新后重启 DSH Web：
 
@@ -493,7 +493,7 @@ Step Plan 订阅没有 API-key 形态的查询接口，需要网页登录态令�
 <details>
 <summary><strong>插件管理页装了插件，版本却停在旧版？</strong></summary>
 
-pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.1.1`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
+pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.1.2`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
 </details>
 
 <details>
