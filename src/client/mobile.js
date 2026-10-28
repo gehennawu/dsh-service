@@ -332,19 +332,23 @@ html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshs
 /* composer 底行单行紧凑：收紧间距与左右内边距，换出可用宽度。
    类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自 dsh-client-ui-conversation composer
    （rc.2，0.1.6-alpha.1 漂移至 JObwrW_ 并存），升级需复核。 */
+/* 0.2.2-alpha.2 起官方 observeControlRow 用「行内容宽 ≥ 子项宽度和 + gap」判定
+   模型钮是否收成 compact：expanded 状态差 4px 就整块收掉模型名（480 档实测
+   available 437 / needed 441，模型名凭空消失只剩思考等级）。手机端把行内边距
+   10→8、列间距 4→2、控制组间距 6→4，多让出 ~10px：短名模型恢复完整展示，
+   真正放不下的长名/窄屏仍由官方逻辑收缩。 */
 html[data-dshsvc-mobile] [class*="uV2eYG_row"] {
-  column-gap: 4px !important;
-  padding-left: 10px !important;
-  padding-right: 10px !important;
+  column-gap: 2px !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
 }
 html[data-dshsvc-mobile] [class*="uV2eYG_tools"],
-html[data-dshsvc-mobile] [class*="uV2eYG_modes"],
-html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 6px !important; min-width: 0 !important; }
-html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { margin-left: auto !important; }
+html[data-dshsvc-mobile] [class*="uV2eYG_modes"] { gap: 6px !important; min-width: 0 !important; }
+html[data-dshsvc-mobile] [class*="uV2eYG_trailing"] { gap: 4px !important; min-width: 0 !important; margin-left: auto !important; }
 /* 0.1.7-alpha.1 在 trailing 内新包了一层 standardControls（会话右槽 + 模型触发钮同组，
    官方 gap:12px）。外层 trailing 的 gap 收紧管不到它，≤480px 时这 12px 会把整组顶出
    容器、触发换行错位。老宿主没有这个类，规则不命中，纯增量。 */
-html[data-dshsvc-mobile] [class*="uV2eYG_standardControls"] { gap: 6px !important; min-width: 0 !important; flex: 0 1 auto !important; }
+html[data-dshsvc-mobile] [class*="uV2eYG_standardControls"] { gap: 4px !important; min-width: 0 !important; flex: 0 1 auto !important; }
 html[data-dshsvc-mobile] [class*="Sh0Q9G_trigger"],
 html[data-dshsvc-mobile] [class*="JObwrW_trigger"] { max-width: 38vw !important; }
 html[data-dshsvc-mobile] [class*="pXSMma_workspace"] { max-width: 30vw !important; }

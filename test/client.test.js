@@ -9433,7 +9433,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 0.1.7-alpha.1 的 composer 底行在 trailing 内新包了一层 standardControls（官方 gap:12px）：
     // 外层 trailing 的收紧管不到它，≤480px 会把「圆环槽 + 模型触发钮」顶出容器。规则必须
     // 无条件在场（老宿主没有该元素，不命中即无副作用），且同时收窄间距与允许收缩。
-    assert.match(styleTag.textContent, /\[class\*="uV2eYG_standardControls"\] \{ gap: 6px !important; min-width: 0 !important; flex: 0 1 auto !important; \}/)
+    // 0.2.2-alpha.2 起 official observeControlRow 按「子项宽度和 + gap」判定 compact，
+    // 间距再收 2px 用于把 expanded 状态塞回可用宽度（详见下方 composer 行断言）。
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_standardControls"\] \{ gap: 4px !important; min-width: 0 !important; flex: 0 1 auto !important; \}/)
     assert.match(styleTag.textContent, /\[class\*="ZKlsPq_root"\]:not\(:has\(\[class\*="ZKlsPq_switcherTrigger"\]\)\) \{ flex: none !important; \}/)
     // 动作芯片泊位 v5（2026-10-24 rc.3 紧凑图标态）：模式回标题行（headerActions
     // 保持官方在流不泊），子代理+任务两枚计数芯片 ≤560 右锚泊入标签行成对。
@@ -9609,8 +9611,12 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[role="dialog"\] nav \{[^}]*padding: 8px 12px/s)
-    // composer 底行收紧间距与左右内边距，移除 flex-wrap: nowrap 强制以兼容官方 observeControlRow 测宽
-    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*padding-left: 10px !important/s)
+    // composer 底行收紧间距与左右内边距，移除 flex-wrap: nowrap 强制以兼容官方 observeControlRow 测宽。
+    // 0.2.2-alpha.2 起官方测宽会把「差 4px」判成 compact（模型名整块收掉），手机端再让出
+    // 内边距 10→8、列距 4→2、trailing 间距 6→4，短名模型（480 档）恢复完整展示。
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*padding-left: 8px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*column-gap: 2px !important/s)
+    assert.match(styleTag.textContent, /\[class\*="uV2eYG_trailing"\] \{ gap: 4px !important; min-width: 0 !important; margin-left: auto !important; \}/)
     assert.doesNotMatch(styleTag.textContent, /\[class\*="uV2eYG_row"\] \{[^}]*flex-wrap: nowrap/s)
     assert.match(styleTag.textContent, /\[class\*="Sh0Q9G_trigger"\],\s*html\[data-dshsvc-mobile\] \[class\*="JObwrW_trigger"\] \{ max-width: 38vw !important; \}/)
     // 真机第八轮：设置关闭钮圆形底衬随钮置顶；工作区侧板开关浮在面板上方。
