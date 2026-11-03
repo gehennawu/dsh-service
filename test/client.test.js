@@ -9421,11 +9421,14 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 旧写法把让位与会话头部的完整 padding 混在一条里，连带改写官方其它页面
     // 头部自己的内边距（插件面板页 padding-top 28→10、右 0→20，头行可用宽度
     // 再少 20px，真机 412px 简介与「添加插件」双双折行）。
-    assert.match(styleTag.textContent, /nth-child\(2\) header \{ padding-left: 46px !important; \}/)
-    assert.doesNotMatch(styleTag.textContent, /nth-child\(2\) header \{ padding: 10px/, 'the FAB clearance rule must not rewrite other pages’ header padding')
+    assert.match(styleTag.textContent, /\[data-dshsvc-center\] header \{ padding-left: 46px !important; \}/)
+    assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-center\] header \{ padding: 10px/, 'the FAB clearance rule must not rewrite other pages’ header padding')
+    // alpha.3 在帧首插了 data-sidebar-mask，子序号整体后移：中列已不是 :nth-child(2)，
+    // 位置型选择器会静默指到侧栏列（真机实测让位规则整条失效）。必须用自有标记。
+    assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-frame\] > :nth-child\(/, 'positional frame selectors must not come back')
     assert.match(
       styleTag.textContent,
-      /header\[class\*="wSkVaW_header"\],\s*html\[data-dshsvc-mobile\] \[data-dshsvc-frame\] > :nth-child\(2\) header\[data-dshsvc-chat-header\] \{ padding: 10px 20px 0 46px !important; \}/,
+      /header\[class\*="wSkVaW_header"\],\s*html\[data-dshsvc-mobile\] \[data-dshsvc-center\] header\[data-dshsvc-chat-header\] \{ padding: 10px 20px 0 46px !important; \}/,
     )
     // 顶栏移动端适配（2026-09-19）：右内边距 28→20、utilities 左距 20→4、
     // titleCluster 列距 10→6、计数组列距 10→4 且 flex:none 不可挤压
@@ -9447,7 +9450,7 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 子代理=图标+数字 34×28；右锚 54/16px、箭头/圆点隐藏、mask 图标、
     // 运行中图标蓝/灰闪烁（无光点）、aria-label 保留完整文案；>560 官方在流
     const parkingGroup = styleTag.textContent.match(
-      /@media \(max-width: 560px\) \{\s*html\[data-dshsvc-mobile\] \[data-dshsvc-frame\] > :nth-child\(2\) header:not\(\[class\*="wSkVaW_headerBlank"\]\) \{ position: relative !important; \}[\s\S]*?\n\}/,
+      /@media \(max-width: 560px\) \{\s*html\[data-dshsvc-mobile\] \[data-dshsvc-center\] header:not\(\[class\*="wSkVaW_headerBlank"\]\) \{ position: relative !important; \}[\s\S]*?\n\}/,
     )
     assert.notEqual(parkingGroup, null, 'header chip parking must be gated by the 560px media query')
     assert.match(parkingGroup[0], /\[class\*="wSkVaW_tabs"\] \{ gap: 20px !important; \}/)
@@ -9542,11 +9545,14 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[data-dshsvc-center\] \{ grid-column: 2 !important; grid-row: 1 !important; \}/)
     assert.match(styleTag.textContent, /\[data-dshsvc-details\] \{ grid-column: 3 !important; grid-row: 1 !important; \}/)
     // 真机反馈第二轮：模态顶部贴顶不留空（全屏面板），市场分区不吞标签条，统计条横滑
-    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*flex-direction: column/s)
-    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*top: 0 !important/s)
-    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*max-height: none !important/s)
-    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*border-radius: 0 !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\) \{[^}]*flex-direction: column/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\) \{[^}]*top: 0 !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\) \{[^}]*max-height: none !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\) \{[^}]*border-radius: 0 !important/s)
     assert.match(styleTag.textContent, /\[role="dialog"\]:has\(\[data-dsh-market-root\]\) > nav \{ display: flex !important; \}/)
+    // alpha.3：抽屉自身也是 role="dialog"，其 nav（侧栏面板列表）不得被设置页
+    // 「竖列 → 顶部横滑条」规则命中（真机复现：插件/自动化任务/更多 被压成一行并裁切）
+    assert.match(styleTag.textContent, /\[role="dialog"\]:not\(\[data-shortcut-modal="sidebar"\]\) nav \{[^}]*flex-direction: row !important/s)
     assert.match(styleTag.textContent, /\[class\*="NDN2W_root"\] \{[^}]*overflow-x: auto !important/s)
     // 自有上箭头 right 已由 JS 按官方按钮实测右缘计算：只移动官方回底按钮，
     // 不得再把自有箭头纳入同一 translateX，否则两者最终右缘会差一个平移量。
@@ -9607,12 +9613,15 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     // 真机第五轮：详情列移动端永久离屏（官方窄屏本就 0 宽），不得存在「打开态」规则
     assert.doesNotMatch(styleTag.textContent, /:not\(\[data-details-collapsed\]\) \[data-dshsvc-details\]/)
     assert.match(styleTag.textContent, /:not\(\[data-sidebar-collapsed\]\) \[data-dshsvc-sidebar\] \{[^}]*left: 0 !important/s)
-    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
+    assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\) \{[^}]*height: 100% !important/s)
     // 真机第七轮：模态打开藏抽屉钮、关闭钮钉右上角（导航条让位）、composer 底行禁换行
-    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]:not\(\[data-shortcut-modal="sidebar"\]\)\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
     // 0.2.2-alpha.3 起官方 shell.leading 座覆盖所有抽屉态（data-sidebar-opener），
     // 官方钮在位时插件 FAB 必须让位，否则抽屉钮成对出现
     assert.match(styleTag.textContent, /body:has\(\[data-sidebar-opener\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    // alpha.3 官方新增抽屉遮罩 data-sidebar-mask（z70/.5）自带关闭；插件 backdrop
+    // 若仍叠加会把背景压到 ~71% 黑（同类「官方新件与插件补件重复」）
+    assert.match(styleTag.textContent, /body:has\(\[data-sidebar-mask\]\) \[data-dshsvc-backdrop\] \{[^}]*display: none !important/s)
     // 2026-09-15 用户点名：移除底部沉浸把手（常驻小胶囊钮）——DOM/样式/词典全清
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
@@ -11246,13 +11255,27 @@ test('mobile adaptation edge gestures drive the left drawer and the official rig
     assert.equal(layoutCalls.toggleSidebar, 6, 'clipped horizontal overflow must not block the edge open')
     hClipper.remove()
 
+    // —— 6f. 0.2.2-alpha.3：侧栏抽屉自身也是 role="dialog" aria-modal（aria-label=导航），
+    // 不得被模态门控当成「模态打开」——否则抽屉开着时滑动手势（滑关/滑开）会被自己
+    // 误杀（真机复现：开抽屉后左滑不关）。豁免按官方标记 data-shortcut-modal="sidebar"，
+    // 真模态（无该标记）仍然整套禁用。 ——
+    const drawerDialog = new FakeElement('div')
+    drawerDialog.setAttribute('role', 'dialog')
+    drawerDialog.setAttribute('aria-modal', 'true')
+    drawerDialog.setAttribute('data-shortcut-modal', 'sidebar')
+    bodyEl.appendChild(drawerDialog)
+    htmlEl.dispatch('touchstart', touchAt(6, 300))
+    htmlEl.dispatch('touchmove', touchAt(90, 300))
+    assert.equal(layoutCalls.toggleSidebar, 7, 'the drawer being a dialog must not disable the edge gesture')
+    drawerDialog.remove()
+
     // —— 7. 热关闭对称拆除 ——
     await renderer.setFeature?.('mobileAdaptation', false)
     assert.equal(htmlEl.attributes.has('data-dshsvc-mobile'), false)
     assert.equal(bodyEl.children.some((el) => el.attributes.has('data-dshsvc-fab')), false)
     htmlEl.dispatch('touchstart', touchAt(6, 300))
     htmlEl.dispatch('touchmove', touchAt(90, 300))
-    assert.equal(layoutCalls.toggleSidebar, 6, 'no edge gestures after the engine is off')
+    assert.equal(layoutCalls.toggleSidebar, 7, 'no edge gestures after the engine is off')
   } finally {
     delete globalThis.document
     delete globalThis.MutationObserver

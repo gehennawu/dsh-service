@@ -317,3 +317,54 @@ test('syncNavDom resolves plugin sections by their current label, follows rename
   assert.equal(models.getAttribute('data-dsh-section-id'), 'models', 'renamed row must still map to its section')
   assert.equal(models.style.order, '9999')
 })
+
+// 0.2.2-alpha.3 起侧栏抽屉本身也是 role="dialog"，且在文档序上先于设置面板：
+// 通用 `[role="dialog"] nav` 会命中抽屉的侧栏列表，排序/隐藏会打到错误节点
+// （真机实测：设置页行不打标记、齿轮复活）。解析必须先认官方设置面板标记。
+test('syncNavDom prefers the settings dialog nav over a drawer dialog nav', async () => {
+  const settingsRow = createButton({ text: '服务控制' })
+  const settingsNav = createNav([settingsRow], { children: [{}, {}] })
+  const drawerRow = createButton({ text: '插件' })
+  const drawerNav = createNav([drawerRow], { children: [{}, {}] })
+  // 抽屉排在前面：通用选择器会先命中它
+  const document = {
+    body: {},
+    querySelector(selector) {
+      if (selector === '[role="dialog"][data-shortcut-modal="settings"] nav') return settingsNav
+      if (selector === '[role="dialog"] nav') return drawerNav
+      return null
+    },
+  }
+  const { syncNavDom } = await loadNavTabs({
+    storage: createStorageMock({}),
+    slotsStub: createSlotsStub({ sections: baseSections() }),
+    document,
+  })
+
+  syncNavDom()
+  assert.equal(settingsRow.getAttribute('data-dsh-section-id'), 'dsh-service', 'the settings dialog nav must be the target')
+  assert.equal(drawerRow.hasAttribute('data-dsh-section-id'), false, 'the drawer panel list is not the settings nav')
+})
+
+test('syncNavDom skips a drawer nav when the settings dialog is not mounted', async () => {
+  const drawerRow = createButton({ text: '服务控制' })
+  const drawerNav = createNav([drawerRow], { children: [] })
+  const document = {
+    body: {},
+    querySelector(selector) {
+      if (selector === '[role="dialog"] nav') return drawerNav
+      return null
+    },
+  }
+  // 通用命中项属于抽屉（closest 能回指到 sidebar dialog）
+  drawerNav.closest = () => ({ getAttribute: () => 'sidebar' })
+  const { syncNavDom } = await loadNavTabs({
+    storage: createStorageMock({}),
+    slotsStub: createSlotsStub({ sections: baseSections() }),
+    document,
+  })
+
+  assert.doesNotThrow(() => syncNavDom())
+  assert.equal(drawerRow.hasAttribute('data-dsh-section-id'), false, 'a drawer nav must never be treated as the settings nav')
+  assert.equal(drawerRow.style.display, '', 'and its rows must not be hidden by the settings nav feature')
+})

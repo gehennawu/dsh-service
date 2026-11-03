@@ -84,11 +84,14 @@ html[data-dshsvc-mobile] [data-dshsvc-details] {
 /* 模态 → 全屏面板：外壳 portal 根是 fixed inset:0 flex 容器（无 transform，
    无 containing-block 陷阱），dialog 改 absolute 四边拉满即可。
    真机反馈：底部 sheet 顶部留空难看 → 顶部贴顶、圆角归零；
-   刘海/home 条遮挡由 dialog 自身 env() padding 补回。 */
+   刘海/home 条遮挡由 dialog 自身 env() padding 补回。
+   0.2.2-alpha.3 起侧栏抽屉本身也是 role="dialog" aria-modal（SidebarRoot drawer 态），
+   必须排除：否则抽屉被套上全屏几何（absolute/overflow/env padding/圆角归零），
+   在刘海机型上还会被 padding-top 顶下去。老宿主抽屉无 dialog 语义、:not 恒真。 */
 html[data-dshsvc-mobile] div[role="presentation"]:has(> [role="dialog"][aria-modal="true"]) {
   padding: 0 !important;
 }
-html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] {
+html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"]:not([data-shortcut-modal="sidebar"]) {
   position: absolute !important;
   top: 0 !important;
   right: 0 !important;
@@ -110,8 +113,11 @@ html[data-dshsvc-mobile] [role="dialog"][aria-modal="true"] {
    手机上会把用户困在市场分区 —— 用更高优先级把横滑标签条顶回来。 */
 html[data-dshsvc-mobile] [role="dialog"]:has([data-dsh-market-root]) > nav { display: flex !important; }
 /* 设置页标签条：nav 从 188px 竖列变顶部横滑条（宽度与列向必须显式推翻）。
-   右侧留 52px 给钉到角落的关闭钮。 */
-html[data-dshsvc-mobile] [role="dialog"] nav {
+   右侧留 52px 给钉到角落的关闭钮。
+   0.2.2-alpha.3 起侧栏抽屉也是 role="dialog"，其 nav（hHd-Xa_panelList 插件/自动化
+   任务/更多）会被这条规则压成横排 45px 高并裁掉末项——必须排除抽屉，只作用于
+   真正的设置/模态面板。 */
+html[data-dshsvc-mobile] [role="dialog"]:not([data-shortcut-modal="sidebar"]) nav {
   flex-direction: row !important;
   align-items: center !important;
   gap: 6px !important;
@@ -123,7 +129,7 @@ html[data-dshsvc-mobile] [role="dialog"] nav {
   border-right: none !important;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
-html[data-dshsvc-mobile] [role="dialog"] nav > div { flex: none !important; }
+html[data-dshsvc-mobile] [role="dialog"]:not([data-shortcut-modal="sidebar"]) nav > div { flex: none !important; }
 /* 0.2.2-alpha.2 触摸横滑修复：官方 .navList 自带 overflow-y:auto；插件改成横排后，
    浏览器把「visible 轴」提升为 auto ⇒ navList 自己也成了横滚容器（scrollW==clientW）。
    触摸手势会被这个不能滚的嵌套容器吃掉，表现为 nav 可程序化滚动、手指拖不动。
@@ -325,8 +331,10 @@ html[data-dshsvc-mobile] [data-testid^="usage-summary-"] > span:last-child {
 }
 /* 设置/任意模态打开时藏抽屉钮：抽屉列自带 z-index:32 层叠上下文会把模态的
    z1000 封顶在 32，body 级 z33 的钮反而浮在设置页上（真机实测）。:has 不支持时
-   退化为旧行为（钮仍显示），无副作用。 */
-html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab] {
+   退化为旧行为（钮仍显示），无副作用。
+   排除侧栏抽屉自身：alpha.3 起抽屉开着时也是 aria-modal dialog，但它本来就由
+   JS 内联隐藏 FAB（drawerOpen），这条规则只该管「真正的模态」。 */
+html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]:not([data-shortcut-modal="sidebar"])) [data-dshsvc-fab] {
   display: none !important;
 }
 /* 0.2.2-alpha.3 起官方把 shell.leading 座从「macOS 折叠专用」扩成「所有抽屉态」
@@ -336,6 +344,13 @@ html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshs
    :has 不支持或老宿主（无标记）退化为旧行为。抽屉开时座位 inert 但仍在 DOM，
    FAB 本就随 drawerOpen 内联隐藏，两路一致。 */
 html[data-dshsvc-mobile] body:has([data-sidebar-opener]) [data-dshsvc-fab] {
+  display: none !important;
+}
+/* 0.2.2-alpha.3 官方自带抽屉遮罩（AppFrame 新增 data-sidebar-mask，z-index 70、
+   rgba(0,0,0,.5)、自带点击关闭）。插件自有 backdrop 在它下层（z31、.42），两层叠
+   起来把背景压到约 71% 黑（真机实测两元素同时可见）。官方遮罩在位即藏自有
+   backdrop；老宿主无该元素、规则空转，点击关闭仍由自有 backdrop 承担。 */
+html[data-dshsvc-mobile] body:has([data-sidebar-mask]) [data-dshsvc-backdrop] {
   display: none !important;
 }
 /* composer 底行单行紧凑：收紧间距与左右内边距，换出可用宽度。
@@ -552,13 +567,17 @@ html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-
    了官方其它页面头部自己的内边距：官方插件面板页头部（PluginManagerPage
    .X_2TxG_pageHead）官方只有 padding-top:28px，被改成 10px/20px 后头行可用宽度
    再少 20px，412px 视口实测简介与「添加插件」双双折行（详见下方插件面板页组）。 */
-html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header { padding-left: 46px !important; }
+/* 选择器用自有标记 [data-dshsvc-center]，不再按帧的子序号取中列：
+   0.2.2-alpha.3 在帧里新增了 data-sidebar-mask（抽屉遮罩）作为首个子节点，子序号整体
+   后移 ⇒ 中列从第 2 个变成第 3 个，旧写法会指到侧栏列（真机实测：中列头部内边距退回
+   官方值、让位规则整条失效）。自有标记跨版本稳定。 */
+html[data-dshsvc-mobile] [data-dshsvc-center] header { padding-left: 46px !important; }
 /* 会话头部自己的移动端内边距（官方 10px 28px 0 [10px] 的收紧版：右 28→20）
    只作用于会话头部本体：引擎标记属性优先，官方类哈希兜底覆盖未打标的空头部
    （wSkVaW_ 取自 dsh-client-ui-conversation，0.1.5-rc.2 与 0.2.0-rc.1 两代同名同值，
    升级需复核）。其余页面头部保持官方纵向与右侧内边距不变。 */
-html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header[class*="wSkVaW_header"],
-html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header[data-dshsvc-chat-header] { padding: 10px 20px 0 46px !important; }
+html[data-dshsvc-mobile] [data-dshsvc-center] header[class*="wSkVaW_header"],
+html[data-dshsvc-mobile] [data-dshsvc-center] header[data-dshsvc-chat-header] { padding: 10px 20px 0 46px !important; }
 /* 官方插件面板页（dsh-client-ui-plugin-manager 的 main 面板，页面根
    section[data-plugin-panel]，头行 = 直接子 header[data-window-drag]）移动端适配。
    官方 pageHead 是**不换行**的单行 flex：左「标题+简介」、右「刷新+添加插件」，
@@ -634,7 +653,7 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      [activitySlot?][count(no class)][IconChevron]）。:has 不支持时回落官方布局；
      未来版本仍须复核哈希。 */
 @media (max-width: 560px) {
-  html[data-dshsvc-mobile] [data-dshsvc-frame] > :nth-child(2) header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
+  html[data-dshsvc-mobile] [data-dshsvc-center] header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
   /* 0.2.2-alpha.2：titleCluster 新增 overflow:clip + 右缘渐隐 mask（官方窄栏「溢出的头部
      状态入口渐隐」）。插件把任务/子代理芯片绝对定位到标题行下方的 tab 行（bottom:4px），
@@ -1539,9 +1558,19 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
         }
 
         /** 模态全屏态门控：与移动 CSS 的 body:has 规则同一判定选择器。
-            桩环境的 matchesSelector 不支持带值选择器时恒回 null → 视为无模态。 */
+            桩环境的 matchesSelector 不支持带值选择器时恒回 null → 视为无模态。
+            0.2.2-alpha.3 起侧栏抽屉自身也是 role="dialog" aria-modal —— 必须排除，
+            否则「抽屉开着 → 滑动手势（滑关）」会被自己误判成模态而整条放弃
+            （真机复现：开抽屉后左滑不关）。老宿主抽屉无 dialog 语义，行为不变。 */
         const modalOpenNow = () => {
-          try { return document.querySelector('[role="dialog"][aria-modal="true"]') !== null } catch (_) { return false }
+          try {
+            if (typeof document.querySelectorAll !== 'function') return document.querySelector('[role="dialog"][aria-modal="true"]') !== null
+            for (const dialog of document.querySelectorAll('[role="dialog"][aria-modal="true"]')) {
+              const kind = typeof dialog.getAttribute === 'function' ? dialog.getAttribute('data-shortcut-modal') : null
+              if (kind !== 'sidebar') return true
+            }
+            return false
+          } catch (_) { return false }
         }
 
         /** 起点是否在某【可交互横滚】内容内（CodeMirror 横滚区、tab 条、统计条）：

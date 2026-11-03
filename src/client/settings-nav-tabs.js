@@ -217,9 +217,21 @@ function createSettingsNavTabs({ ctx, rpcCall }) {
 
       syncNavDom = () => {
         if (typeof document === 'undefined' || !document.body) return
-        const nav = typeof document.querySelector === 'function'
-          ? document.querySelector('[role="dialog"] nav')
-          : null
+        // 优先官方设置面板标记；0.2.2-alpha.3 起侧栏抽屉也是 role="dialog" 且在文档序
+        // 上前置，通用选择器会把抽屉 nav 当成设置页导航（排序/隐藏打到错误节点）。
+        const resolveSettingsNav = () => {
+          if (typeof document.querySelector !== 'function') return null
+          const scoped = document.querySelector('[role="dialog"][data-shortcut-modal="settings"] nav')
+          if (scoped !== null && scoped !== undefined) return scoped
+          const generic = document.querySelector('[role="dialog"] nav')
+          if (generic === null || generic === undefined) return null
+          const owner = typeof generic.closest === 'function' ? generic.closest('[role="dialog"]') : null
+          const kind = owner !== null && owner !== undefined && typeof owner.getAttribute === 'function'
+            ? owner.getAttribute('data-shortcut-modal')
+            : null
+          return kind === 'sidebar' ? null : generic
+        }
+        const nav = resolveSettingsNav()
         if (!nav) return
         ensureSettingsNavBackendSynced()
         const buttons = typeof nav.querySelectorAll === 'function'

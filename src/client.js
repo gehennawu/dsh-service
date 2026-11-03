@@ -3215,9 +3215,23 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       }
       const sync = () => {
         if (disposed) return
-        const nextNav = typeof document.querySelector === 'function'
-          ? document.querySelector('[role="dialog"] nav')
-          : null
+        // 设置页导航解析：优先官方设置面板标记（alpha.2 起即有）。0.2.2-alpha.3 起
+        // 侧栏抽屉也是 role="dialog"，且在文档序上先于设置面板——通用选择器会命中
+        // 抽屉的 nav（hHd-Xa_panelList），把标记打到错误节点、设置页行反而露出齿轮。
+        // 老宿主无 drawer dialog 语义时两条路径等价。
+        const resolveNav = () => {
+          if (typeof document.querySelector !== 'function') return null
+          const scoped = document.querySelector('[role="dialog"][data-shortcut-modal="settings"] nav')
+          if (scoped !== null && scoped !== undefined) return scoped
+          const generic = document.querySelector('[role="dialog"] nav')
+          if (generic === null || generic === undefined) return null
+          const owner = typeof generic.closest === 'function' ? generic.closest('[role="dialog"]') : null
+          const kind = owner !== null && owner !== undefined && typeof owner.getAttribute === 'function'
+            ? owner.getAttribute('data-shortcut-modal')
+            : null
+          return kind === 'sidebar' ? null : generic
+        }
+        const nextNav = resolveNav()
         if (nextNav !== nav) {
           if (navObserver !== null) navObserver.disconnect()
           navObserver = null
