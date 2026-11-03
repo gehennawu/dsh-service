@@ -120,6 +120,21 @@ test('collectPluginHealth reports only abnormal enabled plugins and total counts
   assert.equal(byId.has('off-custom'), false, 'a failed fiber on a disabled entry is not an issue')
 })
 
+// 0.2.2-alpha.3 起 Fiber.store 被拆成 committed/provisions：缺失依赖判断要读 committed，
+// 否则新宿主上所有 inject 键都会被报成缺失（旧字段缺失时退回 store 保持老宿主兼容）。
+test('collectPluginHealth reads committed implementations on hosts that split Fiber.store', async () => {
+  const loader = {
+    entries: () => [
+      { id: 'new-host-pending', options: { name: 'pkg-new' }, fiber: { state: PLUGIN_FIBER_STATE.PENDING, inject: { settings: null, credentials: null }, committed: { credentials: {} } } },
+      { id: 'old-host-pending', options: { name: 'pkg-old' }, fiber: { state: PLUGIN_FIBER_STATE.PENDING, inject: { settings: null, credentials: null }, store: { credentials: {} } } },
+    ],
+  }
+  const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+  const byId = new Map(report.issues.map((issue) => [issue.entryId, issue]))
+  assert.deepEqual(byId.get('new-host-pending').missingDeps, ['settings'], 'committed supplies credentials; settings stays missing')
+  assert.deepEqual(byId.get('old-host-pending').missingDeps, ['settings'], 'the legacy store field still answers on old hosts')
+})
+
 test('collectPluginHealth degrades when the loader service is absent', async () => {
   const report = await collectPluginHealth(createFakeCtx(undefined))
   assert.deepEqual(report, { available: false, total: 0, issues: [] })

@@ -1,6 +1,6 @@
 // Editable vocabulary for pi-ai Profile configuration, not a projection of defaults.
 export const MODEL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
-export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'requestImagePixelBudget', 'requestImageMaxBytes', 'retryPolicy']
+export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImagePixelBudget', 'requestImageMaxBytes', 'retryPolicy']
 export const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages']
 const completions = ['supportsStore', 'supportsDeveloperRole', 'supportsReasoningEffort', 'supportsUsageInStreaming', 'supportsFinishReason', 'maxTokensField', 'requiresToolResultName', 'requiresAssistantAfterToolResult', 'requiresThinkingAsText', 'requiresReasoningContentOnAssistantMessages', 'thinkingFormat', 'chatTemplateKwargs', 'chatTemplateArgs', 'supportsThinkingTokenBudget', 'thinkingTokenBudgetField', 'vllmPriority', 'supportsStrictMode', 'cacheControlFormat', 'supportsLongCacheRetention']
@@ -91,7 +91,7 @@ export function validateField(field, value, { api, previous } = {}) {
     return
   }
   if (field === 'apiKeyEnv') { if (typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(value)) fail('bad-key-ref'); return }
-  if (['contextWindow', 'maxTokens', 'defaultContextWindow', 'defaultMaxTokens', 'maxRequestImageBytes', 'requestImagePixelBudget', 'requestImageMaxBytes'].includes(field)) { if (!positive(value)) fail(); return }
+  if (['contextWindow', 'maxTokens', 'defaultContextWindow', 'defaultMaxTokens', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImagePixelBudget', 'requestImageMaxBytes'].includes(field)) { if (!positive(value)) fail(); return }
   if (field === 'timeoutMs' || field === 'websocketConnectTimeoutMs') { if (!Number.isSafeInteger(value) || value < 0 || value > 2147483647) fail(); return }
   if (field === 'streamIdleTimeoutMs') { if (!timer(value)) fail(); return }
   if (field === 'input' || field === 'defaultInput') { if (!Array.isArray(value) || value.length === 0 || value.some((x) => !['text', 'image'].includes(x)) || new Set(value).size !== value.length) fail(); return }
@@ -127,6 +127,22 @@ export function patchFields(raw, patch, unset, fields, api) {
     if (value === undefined) fail('schema-invalid')
     next[field] = structuredClone(value)
   }
+  validateImageCountPair(next)
+  return next
+}
+
+/**
+ * 跨字段约束：每次超限卸载的图片数不得超过单请求图片上限。
+ * 宿主 `resolveProfiles` 对 `imageOffloadCountQuantum > maxRequestImages` 直接抛错，
+ * 写进 Profile 会让整条渠道在下次加载时失败——写前拦住，给可操作错误码。
+ * 任一字段缺席（继承宿主默认）时不在本地裁决，交给宿主。
+ * @param next - 合并后的渠道配置
+ */
+export function validateImageCountPair(next) {
+  if (!object(next)) fail()
+  const max = next.maxRequestImages
+  const quantum = next.imageOffloadCountQuantum
+  if (max !== undefined && quantum !== undefined && quantum > max) fail('image-offload-exceeds-limit')
   return next
 }
 export const schemaVocabulary = () => ({ modelFields: MODEL_FIELDS, routeFields: ROUTE_FIELDS, levels: LEVELS, protocols: PROTOCOLS, compatGates: COMPAT_GATES, compatEnums: COMPAT_ENUMS, routeEnums: ROUTE_ENUMS })

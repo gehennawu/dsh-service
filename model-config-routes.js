@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { createMetadataCache, createSourceFetcher, loadPiEvidenceFromDir, querySmartFill } from './model-smart-fill.js'
 import { modelSettingsFor, redactSensitive } from './model-workbench-settings.js'
 import { loadPiAiCatalog, locateDshPackageJson, profileFingerprint, selfCheckModelsPatch, fetchModelsProbe, deriveKeyRefFor, MODEL_ID_RE, MODELS_ROUTE_RE, MODELS_KEY_REF_RE, WORKBENCH_PLAN_TTL_MS } from './model-workbench.js'
-import { MODEL_FIELDS, ROUTE_FIELDS, PROTOCOLS, object, displayProfile, containsSensitive, sensitiveHeader, patchFields, schemaVocabulary, validateField } from './model-config-schema.js'
+import { MODEL_FIELDS, ROUTE_FIELDS, PROTOCOLS, object, displayProfile, containsSensitive, sensitiveHeader, patchFields, schemaVocabulary, validateField, validateImageCountPair } from './model-config-schema.js'
 
 const clone = (value) => structuredClone(value)
 const has = (value, key) => object(value) && Object.hasOwn(value, key)
@@ -542,6 +542,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       if (routeRaw(access, id)) error('route-taken')
       if (!object(profile) || Object.keys(profile).some((key) => ![...ROUTE_FIELDS.filter((x) => x !== 'apiKeyEnv'), 'models'].includes(key))) error('unknown-field')
       for (const [field, value] of Object.entries(profile)) if (field !== 'models') validateField(field, value, { api: profile.api })
+      validateImageCountPair(profile)
       if (!PROTOCOLS.includes(profile.api) || !profile.baseURL || !selfCheckModelsPatch(profile.models).ok) error('schema-invalid')
       for (const row of profile.models) { if (Object.keys(row).some((x) => !['id', ...MODEL_FIELDS].includes(x))) error('unknown-field'); for (const [field, value] of Object.entries(row)) if (field !== 'id') validateField(field, value, { api: profile.api }) }
       const credentialRef = typeof key === 'string' && key.trim() ? `${deriveKeyRefFor(id)}_${uuid().replaceAll('-', '').slice(0, 12)}` : null

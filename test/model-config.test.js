@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createModelConfigRoutes } from '../model-config-routes.js'
-import { MODEL_FIELDS, ROUTE_FIELDS, COMPAT_GATES, displayProfile, containsSensitive, sensitiveHeader, validateField } from '../model-config-schema.js'
+import { MODEL_FIELDS, ROUTE_FIELDS, COMPAT_GATES, displayProfile, containsSensitive, sensitiveHeader, validateField, patchFields } from '../model-config-schema.js'
 
 test('built-in provider accepts and persists models outside its installed catalog', async () => {
   const env = host({ profiles: { builtin: { models: [{ id: 'existing' }] } } })
@@ -95,6 +95,29 @@ test('new Profile editor: complete field vocabulary and per-protocol compat gate
   assert.doesNotThrow(() => validateField('reasoningEfforts', { high: 'custom-wire', off: null }))
   assert.doesNotThrow(() => validateField('baseURL', 'http://127.0.0.1/v1'))
   assert.throws(() => validateField('baseURL', 'file:///etc/passwd'), /bad-base-url/)
+})
+// 0.2.2-alpha.3 起 pi-ai 新增两个请求级图片数量参数：插件必须能透传/校验，
+// 且写入前拦住宿主会直接抛错的组合（quantum 不得超过 maxRequestImages）。
+test('new Profile editor: request image-count limits are validated and cross-checked', () => {
+  assert.ok(ROUTE_FIELDS.includes('maxRequestImages'))
+  assert.ok(ROUTE_FIELDS.includes('imageOffloadCountQuantum'))
+  for (const field of ['maxRequestImages', 'imageOffloadCountQuantum']) {
+    assert.doesNotThrow(() => validateField(field, 10))
+    for (const bad of [0, -1, 1.5, '10', null]) assert.throws(() => validateField(field, bad), /schema-invalid/, `${field}=${String(bad)}`)
+  }
+  const raw = { displayName: 'relay', maxRequestImages: 20, models: [] }
+  // 合法：卸载步长不超过上限
+  assert.equal(patchFields(raw, { imageOffloadCountQuantum: 5 }, [], ROUTE_FIELDS, 'openai-completions').imageOffloadCountQuantum, 5)
+  // 越界：写入后宿主 resolveProfiles 会整条渠道加载失败，必须写前拒绝
+  assert.throws(() => patchFields(raw, { imageOffloadCountQuantum: 40 }, [], ROUTE_FIELDS, 'openai-completions'), /image-offload-exceeds-limit/)
+  assert.throws(() => patchFields({ displayName: 'relay', models: [] }, { maxRequestImages: 3, imageOffloadCountQuantum: 4 }, [], ROUTE_FIELDS, 'openai-completions'), /image-offload-exceeds-limit/)
+  // 仅其中一项在场时不在本地裁决（另一项继承宿主默认）
+  assert.doesNotThrow(() => patchFields({ displayName: 'relay', models: [] }, { imageOffloadCountQuantum: 9 }, [], ROUTE_FIELDS, 'openai-completions'))
+  // 展示面按白名单透出，不泄漏其它键
+  const dto = displayProfile({ ...raw, maxRequestImages: 20, imageOffloadCountQuantum: 4, secretish: 1 })
+  assert.equal(dto.maxRequestImages, 20)
+  assert.equal(dto.imageOffloadCountQuantum, 4)
+  assert.equal('secretish' in dto, false)
 })
 test('new Profile editor: sensitive headers and unknown secret fields never reach Display DTO', () => {
   for (const name of ['Authorization', 'aUtHoRiZaTiOn', 'Proxy-Authorization', 'X-API-Key', 'Cookie', 'X-Auth-Token']) assert.equal(sensitiveHeader(name), true)

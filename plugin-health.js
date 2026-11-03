@@ -111,8 +111,15 @@ export async function collectPluginHealth(ctx, options = {}) {
     const error = phase === 'failed' && fiber?._error != null
       ? clipPluginError(fiber._error)
       : null
-    const missingDeps = phase === 'pending'
-      ? Object.keys(fiber.inject || {}).filter((key) => !(fiber.store !== undefined && fiber.store[key]))
+    // 0.2.2-alpha.3（Cordis 4.0.6-alpha.2）把 `Fiber.store` 拆成 `committed`（已承诺实现）
+    // 与 `provisions`（本 fiber 提供的服务）。只读旧 `store` 在新宿主上恒为 undefined ⇒
+    // 依赖判断会把所有 inject 键都报成缺失；优先读 `committed`，老宿主没有该字段时退回
+    // `store`。当前因启动宽限（startupAgeMs 恒 0）pending 条目被跳过而未触发，属预防性修正。
+    const missingDeps = phase === 'pending' && fiber !== undefined
+      ? (() => {
+        const committed = fiber.committed !== undefined ? fiber.committed : fiber.store
+        return Object.keys(fiber.inject || {}).filter((key) => !(committed !== undefined && committed !== null && committed[key]))
+      })()
       : []
     issues.push({
       entryId: entry.id,
