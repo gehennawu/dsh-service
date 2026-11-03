@@ -329,6 +329,15 @@ html[data-dshsvc-mobile] [data-testid^="usage-summary-"] > span:last-child {
 html[data-dshsvc-mobile] body:has([role="dialog"][aria-modal="true"]) [data-dshsvc-fab] {
   display: none !important;
 }
+/* 0.2.2-alpha.3 起官方把 shell.leading 座从「macOS 折叠专用」扩成「所有抽屉态」
+   （AppFrame leadingMounted = drawer || darwin&&collapsed），web 窄屏头部会渲染
+   原生抽屉钮（data-sidebar-opener，alpha.2 及以前无此标记）——与插件 FAB 重复
+   （用户截图实报）。官方钮在位即藏 FAB，功能等价（同为 toggleSidebar）不留死钮；
+   :has 不支持或老宿主（无标记）退化为旧行为。抽屉开时座位 inert 但仍在 DOM，
+   FAB 本就随 drawerOpen 内联隐藏，两路一致。 */
+html[data-dshsvc-mobile] body:has([data-sidebar-opener]) [data-dshsvc-fab] {
+  display: none !important;
+}
 /* composer 底行单行紧凑：收紧间距与左右内边距，换出可用宽度。
    类哈希 uV2eYG_/Sh0Q9G_/pXSMma_ 取自 dsh-client-ui-conversation composer
    （rc.2，0.1.6-alpha.1 漂移至 JObwrW_ 并存），升级需复核。 */

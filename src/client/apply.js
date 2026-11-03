@@ -67,6 +67,11 @@
           // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段；
           // markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画图标、currentColor 跟主题。
           '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-models-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
+          // 0.2.2-alpha.3 起外壳把官方图标（未注册 settings.section.icon 时的齿轮回落）
+          // 包进 `<span class="…_navIcon">`——不再是导航行的直接子元素，上面的直子选择器
+          // 落空，齿轮与自家 mask 图标并列出现。按 stem 藏整个包裹层（svg 一并隐藏、
+          // 不留空盒）；老宿主没有该包裹层，此规则自然空转。
+          '[data-dsh-service-nav] [class*="navIcon"],[data-dsh-service-quota-nav] [class*="navIcon"],[data-dsh-service-models-nav] [class*="navIcon"],[data-dsh-service-restart-nav] [class*="navIcon"],[data-dsh-service-sessions-nav] [class*="navIcon"]{display:none}',
           '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-models-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
           '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
           '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',

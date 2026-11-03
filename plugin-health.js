@@ -166,7 +166,19 @@ export async function restartPluginEntry(ctx, entryId) {
   const fiber = target.fiber
   if (fiber === undefined || fiber.state !== PLUGIN_FIBER_STATE.FAILED) return { ok: false, code: 'not-failed' }
   try {
-    await fiber.restart()
+    if (typeof loader.commit === 'function') {
+      // DSH 0.2.2-alpha.3（Cordis 4.0.6-alpha.2）起 `Fiber._setEpoch` 对带 `_error` 的
+      // fiber 直接 return，`restart()` 对 failed fiber 成为静默 no-op（只有 `update()`
+      // 清 `_error`）——旧调用会假报成功。判据：新 Loader 根树有 `commit()`，旧 Loader
+      // 没有。恢复走 `update(raw config, noSave)`：传原始 config（failed fiber 没有
+      // effectiveConfig），noSave 抑制 internal/commit 持久化通知，恢复不改写 profile
+      // 补丁；新版 entry.fiber 是 registry 包装，真身经 `ctx.fiber` 取。
+      const live = fiber.ctx?.fiber
+      if (live === undefined || typeof live.update !== 'function') throw new Error('fiber.update unavailable on this host')
+      await live.update(fiber.config, true)
+    } else {
+      await fiber.restart()
+    }
   } catch (error) {
     // 重启后仍失败；错误原文交给客户端透出，等待下一次「重新诊断」落定新状态。
     return { ok: false, code: 'restart-failed', error: String(error?.message || error) }

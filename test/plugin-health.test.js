@@ -17,7 +17,7 @@ function createFakeCtx(loader) {
   }
 }
 
-function createFakeEntry({ id, name, group = false, disabled = false, state = null, inject = {}, store = null, error = null, restart = async () => {} }) {
+function createFakeEntry({ id, name, group = false, disabled = false, state = null, inject = {}, store = null, error = null, restart = async () => {}, fiber: fiberProps = {} }) {
   return {
     id,
     disabled,
@@ -28,6 +28,7 @@ function createFakeEntry({ id, name, group = false, disabled = false, state = nu
       store,
       _error: error,
       async restart() { return restart() },
+      ...fiberProps,
     },
   }
 }
@@ -174,4 +175,60 @@ test('restartPluginEntry surfaces a still-failing reload as restart-failed', asy
   }
   const result = await restartPluginEntry(createFakeCtx(loader), 'broken')
   assert.deepEqual(result, { ok: false, code: 'restart-failed', error: 'still broken' })
+})
+
+// DSH 0.2.2-alpha.3（Cordis 4.0.6-alpha.2）起 `Fiber._setEpoch` 对带 `_error` 的 fiber
+// 直接 return，`restart()` 对 failed fiber 成为静默 no-op——旧调用会假报成功。新 Loader
+// 根树带 `commit()`，恢复必须走 `fiber.update(raw config)`（noSave 抑制持久化通知）。
+test('restartPluginEntry recovers failed fibers through fiber.update on hosts with a committing loader', async () => {
+  const updates = []
+  const restarted = []
+  const loader = {
+    commit() {},
+    entries() {
+      return [
+        createFakeEntry({
+          id: 'broken',
+          name: 'pkg-broken',
+          state: PLUGIN_FIBER_STATE.FAILED,
+          error: new Error('stale'),
+          restart: async () => { restarted.push('broken') },
+          fiber: { config: { keep: 1 }, ctx: { fiber: { async update(config, noSave) { updates.push([config, noSave]) } } } },
+        }),
+      ]
+    },
+  }
+  assert.deepEqual(await restartPluginEntry(createFakeCtx(loader), 'broken'), { ok: true })
+  assert.deepEqual(updates, [[{ keep: 1 }, true]], 'must update with the raw config and noSave=true')
+  assert.deepEqual(restarted, [], 'restart() is a silent no-op on failed fibers here and must not be used')
+})
+
+test('restartPluginEntry surfaces a failing update on the new host as restart-failed', async () => {
+  const loader = {
+    commit() {},
+    entries() {
+      return [createFakeEntry({
+        id: 'broken',
+        name: 'pkg-broken',
+        state: PLUGIN_FIBER_STATE.FAILED,
+        error: new Error('old'),
+        fiber: { config: undefined, ctx: { fiber: { async update() { throw new Error('still broken') } } } },
+      })]
+    },
+  }
+  const result = await restartPluginEntry(createFakeCtx(loader), 'broken')
+  assert.deepEqual(result, { ok: false, code: 'restart-failed', error: 'still broken' })
+})
+
+test('restartPluginEntry refuses to fake success when the new host lacks a usable fiber', async () => {
+  const loader = {
+    commit() {},
+    entries() {
+      return [createFakeEntry({ id: 'broken', name: 'pkg-broken', state: PLUGIN_FIBER_STATE.FAILED, error: new Error('x') })]
+    },
+  }
+  const result = await restartPluginEntry(createFakeCtx(loader), 'broken')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'restart-failed')
+  assert.match(result.error, /fiber\.update unavailable/)
 })

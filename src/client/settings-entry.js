@@ -30,11 +30,18 @@ function createSettingsEntry({ ctx, useTranslation }) {
   }
 
   // 当前是否已有别的模态层（设置面板自身除外）：此时不该再叠一层设置面板。
-  const hasForeignModal = () => {
+  // 例外：包含点击源自身的 dialog 不算冲突——0.2.2-alpha.3 起移动端侧栏抽屉本身就是
+  // role="dialog"（SidebarRoot drawer 态，aria-label=导航，官方另标 data-shortcut-modal=
+  // "sidebar"），入口是它的子节点；不豁免的话入口在抽屉里永远走不到任何打开路径
+  // （真机实报「点击没反应」，0.2.2-alpha.3 回归）。老宿主抽屉无 dialog 语义，行为不变。
+  const hasForeignModal = (container) => {
     try {
       if (typeof document === 'undefined') return false
       for (const dialog of document.querySelectorAll('[role="dialog"]')) {
-        if (dialog.getAttribute('data-shortcut-modal') !== 'settings') return true
+        if (dialog.getAttribute('data-shortcut-modal') !== 'settings') {
+          const hostsEntry = typeof dialog.contains === 'function' && container !== null && container !== undefined && dialog.contains(container) === true
+          if (!hostsEntry) return true
+        }
       }
       return false
     } catch (_) {
@@ -104,7 +111,7 @@ function createSettingsEntry({ ctx, useTranslation }) {
 
   // 逐条尝试；某条报告成功即停（store 路径额外用微任务复核，防脱钩实例静默失效）。
   const attempt = (target, stages, index) => {
-    if (isSettingsOpen() || hasForeignModal()) return
+    if (isSettingsOpen() || hasForeignModal(target)) return
     if (index >= stages.length) return
     const attempted = stages[index]()
     if (!attempted) {

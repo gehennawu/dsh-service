@@ -7354,10 +7354,13 @@ test('settings nav rows get icon markers by localized label and follow text chan
     for (const observer of observers) observer.callback([], undefined)
     assert.equal(navButtons[2].attrs.size, 0)
 
-    // CSS 已随 load 注入：齿轮隐藏规则 + 各条 data 标记的 mask 规则齐全。
+    // CSS 已随 load 注入：齿轮隐藏规则（两代外壳形状各一条）+ 各条 data 标记的 mask 规则齐全。
+    // alpha.3 起齿轮被包进 `<span class="…_navIcon">`，直子选择器落空 ⇒ 必须按 stem 藏包裹层。
     const sheet = injectedStyles.join('')
-    assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'gear-hiding rule missing')
+    assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'legacy gear-hiding rule missing')
+    assert.ok(sheet.includes('[data-dsh-service-nav] [class*="navIcon"]'), 'navIcon wrapper rule missing')
     for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav']) {
+      assert.ok(sheet.includes('[' + attr + '] [class*="navIcon"]'), attr + ' wrapper rule missing')
       assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
       assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
     }
@@ -9607,6 +9610,9 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*height: 100% !important/s)
     // 真机第七轮：模态打开藏抽屉钮、关闭钮钉右上角（导航条让位）、composer 底行禁换行
     assert.match(styleTag.textContent, /body:has\(\[role="dialog"\]\[aria-modal="true"\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
+    // 0.2.2-alpha.3 起官方 shell.leading 座覆盖所有抽屉态（data-sidebar-opener），
+    // 官方钮在位时插件 FAB 必须让位，否则抽屉钮成对出现
+    assert.match(styleTag.textContent, /body:has\(\[data-sidebar-opener\]\) \[data-dshsvc-fab\] \{[^}]*display: none !important/s)
     // 2026-09-15 用户点名：移除底部沉浸把手（常驻小胶囊钮）——DOM/样式/词典全清
     assert.doesNotMatch(styleTag.textContent, /data-dshsvc-handle/)
     assert.match(styleTag.textContent, /\[class\*="VOzbGW_close"\] \{[^}]*position: absolute !important/s)
@@ -17388,6 +17394,86 @@ test('settings entry: falls back to the settings.open command when the shell sto
   assert.equal(invoked[0].id, 'settings.open')
   assert.equal(invoked[0].context.region, 'page')
   assert.equal(target.dataset.dshsvcOpenVia, 'shortcut')
+})
+
+// 0.2.2-alpha.3 起移动端侧栏抽屉本身就是 role="dialog"（aria-label=导航），入口是
+// 它的子节点——外来模态守卫必须豁免「包含点击源自身的 dialog」，否则入口在抽屉里
+// 永远点不开（真机实报回归）。
+test('settings entry: the hosting drawer dialog does not count as a foreign modal', async (t) => {
+  const opened = []
+  let settingsPanelMounted = false
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root' },
+        component: () => null,
+        // 真实宿主：settings-general 把 store 句柄的 create() 覆写成恒返回同一个外壳实例。
+        store: { create: () => ({ actions: { open: () => { opened.push('store'); settingsPanelMounted = true } } }) },
+      }],
+    },
+  })
+  await renderer.load()
+
+  const target = { dataset: {} }
+  const drawerDialog = {
+    getAttribute: (name) => (name === 'data-shortcut-modal' ? 'sidebar' : null),
+    contains: (node) => node === target,
+  }
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    // store.open() 之后设置面板真的挂出（复核算作成功），之前视为未打开
+    querySelector: (selector) => (selector === '[data-shortcut-modal="settings"]' && settingsPanelMounted ? {} : null),
+    querySelectorAll: () => [drawerDialog],
+  }
+  t.after(() => {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  })
+
+  renderer.findByTestId('dsh-service-settings-entry').props.onClick({ currentTarget: target })
+  await renderer.flush()
+  assert.deepEqual(opened, ['store'], 'the drawer hosting the entry must not block the open paths')
+  assert.equal(target.dataset.dshsvcOpenVia, 'store')
+})
+
+test('settings entry: a dialog elsewhere on screen still blocks the open paths', async (t) => {
+  const opened = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root' },
+        component: () => null,
+        store: { create: () => ({ actions: { open: () => opened.push('store') } }) },
+      }],
+    },
+  })
+  await renderer.load()
+
+  const target = Object.assign(() => {}, { dataset: {} })
+  const foreignDialog = {
+    getAttribute: () => null,
+    contains: () => false,
+  }
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    querySelector: () => null,
+    querySelectorAll: () => [foreignDialog],
+  }
+  t.after(() => {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  })
+
+  renderer.findByTestId('dsh-service-settings-entry').props.onClick({ currentTarget: target })
+  await renderer.flush()
+  assert.deepEqual(opened, [], 'a foreign modal keeps suppressing the open paths')
+  assert.equal(target.dataset.dshsvcOpenVia, undefined)
 })
 
 test('settings entry: rail mode is icon-only and keeps the accessible label', async () => {
