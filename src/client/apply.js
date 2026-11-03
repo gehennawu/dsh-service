@@ -35,6 +35,24 @@
       }
 
 
+      // 设置页导航图标样式（两代宿主共用一份生成器）：
+      //  · 官方槽可用时（0.2.2-alpha.3+）：行上有 data-dshsvc-official-icon，CSS 全不参与；
+      //  · 老宿主 / 官方槽未渲染：按 `:not([data-dshsvc-official-icon])` 走回退——藏官方图标
+      //    （直子形态 + alpha.3 的 navIcon 包裹层形态各一条），再用 mask 画自家图标。
+      const NAV_ICON_ROWS = [
+        ['data-dsh-service-nav', NAV_ICON_BODY_SERVICE],
+        ['data-dsh-service-quota-nav', NAV_ICON_BODY_QUOTA],
+        ['data-dsh-service-models-nav', NAV_ICON_BODY_MODELS],
+        ['data-dsh-service-sessions-nav', NAV_ICON_BODY_SESSIONS],
+        ['data-dsh-service-restart-nav', NAV_ICON_BODY_RESTART],
+      ]
+      const navIconFallback = (attr) => '[' + attr + ']:not([data-dshsvc-official-icon])'
+      const navIconStyleRules = [
+        NAV_ICON_ROWS.map(([attr]) => navIconFallback(attr) + '>svg:first-child').join(',') + '{display:none}',
+        NAV_ICON_ROWS.map(([attr]) => navIconFallback(attr) + ' [class*="navIcon"]').join(',') + '{display:none}',
+        NAV_ICON_ROWS.map(([attr]) => navIconFallback(attr) + '::before').join(',') + "{content:'';flex:none;width:16px;height:16px;background:currentColor}",
+        ...NAV_ICON_ROWS.map(([attr, body]) => navIconFallback(attr) + '::before{' + navIconMask(body) + '}'),
+      ]
       let svcStyle
       if (typeof document !== 'undefined' && document.head) {
         svcStyle = document.createElement('style')
@@ -64,20 +82,10 @@
           // 兼容别名：展示面底=卡片底；分段条激活块=文字反色块（铁律二同样适用，暗色只改叶值）。
           'body{--dsh-svc-surface-bg:var(--dsh-svc-card-bg);--dsh-svc-tab-active-bg:var(--dsh-svc-text);--dsh-svc-tab-active-danger:var(--dsh-svc-text);--dsh-svc-tab-active-text:#ffffff}',
           'body[data-ds-dark-theme]{--dsh-svc-tab-active-text:#111318}',
-          // 设置页导航行图标：外壳按 id 硬编码（第三方一律兜底齿轮）且协议无 icon 字段；
-          // markSettingsNavRows 打的 data 标记接住——藏齿轮 SVG、mask SVG 画图标、currentColor 跟主题。
-          '[data-dsh-service-nav]>svg:first-child,[data-dsh-service-quota-nav]>svg:first-child,[data-dsh-service-models-nav]>svg:first-child,[data-dsh-service-restart-nav]>svg:first-child,[data-dsh-service-sessions-nav]>svg:first-child{display:none}',
-          // 0.2.2-alpha.3 起外壳把官方图标（未注册 settings.section.icon 时的齿轮回落）
-          // 包进 `<span class="…_navIcon">`——不再是导航行的直接子元素，上面的直子选择器
-          // 落空，齿轮与自家 mask 图标并列出现。按 stem 藏整个包裹层（svg 一并隐藏、
-          // 不留空盒）；老宿主没有该包裹层，此规则自然空转。
-          '[data-dsh-service-nav] [class*="navIcon"],[data-dsh-service-quota-nav] [class*="navIcon"],[data-dsh-service-models-nav] [class*="navIcon"],[data-dsh-service-restart-nav] [class*="navIcon"],[data-dsh-service-sessions-nav] [class*="navIcon"]{display:none}',
-          '[data-dsh-service-nav]::before,[data-dsh-service-quota-nav]::before,[data-dsh-service-models-nav]::before,[data-dsh-service-restart-nav]::before,[data-dsh-service-sessions-nav]::before{content:\'\';flex:none;width:16px;height:16px;background:currentColor}',
-          '[data-dsh-service-nav]::before{' + navIconMask(NAV_ICON_BODY_SERVICE) + '}',
-          '[data-dsh-service-quota-nav]::before{' + navIconMask(NAV_ICON_BODY_QUOTA) + '}',
-          '[data-dsh-service-models-nav]::before{' + navIconMask(NAV_ICON_BODY_MODELS) + '}',
-          '[data-dsh-service-sessions-nav]::before{' + navIconMask(NAV_ICON_BODY_SESSIONS) + '}',
-          '[data-dsh-service-restart-nav]::before{' + navIconMask(NAV_ICON_BODY_RESTART) + '}',
+          // 设置页导航行图标：官方 slot 可用时由外壳渲染我们注册的图标（行上带
+          // data-dshsvc-official-icon，这些规则全部不参与）；否则退回「藏官方图标 +
+          // mask 画自家图标」。两代外壳形态（直子 svg / alpha.3 的 navIcon 包裹层）都覆盖。
+          ...navIconStyleRules,
           // 侧栏底部常驻「设置」入口（账号按钮上方）：几何对齐账号按钮——24px 图标位让
           // 两行文字左缘同列（6px padding + 24px 图标位 + 8px gap）；折叠成图标条时 36px 居中。
           '[data-dshsvc-settings-entry]{box-sizing:border-box;width:calc(100% + 4px);height:44px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px;display:flex;align-items:center;gap:8px;padding:0 10px 0 6px;margin:0 -2px;cursor:pointer;overflow:hidden;flex:none;text-align:left}',
@@ -218,6 +226,8 @@
       })
       ctx.effect(() => () => featureScope.dispose(), 'dsh-service feature settings facade')
       // 设置页左列三行打标记，配合上方样式换成各自图标；label 走 locale 绑定值。
+      // 官方设置导航图标槽（0.2.2-alpha.3+）；老宿主无该槽时不渲染，样式回退照常。
+      ctx.effect(() => registerSettingsNavIcons(ctx), 'dsh-service settings nav official icons')
       ctx.effect(
         () => markSettingsNavRows([
           { attr: 'data-dsh-service-nav', label: () => t('nav.label') },
@@ -226,7 +236,7 @@
           { attr: 'data-dsh-service-restart-nav', label: () => t('nav.restart') },
           { attr: 'data-dsh-service-sessions-nav', label: () => t('tabs.sessions') },
         ]),
-        'dsh-service settings nav icons',
+        'dsh-service settings nav icons (fallback)',
       )
       // ── 设置栏左侧标签手动排序与显隐：正文已整段抽至 src/client/settings-nav-tabs.js
       // （工厂作用域分片，清单见 scripts/client-source.mjs）。工厂在本位原位调用，返回值

@@ -3178,6 +3178,46 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
     const NAV_ICON_BODY_RESTART = iconMaskBody(SVG_ICONS.restart)
     // 会话管理 = 对话气泡 + 对钩（lucide message-circle check，16px 下可读）
     const NAV_ICON_BODY_SESSIONS = iconMaskBody(SVG_ICONS.sessions)
+    // 设置页导航图标（官方槽，0.2.2-alpha.3+）：`settings.section.icon` 的注册 id 必须
+    // 等于对应 `settings.section` 的 id，owner props 为 {size, active}；未注册时外壳回落
+    // 默认齿轮。老宿主没有该槽，注册不会渲染任何东西，行上仍走 CSS 回退方案
+    // （apply.js 的 navIconStyleRules，按行上的 data-dshsvc-official-icon 开关）。
+    const SETTINGS_NAV_ICONS = [
+      ['dsh-service', 'service'],
+      ['dsh-service-quota', 'quota'],
+      ['dsh-service-models', 'models'],
+      ['dsh-service-restart', 'restart'],
+      ['dsh-service-sessions', 'sessions'],
+    ]
+    /** 官方图标组件：与顶栏胶囊共用同一份 SVG 数据源，换图标只改 SVG_ICONS。 */
+    function createSettingsNavIcon(name) {
+      return function SettingsNavIcon(props) {
+        const elements = SVG_ICONS[name]
+        if (!Array.isArray(elements)) return null
+        const size = props !== null && props !== undefined && Number.isFinite(props.size) ? props.size : 16
+        return React.createElement('svg', {
+          viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor',
+          strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+          'aria-hidden': 'true', 'data-dshsvc-official-icon': name,
+          style: { display: 'block' },
+        }, elements.map(([tag, attrs], index) => React.createElement(tag, Object.assign({ key: index }, attrs))))
+      }
+    }
+    /** 注册官方导航图标（传入调用方 ctx）；返回 disposer。槽不存在的老宿主上回调不会生效。 */
+    function registerSettingsNavIcons(clientCtx) {
+      if (clientCtx === null || clientCtx === undefined || clientCtx.slots === undefined || typeof clientCtx.slots.inject !== 'function') return () => {}
+      const disposers = []
+      for (const [id, icon] of SETTINGS_NAV_ICONS) {
+        try {
+          disposers.push(clientCtx.slots.inject('settings.section.icon', () => clientCtx.slots.register({
+            name: 'settings.section.icon',
+            id,
+          }, createSettingsNavIcon(icon))))
+        } catch (_) {}
+      }
+      return () => { for (const dispose of disposers) { try { dispose() } catch (_) {} } }
+    }
+
     /** 顶栏胶囊的内联 SVG 图标：跟随 currentColor，尺寸 13px，随文字基线居中。 */
     function TabIcon({ name }) {
       const elements = SVG_ICONS[name]
@@ -3254,6 +3294,18 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
             if (label && text === label) button.setAttribute(row.attr, '')
             else button.removeAttribute(row.attr)
           }
+          // 官方图标已由我们注册并渲染（包裹层里存在带标记的 svg）时打开关：CSS 据此
+          // 保留官方图标、不再藏包裹层/画 mask。老宿主没有该 svg，开关恒缺席 ⇒ 走回退。
+          try {
+            const official = typeof button.querySelector === 'function'
+              ? button.querySelector('svg[data-dshsvc-official-icon]')
+              : null
+            if (official !== null && official !== undefined && typeof button.setAttribute === 'function') {
+              button.setAttribute('data-dshsvc-official-icon', '')
+            } else if (typeof button.removeAttribute === 'function') {
+              button.removeAttribute('data-dshsvc-official-icon')
+            }
+          } catch (_) {}
         }
         syncNavDom()
       }
@@ -3269,7 +3321,10 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
         if (frame !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
         frame = null
         for (const row of rows) {
-          for (const el of document.querySelectorAll('[' + row.attr + ']')) el.removeAttribute(row.attr)
+          for (const el of document.querySelectorAll('[' + row.attr + ']')) {
+            el.removeAttribute(row.attr)
+            el.removeAttribute('data-dshsvc-official-icon')
+          }
         }
       }
     }

@@ -723,6 +723,11 @@ function createRenderer(rpcCall, options = {}) {
       }
       return out
     },
+    /** 取某槽已注册条目（含组件本体），供需要渲染结果而非仅注册参数的用例使用。 */
+    registrationsWithComponents(slot) {
+      const entries = slotComponents.get(slot)
+      return entries ? [...entries.entries()].map(([key, entry]) => ({ key, options: { ...entry.options }, component: entry.component })) : []
+    },
     get ctx() {
       return activeCtx
     },
@@ -7354,16 +7359,26 @@ test('settings nav rows get icon markers by localized label and follow text chan
     for (const observer of observers) observer.callback([], undefined)
     assert.equal(navButtons[2].attrs.size, 0)
 
-    // CSS 已随 load 注入：齿轮隐藏规则（两代外壳形状各一条）+ 各条 data 标记的 mask 规则齐全。
-    // alpha.3 起齿轮被包进 `<span class="…_navIcon">`，直子选择器落空 ⇒ 必须按 stem 藏包裹层。
+    // CSS 已随 load 注入：回退方案（官方槽不可用/未渲染时）必须齐全——
+    // 直子形态与 alpha.3 的 navIcon 包裹层形态各一条，且都带 official-icon 开关
+    // （行上有 data-dshsvc-official-icon 时这些规则不参与，由官方图标承接）。
     const sheet = injectedStyles.join('')
-    assert.ok(sheet.includes('[data-dsh-service-nav]>svg:first-child'), 'legacy gear-hiding rule missing')
-    assert.ok(sheet.includes('[data-dsh-service-nav] [class*="navIcon"]'), 'navIcon wrapper rule missing')
-    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-restart-nav']) {
-      assert.ok(sheet.includes('[' + attr + '] [class*="navIcon"]'), attr + ' wrapper rule missing')
-      assert.ok(sheet.includes('[' + attr + ']::before'), attr + ' icon rule missing')
-      assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), attr + ' mask data URI missing')
+    const fallback = (attr) => '[' + attr + ']:not([data-dshsvc-official-icon])'
+    assert.ok(sheet.includes(fallback('data-dsh-service-nav') + '>svg:first-child'), 'legacy gear-hiding rule missing')
+    for (const attr of ['data-dsh-service-nav', 'data-dsh-service-quota-nav', 'data-dsh-service-models-nav', 'data-dsh-service-restart-nav', 'data-dsh-service-sessions-nav']) {
+      assert.ok(sheet.includes(fallback(attr) + ' [class*="navIcon"]'), attr + ' wrapper rule missing')
+      assert.ok(sheet.includes(fallback(attr) + '::before'), attr + ' icon rule missing')
+    // 行内出现我们注册的官方 svg 时，行上打开关；CSS 回退规则据此让位（老宿主无该 svg）。
+    const officialRow = navButton('服务控制')
+    officialRow.querySelector = (selector) => (selector === 'svg[data-dshsvc-official-icon]' ? {} : null)
+    navButtons.push(officialRow)
+    navObserver.callback([], undefined)
+    assert.ok(officialRow.attrs.has('data-dshsvc-official-icon'), 'the row must switch to the official icon when our svg rendered')
+    assert.equal(navButtons[0].attrs.has('data-dshsvc-official-icon'), false, 'rows without the official svg keep the CSS fallback')
     }
+    assert.ok(sheet.includes('mask:url("data:image/svg+xml,'), 'mask data URI missing')
+    // 回退规则不得无条件命中（否则官方槽渲染出的图标会被一起藏掉）
+    assert.equal(sheet.includes('[data-dsh-service-nav] [class*="navIcon"]{display:none}'), false, 'fallback must be gated by the official-icon switch')
     assert.ok(sheet.includes('%3Crect width=%2720%27 height=%278%27'), 'service nav icon must serialize server rack rect')
     // 撤销入口的选择器不残留。
     assert.equal(sheet.includes('data-dsh-service-skills-nav'), false, 'skills nav selector must be gone')
@@ -17370,6 +17385,47 @@ test('client dictionaries keep distinct English labels for distinct navigation t
   const labels = ['tabs.overview', 'tabs.usage', 'tabs.models', 'tabs.quota'].map((key) => en[key])
   assert.equal(new Set(labels).size, labels.length, 'English tab labels must be distinct')
   assert.notEqual(en['tabs.usage'], en['tabs.models'], 'usage must not reuse the models label')
+})
+
+// 0.2.2-alpha.3 的官方图标槽：注册 id 必须与 settings.section 的 id 一一对应，
+// 渲染出的 svg 带 data-dshsvc-official-icon 标记——CSS 靠它判断「官方图标已接管」，
+// 不再藏包裹层、不再画 mask（老宿主没有该槽与标记，回退规则照常生效）。
+test('settings nav icons register into the official settings.section.icon slot', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-alpha.3', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  })
+  await renderer.load()
+
+  const entries = renderer.registrationsWithComponents('settings.section.icon')
+  const byId = new Map(entries.map((entry) => [entry.options.id, entry]))
+  // 注册 id 必须与 settings.section 的 id 一一对应；后四个分节由各自的快捷入口开关
+  // 按需注册，外壳对未注册的 id 直接跳过（幂等），所以这里按已知 id 全量断言。
+  const expected = {
+    'dsh-service': 'service',
+    'dsh-service-quota': 'quota',
+    'dsh-service-models': 'models',
+    'dsh-service-restart': 'restart',
+    'dsh-service-sessions': 'sessions',
+  }
+  assert.deepEqual([...byId.keys()].sort(), Object.keys(expected).sort())
+  // 常驻分节此刻确实已注册（其余随开关出现，id 由 createNavEntryToggle 固定）
+  const sectionIds = (renderer.registrations()['settings.section'] ?? []).map((entry) => entry.id)
+  assert.ok(sectionIds.includes('dsh-service'), 'the always-on section must own a matching icon id')
+
+  // 渲染契约：带官方标记的 svg，尺寸跟随 owner 传入的 size（外壳传 16）
+  for (const [id, iconName] of Object.entries(expected)) {
+    const entry = byId.get(id)
+    const node = entry.component({ size: 16, active: false })
+    assert.equal(node.type, 'svg')
+    assert.equal(node.props.width, 16)
+    assert.equal(node.props.height, 16)
+    assert.equal(node.props.viewBox, '0 0 24 24')
+    assert.equal(node.props.stroke, 'currentColor')
+    assert.equal(node.props['data-dshsvc-official-icon'], iconName)
+    assert.ok(Array.isArray(node.children) && node.children.length > 0, `${id} must draw its paths`)
+    assert.equal(entry.component({}).props.width, 16, 'a missing size falls back to 16')
+  }
 })
 
 test('settings entry: an always-visible settings row registers above the account button', async () => {
