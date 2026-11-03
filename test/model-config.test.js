@@ -80,6 +80,26 @@ test('new Profile editor: credential writes obey recovery gating and shared repl
   assert.equal((await env.call('models3-credential-commit', { planId: preview.value.planId, key: 'new' })).error, 'recovery-pending')
   assert.equal(env.credentialCalls.length, 0)
 })
+// 端到端：新字段经渠道编辑 RPC 写入并回读；越界组合在 RPC 层就被拒（而不是写进
+// Profile 后让宿主 resolveProfiles 在下次加载时整条渠道失败）。
+test('new Profile editor: request image-count limits round-trip through the route RPC', async () => {
+  const env = host({ profiles: { relay: { api: 'openai-completions', baseURL: 'http://127.0.0.1/v1', models: [{ id: 'one' }] } } })
+  const opened = await env.open()
+  const saved = await env.call('models3-save-route', { sessionId: opened.sessionId, patch: { maxRequestImages: 30, imageOffloadCountQuantum: 5 } })
+  assert.equal(saved.ok, true, saved.error)
+  assert.equal(env.raw.providers.relay.maxRequestImages, 30)
+  assert.equal(env.raw.providers.relay.imageOffloadCountQuantum, 5)
+  const reopened = await env.call('models3-open', { route: 'relay' })
+  assert.equal(reopened.value.profile.maxRequestImages, 30)
+  assert.equal(reopened.value.profile.imageOffloadCountQuantum, 5)
+
+  // 越界：单请求上限 30 却要每次卸载 100 张
+  const bad = await env.call('models3-save-route', { sessionId: (await env.call('models3-open', { route: 'relay' })).value.sessionId, patch: { imageOffloadCountQuantum: 100 } })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error, 'image-offload-exceeds-limit')
+  assert.equal(env.raw.providers.relay.imageOffloadCountQuantum, 5, 'a rejected patch must not touch the profile')
+})
+
 test('new Profile editor: token-count metadata is not a secret and unknown benign fields survive', () => {
   assert.equal(containsSensitive({ inputTokens: 100, outputTokens: 20, maxOutputTokens: 4096 }), false)
   assert.equal(containsSensitive({ accessToken: 'secret' }), true)
