@@ -1625,7 +1625,8 @@ function capabilityGroup(field, target, pi, openRouter) {
   // maxTokens 语义特判：目录声明的是「模型最大输出能力」，而 route 配置里的 maxTokens 是
   // **单次请求的输出预留**——DSH compaction 用 `contextWindow − maxTokens − headroom` 计算
   // 压力阈值（阈值随 maxTokens 1:1 下降，叠到 ≤0 时自动压缩直接不可用）。二者不是同一概念，
-  // 因此能力上限一律只读参考，**绝不进入自动填入**；用户按实际需要手填（适配器默认 32768）。
+  // 因此能力上限一律只读参考，**绝不进入自动填入**；用户按实际需要手填（pi-ai 1.3 起 route
+  // 未声明 maxTokens 时宿主按 128000 推断，旧版为 32768；插件不复制该默认值，只提示区间）。
   const options = field === 'maxTokens'
     ? rawOptions.map((option) => ({
         ...option,

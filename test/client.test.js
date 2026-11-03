@@ -17343,6 +17343,35 @@ test('models page clears a stale smart-fill error once a retry succeeds', async 
   assert.equal(renderer.hasTest('model-config-error'), false, 'a successful retry clears the stale error')
 })
 
+// 词典笔误守卫：不同导航项必须映射到不同英文文案（2.1.1 曾把 tabs.usage 写成 Models，
+// 与 tabs.models 撞名，英文界面下「模型统计」被显示成「模型配置」）。
+test('client dictionaries keep distinct English labels for distinct navigation tabs', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
+  // 两个词典都是同缩进的 `const zh/en = { ... }` 字面量，截到同缩进闭括号为止
+  const dict = (decl) => {
+    const start = source.indexOf(decl)
+    const body = source.slice(start + decl.length - 1)
+    const end = body.indexOf('\n    }')
+    const block = body.slice(0, end === -1 ? body.length : end)
+    const entries = {}
+    for (const match of block.matchAll(/'([\w.]+)':\s*'((?:[^'\\]|\\.)*)'/g)) entries[match[1]] = match[2]
+    return entries
+  }
+  const zhStart = source.indexOf('const zh = {')
+  const enStart = source.indexOf('const en = {')
+  assert.ok(zhStart > 0 && enStart > 0, 'both dictionaries must exist in the client source')
+  const zh = dict('const zh = {')
+  const en = dict('const en = {')
+  for (const key of ['tabs.overview', 'tabs.usage', 'tabs.models', 'tabs.quota']) {
+    assert.ok(key in zh && key in en, `${key} must exist in both dictionaries`)
+    assert.notEqual(zh[key], en[key], `${key} must be translated`)
+  }
+  const labels = ['tabs.overview', 'tabs.usage', 'tabs.models', 'tabs.quota'].map((key) => en[key])
+  assert.equal(new Set(labels).size, labels.length, 'English tab labels must be distinct')
+  assert.notEqual(en['tabs.usage'], en['tabs.models'], 'usage must not reuse the models label')
+})
+
 test('settings entry: an always-visible settings row registers above the account button', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'fixture' } }

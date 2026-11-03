@@ -2256,7 +2256,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       'tabs.overview': 'Overview',
       'tabs.notify': 'Notifications',
       'tabs.health': 'Health',
-      'tabs.usage': 'Models',
+      'tabs.usage': 'Model usage',
       'tabs.quota': 'Quota lookup',
       'overview.container': 'Process and runtime',
       'overview.errors': 'Errors',
