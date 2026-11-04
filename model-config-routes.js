@@ -427,7 +427,8 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         baseURL: defaultEntry?.baseUrl ?? '',
         models: [],
       }
-      const next = patchFields(raw, payload.patch ?? {}, payload.unset ?? [], ROUTE_FIELDS.filter((x) => x !== 'apiKeyEnv'), payload.patch?.api ?? raw.api)
+      const inherited = access.inherited?.()?.providers?.[session.route] ?? {}
+      const next = patchFields(raw, payload.patch ?? {}, payload.unset ?? [], ROUTE_FIELDS.filter((x) => x !== 'apiKeyEnv'), payload.patch?.api ?? raw.api, inherited)
       if (has(payload.patch, 'headers')) next.headers = { ...Object.fromEntries(Object.entries(raw.headers ?? {}).filter(([key]) => sensitiveHeader(key))), ...next.headers }
       if ((payload.unset ?? []).includes('headers') && Object.keys(raw.headers ?? {}).some(sensitiveHeader)) error('sensitive-header')
       // Preserve unknown nested keys; the client never owns their write baseline.
@@ -438,8 +439,6 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       const ops = []
       for (const key of payload.unset ?? []) ops.push({ op: 'unset', path: ['providers', session.route, key] })
       for (const key of Object.keys(payload.patch ?? {})) ops.push({ op: 'set', path: ['providers', session.route, key], value: next[key] })
-      // Calculate unset's true inherited result for the restore fingerprint.
-      for (const key of payload.unset ?? []) { const value = access.inherited?.()?.providers?.[session.route]?.[key]; if (value !== undefined) next[key] = clone(value) }
       const result = await apply(session, next, { ops })
       sessions.delete(payload.sessionId)
       return result

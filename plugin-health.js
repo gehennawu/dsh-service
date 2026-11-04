@@ -5,8 +5,11 @@
 //     自定义插件同列；group 条目是文件夹，跳过）。每条目：id / options.name（模块说明符）/
 //     options.group / disabled（含祖先组禁用）/ fiber（启用时存在）。
 //   - `fiber.state`：0 pending（等待依赖）/ 1 loading / 2 active / 3 failed / 4 disposed /
-//     5 unloading；`fiber.inject` = 声明依赖的服务名 Dict；`fiber.store` = 已满足依赖的 Impl
-//     快照（ACTIVE 时含全部 inject 键，缺失键即依赖未就绪）；`fiber._error` = fail 原因。
+//     5 unloading；`fiber.inject` = 声明依赖的服务名 Dict；`fiber._error` = fail 原因。
+//   - 依赖快照：0.2.2-alpha.3（Cordis 4.0.6-alpha.2）起 `store` 拆成 `committed`+`provisions`，
+//     且 `committed` 只在依赖齐全、进入加载时才赋值 ⇒ 真正等待依赖的 pending fiber 上
+//     `committed`/旧 `store` 都为 undefined，已满足的依赖只留在私有 `_store`。缺失依赖
+//     改由公开 `fiber.ctx.get(name)` 判定（见 `missingPendingDeps`）。
 //
 // 口径（用户点名：只要「检查是否有插件异常」；官方设置页已有完整插件清单与开关，
 // 本功能不做重复清单）：
@@ -81,6 +84,42 @@ function startupAgeMs(entry, now, options) {
 }
 
 /**
+ * pending fiber 未满足的 inject 依赖名。
+ *   1. `committed`（0.2.2-alpha.3 起）只在依赖齐全、进入加载后赋值 ⇒ 真 pending 上通常为空；
+ *      旧宿主的 `store` 同理。有公开快照时以它为准。
+ *   2. 无快照时问 fiber 自己上下文的公开 `ctx.get(name)`（按该 context 的隔离解析、只认
+ *      provider 已 ACTIVE 的实现）：只有 undefined 能确定缺失，返回可确定的缺失子集，
+ *      false/0 服务值算存在。
+ *   3. 无上下文 / get 抛错 / 全部可解析却仍 pending（可用性谓词不可见）⇒ undefined：只报
+ *      pending 相位，不虚构缺失名。不读 `_store` 等私有字段。
+ *
+ * @returns 缺失依赖名数组（非空）；判据不可靠时为 undefined。
+ */
+function missingPendingDeps(fiber) {
+  const inject = fiber?.inject
+  if (inject === null || typeof inject !== 'object') return undefined
+  const keys = Object.keys(inject)
+  if (keys.length === 0) return []
+  const snapshot = fiber.committed ?? fiber.store
+  if (snapshot !== null && typeof snapshot === 'object') {
+    const missing = keys.filter((key) => !snapshot[key])
+    return missing.length > 0 ? missing : undefined
+  }
+  const fiberCtx = fiber.ctx
+  if (fiberCtx === null || typeof fiberCtx !== 'object' || typeof fiberCtx.get !== 'function') return undefined
+  const missing = []
+  try {
+    for (const key of keys) {
+      if (fiberCtx.get(key) === undefined) missing.push(key)
+    }
+  } catch (_) {
+    // 服务解析不可用或该上下文已失效：放弃点名，pending 相位本身照常上报。
+    return undefined
+  }
+  return missing.length > 0 ? missing : undefined
+}
+
+/**
  * 收集插件健康体检结果。
  *
  * @param ctx 宿主插件上下文（供 `ctx.get('loader')`）
@@ -111,22 +150,21 @@ export async function collectPluginHealth(ctx, options = {}) {
     const error = phase === 'failed' && fiber?._error != null
       ? clipPluginError(fiber._error)
       : null
-    // 0.2.2-alpha.3（Cordis 4.0.6-alpha.2）把 `Fiber.store` 拆成 `committed`（已承诺实现）
-    // 与 `provisions`（本 fiber 提供的服务）。只读旧 `store` 在新宿主上恒为 undefined ⇒
-    // 依赖判断会把所有 inject 键都报成缺失；优先读 `committed`，老宿主没有该字段时退回
-    // `store`。当前因启动宽限（startupAgeMs 恒 0）pending 条目被跳过而未触发，属预防性修正。
-    const missingDeps = phase === 'pending' && fiber !== undefined
-      ? (() => {
-        const committed = fiber.committed !== undefined ? fiber.committed : fiber.store
-        return Object.keys(fiber.inject || {}).filter((key) => !(committed !== undefined && committed !== null && committed[key]))
-      })()
-      : []
+    let missingDeps
+    if (phase === 'pending' && fiber !== undefined) {
+      try {
+        missingDeps = missingPendingDeps(fiber)
+      } catch (_) {
+        // 体检必须永不抛：读不到判据就当未知，不点名缺失依赖。
+        missingDeps = undefined
+      }
+    }
     issues.push({
       entryId: entry.id,
       moduleName,
       phase,
       ...(error === null ? {} : { error }),
-      ...(missingDeps.length > 0 ? { missingDeps } : {}),
+      ...(missingDeps !== undefined && missingDeps.length > 0 ? { missingDeps } : {}),
     })
   }
   return { available: true, total, issues }

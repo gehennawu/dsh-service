@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
 import {
   PLUGIN_FIBER_STATE,
@@ -8,6 +11,26 @@ import {
   pluginCheckItem,
   restartPluginEntry,
 } from '../plugin-health.js'
+
+// 真机验证用：本机全局安装的 DSH 里带着官方 @deepseek-ai/cordis。解析不到就 skip，
+// 绝不拿自造替身冒充真实 Cordis（替身无法证明 pending fiber 的真实字段形状）。
+async function loadInstalledCordis() {
+  const anchors = []
+  if (process.env.DSH_INSTALL_PATH) anchors.push(join(process.env.DSH_INSTALL_PATH, 'package.json'))
+  const globalNodeModules = join(dirname(dirname(process.execPath)), 'lib', 'node_modules')
+  anchors.push(join(globalNodeModules, '@deepseek-ai', 'dsh', 'package.json'))
+  for (const anchor of anchors) {
+    try {
+      const entry = createRequire(anchor).resolve('@deepseek-ai/cordis')
+      return await import(pathToFileURL(entry).href)
+    } catch (_) {
+      // try the next anchor
+    }
+  }
+  return undefined
+}
+
+const INSTALLED_CORDIS = await loadInstalledCordis()
 
 function createFakeCtx(loader) {
   return {
@@ -120,8 +143,8 @@ test('collectPluginHealth reports only abnormal enabled plugins and total counts
   assert.equal(byId.has('off-custom'), false, 'a failed fiber on a disabled entry is not an issue')
 })
 
-// 0.2.2-alpha.3 起 Fiber.store 被拆成 committed/provisions：缺失依赖判断要读 committed，
-// 否则新宿主上所有 inject 键都会被报成缺失（旧字段缺失时退回 store 保持老宿主兼容）。
+// 快照存在时保留 committed / 旧 store 兼容路径；真正 pending 尚未产生 committed，
+// 无快照路径由下面的 fiber.ctx.get 与真实 Cordis 回归另行覆盖。
 test('collectPluginHealth reads committed implementations on hosts that split Fiber.store', async () => {
   const loader = {
     entries: () => [
@@ -133,6 +156,167 @@ test('collectPluginHealth reads committed implementations on hosts that split Fi
   const byId = new Map(report.issues.map((issue) => [issue.entryId, issue]))
   assert.deepEqual(byId.get('new-host-pending').missingDeps, ['settings'], 'committed supplies credentials; settings stays missing')
   assert.deepEqual(byId.get('old-host-pending').missingDeps, ['settings'], 'the legacy store field still answers on old hosts')
+})
+
+// 0.2.2-alpha.3 真机复现（Cordis 4.0.6-alpha.2）：真正等待依赖的 pending fiber 上
+// `committed` 仍是 undefined——它只在依赖齐全后进入 `_reload` 时才被赋值——旧 `store`
+// 字段也已删除，已满足的依赖只留在私有 `_store`。盲读公开快照会把全部 inject 键误报成
+// 缺失；公开判据是 fiber 自己上下文的 `ctx.get(name)`（Cordis 文档语义：按该 context 的
+// isolate 解析服务实现，不需要 inject 声明，默认只认 provider 已 ACTIVE 的实现）。
+test('collectPluginHealth resolves pending dependencies through the public fiber context when no snapshot exists', async () => {
+  const loader = {
+    entries: () => [{
+      id: 'real-pending',
+      options: { name: 'pkg-real' },
+      fiber: {
+        state: PLUGIN_FIBER_STATE.PENDING,
+        inject: { settings: null, credentials: null },
+        committed: undefined,
+        store: undefined,
+        ctx: { get: (name) => (name === 'credentials' ? { impl: true } : undefined) },
+      },
+    }],
+  }
+  const pluginCtx = { get(name) {
+    if (name === 'loader') return loader
+    throw new Error('dependency lookup must use the target fiber context, not the diagnostics context')
+  } }
+  const report = await collectPluginHealth(pluginCtx, { startupGraceMs: 0 })
+  assert.deepEqual(report.issues, [
+    { entryId: 'real-pending', moduleName: 'pkg-real', phase: 'pending', missingDeps: ['settings'] },
+  ], 'credentials is satisfied; only settings may be named missing')
+})
+
+// `false`/`0` 等服务值同样是「已提供」：缺失判定只认「解析结果为 undefined」，
+// 不能按真假值判断，否则会把提供了 0/false 的服务误报成缺失。
+test('collectPluginHealth counts falsy service values as present', async () => {
+  const loader = {
+    entries: () => [{
+      id: 'falsy-pending',
+      options: { name: 'pkg-falsy' },
+      fiber: {
+        state: PLUGIN_FIBER_STATE.PENDING,
+        inject: { zero: null, disabledFlag: null, absent: null },
+        ctx: { get: (name) => ({ zero: 0, disabledFlag: false })[name] },
+      },
+    }],
+  }
+  const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+  assert.deepEqual(report.issues, [
+    { entryId: 'falsy-pending', moduleName: 'pkg-falsy', phase: 'pending', missingDeps: ['absent'] },
+  ])
+})
+
+// 读不到可靠证据时宁可不点名缺失依赖，也不伪报：
+//   - 没有 fiber 上下文（老/异形宿主）⇒ 无从判断；
+//   - 公开 get 抛错 ⇒ 判断不可信；
+//   - 服务都提供了、fiber 却仍 pending ⇒ provider 的可用性谓词（ctx.provide 第三个参数
+//     check）不满足，公开 get 看不到该谓词，无法确定谁在拖住 fiber。
+test('collectPluginHealth never fabricates missing dependency names when availability is unreadable or gated', async () => {
+  const loader = {
+    entries: () => [
+      { id: 'no-context', options: { name: 'pkg-noctx' }, fiber: { state: PLUGIN_FIBER_STATE.PENDING, inject: { settings: null } } },
+      {
+        id: 'throwing-context',
+        options: { name: 'pkg-throwing' },
+        fiber: { state: PLUGIN_FIBER_STATE.PENDING, inject: { settings: null }, ctx: { get() { throw new Error('reflect unavailable') } } },
+      },
+      {
+        id: 'gated-services',
+        options: { name: 'pkg-gated' },
+        fiber: { state: PLUGIN_FIBER_STATE.PENDING, inject: { settings: null, credentials: null }, ctx: { get: () => ({ provided: true }) } },
+      },
+    ],
+  }
+  const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+  assert.deepEqual(report.issues, [
+    { entryId: 'no-context', moduleName: 'pkg-noctx', phase: 'pending' },
+    { entryId: 'throwing-context', moduleName: 'pkg-throwing', phase: 'pending' },
+    { entryId: 'gated-services', moduleName: 'pkg-gated', phase: 'pending' },
+  ])
+  for (const issue of report.issues) assert.equal('missingDeps' in issue, false, `${issue.entryId} must not carry invented names`)
+})
+
+// 公开快照存在时它是权威证据（pending 阶段只有老宿主的 store 会存在），不再去问
+// fiber 上下文——避免两条证据打架时给出不一致的结论。
+test('collectPluginHealth keeps a present committed/store snapshot authoritative', async () => {
+  const loader = {
+    entries: () => [{
+      id: 'snapshot-pending',
+      options: { name: 'pkg-snapshot' },
+      fiber: {
+        state: PLUGIN_FIBER_STATE.PENDING,
+        inject: { settings: null, credentials: null },
+        store: { credentials: {} },
+        ctx: { get() { throw new Error('the snapshot must answer first') } },
+      },
+    }],
+  }
+  const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+  assert.deepEqual(report.issues, [
+    { entryId: 'snapshot-pending', moduleName: 'pkg-snapshot', phase: 'pending', missingDeps: ['settings'] },
+  ])
+})
+
+// 真机验证：用本机安装的官方 Cordis 起一个真的等待依赖的 fiber，确认线上形状就是
+// 「committed / store 都没有、已满足依赖只在 _store」，且体检给出正确的单条缺失名。
+// 其中 `zero` 以 0 提供服务，用来证明真机路径上 falsy 服务值也算已满足。
+test('collectPluginHealth matches a real pending fiber built by the installed Cordis', { skip: INSTALLED_CORDIS ? false : 'no installed @deepseek-ai/cordis found' }, async () => {
+  const { Context } = INSTALLED_CORDIS
+  const ctx = new Context()
+  const provider = ctx.plugin({
+    name: 'health-fixture-provider',
+    apply(c) {
+      c.provide('alpha', { ok: true })
+      c.provide('zero', 0)
+    },
+  })
+  const pending = ctx.plugin({ name: 'health-fixture-pending', inject: { alpha: null, zero: null, beta: null }, apply() {} })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(pending.state, PLUGIN_FIBER_STATE.PENDING, 'the fixture fiber must really be waiting for beta')
+    if ('committed' in pending) {
+      // 新版宿主（store 已拆成 committed/provisions）上复现缺陷成因。
+      assert.equal(pending.committed, undefined, 'committed is only assigned once all deps are satisfied')
+      assert.equal(pending.store, undefined, 'the legacy store field is gone on this host')
+      assert.deepEqual(Object.keys(pending._store), ['alpha', 'zero'], 'satisfied dependencies only live in the private _store')
+    }
+    const loader = {
+      entries: () => [{ id: 'real-pending', options: { name: '@fixture/real-pending' }, disabled: false, fiber: pending }],
+    }
+    const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+    assert.deepEqual(report.issues, [
+      { entryId: 'real-pending', moduleName: '@fixture/real-pending', phase: 'pending', missingDeps: ['beta'] },
+    ])
+  } finally {
+    await pending.dispose()
+    await provider.dispose()
+  }
+})
+
+// 源码复核（Cordis 4.0.6-alpha.2）：inject Dict 的键值只是传给 provider 服务的 intercept
+// 配置（`Inject.resolve` 原样保留），`Fiber._refresh` 对全部键判缺 ⇒ 插件自写的
+// `required: false` 不是可选依赖契约，真机上照样把 fiber 卡在 pending。故体检不做该过滤，
+// 缺失名照常上报。
+test('the installed Cordis has no optional-inject contract, so required:false still blocks and is reported', { skip: INSTALLED_CORDIS ? false : 'no installed @deepseek-ai/cordis found' }, async () => {
+  const { Context, Inject } = INSTALLED_CORDIS
+  const resolved = Inject.resolve({ alpha: { required: false } })
+  assert.deepEqual({ ...resolved }, { alpha: { required: false } }, 'the value survives normalize as intercept config')
+  const ctx = new Context()
+  const fiber = ctx.plugin({ name: 'health-fixture-required-flag', inject: { alpha: { required: false } }, apply() {} })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(fiber.state, PLUGIN_FIBER_STATE.PENDING, 'a missing service still blocks despite required:false')
+    const loader = {
+      entries: () => [{ id: 'required-flag', options: { name: '@fixture/required-flag' }, disabled: false, fiber }],
+    }
+    const report = await collectPluginHealth(createFakeCtx(loader), { startupGraceMs: 0 })
+    assert.deepEqual(report.issues, [
+      { entryId: 'required-flag', moduleName: '@fixture/required-flag', phase: 'pending', missingDeps: ['alpha'] },
+    ])
+  } finally {
+    await fiber.dispose()
+  }
 })
 
 test('collectPluginHealth degrades when the loader service is absent', async () => {

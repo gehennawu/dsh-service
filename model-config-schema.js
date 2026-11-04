@@ -118,10 +118,14 @@ export function validateField(field, value, { api, previous } = {}) {
   }
   fail('unknown-field')
 }
-export function patchFields(raw, patch, unset, fields, api) {
+export function patchFields(raw, patch, unset, fields, api, inherited = {}) {
   if (!object(patch) || !Array.isArray(unset) || unset.some((k) => !fields.includes(k)) || Object.keys(patch).some((k) => !fields.includes(k)) || unset.some((k) => Object.hasOwn(patch, k))) fail('unknown-field')
   const next = structuredClone(raw)
-  for (const field of unset) delete next[field]
+  // Settings object-path unset restores the inherited value, rather than always deleting it.
+  for (const field of unset) {
+    if (Object.hasOwn(inherited, field) && inherited[field] !== undefined) next[field] = structuredClone(inherited[field])
+    else delete next[field]
+  }
   for (const [field, value] of Object.entries(patch)) {
     validateField(field, value, { api, previous: raw[field] })
     if (value === undefined) fail('schema-invalid')
@@ -133,16 +137,15 @@ export function patchFields(raw, patch, unset, fields, api) {
 
 /**
  * 跨字段约束：每次超限卸载的图片数不得超过单请求图片上限。
- * 宿主 `resolveProfiles` 对 `imageOffloadCountQuantum > maxRequestImages` 直接抛错，
- * 写进 Profile 会让整条渠道在下次加载时失败——写前拦住，给可操作错误码。
- * 任一字段缺席（继承宿主默认）时不在本地裁决，交给宿主。
- * @param next - 合并后的渠道配置
+ * 宿主写前的 `resolveProfiles` 会拒绝越界组合；此处给出可操作的专用错误码。
+ * 按 pi-ai 的默认值校验，但不把默认值写入原始配置；unset 的继承值由调用方先恢复。
+ * @param next - 合并并恢复继承值后的渠道配置
  */
 export function validateImageCountPair(next) {
   if (!object(next)) fail()
-  const max = next.maxRequestImages
-  const quantum = next.imageOffloadCountQuantum
-  if (max !== undefined && quantum !== undefined && quantum > max) fail('image-offload-exceeds-limit')
+  const max = next.maxRequestImages ?? 50
+  const quantum = next.imageOffloadCountQuantum ?? Math.min(10, max)
+  if (quantum > max) fail('image-offload-exceeds-limit')
   return next
 }
 export const schemaVocabulary = () => ({ modelFields: MODEL_FIELDS, routeFields: ROUTE_FIELDS, levels: LEVELS, protocols: PROTOCOLS, compatGates: COMPAT_GATES, compatEnums: COMPAT_ENUMS, routeEnums: ROUTE_ENUMS })

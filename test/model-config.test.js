@@ -80,8 +80,7 @@ test('new Profile editor: credential writes obey recovery gating and shared repl
   assert.equal((await env.call('models3-credential-commit', { planId: preview.value.planId, key: 'new' })).error, 'recovery-pending')
   assert.equal(env.credentialCalls.length, 0)
 })
-// 端到端：新字段经渠道编辑 RPC 写入并回读；越界组合在 RPC 层就被拒（而不是写进
-// Profile 后让宿主 resolveProfiles 在下次加载时整条渠道失败）。
+// 新字段经渠道编辑 RPC 写入并回读；越界组合在 RPC 层返回专用错误码。
 test('new Profile editor: request image-count limits round-trip through the route RPC', async () => {
   const env = host({ profiles: { relay: { api: 'openai-completions', baseURL: 'http://127.0.0.1/v1', models: [{ id: 'one' }] } } })
   const opened = await env.open()
@@ -98,6 +97,65 @@ test('new Profile editor: request image-count limits round-trip through the rout
   assert.equal(bad.ok, false)
   assert.equal(bad.error, 'image-offload-exceeds-limit')
   assert.equal(env.raw.providers.relay.imageOffloadCountQuantum, 5, 'a rejected patch must not touch the profile')
+})
+
+test('new Profile editor: image-count defaults reject invalid saves before any write', async () => {
+  for (const [limits, patch, unset] of [
+    [{}, { imageOffloadCountQuantum: 51 }, []],
+    [{ maxRequestImages: 100, imageOffloadCountQuantum: 80 }, {}, ['maxRequestImages']],
+  ]) {
+    const env = host({ profiles: { relay: { api: 'openai-completions', baseURL: 'https://example.com/v1', models: [{ id: 'one' }], ...limits } } })
+    const before = clone(env.raw)
+    const opened = await env.open()
+    const result = await env.call('models3-save-route', { sessionId: opened.sessionId, patch, unset })
+    assert.equal(result.error, 'image-offload-exceeds-limit')
+    assert.deepEqual(env.raw, before)
+    assert.equal(env.calls.length, 0)
+    assert.deepEqual(env.state.providers, {}, 'rejection must precede recovery snapshot writes')
+  }
+})
+
+test('new Profile editor: image-count validation uses the restored inherited values', async () => {
+  for (const [inheritedLimits, patch, unset, expected] of [
+    [{ maxRequestImages: 30 }, {}, ['maxRequestImages'], 'image-offload-exceeds-limit'],
+    [{ maxRequestImages: 100 }, {}, ['maxRequestImages'], undefined],
+    [{ imageOffloadCountQuantum: 90 }, { maxRequestImages: 60 }, ['imageOffloadCountQuantum'], 'image-offload-exceeds-limit'],
+  ]) {
+    const env = host({
+      profiles: { relay: { api: 'openai-completions', baseURL: 'https://example.com/v1', models: [{ id: 'one' }], maxRequestImages: 100, imageOffloadCountQuantum: 80 } },
+      inherited: { providers: { relay: inheritedLimits } },
+    })
+    const before = clone(env.raw)
+    const opened = await env.open()
+    const result = await env.call('models3-save-route', { sessionId: opened.sessionId, patch, unset })
+    assert.equal(result.error, expected)
+    if (expected) {
+      assert.deepEqual(env.raw, before)
+      assert.equal(env.calls.length, 0)
+      assert.deepEqual(env.state.providers, {})
+    } else {
+      assert.equal(result.ok, true)
+      assert.equal(env.raw.providers.relay.maxRequestImages, 100)
+    }
+  }
+})
+
+test('new Profile editor: image-count defaults reject invalid channel creation without side effects', async () => {
+  const env = host()
+  const profile = { api: 'openai-completions', baseURL: 'https://example.com/v1', models: [{ id: 'one' }], imageOffloadCountQuantum: 51 }
+  const invalid = await env.call('models3-create-preview', { route: 'new-route', profile, key: 'not-stored' })
+  assert.equal(invalid.error, 'image-offload-exceeds-limit')
+  assert.equal(env.calls.length, 0)
+  assert.equal(env.credentialCalls.length, 0)
+  assert.deepEqual(env.state.providers, {})
+  const valid = await env.call('models3-create-preview', { route: 'new-route', profile: { ...profile, maxRequestImages: 2, imageOffloadCountQuantum: 2 } })
+  assert.equal(valid.ok, true)
+})
+
+test('new Profile editor: image-count defaults validate without materializing defaults', () => {
+  assert.throws(() => patchFields({}, { imageOffloadCountQuantum: 51 }, [], ROUTE_FIELDS), /image-offload-exceeds-limit/)
+  assert.deepEqual(patchFields({}, { maxRequestImages: 2 }, [], ROUTE_FIELDS), { maxRequestImages: 2 })
+  assert.deepEqual(patchFields({}, { imageOffloadCountQuantum: 50 }, [], ROUTE_FIELDS), { imageOffloadCountQuantum: 50 })
 })
 
 test('new Profile editor: token-count metadata is not a secret and unknown benign fields survive', () => {
@@ -128,10 +186,10 @@ test('new Profile editor: request image-count limits are validated and cross-che
   const raw = { displayName: 'relay', maxRequestImages: 20, models: [] }
   // 合法：卸载步长不超过上限
   assert.equal(patchFields(raw, { imageOffloadCountQuantum: 5 }, [], ROUTE_FIELDS, 'openai-completions').imageOffloadCountQuantum, 5)
-  // 越界：写入后宿主 resolveProfiles 会整条渠道加载失败，必须写前拒绝
+  // 越界：在交给宿主完整配置校验前返回专用错误码
   assert.throws(() => patchFields(raw, { imageOffloadCountQuantum: 40 }, [], ROUTE_FIELDS, 'openai-completions'), /image-offload-exceeds-limit/)
   assert.throws(() => patchFields({ displayName: 'relay', models: [] }, { maxRequestImages: 3, imageOffloadCountQuantum: 4 }, [], ROUTE_FIELDS, 'openai-completions'), /image-offload-exceeds-limit/)
-  // 仅其中一项在场时不在本地裁决（另一项继承宿主默认）
+  // 缺省上限为 50，步长 9 合法且不物化默认值
   assert.doesNotThrow(() => patchFields({ displayName: 'relay', models: [] }, { imageOffloadCountQuantum: 9 }, [], ROUTE_FIELDS, 'openai-completions'))
   // 展示面按白名单透出，不泄漏其它键
   const dto = displayProfile({ ...raw, maxRequestImages: 20, imageOffloadCountQuantum: 4, secretish: 1 })

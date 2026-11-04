@@ -894,12 +894,28 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab] {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+/* 0.2.2-alpha.3 起官方抽屉钮挂在帧根独立的 shell.leading 座（[data-shell-leading]），
+   不在会话头部内：沉浸态头部上滑时它不跟着走，而 FAB 已让位给官方钮藏起，
+   全屏阅读区左上角因此残留一枚可点的抽屉钮（误触风险）。官方钮在位时把整个座
+   按 FAB 同款位移+淡出隐藏，沉浸标记移除即恢复；老宿主无该座、:has 不支持时
+   选择器空转，回退由 FAB 自己的沉浸规则承接。 */
+html[data-dshsvc-mobile] body:has([data-sidebar-opener]) [data-shell-leading] {
+  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease),
+    opacity var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+}
+html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) [data-shell-leading] {
+  transform: translateY(calc(0px - var(--dshsvc-header-h, 76px) - env(safe-area-inset-top, 0px))) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
 @media (prefers-reduced-motion: reduce) {
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-composer-seat],
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header],
   html[data-dshsvc-mobile] [data-dshsvc-chat-header],
   html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-fab],
-  html[data-dshsvc-mobile] [data-dshsvc-fab] { transition: none !important; }
+  html[data-dshsvc-mobile] [data-dshsvc-fab],
+  html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) [data-shell-leading],
+  html[data-dshsvc-mobile] body:has([data-sidebar-opener]) [data-shell-leading] { transition: none !important; }
 }
 `
 
