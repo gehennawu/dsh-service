@@ -255,21 +255,23 @@
       // 之后（见「Svc 视觉基元」段前），避免按值传参的 TDZ；每次 apply 调用产出一份新缓存状态，
       // 与原 apply 作用域声明等命。
       const { SubagentModelsDock } = createSubagentDispatchRing({ ctx, rpcCall, useTranslation })
-      // ── 导航纯函数（v0.39 六页信息架构）────────────────────────────────
+      // ── 导航纯函数（六页信息架构）────────────────────────────────
       // 可见性/顺序/回退全部收敛为纯函数（可独立测试）；ServicePanel 只持状态与业务块。
-      // v1.10 模型配置工作台：插入在「额度查询」之后、「诊断」之前（与旧分支的信息架构一致）。
+      // v1.10 模型配置工作台：插入在「额度查询」之后（与旧分支的信息架构一致）。
       // 门控 = modelCatalog（供应商与模型 + 子代理路由两个子标签都由本页承载）。
-      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'models', 'diagnostics', 'maintenance', 'configuration']
-      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', models: 'tabs.models', diagnostics: 'tabs.health', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
-      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', models: ['modelCatalog', 'subagentRoute'], diagnostics: 'healthDiagnostics' }
+      // 健康诊断不再是顶层页：收敛为维护子页（用户点名，2026-11-05），主标签收敛六页。
+      const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'models', 'maintenance', 'configuration']
+      const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', models: 'tabs.models', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
+      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', models: ['modelCatalog', 'subagentRoute'] }
       const getVisiblePrimaryTabs = (features, warnings) => PRIMARY_TAB_ORDER
         .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || (Array.isArray(PRIMARY_TAB_FEATURES[id]) ? PRIMARY_TAB_FEATURES[id].some((key) => features[key] !== false) : features[PRIMARY_TAB_FEATURES[id]] !== false))
         .map((id) => ({ id, labelKey: PRIMARY_TAB_LABELS[id], warning: warnings !== undefined && warnings[id] === true }))
-      // 维护子页顺序（用户点名）：sessions → skills → subagent → backup → restart；
+      // 维护子页顺序（健康诊断移入维护页最前，用户点名 2026-11-05）：
+      // diagnostics → sessions → skills → backup → restart；
       // restart 不受功能门控（重启永远可用），维护页实际恒可达。
-      const MAINTENANCE_TAB_ORDER = ['sessions', 'skills', 'backup', 'restart']
-      const MAINTENANCE_TAB_LABELS = { sessions: 'tabs.sessions', skills: 'tabs.skills', subagent: 'tabs.subagent', backup: 'tabs.backup', restart: 'tabs.restart' }
-      const MAINTENANCE_TAB_FEATURES = { sessions: 'sessionManager', skills: 'skillManager', subagent: 'subagentRoute', backup: 'backupMaintenance' }
+      const MAINTENANCE_TAB_ORDER = ['diagnostics', 'sessions', 'skills', 'backup', 'restart']
+      const MAINTENANCE_TAB_LABELS = { diagnostics: 'tabs.health', sessions: 'tabs.sessions', skills: 'tabs.skills', subagent: 'tabs.subagent', backup: 'tabs.backup', restart: 'tabs.restart' }
+      const MAINTENANCE_TAB_FEATURES = { diagnostics: 'healthDiagnostics', sessions: 'sessionManager', skills: 'skillManager', subagent: 'subagentRoute', backup: 'backupMaintenance' }
       const getVisibleMaintenanceTabs = (features) => MAINTENANCE_TAB_ORDER
         .filter((id) => MAINTENANCE_TAB_FEATURES[id] === undefined || features[MAINTENANCE_TAB_FEATURES[id]] !== false)
         .map((id) => ({ id, labelKey: MAINTENANCE_TAB_LABELS[id] }))
@@ -6524,7 +6526,8 @@
           : null
 
         const healthBlock = React.createElement('div', { key: 'health-section', 'data-testid': 'health-card', style: card },
-          // v0.39 省空间：页头标题即「健康诊断」，去掉内容区重复区块标题。
+          // 区块标题恢复（健康诊断并入维护子页后页头统一为「维护」，与备份子页的「备份管理」同构）。
+          React.createElement('div', { style: sectionTitle }, translate('tabs.health')),
           healthSummaryBlock,
           pluginIssueBlock,
           permissionBlock)
@@ -6993,20 +6996,23 @@
         const maintenanceBlock = React.createElement('div', { key: 'maintenance-card', 'data-testid': 'maintenance-card', style: card }, backupBlock)
         // advisory 警告（如手动启动环境的黄色提示）只做行内呈现，不点亮标签 ⚠ 与顶部服务控制提醒。
         const diagnosticFailure = diagnostics?.checks?.some((check) => check.status === 'error' || (check.status === 'warning' && check.advisory !== true)) === true
+        // 健康诊断侧故障源（RPC/权限错误、非 advisory 检查项、权限异常计数）随页面并入维护标签：
+        // 既点亮维护子页内「健康诊断」的 ⚠，也聚合进维护主标签 ⚠ 与顶部提醒（顶层不再单列健康诊断）。
+        const diagnosticsWarning = Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0)
         // 批量进行中在「维护」标签右上角显示进度计数角标（done/total）。
         const { batch: skillsBadgeBatch } = useSkillsBatch()
-        // v0.39 六页信息架构：顶层 overview→usage→quota→diagnostics→maintenance→configuration。
+        // 六页信息架构：顶层 overview→usage→quota→models→maintenance→configuration。
         // 通知不再是顶层页：归入 配置→通知（功能关闭时页面保留、置灰标注）。
+        // 健康诊断不再是顶层页：归入 维护→健康诊断（用户点名，2026-11-05）。
         const tabWarnings = {
           overview: false,
           usage: Boolean(usageError),
           quota: false,
-          diagnostics: Boolean(healthError || permissionError || diagnosticFailure || permissionAbnormal > 0),
-          maintenance: Boolean(backupError || restartFlowState.error),
+          maintenance: Boolean(backupError || restartFlowState.error || diagnosticsWarning),
           configuration: false,
         }
-        // 维护子页记忆：首次开面板默认「子代理」（用户点名），此后读写 localStorage；
-        // 非法/被功能关闭的值按 sessions→skills→subagent→backup→restart 回退到首个可用页。
+        // 维护子页记忆：首次开面板默认白名单首项（现为健康诊断），此后读写 localStorage；
+        // 非法/被功能关闭的值按白名单顺序回退到首个可用页；全关返回 null（重启恒开，实际不会发生）。
         // 配置页恒开在 features，无子页记忆（用户点名）。
         const [maintenanceTab, setMaintenanceTab] = useState('subagent')
         const [configTab, setConfigTab] = useState('features')
@@ -7020,6 +7026,8 @@
         const selectMaintenanceTab = (id) => {
           setMaintenanceTab(id)
           try { localStorage.setItem('dsh-service-maintenance-tab', id) } catch (_) {}
+          // 进入健康诊断子页即跑一次诊断（30s 节流，与旧顶层标签入口同口径）。
+          if (id === 'diagnostics') runDiagnostics(false)
         }
         const primaryTabs = getVisiblePrimaryTabs(features, tabWarnings)
         const maintenanceTabs = getVisibleMaintenanceTabs(features)
@@ -7035,20 +7043,20 @@
             : visiblePrimaryTab === 'models'
               // SubagentSection 是 apply 内后置的函数声明；此处只在渲染期求值，不受声明顺序影响。
               ? React.createElement(ModelsSection, { SubagentSection })
-            : visiblePrimaryTab === 'diagnostics'
-              ? healthBlock
             : visiblePrimaryTab === 'maintenance'
               ? (visibleMaintenanceTab === null
                   ? React.createElement('div', { 'data-testid': 'maintenance-empty', style: displaySurface }, translate('maintenance.empty'))
-                  : visibleMaintenanceTab === 'restart'
-                    ? restartBlock
-                    : visibleMaintenanceTab === 'backup'
-                      ? maintenanceBlock
-                      : visibleMaintenanceTab === 'skills'
-                        ? React.createElement(SkillsSection, null)
-                        : visibleMaintenanceTab === 'subagent'
-                          ? React.createElement(SubagentSection, null)
-                          : React.createElement(SessionsSection, null))
+                  : visibleMaintenanceTab === 'diagnostics'
+                    ? healthBlock
+                    : visibleMaintenanceTab === 'restart'
+                      ? restartBlock
+                      : visibleMaintenanceTab === 'backup'
+                        ? maintenanceBlock
+                        : visibleMaintenanceTab === 'skills'
+                          ? React.createElement(SkillsSection, null)
+                          : visibleMaintenanceTab === 'subagent'
+                            ? React.createElement(SubagentSection, null)
+                            : React.createElement(SessionsSection, null))
             : configTab === 'notifications'
               ? React.createElement('div', { 'data-testid': 'config-notifications-page', style: Object.assign({}, card, features.taskNotifications === false ? { opacity: 0.55 } : {}) },
                   notificationBlock,
@@ -7069,34 +7077,35 @@
             items: primaryTabs.map((item) => ({
               id: item.id,
               label: translate(item.labelKey),
-              icon: item.id === 'diagnostics' ? 'health' : item.id,
+              icon: item.id,
               warning: item.warning,
               badge: item.id === 'maintenance' && skillsBadgeBatch !== null && skillsBadgeBatch.phase === 'running'
                 ? { testid: 'skills-tab-badge', text: skillsBadgeBatch.done + '/' + skillsBadgeBatch.total }
                 : null,
             })),
             activeId: visiblePrimaryTab,
-            onChange: (id) => { if (!canLeaveModelConfig()) return; setActiveTab(id); if (id === 'diagnostics') runDiagnostics(false) },
+            onChange: (id) => { if (!canLeaveModelConfig()) return; setActiveTab(id) },
             testIdPrefix: 'service-tab',
             dotLabel: translate('tabs.alert.dot'),
             ariaLabel: translate('nav.label'),
           }),
-          // v0.39 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS；
-          // 诊断页的「重新诊断」按钮驻留头部右缘（用户复核点名），内容区不再独占一行。
+          // 页面头部：标题随当前页切换（标签词条复用），描述见 PAGE_DESCRIPTIONS；
+          // 维护·健康诊断子页的「重新诊断」按钮驻留头部右缘（原顶层页口径平移），内容区不再独占一行。
           React.createElement(SvcPageHeader, {
             title: translate(PRIMARY_TAB_LABELS[visiblePrimaryTab]),
             description: PAGE_DESCRIPTIONS[visiblePrimaryTab] !== undefined ? translate(PAGE_DESCRIPTIONS[visiblePrimaryTab]) : null,
-            action: visiblePrimaryTab === 'diagnostics'
+            action: visiblePrimaryTab === 'maintenance' && visibleMaintenanceTab === 'diagnostics'
               ? React.createElement('button', { type: 'button', 'data-testid': 'diagnostics-recheck', 'data-variant': 'neutral', style: neutral, onClick: () => runDiagnostics(true), disabled: diagnosticsBusy }, translate(diagnosticsBusy ? 'health.checking' : diagnostics ? 'health.recheck' : 'health.check'))
               : null,
           }),
           visiblePrimaryTab === 'maintenance' && maintenanceTabs.length > 0
             ? React.createElement(SvcTabs, {
-                items: maintenanceTabs.map((item) => ({ id: item.id, label: translate(item.labelKey) })),
+                items: maintenanceTabs.map((item) => ({ id: item.id, label: translate(item.labelKey), warning: item.id === 'diagnostics' && diagnosticsWarning })),
                 activeId: visibleMaintenanceTab,
                 onChange: selectMaintenanceTab,
                 testIdPrefix: 'maintenance-tab',
                 variant: 'sub',
+                dotLabel: translate('tabs.alert.dot'),
                 ariaLabel: translate('tabs.maintenance'),
               })
             : null,

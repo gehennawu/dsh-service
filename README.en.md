@@ -49,7 +49,7 @@ A service-control and operations plugin for DSH Web: safe restart, version manag
 
 ## 🚀 Features
 
-The Settings "Service Control" panel has a seven-page navigation: **Overview · Model stats · Quota lookup · Model configuration · Health · Maintenance · Configuration**; "Model configuration" contains Providers & models / Subagent routing, "Maintenance" aggregates four subpages — Sessions · Skills · Backups · Restart — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
+The Settings "Service Control" panel has a six-page navigation: **Overview · Model stats · Quota lookup · Model configuration · Maintenance · Configuration**; "Model configuration" contains Providers & models / Subagent routing, "Maintenance" aggregates five subpages — Health diagnostics · Sessions · Skills · Backups · Restart (Health diagnostics is the default landing) — and "Configuration" aggregates Features · Task notifications · Settings Nav. Restart, Quota lookup, and Sessions can each enable a **quick entry in the settings left navigation** (off by default; the Skills and Subagents sidebar entries were removed).
 
 Under **Plugins → Plugin configuration**, thirteen host-level switches: **Health diagnostics, Model statistics, Quota lookup, Model configuration, Backup maintenance, Task notifications, Skill manager, Subagent model, Session manager, Mobile adaptation, Model provider icons, Right-Sidebar file editing, `/healthz` liveness endpoint** (all on by default except Mobile adaptation). All are live settings: disabling hides the UI, stops polling/subscriptions, and makes the host reject that capability; Overview and Restart stay available.
 
@@ -66,7 +66,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 
 ![Configuration page](./screenshots/configuration_en.png)
 
-- Maintenance groups Sessions, Skills, Backups and Restart, remembering the latest subpage.
+- Maintenance groups Health diagnostics, Sessions, Skills, Backups and Restart, remembering the latest subpage.
 - Configuration groups feature switches, notifications and settings-navigation tabs, with drag / arrow ordering and visibility controls. Service Control always remains visible.
 - Navigation and quota-card preferences sync across devices through `$DSH_HOME/dsh-service-config.json`; feature sections do not affect one another.
 
@@ -99,6 +99,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - **Plugin health checks** list failures and missing dependencies; failed plugins can be reloaded after confirmation. Manually disabled plugins are not anomalies; disposed or unknown states are informational only.
 - Permissions & repair provides deep scans and two-step permission repairs.
 - Suspected manual launches warn of no restart assurance; missing backups are informational.
+- Entry: Maintenance → Health diagnostics (the first subpage and the default landing); failures light the Maintenance tab ⚠ and the sub-tab ⚠.
 
 ### Model statistics
 
@@ -281,7 +282,7 @@ The plugin is a Cordis two-half structure: the **Host half (`index.js`)** owns a
 ```mermaid
 flowchart TB
     subgraph Client["🌐 Client browser half (client.js)"]
-        UI["Settings : Service Control panel (seven-page navigation + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
+        UI["Settings : Service Control panel (six-page navigation + quick entries)<br/>quota ring · notification bell · mobile adaptation"]
     end
 
     subgraph Host["⚙️ Host half (index.js)"]

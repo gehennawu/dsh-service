@@ -777,6 +777,15 @@ function createRenderer(rpcCall, options = {}) {
   }
 }
 
+// 健康诊断是维护子页（信息架构修订）：先开「维护」再点「健康诊断」子标签；
+// 子标签点击自带 30s 节流的自动诊断（与旧顶层标签入口同口径）。
+async function openHealthPage(renderer) {
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('健康诊断').props.onClick()
+  await renderer.flush()
+}
+
 // 特性设置门面的隔离测试入口：工厂在模块加载时即挂上 exports（与 apply 无关），
 // 因此借一个一次性 renderer 取到它，再在自定义 ctx 上覆盖三条能力探测分支。
 // mountOnly: [] 不渲染任何槽——这里只验证门面本身，不牵动面板组件。
@@ -997,13 +1006,17 @@ test('health diagnostics switch hides the tab, gates diagnostics RPCs, and hot-r
   }, { featureSettings: { healthDiagnostics: false } })
 
   await renderer.load()
-  // 关闭态：健康诊断标签不渲染，权限浅检查与完整诊断都不发请求（真门控，不是只隐藏）。
+  // 关闭态：维护子页不渲染健康诊断，权限浅检查与完整诊断都不发请求（真门控，不是只隐藏）。
   renderer.mount('settings.section')
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   assert.doesNotMatch(renderer.text('settings.section'), /健康诊断/)
   assert.equal(calls.includes('permissions-plan'), false)
   assert.equal(calls.includes('diagnostics'), false)
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
 
-  // 插件配置卡的胶囊开关：默认关，点击立即恢复标签并发起权限浅检查。
+  // 插件配置卡的胶囊开关：默认关，点击立即恢复子页并发起权限浅检查。
   renderer.mount('settings.plugin.item')
   renderer.findByTestId('feature-card-toggle').props.onClick()
   await renderer.flush()
@@ -1012,15 +1025,17 @@ test('health diagnostics switch hides the tab, gates diagnostics RPCs, and hot-r
   healthSwitch.props.onClick()
   await renderer.flush()
   assert.equal(renderer.featureSettings().healthDiagnostics, true)
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
   assert.match(renderer.text('settings.section'), /健康诊断/)
   assert.equal(calls.includes('permissions-plan'), true)
 
-  // 进入健康诊断标签自动跑一次完整诊断。
+  // 点进健康诊断子页自动跑一次完整诊断。
   renderer.findButton('健康诊断').props.onClick()
   await renderer.flush()
   assert.equal(calls.includes('diagnostics'), true)
 
-  // 再次关闭：标签即时消失；概览的运行指标轮询不受本开关影响。
+  // 再次关闭：子页即时消失（回落首个可用子页）；概览的运行指标轮询不受本开关影响。
   await renderer.setFeature('healthDiagnostics', false)
   assert.doesNotMatch(renderer.text('settings.section'), /健康诊断/)
   assert.equal(calls.filter((endpoint) => endpoint === 'health').length > 0, true)
@@ -1126,8 +1141,9 @@ test('service panel puts versions first and renders switchable provider-prefixed
 
   await renderer.load()
   const overviewText = renderer.text('settings.section')
-  // v0.39 六页单行导航：概览→模型统计→额度查询→健康诊断→维护→配置（通知并入配置页）。
-  assert.match(overviewText, /概览.*模型统计.*额度查询.*健康诊断.*维护.*配置/)
+  // 六页单行导航：概览→模型统计→额度查询→模型配置→维护→配置（通知并入配置页、健康诊断并入维护页）。
+  assert.match(overviewText, /概览.*模型统计.*额度查询.*模型配置.*维护.*配置/)
+  assert.doesNotMatch(overviewText, /健康诊断/)
   assert.doesNotMatch(overviewText, /服务控制提醒/)
   assert.match(overviewText, /版本信息.*进程与运行环境.*平台.*Node 版本.*运行时间.*内存 RSS/)
   assert.match(overviewText, /报错信息.*最近 48 小时.*模型报错.*2 类.*工具报错.*2 类/)
@@ -1148,10 +1164,11 @@ test('service panel puts versions first and renders switchable provider-prefixed
   expandedText = renderer.text('settings.section')
   assert.match(expandedText, /edit.*FS_NOT_OBSERVED.*5 次.*grep.*PATH_NOT_FOUND.*2 次/)
   assert.doesNotMatch(expandedText, /\/workspace\/|README\.md|client\.js/)
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   const healthText = renderer.text('settings.section')
-  assert.match(healthText, /健康诊断.*立即健康检查/)
+  // 维护·健康诊断子页：「立即健康检查」驻留页头右缘，子标签行在页头之后、区块标题回到内容区。
+  assert.match(healthText, /立即健康检查/)
+  assert.match(healthText, /健康诊断.*会话管理.*技能.*备份维护.*重启/)
   assert.doesNotMatch(healthText, /版本信息|进程与运行环境|模型使用/)
   await renderer.findButton('模型统计').props.onClick()
   await renderer.flush()
@@ -2045,12 +2062,18 @@ test('every page and sub-page root block shares the svcCardStyle container conve
   }
   // 顶层页块：点开对应标签后测量卡式容器（三段齐备、无自带 marginTop）。
   const openTab = async (label) => { await renderer.findButton(label).props.onClick(); await renderer.flush() }
-  for (const [label, id] of [['模型统计', 'usage-card'], ['健康诊断', 'health-card'], ['额度查询', 'remote-quota-card']]) {
-    await openTab(label)
-    assertCard(id)
-  }
-  // 维护页默认子页（会话管理）的根块同样是卡式容器。
+  await openTab('模型统计')
+  assertCard('usage-card')
+  // 健康诊断是维护子页：先开维护再点子标签。
   await openTab('维护')
+  await openTab('健康诊断')
+  assertCard('health-card')
+  await openTab('额度查询')
+  assertCard('remote-quota-card')
+  // 维护页默认子页（健康诊断）的根块同样是卡式容器；其余子页沿用。
+  await openTab('维护')
+  assertCard('health-card')
+  await openTab('会话管理')
   assertCard('sessions-section')
   // 子代理已迁到「模型配置」页的子标签（维护页不再有重复入口）：其根块沿用卡式容器。
   await openTab('模型配置')
@@ -2096,8 +2119,7 @@ test('service panel uses distinct cards, display surfaces, and semantic action c
   assert.equal(overviewSurface.props.style.background, 'var(--dsh-svc-surface-bg)')
   assert.equal(overviewSurface.props.style.color, 'var(--dsh-svc-text)')
   assert.equal(overviewSurface.props.style.border, '1px solid var(--dsh-svc-border)')
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   const healthRegion = renderer.findByTestId('health-diagnostics-region')
   assert.equal(healthRegion.props.style.border, '1px solid var(--dsh-svc-border)')
   assert.equal(healthRegion.props.style.background, 'var(--dsh-svc-surface-bg)')
@@ -2149,25 +2171,32 @@ test('tab and top alerts identify health and backup failures without treating an
   })
   await renderer.load()
   const text = renderer.text('settings.section')
-  // v0.39 六页导航：故障 ⚠ 从子功能聚合到顶层页（诊断=健康/权限故障，维护=备份/重启故障）。
-  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
+  // 六页导航：健康诊断并入维护子页——健康/权限故障随页面聚合进维护 ⚠（顶层不再单列诊断标签），
+  // 备份/重启故障同点维护 ⚫；维护子页上的诊断子标签再点自己的 ⚠（见下方子页断言）。
   assert.equal(renderer.hasTest('tab-dot-maintenance'), true)
   assert.equal(renderer.hasTest('tab-dot-overview'), false, 'overview has no failure')
   assert.equal(renderer.hasTest('tab-dot-configuration'), false, 'configuration has no failure')
   assert.equal(renderer.hasTest('tab-dot-usage'), false, 'usage has no failure')
-  // v1.10：模型配置页插在额度之后、诊断之前（旧分支的信息架构）。
+  // 主标签收敛六页：概览→模型统计→额度查询→模型配置→维护→配置（v1.10 模型配置插在额度之后）。
+  assert.equal(renderer.hasTest('service-tab-diagnostics'), false, 'health diagnostics is a maintenance subpage, not a primary tab')
   assert.deepEqual(renderer.findAllByTestIdPrefix('service-tab-').map((node) => node.props['data-testid']), [
     'service-tab-list',
     'service-tab-overview', 'service-tab-usage', 'service-tab-quota', 'service-tab-models',
-    'service-tab-diagnostics', 'service-tab-maintenance', 'service-tab-configuration',
-  ], 'order: overview → usage → quota → models → diagnostics → maintenance → configuration')
+    'service-tab-maintenance', 'service-tab-configuration',
+  ], 'order: overview → usage → quota → models → maintenance → configuration')
   // 重启不再是顶层标签：收敛为维护子页（maintenance-tab-*）。
   assert.equal(renderer.hasTest('top-tab-restart'), false, 'no legacy top tabs remain')
   assert.equal(renderer.hasTest('service-tab-restart'), false, 'restart is a maintenance subpage, not a primary tab')
-  assert.match(text, /服务控制提醒.*健康诊断.*维护/)
+  // 顶部提醒只列顶层页名：健康诊断故障并入「维护」。
+  assert.match(text, /服务控制提醒.*维护/)
+  assert.doesNotMatch(text, /健康诊断/)
+  // 维护页内：健康诊断子标签自带故障 ⚠。
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('tab-dot-diagnostics'), true, 'the diagnostics sub-tab carries its own warning dot')
 })
 
-test('maintenance aggregate page: sessions default, localStorage persistence, fallback, and no duplicate subagent entry', async () => {
+test('maintenance aggregate page: diagnostics default, localStorage persistence, fallback, and no duplicate subagent entry', async () => {
   const rpc = async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
     if (endpoint === 'check-update') return { ok: false, error: 'offline' }
@@ -2179,14 +2208,16 @@ test('maintenance aggregate page: sessions default, localStorage persistence, fa
     if (endpoint === 'subagent-route') return { ok: true, value: { available: true, mode: 'inherit', models: [] } }
     throw new Error(`unexpected endpoint ${endpoint}`)
   }
-  // 首次进入维护页：默认「会话管理」，无 localStorage 记忆；子代理不再是维护子页。
+  // 首次进入维护页：默认「健康诊断」（子页首位），无 localStorage 记忆；子代理不再是维护子页。
   const first = createRenderer(rpc)
   await first.load()
   await first.findButton('维护').props.onClick()
   await first.flush()
-  assert.equal(first.findByTestId('maintenance-tab-sessions').props['aria-selected'], 'true')
+  assert.equal(first.findByTestId('maintenance-tab-diagnostics').props['aria-selected'], 'true')
   assert.equal(first.hasTest('maintenance-tab-subagent'), false, 'subagent is not duplicated under maintenance')
   assert.equal(first.findByTestId('service-panel-root').props['data-dshsvc-page'], 'maintenance')
+  // 默认落页不自动发诊断请求；点子标签才跑（与旧顶层标签入口同口径）。
+  assert.equal(first.hasTest('diagnostics-recheck'), true, 'the header action invites the first check')
   // 用户切到「技能」：写入记忆键。
   await first.findByTestId('maintenance-tab-skills').props.onClick()
   await first.flush()
@@ -2200,14 +2231,14 @@ test('maintenance aggregate page: sessions default, localStorage persistence, fa
   await stored.flush()
   assert.equal(stored.findByTestId('maintenance-tab-backup').props['aria-selected'], 'true')
 
-  // 记忆的子页被功能关闭：整页移除，回退到白名单首项（会话管理）。
+  // 记忆的子页被功能关闭：整页移除，回退到白名单首项（健康诊断）。
   const fallback = createRenderer(rpc, { featureSettings: { backupMaintenance: false } })
   localStorage.setItem('dsh-service-maintenance-tab', 'backup')
   await fallback.load()
   await fallback.findButton('维护').props.onClick()
   await fallback.flush()
   assert.equal(fallback.hasTest('maintenance-tab-backup'), false, 'disabled subpage is removed')
-  assert.equal(fallback.findByTestId('maintenance-tab-sessions').props['aria-selected'], 'true', 'falls back to the first available page')
+  assert.equal(fallback.findByTestId('maintenance-tab-diagnostics').props['aria-selected'], 'true', 'falls back to the first available page')
 
   // 子代理路由的唯一入口在「模型配置」页的子标签下。
   await first.findButton('模型配置').props.onClick()
@@ -2343,8 +2374,7 @@ test('a manual-launch runtime environment no longer occupies the overview action
   assert.match(renderer.text('settings.section'), /所有系统运行正常/)
   assert.doesNotMatch(renderer.text('settings.section'), /疑似终端手动启动/)
   // 健康诊断：黄色行内提示与诊断口径照旧（只在诊断页呈现，且不点横幅/标签 ⚠）。
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
   assert.doesNotMatch(renderer.text('settings.section'), /服务控制提醒/)
@@ -3017,14 +3047,12 @@ test('opening health diagnostics runs once and reuses its short-lived result unt
   })
   await renderer.load()
   assert.equal(calls, 0)
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.equal(calls, 1)
   assert.match(renderer.text('settings.section'), /文件权限.*检查正常/)
   await renderer.findButton('概览').props.onClick()
   await renderer.flush()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.equal(calls, 1)
   await renderer.findButton('重新诊断').props.onClick()
   await renderer.flush()
@@ -3047,8 +3075,7 @@ test('health check button runs deep diagnostics and displays individual results'
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.equal(calls, 1)
   // 空备份是信息级提示：文案照常展示，但没有健康提醒横幅。
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
@@ -3069,8 +3096,7 @@ test('health diagnostics omits file permissions check when host is non-Linux', a
     throw new Error(`unexpected endpoint ${endpoint}`)
   })
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.doesNotMatch(renderer.text('settings.section'), /文件权限|File permissions/)
   assert.match(renderer.text('settings.section'), /会话存储/)
   assert.match(renderer.text('settings.section'), /tar/)
@@ -3111,8 +3137,7 @@ test('permission panel shows the host plan and requires explicit confirmation be
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   const initialText = renderer.text('settings.section')
   assert.match(initialText, /健康诊断.*文件权限/)
   // v0.39：权限与修复默认折叠——摘要警告与目标属主都在折叠区内，展开前不可见。
@@ -3188,8 +3213,7 @@ test('health diagnostics lists only abnormal plugins and reloads failed ones wit
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   const initialText = renderer.text('settings.section')
   // 检查行内摘要：失败与等待依赖分段显示，停用/正常插件不进统计文案。
   assert.match(initialText, /插件1 个插件失败，1 个插件未就绪/)
@@ -3256,8 +3280,7 @@ test('plugin reload surfaces a mapped failure and reopens with a fresh confirm',
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   await renderer.findByTestId('plugin-restart-broken').props.onClick()
   await renderer.flush()
   await renderer.findByTestId('plugin-restart-confirm-broken').props.onClick()
@@ -3284,8 +3307,7 @@ test('plugin check degrades to an informational row when the host has no loader 
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /插件体检不可用（宿主未暴露 Loader）/)
   assert.equal(renderer.hasTest('plugin-issue-list'), false)
 })
@@ -4723,12 +4745,13 @@ test('overview shows platform and node version metrics and diagnostics renders t
   assert.match(renderer.text('settings.section'), /v20\.11\.0/)
   assert.match(renderer.text('settings.section'), /进程与运行环境/)
 
-  // 健康诊断：两个新检查项的可读化文案；runtime-env 警告以胶囊角落橙点点亮标签。
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  // 健康诊断：两个新检查项的可读化文案；node-version 警告（非 advisory）点亮诊断子标签 ⚠
+  // 并聚合进维护主标签 ⚠；runtime-env 是 advisory，只做行内呈现不点 ⚠。
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v20\.11\.0 低于插件要求的 22\.x/)
   assert.equal(renderer.hasTest('tab-dot-diagnostics'), true)
+  assert.equal(renderer.hasTest('tab-dot-maintenance'), true)
 })
 
 test('diagnostics renders a recognized supervisor and a satisfied node version as ok', async () => {
@@ -4749,8 +4772,7 @@ test('diagnostics renders a recognized supervisor and a satisfied node version a
 
   await renderer.load()
   assert.match(renderer.text('settings.section'), /Linux · arm64/)
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /运行环境.*由Docker 容器管理，重启后会自动拉起/)
   assert.match(renderer.text('settings.section'), /Node 运行时.*v22\.14\.0，满足 ≥22 要求/)
   assert.equal(renderer.hasTest('tab-dot-health'), false)
@@ -4775,8 +4797,7 @@ test('a failing usage index shows a readable diagnostics row as info and does no
   await renderer.load()
   // 诊断数据只在进入诊断页时拉取（既有行为），故概览的检查项派生项也要先访问过一次诊断页。
   assert.equal(renderer.hasTest('overview-actionables'), false)
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /使用统计索引.*2 个会话未能索引（统计少算），已索引 7 个，更新于 2026-01-02 03:04/)
   assert.equal(renderer.hasTest('health-check-usage-index'), true)
   assert.equal(renderer.hasTest('tab-dot-diagnostics'), false)
@@ -4804,8 +4825,7 @@ test('a healthy usage index renders as ok and never enters overview attention it
 
   await renderer.load()
   assert.equal(renderer.hasTest('overview-actionables'), false, 'a healthy usage index must not create overview attention items')
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /使用统计索引.*已索引 3 个会话，更新于 2026-06-06 07:08/)
 })
 
@@ -4828,8 +4848,7 @@ test('the notification-permission row is client-owned: appended after host check
   // 被拒的浏览器通知不会响，但那是浏览器侧事实、不是宿主故障：不进概览可行动项、不点 ⚠。
   assert.equal(renderer.hasTest('overview-actionables'), false, 'notification permission must not create overview attention items')
   assert.equal(renderer.hasTest('tab-dot-diagnostics'), false)
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   const text = renderer.text('settings.section')
   // 追加在宿主检查项之后：会话存储行在前，通知权限行在后。
   assert.ok(text.indexOf('会话存储') < text.indexOf('通知权限'), 'the client-owned row follows the host checks')
@@ -4849,8 +4868,7 @@ test('the notification-permission row is client-owned: appended after host check
     throw new Error(`unexpected endpoint ${endpoint}`)
   }, { notificationPermission: 'default' })
   await undecided.load()
-  await undecided.findButton('健康诊断').props.onClick()
-  await undecided.flush()
+  await openHealthPage(undecided)
   assert.match(undecided.text('settings.section'), /通知权限.*浏览器尚未授权系统通知/)
 
   // 功能关闭时整行不渲染（不给关掉通知的用户留无意义的行）。
@@ -4871,8 +4889,7 @@ test('the notification-permission row defers to the browser when system notifica
   })
   // notificationPermission 缺省 = 不注入 Notification（老浏览器/非安全上下文）。
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   assert.match(renderer.text('settings.section'), /通知权限.*当前浏览器不支持系统通知/)
 })
 
@@ -4893,8 +4910,7 @@ test('a manual-launch runtime-env check renders yellow inline but raises no aler
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   // 黄色行内提示保留：检查文案照常展示；但不出现健康提醒横幅、服务控制提醒与任何 ⚠ 标志。
   assert.match(renderer.text('settings.section'), /运行环境.*疑似终端手动启动，重启后不会自动拉起/)
   assert.doesNotMatch(renderer.text('settings.section'), /健康提醒/)
@@ -4919,8 +4935,7 @@ test('an unknown runtime environment renders as informational without warning ma
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   // info 检查项：可读文案照常展示补救提示，但不产生健康提醒横幅、不点亮标签 ⚠。
   assert.match(renderer.text('settings.section'), /运行环境.*未检测到进程管理器，无法确认重启后是否自动拉起/)
   assert.match(renderer.text('settings.section'), /DSH_SERVICE_RUNTIME_ENV=managed/)
@@ -4945,8 +4960,7 @@ test('a desktop runtime-env check reports the Electron shell as managed, not unk
   })
 
   await renderer.load()
-  await renderer.findButton('健康诊断').props.onClick()
-  await renderer.flush()
+  await openHealthPage(renderer)
   // 桌面端是明确的 ok 事实：既不落 unknown 的含糊提示，也不误报成手动启动。
   assert.match(renderer.text('settings.section'), /运行环境.*由桌面端托管（Electron）/)
   assert.doesNotMatch(renderer.text('settings.section'), /未检测到进程管理器/)
@@ -17128,10 +17142,10 @@ test('models page blocks sub-tab and primary-tab switches while a model draft is
   assert.equal(confirms.length, 1)
   assert.match(confirms[0], /未保存/)
   // 主标签切换受同一守卫：确认前不换页。
-  renderer.findByTestId('service-tab-diagnostics').props.onClick()
+  renderer.findByTestId('service-tab-usage').props.onClick()
   await settle(renderer)
   assert.equal(renderer.findByTestId('service-tab-models').props['aria-selected'], 'true', 'the primary tab switch is guarded too')
-  assert.equal(renderer.findByTestId('service-tab-diagnostics').props['aria-selected'], 'false')
+  assert.equal(renderer.findByTestId('service-tab-usage').props['aria-selected'], 'false')
   assert.equal(renderer.hasTest('model-detail'), true)
   assert.equal(confirms.length, 2)
   // 确认后子标签才真正切换。
