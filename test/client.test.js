@@ -10304,6 +10304,17 @@ test('mobile adaptation immersive engine hides chat chrome on downward gesture (
     assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*pointer-events: none !important/s)
     assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*translateY/s)
     assert.match(styleTag.textContent, /margin-top: calc\(0px - var\(--dshsvc-header-h, 76px\)\)/s)
+    // 2026-11-05 抖动修复：margin-top 是布局属性，逐帧过渡 = 沉浸切换每帧全量重排
+    // （实测 8-11 次 layout-shift/次）。头部过渡只留 transform（合成器），空间一步收齐；
+    // 滑动期间靠不透明底色盖住已上移的内容，不得与文字叠加。
+    const headerRule = styleTag.textContent.match(/html\[data-dshsvc-mobile\] \[data-dshsvc-chat-header\] \{(?:\\n|\s)+transition:[^}]*\}/s)
+    assert.ok(headerRule, 'mobile chat header transition rule must exist')
+    assert.doesNotMatch(headerRule[0], /margin-top[^;]*var\(--ds-transition/, 'header transition must not animate margin-top (per-frame relayout = jitter)')
+    assert.match(headerRule[0], /background-color: var\(--dsw-alias-bg-base/, 'header needs opaque bg to mask content during the transform slide')
+    // 模型名翻转修复：沉浸座钉静息实测宽（--dshsvc-seat-w），不得再用 right:0 铺满
+    // （containing block 变宽 → 行可用宽 +7px 摆动 → observeControlRow 翻转模型名）。
+    assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*width: var\(--dshsvc-seat-w, 100%\)/s)
+    assert.doesNotMatch(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-composer-seat\] \{[^}]*right: 0/s)
     assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*opacity: 0 !important/s)
     assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*pointer-events: none !important/s)
     assert.match(styleTag.textContent, /\[data-dshsvc-immersive\] \[data-dshsvc-fab\] \{[^}]*transform: translateY\(calc\(0px - var\(--dshsvc-header-h, 76px\)/s)

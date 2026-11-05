@@ -865,7 +865,11 @@ html[data-dshsvc-mobile] [data-composer-seat] {
 html[data-dshsvc-mobile][data-dshsvc-immersive] [data-composer-seat] {
   position: absolute !important;
   left: 0 !important;
-  right: 0 !important;
+  /* 钉住静息实测宽（--dshsvc-seat-w，引擎 RO 维护）：座 absolute 后 containing block
+     变宽（滚动体内容盒 vs 全幅，实测 383→390），行可用宽随之 +7px 摆动——官方
+     observeControlRow 的 compact 判定迟滞仅 ~2px，摆幅落在「模型名×行子项×屏宽」
+     组合带内时，过渡帧里模型名就在全长↔缩略之间来回翻转。钉宽后摆幅归零。 */
+  width: var(--dshsvc-seat-w, 100%) !important;
   bottom: 0 !important;
   opacity: 0 !important;
   visibility: hidden !important;
@@ -874,10 +878,14 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] [data-composer-seat] {
 /* 会话头部（面包屑+视图标签）在滚动体外面，藏在根列里：translateY(-100%) 上滑出
    data-phase=active 根的 overflow:hidden 裁剪区，负 margin-top 用引擎测得的高度
    （--dshsvc-header-h，ResizeObserver 实时校正；老内核无 RO 时回退常量）补位，
-   否则留一条空带。 */
+   否则留一条空带。
+   v2.1.4 抖动修复：margin-top 是布局属性——逐帧过渡会让整根滚动体（万级像素高）
+   每帧全量重排，实测每次沉浸切换 8-11 次 layout-shift（真机即「对话栏隐藏/出现
+   转换阶段窗口抖动」）。现改为空间一步收齐（单次跳变），滑出动画只留给 transform
+   （合成器动画，零重排）；头部补不透明底色，滑动期间盖住已上移的内容不叠字。 */
 html[data-dshsvc-mobile] [data-dshsvc-chat-header] {
-  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease),
-    margin-top var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+  transition: transform var(--ds-transition-duration-slow, .25s) var(--ds-ease-in-out, ease);
+  background-color: var(--dsw-alias-bg-base, transparent) !important;
 }
 html[data-dshsvc-mobile][data-dshsvc-immersive] [data-dshsvc-chat-header] {
   transform: translateY(-100%) !important;
@@ -964,6 +972,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
           lastRevealReason: null,
           headerEl: null,
           headerRO: null,
+          seatRO: null,
         }
 
         // 会话导航适配层：官方外壳 DOM 结构（含类哈希）只在该层里出现，
@@ -1065,6 +1074,11 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
         const setHeaderHeightVar = (px) => {
           const styleEl = document.documentElement.style
           if (cssVarSupported(styleEl)) styleEl.setProperty('--dshsvc-header-h', `${Math.max(0, Math.round(px))}px`)
+        }
+
+        const setSeatWidthVar = (px) => {
+          const styleEl = document.documentElement.style
+          if (cssVarSupported(styleEl)) styleEl.setProperty('--dshsvc-seat-w', `${Math.max(0, Math.round(px))}px`)
         }
 
         /** 会话骨架三要素定位：全部官方属性钩子 + parentNode 走树，无类哈希。
@@ -1187,6 +1201,32 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
           }
         }
 
+        /** 座宽测量 → --dshsvc-seat-w（沉浸态钉宽用）。只在**非沉浸**时写值：沉浸态座是
+            absolute 铺满宽（正是要消除的 +7px 摆幅），绝不能把那个宽度写进变量。 */
+        const measureComposerSeat = (seatEl) => {
+          if (typeof ResizeObserver !== 'function') return
+          if (state.seatRO !== null && state.seatRO.__el === seatEl) return
+          if (state.seatRO !== null) { try { state.seatRO.disconnect() } catch (_) {} }
+          try {
+            const observer = new ResizeObserver(() => {
+              if (state.immersive) return
+              try {
+                const width = seatEl.getBoundingClientRect().width
+                if (typeof width === 'number' && width > 0) setSeatWidthVar(width)
+              } catch (_) {}
+            })
+            observer.__el = seatEl
+            observer.observe(seatEl)
+            state.seatRO = observer
+            if (!state.immersive) {
+              const initial = seatEl.getBoundingClientRect().width
+              if (typeof initial === 'number' && initial > 0) setSeatWidthVar(initial)
+            }
+          } catch (_) {
+            state.seatRO = null
+          }
+        }
+
         const nodeContains = (ancestor, node) => {
           let cursor = node
           while (cursor !== null && cursor !== undefined) {
@@ -1300,6 +1340,7 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
             decorateHeaderChips()
             const seat = (() => { try { return document.querySelector('[data-composer-seat]') } catch (_) { return null } })()
             if (seat !== null && nodeContains(ctx.scroller, seat)) {
+              measureComposerSeat(seat)
               let scrollTop = NaN; let scrollHeight = NaN; let clientHeight = NaN
               try {
                 scrollTop = Number(ctx.scroller.scrollTop)
@@ -2105,6 +2146,10 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
           if (state.headerRO !== null) {
             try { state.headerRO.disconnect() } catch (_) {}
             state.headerRO = null
+          }
+          if (state.seatRO !== null) {
+            try { state.seatRO.disconnect() } catch (_) {}
+            state.seatRO = null
           }
           state.headerEl = null
           if (state.frameObserver !== null) { state.frameObserver.disconnect(); state.frameObserver = null }
