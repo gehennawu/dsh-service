@@ -7214,13 +7214,22 @@
       ctx.slots.inject('sidebar.footer.action', () => {
         let disposeEntry = null
         const sync = () => {
-          if (disposeEntry !== null) { disposeEntry(); disposeEntry = null }
-          if (!featureEnabled('sidebarSettingsEntry')) return
-          if (settingsEntry.hostOwnsSettingsTrigger()) return
-          disposeEntry = ctx.slots.register(
-            { name: 'sidebar.footer.action', id: 'dsh-service-settings-entry', order: 50, label: () => t('settingsEntry.label') },
-            (props) => React.createElement(settingsEntry.SettingsEntry, props),
-          )
+          const visible = featureEnabled('sidebarSettingsEntry') && !settingsEntry.hostOwnsSettingsTrigger()
+          if (visible === (disposeEntry !== null)) return
+          // 槽通知共享同一轮监听器派发；单条注册失败不能打断其他插件的订阅。
+          try {
+            if (disposeEntry !== null) {
+              const release = disposeEntry
+              disposeEntry = null
+              release()
+            }
+            if (visible) disposeEntry = ctx.slots.register(
+              { name: 'sidebar.footer.action', id: 'dsh-service-settings-entry', order: 50, label: () => t('settingsEntry.label') },
+              (props) => React.createElement(settingsEntry.SettingsEntry, props),
+            )
+          } catch (error) {
+            console.warn('[dsh-service] settings entry sync failed', error)
+          }
         }
         sync()
         const unsubscribeFeatures = featureScope.subscribe(sync)

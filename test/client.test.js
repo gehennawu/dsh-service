@@ -15,15 +15,63 @@ function createRenderer(rpcCall, options = {}) {
   // 声明面（ui-slots 的 spec 表）：子槽在**父条目注册那一刻**就建记录，此时它可能
   // 一个占用者都没有——「外壳自带设置行」判定正是靠这一点（声明在、占用空）。
   const slotSpecs = new Map(Object.entries(options.slotSpecs || {}))
+  // ── 子槽声明生命周期记账 ───────────────────────────────────────────────
+  // 真实 ui-slots 在「父条目注册的 children」那一刻就建子槽记录（spec 查得到、entries
+  // 仍为空，正是「外壳自带设置行」的判据）；父条目注销且无其他声明者时，该声明随之
+  // 折叠。旧替身只在 initialSlots 播种时看 children、register 时完全忽略，于是复现
+  // 不了「外壳稍后才声明 settings.launcher」与「父条目注销后又回到无声明」两条生命周期。
+  const slotDeclarationOwners = new Map()
+  const declaredChildren = new Map()
+  // 由「条目 children」机制亲自建立 spec 记录的子槽：只有这些才允许在最后一个声明者
+  // 注销时折叠；options.slotSpecs 预置或用别的方式建过的声明不归本机制删。
+  const declarationCreatedSpecs = new Set()
+  const slotOwnerId = (slotName, entryKey) => `${slotName}\u0000${entryKey}`
+  const notifySlot = (key) => {
+    const listeners = slotSubscribers.get(key)
+    if (listeners) for (const listener of listeners) listener()
+  }
+  // 同一次注册/注销里的多个子槽按 key 去重；返回「本次新声明」的 key 列表，
+  // 由 register/fold 在条目、版本等状态全部落地后一次性批量派发（不在中途回调订阅者）。
+  const declareChildren = (slotName, entryKey, children) => {
+    if (children === null || children === undefined || typeof children !== 'object') return []
+    const owner = slotOwnerId(slotName, entryKey)
+    let owned = declaredChildren.get(owner)
+    if (!owned) { owned = new Set(); declaredChildren.set(owner, owned) }
+    const announced = new Set()
+    for (const [childKey, childSpec] of Object.entries(children)) {
+      if (owned.has(childKey)) continue
+      owned.add(childKey)
+      let owners = slotDeclarationOwners.get(childKey)
+      if (!owners) { owners = new Set(); slotDeclarationOwners.set(childKey, owners) }
+      owners.add(owner)
+      if (!slotSpecs.has(childKey)) { slotSpecs.set(childKey, childSpec); announced.add(childKey); declarationCreatedSpecs.add(childKey) }
+    }
+    return [...announced]
+  }
+  const foldChildren = (slotName, entryKey) => {
+    const owner = slotOwnerId(slotName, entryKey)
+    const owned = declaredChildren.get(owner)
+    if (!owned) return []
+    declaredChildren.delete(owner)
+    const folded = new Set()
+    for (const childKey of owned) {
+      const owners = slotDeclarationOwners.get(childKey)
+      if (!owners) continue
+      owners.delete(owner)
+      if (owners.size === 0) {
+        slotDeclarationOwners.delete(childKey)
+        if (declarationCreatedSpecs.has(childKey)) { declarationCreatedSpecs.delete(childKey); slotSpecs.delete(childKey); folded.add(childKey) }
+      }
+    }
+    return [...folded]
+  }
   if (options.initialSlots) {
     for (const [name, list] of Object.entries(options.initialSlots)) {
       const map = new Map()
       for (const item of list) {
         const entryKey = item.options?.key ?? item.options?.id ?? 'entry'
         map.set(entryKey, item)
-        for (const [childKey, childSpec] of Object.entries(item.options?.children ?? {})) {
-          if (!slotSpecs.has(childKey)) slotSpecs.set(childKey, childSpec)
-        }
+        declareChildren(name, entryKey, item.options?.children)
       }
       slotComponents.set(name, map)
       slotVersions.set(name, 1)
@@ -36,6 +84,9 @@ function createRenderer(rpcCall, options = {}) {
   const effectCleanups = new Map()
   const timers = []
   const factoryDisposers = []
+  // slots.inject 的返回 disposer：真实运行时它挂在下达注入的 Fiber 上，Fiber 销毁时执行。
+  // 旧替身把这个 disposer 直接丢掉，于是「插件卸载后条目/订阅仍在」类缺陷测不出来。
+  const slotInjectDisposers = new Set()
   const localeListeners = new Set()
   const localeDictionaries = new Map()
   const sessionListeners = new Set()
@@ -432,9 +483,19 @@ function createRenderer(rpcCall, options = {}) {
           inject(key, callback) {
             // 与 cordis 的 slot 注入同语义：回调返回的 disposer 是这条注入的效应，
             // 句柄被释放（或槽声明折叠）时执行它。旧替身丢弃返回值，会掩盖
-            // 「开关关闭后条目仍挂着」这类真实缺陷。
-            const disposer = callback()
-            return () => { if (typeof disposer === 'function') disposer() }
+            // 「开关关闭后条目仍挂着」这类真实缺陷；同时把该 disposer 挂到工厂作用域，
+            // 由 disposeFactory() 模拟 Fiber 销毁时统一回收（重复释放幂等）。
+            let active = true
+            let disposer = null
+            const dispose = () => {
+              if (!active) return
+              active = false
+              slotInjectDisposers.delete(dispose)
+              if (typeof disposer === 'function') disposer()
+            }
+            disposer = callback()
+            if (active) slotInjectDisposers.add(dispose)
+            return dispose
           },
           register(slotOptions, component) {
             // keyed 槽（sidebar.right.tab.document 一类）用 key 标识条目，普通槽用 id。
@@ -442,9 +503,9 @@ function createRenderer(rpcCall, options = {}) {
             const entries = slotComponents.get(slotOptions.name) || new Map()
             entries.set(entryKey, { component, options: slotOptions })
             slotComponents.set(slotOptions.name, entries)
+            // 子槽声明随父条目注册当场建立（与真实 ui-slots 同序）；通知在状态落地后批量派发。
+            const announcedChildren = declareChildren(slotOptions.name, entryKey, slotOptions.children)
             slotVersions.set(slotOptions.name, (slotVersions.get(slotOptions.name) || 0) + 1)
-            const subs = slotSubscribers.get(slotOptions.name)
-            if (subs) { for (const fn of subs) fn() }
             // 挂载门控：mountOnly 白名单优先（只挂被测槽，其余一律不渲染）；
             // 否则默认不挂「右栏编辑正文」（它需要槽主注入的 owner props，
             // 无 props 渲染会发出 file-read 请求，干扰与它无关的用例）。
@@ -453,6 +514,7 @@ function createRenderer(rpcCall, options = {}) {
               ? options.mountOnly.includes(slotOptions.name)
               : slotOptions.name !== 'settings.plugin.item' && !(options.initiallyUnmounted ?? defaultUnmounted).includes(slotOptions.name)
             if (shouldMount) mountedSlots.add(slotOptions.name)
+            for (const key of new Set([slotOptions.name, ...announcedChildren])) notifySlot(key)
             return () => {
               // 与真实 cordis 一致：disposer 只摘除本条目，整槽无占用时才取消挂载。
               // 此前误杀整个槽名——「关闭左列入口」会把整个设置面板从渲染树里炸掉。
@@ -462,9 +524,10 @@ function createRenderer(rpcCall, options = {}) {
                 live.delete(entryKey)
                 if (live.size === 0) mountedSlots.delete(name)
               }
+              // 本条目声明的子槽随之折叠（无其他声明者时）；通知同样批量派发。
+              const foldedChildren = foldChildren(name, entryKey)
               slotVersions.set(name, (slotVersions.get(name) || 0) + 1)
-              const nameSubs = slotSubscribers.get(name)
-              if (nameSubs) { for (const fn of nameSubs) fn() }
+              for (const key of new Set([name, ...foldedChildren])) notifySlot(key)
               renderAll()
             }
           },
@@ -580,11 +643,15 @@ function createRenderer(rpcCall, options = {}) {
       await new Promise((resolve) => setImmediate(resolve))
       await Promise.resolve()
     },
-    // 工厂级 ctx.effect 的 disposer（批量轮询表等）：测试末尾显式停表，防止真实 setInterval 挂住进程。
+    // 工厂级 ctx.effect 与 slots.inject 的 disposer（批量轮询表、槽条目/订阅等）：
+    // 测试末尾显式停表并模拟 Fiber 销毁，防止真实 setInterval 挂住进程、条目残留到下一个用例。
     disposeFactory() {
-      while (factoryDisposers.length > 0) {
+      let rounds = 0
+      while ((factoryDisposers.length > 0 || slotInjectDisposers.size > 0) && rounds < 1000) {
+        rounds += 1
         const batch = factoryDisposers.splice(0)
         for (const dispose of batch) dispose()
+        for (const dispose of Array.from(slotInjectDisposers)) dispose()
       }
     },
     async advanceTimer(expectedDelay) {
@@ -17748,4 +17815,251 @@ test('settings entry: rail mode is icon-only and keeps the accessible label', as
   assert.equal(button.props['data-collapsed'], 'true')
   assert.equal(button.props['aria-label'], '设置')
   assert.equal(renderer.text('sidebar.footer.action'), '', 'the collapsed rail renders the icon without the visible label')
+})
+
+// ── 声明生命周期 / 让位判定的回归补测 ─────────────────────────────────────
+// 替身在 register 里如实建子槽声明、在父条目注销时折叠它，并触达子槽订阅者；
+// 外壳「先注册根条目、children 里带 settings.launcher」发生在引导后期这条路径，
+// 以前只能靠 initialSlots 播种，测不到「声明迟到」与「声明折叠」两种状态迁移。
+
+test('settings entry: a launcher seat declared after load folds the row, and folding back restores it', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  })
+  await renderer.load()
+
+  const rows = () => renderer.registrations()['sidebar.footer.action'] ?? []
+  const find = () => rows().some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), true, 'without a launcher declaration the plugin row is the only settings entry')
+  assert.equal(renderer.slots.spec('settings.launcher'), undefined)
+
+  // 外壳（settings-general 一类）稍后注册根条目，children 当场声明 settings.launcher。
+  const disposeRoot = renderer.slots.register(
+    { name: 'sidebar.settings', id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+    () => null,
+  )
+  assert.notEqual(renderer.slots.spec('settings.launcher'), undefined, 'registering the parent declares the child slot')
+  assert.equal(renderer.slots.entries('settings.launcher').length, 0, 'the declared seat still has no occupant')
+  assert.equal(find(), false, 'declared-and-empty means the shell renders its own row, so the plugin yields')
+  renderer.mount('sidebar.footer.action')
+  assert.equal(renderer.text('sidebar.footer.action'), '')
+
+  // 父条目注销 → 子槽声明折叠 → 判定回到「失败方向」，插件行必须补回。
+  disposeRoot()
+  assert.equal(renderer.slots.spec('settings.launcher'), undefined, 'unregistering the parent folds the child declaration')
+  assert.equal(find(), true, 'a folded declaration is a predicate failure: the row must come back')
+  renderer.mount('sidebar.footer.action')
+  assert.match(renderer.text('sidebar.footer.action'), /设置/)
+
+  // 重新声明 → 再次让位；重挂不遗留重复行，也不卡在「已让位」状态。
+  const disposeRootAgain = renderer.slots.register(
+    { name: 'sidebar.settings', id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+    () => null,
+  )
+  assert.equal(find(), false, 'redeclaring the empty seat yields again')
+  assert.equal(rows().filter((item) => item.id === 'dsh-service-settings-entry').length, 0)
+
+  // 再注销 → 又补回，且任何时刻都只有一条。
+  disposeRootAgain()
+  assert.equal(find(), true)
+  assert.equal(rows().filter((item) => item.id === 'dsh-service-settings-entry').length, 1,
+    'declare/unregister cycles must never leave a duplicate row')
+})
+
+test('settings entry: an occupant that leaves the seat hands it back to the shell', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), false, 'declared and empty at load: the shell owns the row')
+
+  // 账号模块经 remoteAccess.whenAccess 异步注册：座位被占用后插件行补回。
+  const disposeAccount = renderer.slots.register({ name: 'settings.launcher', id: 'account' }, () => null)
+  assert.equal(find(), true, 'an occupied seat is the account button, so the plugin row is needed')
+
+  // 账号模块卸载（登出/权限回收）→ 座位重新变空 → 必须再次让位，否则与外壳回落的行重复。
+  disposeAccount()
+  assert.equal(renderer.slots.entries('settings.launcher').length, 0)
+  assert.equal(find(), false, 'an emptied seat folds the plugin row back to the shell fallback')
+
+  // 占用者反复进出：每次都应精确切换，不累积重复条目。
+  const disposeSecond = renderer.slots.register({ name: 'settings.launcher', id: 'account' }, () => null)
+  assert.equal(find(), true)
+  disposeSecond()
+  assert.equal(find(), false)
+})
+
+test('settings entry: feature notifications that do not change the decision never re-register the row', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+      'settings.launcher': [{ options: { id: 'account' }, component: () => null }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), true)
+
+  // ① 同值通知（宿主设置面每次写配置都会回调一次）：可见性未变，不得注销/重注册。
+  const versionBefore = renderer.slots.getVersion('sidebar.footer.action')
+  await renderer.setFeature('sidebarSettingsEntry', true)
+  assert.equal(renderer.slots.getVersion('sidebar.footer.action'), versionBefore, 'an unchanged feature value must not re-register the row')
+  assert.equal(find(), true)
+
+  // ② 与本功能无关的开关写入：同样不得触碰条目（重建会闪一下并丢掉行内状态）。
+  await renderer.setFeature('modelUsage', false)
+  assert.equal(renderer.slots.getVersion('sidebar.footer.action'), versionBefore, 'an unrelated feature notification must not re-register the row')
+
+  // ③ 真正变化仍然生效：关闭即摘除，开启即补回。
+  await renderer.setFeature('sidebarSettingsEntry', false)
+  assert.equal(find(), false, 'turning the switch off removes the row')
+  const versionOff = renderer.slots.getVersion('sidebar.footer.action')
+  assert.ok(versionOff > versionBefore, 'a real state change still touches the slot')
+  await renderer.setFeature('sidebarSettingsEntry', true)
+  assert.equal(find(), true, 'turning it back on restores the row')
+  const versionOn = renderer.slots.getVersion('sidebar.footer.action')
+  assert.ok(versionOn > versionOff, 'restoring the row re-registers it')
+
+  // ④ 稳定后再次同值通知：版本必须停住。
+  await renderer.setFeature('sidebarSettingsEntry', true)
+  assert.equal(renderer.slots.getVersion('sidebar.footer.action'), versionOn, 'once settled, a same-value notification is a no-op')
+})
+
+test('settings entry: a failing host-trigger probe keeps the row (conservative direction)', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), false, 'healthy probe: declared and empty → the plugin yields')
+
+  const savedSpec = renderer.slots.spec
+  const savedEntries = renderer.slots.entries
+  const settle = async () => { await renderer.setFeature('sidebarSettingsEntry', true) }
+  try {
+    // ① spec() 抛错（老宿主替身/竞态）：判定失败方向 → 保留行（宁可有行，也不误删功能）。
+    renderer.slots.spec = (key) => { if (key === 'settings.launcher') throw new Error('legacy slots'); return savedSpec(key) }
+    await settle()
+    assert.equal(find(), true, 'a throwing spec() probe must keep the row')
+    renderer.slots.spec = savedSpec
+    await settle()
+    assert.equal(find(), false, 'restoring the probe yields again')
+
+    // ② entries() 抛错：同样保留行。
+    renderer.slots.entries = (key) => { if (key === 'settings.launcher') throw new Error('legacy entries'); return savedEntries(key) }
+    await settle()
+    assert.equal(find(), true, 'a throwing entries() probe must keep the row')
+    renderer.slots.entries = savedEntries
+    await settle()
+    assert.equal(find(), false)
+
+    // ③ spec 能力缺席（完全没有该函数的旧插槽面）：保留行。
+    renderer.slots.spec = undefined
+    await settle()
+    assert.equal(find(), true, 'a missing spec() capability must keep the row')
+    renderer.slots.spec = savedSpec
+    await settle()
+    assert.equal(find(), false)
+
+    // ④ entries() 返回非数组（能力残缺）：不得把「读不到占用」当成「空座」而误删功能。
+    renderer.slots.entries = (key) => (key === 'settings.launcher' ? undefined : savedEntries(key))
+    await settle()
+    assert.equal(find(), true, 'a non-array entries() result must keep the row')
+  } finally {
+    renderer.slots.spec = savedSpec
+    renderer.slots.entries = savedEntries
+  }
+})
+
+test('settings entry: a registration error does not interrupt other launcher subscribers', async () => {
+  const renderer = createRenderer(async () => ({ ok: false, error: 'fixture' }), {
+    slotSpecs: { 'settings.launcher': { kind: 'single', scope: 'root' } },
+  })
+  await renderer.load()
+  const savedRegister = renderer.slots.register
+  const savedWarn = console.warn
+  const warnings = []
+  let notified = 0
+  const unsubscribe = renderer.slots.subscribe('settings.launcher', () => { notified += 1 })
+  try {
+    console.warn = (...args) => warnings.push(args)
+    renderer.slots.register = (options, component) => {
+      if (options.id === 'dsh-service-settings-entry') throw new Error('registration unavailable')
+      return savedRegister(options, component)
+    }
+    let releaseAccount
+    assert.doesNotThrow(() => {
+      releaseAccount = renderer.slots.register({ name: 'settings.launcher', id: 'account' }, () => null)
+    })
+    assert.equal(notified, 1, 'later subscribers still run after the entry registration fails')
+    assert.equal(warnings.length, 1, 'the failure is observable instead of silently swallowed')
+    renderer.slots.register = savedRegister
+    await renderer.setFeature('sidebarSettingsEntry', true)
+    assert.ok((renderer.registrations()['sidebar.footer.action'] ?? []).some(row => row.id === 'dsh-service-settings-entry'),
+      'the next notification retries the missing entry')
+    releaseAccount()
+  } finally {
+    renderer.slots.register = savedRegister
+    console.warn = savedWarn
+    unsubscribe()
+  }
+})
+
+test('settings entry: plugin unload releases the row and the launcher subscription', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  // 座位被占用，插件行是当前有效状态；判定订阅也已挂在该槽上。
+  const disposeAccount = renderer.slots.register({ name: 'settings.launcher', id: 'account' }, () => null)
+  assert.equal(find(), true)
+  assert.equal(renderer.slotSubscriptionCount('settings.launcher'), 1, 'the plugin subscribes to the seat it probes')
+
+  // Fiber 销毁：slots.inject 的 disposer 由 disposeFactory 统一回收（条目 + 订阅一起释放）。
+  renderer.disposeFactory()
+  assert.equal(find(), false, 'unload must unregister the plugin row')
+  assert.equal(renderer.slotSubscriptionCount('settings.launcher'), 0, 'unload must release the launcher subscription')
+
+  // 卸载后座位再变化也不能复活条目：注入效应已经不存在了。
+  disposeAccount()
+  renderer.slots.register({ name: 'settings.launcher', id: 'account-2' }, () => null)
+  await renderer.flush()
+  assert.equal(find(), false, 'no subscription survives unload to re-register the row')
 })
