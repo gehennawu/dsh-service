@@ -133,6 +133,9 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   modelProviderIcons: true,
   // v1.10 新增：模型配置工作台（供应商与模型 / 子代理路由），写路径经两段式确认。
   modelCatalog: true,
+  // v2.2 新增：侧栏底部常驻设置入口。默认开；宿主自己在侧栏底部渲染设置行时
+  // 自动让位（同行不重复），关闭则整条不注册。
+  sidebarSettingsEntry: true,
 })
 /** 标记为「可热更新」的 Config 字段（0.1.7-alpha.1 的表单与原地热更新以此为准）。 */
 const volatileField = (schema) => (typeof schema?.extra === 'function' ? schema.extra('volatile', true) : schema)

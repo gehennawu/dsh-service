@@ -213,7 +213,7 @@
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true, sidebarSettingsEntry: true }
       // 特性设置门面：静态 inject 不带任何设置服务，运行时按能力探测接入
       // （configForms → settingsScope → 内存兜底；见 src/client/feature-settings.js）。
       // 0.1.7-alpha.1 移除了 settingsScope，静态依赖它会在该版本阻断整个客户端激活；
@@ -1558,7 +1558,7 @@
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
         ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager', 'modelCatalog'], true],
-        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor'], true],
+        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor', 'sidebarSettingsEntry'], true],
         ['features.external', ['healthz'], false],
       ]
       function FeatureGroups() {
@@ -7204,11 +7204,37 @@
       // 账号按钮——这里直接给出常驻入口，点击打开官方设置面板（打开路径见
       // src/client/settings-entry.js 的分片头注释）。槽缺席的老宿主上 inject 不生效，
       // 入口不渲染，其余功能零影响。
+      //
+      // 让位规则：外壳自己在 settings.launcher 无人占用时会渲染一行齿轮 +「设置」，
+      // 此时插件行整条不注册（同屏两行重复）；外壳那行是账号按钮时（槽被占用）插件行
+      // 才必要。账号模块经 remoteAccess.whenAccess 异步注册，故订阅 settings.launcher
+      // 的声明/条目变化重挂。判定与「宁可有行不误删」的保守方向见
+      // settingsEntry.hostOwnsSettingsTrigger。
       const settingsEntry = createSettingsEntry({ ctx, useTranslation })
-      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
-        { name: 'sidebar.footer.action', id: 'dsh-service-settings-entry', order: 50, label: () => t('settingsEntry.label') },
-        (props) => React.createElement(settingsEntry.SettingsEntry, props),
-      ))
+      ctx.slots.inject('sidebar.footer.action', () => {
+        let disposeEntry = null
+        const sync = () => {
+          if (disposeEntry !== null) { disposeEntry(); disposeEntry = null }
+          if (!featureEnabled('sidebarSettingsEntry')) return
+          if (settingsEntry.hostOwnsSettingsTrigger()) return
+          disposeEntry = ctx.slots.register(
+            { name: 'sidebar.footer.action', id: 'dsh-service-settings-entry', order: 50, label: () => t('settingsEntry.label') },
+            (props) => React.createElement(settingsEntry.SettingsEntry, props),
+          )
+        }
+        sync()
+        const unsubscribeFeatures = featureScope.subscribe(sync)
+        // 订阅失败（老宿主无该 API）不影响本轮判定结果：sync 已跑过一次。
+        let unsubscribeLauncher = null
+        try {
+          if (typeof ctx.slots.subscribe === 'function') unsubscribeLauncher = ctx.slots.subscribe('settings.launcher', sync)
+        } catch (_) { unsubscribeLauncher = null }
+        return () => {
+          unsubscribeFeatures()
+          if (typeof unsubscribeLauncher === 'function') unsubscribeLauncher()
+          if (disposeEntry !== null) { disposeEntry(); disposeEntry = null }
+        }
+      })
 
       // 额度查询圆环：跟随当前会话所选模型的供应商。modelDirectories 是可选服务
       // （老版本 DSH 没有）。槽位条目无条件注册，服务在条目渲染时（inject(sessionId)）

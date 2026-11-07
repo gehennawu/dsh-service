@@ -12,12 +12,18 @@ function createRenderer(rpcCall, options = {}) {
   const slotComponents = new Map()
   const slotVersions = new Map()
   const slotSubscribers = new Map()
+  // 声明面（ui-slots 的 spec 表）：子槽在**父条目注册那一刻**就建记录，此时它可能
+  // 一个占用者都没有——「外壳自带设置行」判定正是靠这一点（声明在、占用空）。
+  const slotSpecs = new Map(Object.entries(options.slotSpecs || {}))
   if (options.initialSlots) {
     for (const [name, list] of Object.entries(options.initialSlots)) {
       const map = new Map()
       for (const item of list) {
         const entryKey = item.options?.key ?? item.options?.id ?? 'entry'
         map.set(entryKey, item)
+        for (const [childKey, childSpec] of Object.entries(item.options?.children ?? {})) {
+          if (!slotSpecs.has(childKey)) slotSpecs.set(childKey, childSpec)
+        }
       }
       slotComponents.set(name, map)
       slotVersions.set(name, 1)
@@ -58,6 +64,8 @@ function createRenderer(rpcCall, options = {}) {
     modelProviderIcons: true,
     // v1.10：模型配置工作台默认开（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
     modelCatalog: true,
+    // v2.2：侧栏设置入口默认开（宿主自带设置行时客户端自行让位，与宿主默认表同值）。
+    sidebarSettingsEntry: true,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -464,6 +472,9 @@ function createRenderer(rpcCall, options = {}) {
             const map = slotComponents.get(key)
             if (!map) return []
             return Array.from(map.values())
+          },
+          spec(key) {
+            return slotSpecs.get(key)
           },
           getVersion(key) {
             return slotVersions.get(key) || 0
@@ -17479,6 +17490,123 @@ test('settings entry: an always-visible settings row registers above the account
   renderer.setLocale('en')
   assert.equal(renderer.findByTestId('dsh-service-settings-entry').props['aria-label'], 'Settings')
   assert.match(renderer.text('sidebar.footer.action'), /Settings/)
+})
+
+// 0.2.1-rc.2 起外壳自带一行设置触发：settings-general 的 SettingsRoot 在 triggerRow 里
+// 渲染 settings.launcher，该槽无人占用时回落成官方「齿轮 + 设置」button。插件再注入一行
+// 就是同屏两行重复。判定依据是「子槽已声明 + 占用为空」——ui-slots 在父条目注册 children
+// 的那一刻就建子槽记录，所以 spec 查得到、entries 仍为空，正好等于「外壳会自己渲染」。
+test('settings entry: yields to the shell trigger row when the launcher seat is declared and empty', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+    },
+  })
+  await renderer.load()
+
+  const entries = renderer.registrations()['sidebar.footer.action'] ?? []
+  assert.equal(entries.some((item) => item.id === 'dsh-service-settings-entry'), false,
+    'the plugin must not add a second settings row while the shell renders its own')
+  assert.equal(renderer.text('sidebar.footer.action'), '')
+  // 判定是订阅驱动的：账号模块随后注册进 settings.launcher 时插件行要能自己回来。
+  assert.equal(renderer.slotSubscriptionCount('settings.launcher'), 1)
+})
+
+test('settings entry: registers while the account launcher occupies the seat', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+      // 真实宿主：账号模块把 AccountMenu（头像 + 名字/「更多」）注册进该槽。
+      'settings.launcher': [{ options: { id: 'account' }, component: () => null }],
+    },
+  })
+  await renderer.load()
+
+  const entries = renderer.registrations()['sidebar.footer.action'] ?? []
+  assert.ok(entries.some((item) => item.id === 'dsh-service-settings-entry'),
+    'the shell row is the account button here, so the plugin row stays')
+  assert.match(renderer.text('sidebar.footer.action'), /设置/)
+})
+
+test('settings entry: appears when the account launcher registers after load', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), false, 'starting from an empty seat the plugin yields')
+  // 账号模块经 remoteAccess.whenAccess 异步注册：订阅触发后必须把插件行补回来——
+  // 否则「登录后设置入口消失」比重复行更糟。
+  renderer.slots.register({ name: 'settings.launcher', id: 'account' }, () => null)
+  assert.equal(find(), true, 'the plugin row comes back as soon as the account launcher lands')
+  // 直接看注册条目（替身的渲染树只在 load/setFeature 时重建，这里不依赖它重建）。
+  const entry = renderer.registrationsWithComponents('sidebar.footer.action')
+    .find((item) => item.options.id === 'dsh-service-settings-entry')
+  assert.equal(typeof entry.component, 'function', 'the re-registered row keeps its component')
+  assert.equal(entry.options.order, 50)
+  assert.equal(entry.options.label(), '设置')
+})
+
+test('settings entry: the sidebarSettingsEntry switch removes the row', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  }, {
+    initialSlots: {
+      'sidebar.settings': [{
+        options: { id: 'settings-root', children: { 'settings.launcher': { kind: 'single', scope: 'root' } } },
+        component: () => null,
+      }],
+      'settings.launcher': [{ options: { id: 'account' }, component: () => null }],
+    },
+  })
+  await renderer.load()
+
+  const find = () => (renderer.registrations()['sidebar.footer.action'] ?? []).some((item) => item.id === 'dsh-service-settings-entry')
+  assert.equal(find(), true, 'on by default')
+  await renderer.setFeature('sidebarSettingsEntry', false)
+  assert.equal(find(), false, 'the switch takes the whole row away')
+  assert.equal(renderer.text('sidebar.footer.action'), '')
+  await renderer.setFeature('sidebarSettingsEntry', true)
+  assert.equal(find(), true, 'and turns it back on')
+})
+
+test('settings entry: the switch renders in the plugin config card in both languages', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.2.2-rc.1', instanceId: 'fixture' } }
+    return { ok: false, error: 'fixture' }
+  })
+  await renderer.load()
+
+  renderer.mount('settings.plugin.item')
+  renderer.findByTestId('feature-card-toggle').props.onClick()
+  await renderer.flush()
+  const row = renderer.findByTestId('feature-switch-sidebarSettingsEntry')
+  assert.equal(row.props['aria-checked'], 'true', 'the switch defaults on')
+  assert.match(renderer.text('settings.plugin.item'), /侧栏设置入口/)
+  renderer.setLocale('en')
+  assert.match(renderer.text('settings.plugin.item'), /Sidebar settings entry/)
 })
 
 test('settings entry: opens the settings shell store and records the path', async () => {

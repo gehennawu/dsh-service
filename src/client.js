@@ -1801,6 +1801,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       // ── 官方右栏文件编辑（v1.6 用户点名）────────────────────────────────
       'features.fileEditor': '右栏文件编辑',
       'features.modelProviderIcons': '模型厂家图标',
+      'features.sidebarSettingsEntry': '侧栏设置入口',
       'editor.viewer': '编辑',
       'editor.loading': '正在读取文件…',
       'editor.preview': '预览',
@@ -3083,6 +3084,7 @@ html [${MENU_GROUP_ATTR}][${MODEL_ICON_SEAT_ATTR}="color"] [${MENU_GROUP_ICON_AT
       // ── Official right-Sidebar file editing (v1.6) ──────────────────────
       'features.fileEditor': 'Right-Sidebar file editing',
       'features.modelProviderIcons': 'Model provider icons',
+      'features.sidebarSettingsEntry': 'Sidebar settings entry',
       'editor.viewer': 'Edit',
       'editor.loading': 'Reading file…',
       'editor.preview': 'Preview',

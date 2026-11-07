@@ -4,6 +4,8 @@
 // 背景：DSH 的设置入口默认藏在账号按钮弹出的菜单里（菜单项「设置」），未登录/已登录
 // 都只能先点账号按钮。本分片在侧栏底部 settingsArea **上方**的官方 list 槽
 // sidebar.footer.action 常驻一行设置入口，点击直接打开官方设置面板。
+// 例外：外壳自己在 `settings.launcher` 无人占用时就会渲染一行齿轮 +「设置」（判定见文件
+// 末尾的 hostOwnsSettingsTrigger），那种宿主上插件行必须整条让位，否则同屏两行重复。
 //
 // 打开面板的路径：DSH 没有公开的「打开设置」客户端 API，故按三条路径降级：
 //   ① 设置外壳的单例 store：sidebar.settings 槽条目携带 store 句柄（settings-general
@@ -181,5 +183,25 @@ function createSettingsEntry({ ctx, useTranslation }) {
     )
   }
 
-  return { SettingsEntry, openSettings }
+  // 外壳自带设置行的判定：settings-general 的 SettingsRoot 在 triggerRow 里渲染
+  // `settings.launcher` 条目；该槽「已声明但无人占用」时外壳回落成自己的触发行
+  // （齿轮 + 设置，内容取 `settings.trigger`）。此时插件再注入一行就是同屏两行重复，
+  // 故整条让位；槽被占用时外壳那行是账号按钮（头像 + 名字/「更多」），插件行才必要。
+  // 判定失败（取不到 spec/subscribe 能力的老宿主、替身、抛错）一律返回 false：
+  // 保守方向是「宁可有行，也不误删功能」。
+  const hostOwnsSettingsTrigger = () => {
+    try {
+      const slots = ctx.slots
+      if (slots === null || slots === undefined) return false
+      if (typeof slots.spec !== 'function' || typeof slots.entries !== 'function') return false
+      if (slots.spec('settings.launcher') === undefined) return false
+      const occupied = slots.entries('settings.launcher')
+      if (occupied === null || occupied === undefined) return false
+      return occupied.length === 0
+    } catch (_) {
+      return false
+    }
+  }
+
+  return { SettingsEntry, openSettings, hostOwnsSettingsTrigger }
 }

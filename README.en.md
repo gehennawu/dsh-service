@@ -232,6 +232,7 @@ Under **Plugins → Plugin configuration**, thirteen host-level switches: **Heal
 - It stays visible whether signed in or signed out; the official “Settings” item in the account menu is untouched, so both routes work.
 - Collapsed into the icon rail, the entry becomes a 36×36 gear button whose tooltip and accessible name stay “Settings”.
 - Its copy follows the interface language; on hosts without the seat the row simply does not appear and nothing else changes.
+- When the host already renders its own settings row at the sidebar foot (empty account seat, so the shell falls back to its official trigger), this row steps aside entirely instead of duplicating it; the **Sidebar settings entry** switch under Configuration → Features turns it off when you prefer.
 
 ### Session manager
 
