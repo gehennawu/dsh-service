@@ -925,6 +925,35 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
   html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) [data-shell-leading],
   html[data-dshsvc-mobile] body:has([data-sidebar-opener]) [data-shell-leading] { transition: none !important; }
 }
+/* ─── 新会话页「新建工作树」选项：官方窄屏竖排的观感打磨（2026-11-08）─────────────
+   官方 forge 插件（dsh-experimental-client-ui-forge）的 WorktreeToggle 在 ≤600px
+   视口把「分支 + 复选框」竖成右对齐两行（column + flex-end + gap:0），手机上是
+   一块悬空的右对齐小列，看起来像意外折行。官方根节点带语义属性 data-forge-worktree，
+   据此给竖排块加轻底分组胶囊（两行拉齐撑满、行距 0→2px），行高 28→32px、
+   左右内边距 8→10px 改善触控；统一 box-sizing（官方 .current 是 content-box，
+   不统一两行会不等高）。断点镜像官方 max-width:600px——601–1023px 官方是单行
+   横排，不加胶囊；刻意不重申 flex-direction，保持纯叠加层（官方未来改回横排，
+   胶囊同样成立）。零类哈希依赖，老宿主无 forge 插件时选择器空转。
+   面漆选型：--dsw-alias-menu-group-header-fill（明 #f8f9faf0 / 暗 #303136f0，
+   两主题都可见且安静的「分组块底」）；bg-layer-1/2 在浅色主题与 bg-base 同为
+   bluish-00 纯白不可见，--dsw-alias-fill-tsp-secondary 未在本版主题定义（死令牌，
+   官方 agent-preset 标签芯片也在引用它）——均不可用。 */
+@media (max-width: 600px) {
+  html[data-dshsvc-mobile] [data-forge-worktree] {
+    align-items: stretch;
+    gap: 2px;
+    margin-left: 4px;
+    padding: 3px;
+    border-radius: var(--dsw-radius-md, 8px);
+    background: var(--dsw-alias-menu-group-header-fill, transparent);
+  }
+  html[data-dshsvc-mobile] [data-forge-worktree] > button,
+  html[data-dshsvc-mobile] [data-forge-worktree] > label {
+    box-sizing: border-box;
+    height: 32px;
+    padding: 0 10px;
+  }
+}
 `
 
       function createMobileAdaptation({ ctx, t, featureEnabled, createConversationNav }) {
