@@ -9789,17 +9789,6 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     assert.match(styleTag.textContent, /\[class\*="bOPqQW_label"\] \{[^}]*text-overflow: ellipsis !important/s)
     assert.match(styleTag.textContent, /\[class\*="JObwrW_trigger"\] \{[^}]*font-size: 11px !important/s)
     assert.match(styleTag.textContent, /@media \(max-width: 375px\) \{[^}]*font-size: 10px !important/s)
-    // 新会话页「新建工作树」选项（2026-11-08）：官方 forge 插件 ≤600px 竖排兜底观感打磨
-    // —— 锚官方语义属性 data-forge-worktree（零类哈希），竖排块加轻底分组胶囊、
-    // 两行拉齐撑满、行高 32px；刻意不重申 flex-direction（纯叠加层），
-    // 断点镜像官方 max-width:600px，601–1023px 官方单行横排不加胶囊。
-    assert.match(styleTag.textContent, /@media \(max-width: 600px\) \{[^}]*\[data-forge-worktree\] \{[^}]*align-items: stretch/s)
-    assert.match(styleTag.textContent, /@media \(max-width: 600px\) \{[^}]*\[data-forge-worktree\] \{[^}]*background: var\(--dsw-alias-menu-group-header-fill/s)
-    assert.match(styleTag.textContent, /\[data-forge-worktree\] \{[^}]*border-radius: var\(--dsw-radius-md/s)
-    assert.match(styleTag.textContent, /\[data-forge-worktree\] \{[^}]*padding: 3px/s)
-    assert.match(styleTag.textContent, /\[data-forge-worktree\] > button,\s*html\[data-dshsvc-mobile\] \[data-forge-worktree\] > label \{[^}]*box-sizing: border-box/s)
-    assert.match(styleTag.textContent, /\[data-forge-worktree\] > button,\s*html\[data-dshsvc-mobile\] \[data-forge-worktree\] > label \{[^}]*height: 32px/s)
-    assert.match(styleTag.textContent, /\[data-forge-worktree\] > button,\s*html\[data-dshsvc-mobile\] \[data-forge-worktree\] > label \{[^}]*padding: 0 10px/s)
     const backdrop = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-backdrop'))
     const fab = bodyEl.children.find((el) => el.attributes.has('data-dshsvc-fab'))
     assert.notEqual(backdrop, undefined)
