@@ -572,6 +572,12 @@ html[data-dshsvc-mobile] [data-dshsvc-fab]:active { background: var(--dsw-alias-
    后移 ⇒ 中列从第 2 个变成第 3 个，旧写法会指到侧栏列（真机实测：中列头部内边距退回
    官方值、让位规则整条失效）。自有标记跨版本稳定。 */
 html[data-dshsvc-mobile] [data-dshsvc-center] header { padding-left: 46px !important; }
+/* 标题行的重复让位：页头已按 46px 给抽屉钮（官方钮落在 x12..40，或插件自绘 FAB）
+   让位，titleRow 又按 --dsh-frame-leading-clearance 额外让出 28px（实测 46→74），
+   属于同一件让位的第二次扣减——真机 390 白丢 28px。只归零**标题行**的内边距：
+   不动页头，标签行（对话/轨迹…）位置与官方一致，标题左缘 50px 仍比官方钮右缘
+   多 10px。390 实测 crumbs 136→164px、可见字符 +18%，零重叠零横向溢出。 */
+html[data-dshsvc-mobile] [data-dshsvc-center] header[class*="wSkVaW_header"] [class*="wSkVaW_titleRow"] { padding-inline-start: 0 !important; }
 /* 会话头部自己的移动端内边距（官方 10px 28px 0 [10px] 的收紧版：右 28→20）
    只作用于会话头部本体：引擎标记属性优先，官方类哈希兜底覆盖未打标的空头部
    （wSkVaW_ 取自 dsh-client-ui-conversation，0.1.5-rc.2 与 0.2.0-rc.1 两代同名同值，
@@ -621,7 +627,7 @@ html[data-dshsvc-mobile] [data-plugin-panel] [class*="X_2TxG_addButton"] { white
    ZKlsPq_ 取自 dsh-client-ui-subagent SubagentHeaderLineage.module.css
    （均 0.1.6-alpha.2），升级需复核。 */
 html[data-dshsvc-mobile] [class*="wSkVaW_headerUtilities"] { margin-left: 4px !important; }
-html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 6px !important; }
+html[data-dshsvc-mobile] [class*="wSkVaW_titleCluster"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"] { gap: 4px !important; }
 html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) { flex: none !important; }
 /* 动作芯片泊位 v4（rc.3 图标+数量态；模式回标题行，子代理+任务下标签行
@@ -634,14 +640,19 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      官方计数文本整段隐藏，数字由 JS 抽到 data-dshsvc-count、CSS ::after 只画数字
      ——不裁官方文本，避免「个」字被裁成半个；完整文案仍在 aria-label。
      胶囊 = bg-layer-2 底 + border-l1 内描边、999px 圆角、图标/数字间距 2px；
-     任务右锚 58px、子代理 16px，宽度自适应；图标用 mask 绘制，箭头/圆点隐藏。
-     运行中**图标与胶囊底色同节奏闪烁**（business 蓝紫 ↔ label-secondary 灰，
-     1200ms），不加光点、不染色数字；胶囊底色的动画必须依赖非 !important 的
+     任务右锚 58px、子代理 16px，宽度自适应；图标=官方 activitySlot sprite
+     （任务 layers、子代理 users，rc.2 起），箭头/spinner/旧圆点隐藏。
+     任务运行中**官方图标（color）与胶囊底色同节奏闪烁**（business 蓝紫 ↔
+     label-secondary 灰，1200ms，判据=官方在场的 textModeActivity spinner），
+     不加光点、不染色数字；子代理 trigger 在 rc.2 无运行标记，恒常亮。
+     胶囊底色的动画必须依赖非 !important 的
      background（!important 声明会压过 keyframes）。
      图标带最左 = 视口 − ~110px，More 永不落入；同时给 viewTabs 封顶
      calc(100vw − 215px)，避免长标签 + 三枚可见 tab 时 More 反向压到图标带。
-   · 计数定位：任务为 QsffPG_count 类；子代理的 count span 没有类
-     （官方映射表无 count 项）⇒ 用 > span:not([class]) 定位。
+   · 计数定位：任务为 QsffPG_count 类；子代理 rc.2 起为 ZKlsPq_count 类
+     （旧宿主为无类 span，两条隐藏规则并存）。JS 计数抽取读 aria-label 数字，
+     与计数文本的类/结构无关；rc.2 的 chat-header 标记要等沉浸路径才打，
+     装饰因此改为全文档按 stem 查找（见 decorateHeaderChips）。
    · 旧宿主/新版菜单锚定不变：两枚芯片的下拉菜单改右锚展开并按视口封顶
      （旧版 max-width 100vw−122）；alpha.2 任务菜单 portal 至 body 后按触发器
      位置算 fixed 坐标，不能覆盖其 left/right；
@@ -649,12 +660,24 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
    · ≤560 门：561~1023 行宽足够（标题 ≥115px），保持官方在流。blank 空头部
      :not 守卫不泊。类哈希 QsffPG_ 取自 dsh-client-ui-jobs JobListAction.module.css、
      ZKlsPq_ 取自 dsh-client-ui-subagent SubagentHeaderLineage.module.css（rc.3 复核
-     结构：任务 trigger = [StateDot?][.count][IconChevron]；子代理 trigger =
-     [activitySlot?][count(no class)][IconChevron]）。:has 不支持时回落官方布局；
+     结构 rc.2 复核：任务 trigger = [activitySlot(layers+spinner?)][.count]、
+     子代理 trigger = [activitySlot(users)][.count]，均无 chevron）。:has 不支持时回落官方布局；
      未来版本仍须复核哈希。 */
 @media (max-width: 560px) {
   html[data-dshsvc-mobile] [data-dshsvc-center] header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
+  /* 会话标题紧凑态：文本 14→13px（官方 .wSkVaW_crumb 自带 14px，不继承 nav，
+     写 nav 字号是无效改动），crumbs 改 flex:1 1 auto 吸收 cluster 富余、单行省略，
+     同排 lineage 切换器标题同步收紧。仅 ≤560 生效，561~1023 保持官方形态。
+     宽度上限的真相（390 实测）：头行被 FAB 让位 24 + 标题 136 + 模式芯片 68 +
+     utilities 64 + 官方 20px 渐隐缓冲吃满；那 20px 与 cluster 的 -20px 负外边距
+     是官方给「文字在图标下方渐隐」配对的缓冲，只减内边距会让模式芯片压进
+     utilities（实测重叠 12px），故保持官方值、宽度收益只能从字号拿。 */
+  html[data-dshsvc-mobile] [class*="wSkVaW_crumbs"] { flex: 1 1 auto !important; }
+  /* 标题文本在 .wSkVaW_crumb 上自带 14px（不继承 nav 字号，只改 nav 是无效改动——
+     真机 390 复核：crumbs 13px 而文本仍 14px）。必须直接命中 crumb 本体。 */
+  html[data-dshsvc-mobile] [class*="wSkVaW_crumb"] { font-size: 13px !important; line-height: 18px !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_switcherTrigger"] { font-size: 13px !important; }
   /* 0.2.2-alpha.2：titleCluster 新增 overflow:clip + 右缘渐隐 mask（官方窄栏「溢出的头部
      状态入口渐隐」）。插件把任务/子代理芯片绝对定位到标题行下方的 tab 行（bottom:4px），
      落在 cluster 盒外 ⇒ 被整块裁掉（真机 390：芯片 rect y43..71 vs cluster clip y7..43）。
@@ -668,6 +691,11 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     -webkit-mask-image: none !important;
     mask-image: none !important;
   }
+  /* 注意：官方 titleCluster 的 padding-right:20px 与 margin-right:-20px 是**成对**的
+     ——那 20px 是给 mask 渐隐留的文字缓冲，负外边距把盒右缘拉回去盖住缓冲。只减内边距
+     会让内容（模式芯片）压进 headerUtilities（真机 390 实测重叠 12px：三点/面板图标
+     压在「创造模式」上），两者同减又只是把 cluster 变窄、标题零收益。故此处保持官方值，
+     标题宽度改从字号（下面 13px）与右侧芯片尺寸上找。 */
   html[data-dshsvc-mobile] [class*="wSkVaW_headerActions"] div:has(> button[class*="QsffPG_trigger"]),
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) {
     position: absolute !important;
@@ -705,16 +733,26 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     transition: background-color 150ms ease, color 150ms ease !important;
     animation: dshsvc-chip-in 180ms ease-out;
   }
-  /* 两枚芯片同形态：图标 + 数字胶囊（任务=脉冲折线、子代理=人形），同一底色/描边 */
+  /* 两枚芯片同形态：图标 + 数字胶囊。rc.2 起官方 trigger 自带 sprite 图标
+     （任务 activitySlot = compactIcon「layers」、子代理 =「users」），胶囊直接
+     复用官方 activitySlot 图标、不再自绘 mask：官方换图标时无需跟随改版。
+     旧版结构的直子 chevron/StateDot 与 rc.2 的运行 spinner（textModeActivity）
+     整体隐藏，activitySlot 是胶囊唯一图标，尺寸钉 14px。 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] { width: auto !important; min-width: 28px !important; padding: 0 7px !important; }
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { width: auto !important; min-width: 28px !important; padding: 0 7px !important; }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > svg,
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_triggerDot"],
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > [class*="ZKlsPq_activitySlot"] { display: none !important; }
-  /* 两枚芯片的官方计数文本整段隐藏，数字由 JS 抽到 data-dshsvc-count、::after 只画数字
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] [class*="QsffPG_textModeActivity"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > svg { display: none !important; }
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] [class*="QsffPG_activitySlot"],
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] [class*="QsffPG_activitySlot"] > svg,
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] [class*="ZKlsPq_activitySlot"],
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] [class*="ZKlsPq_activitySlot"] > svg { width: 14px !important; height: 14px !important; }
+  /* 两枚芯片的官方计数文本整段隐藏（rc.2 子代理计数已带 ZKlsPq_count 类；
+     旧宿主为无类 span，两条都保留），数字由 JS 抽到 data-dshsvc-count、::after 只画数字
      （不裁文本 ⇒ 不会出现半个「个」）。 */
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"] > [class*="QsffPG_count"] { display: none !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > [class*="ZKlsPq_count"],
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] > span:not([class]) { display: none !important; }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"][data-dshsvc-count]::after,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"][data-dshsvc-count]::after {
@@ -725,38 +763,15 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
     font-variant-numeric: tabular-nums;
     color: inherit;
   }
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before {
-    content: "";
-    display: block;
-    width: 14px;
-    height: 14px;
-    flex: none;
-    background: currentColor;
-    -webkit-mask-repeat: no-repeat;
-    -webkit-mask-position: center;
-    -webkit-mask-size: 14px 14px;
-    mask-repeat: no-repeat;
-    mask-position: center;
-    mask-size: 14px 14px;
-  }
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5 5.5L14 6l2.5 6H21'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12h4l2.5 5.5L14 6l2.5 6H21'/%3E%3C/svg%3E");
-  }
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.5'/%3E%3Cpath d='M4.5 20c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='8' r='3.5'/%3E%3Cpath d='M4.5 20c0-3.6 3.4-6.5 7.5-6.5s7.5 2.9 7.5 6.5'/%3E%3C/svg%3E");
-  }
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:hover,
   html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:hover { background: var(--dsw-alias-interactive-bg-hover); }
-  /* 运行中：图标与胶囊底色用同一节奏闪烁（蓝紫 ↔ 灰），不加光点、不染色数字 */
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_triggerDot"])::before,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:has([class*="ZKlsPq_activitySlot"])::before {
-    animation: dshsvc-chip-blink 1200ms ease-in-out infinite;
+  /* 运行中闪烁：任务以官方在场的 textModeActivity spinner 为「运行」判据，图标
+     （color 作用于 sprite currentColor）与胶囊底色同节奏闪烁；rc.2 子代理 trigger
+     无任何运行标记（计数为树内总数语义），两段动画都不参与，常亮即可。 */
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_textModeActivity"]) [class*="QsffPG_activitySlot"] {
+    animation: dshsvc-chip-icon-blink 1200ms ease-in-out infinite;
   }
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_triggerDot"]),
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]:has([class*="ZKlsPq_activitySlot"]) {
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]:has([class*="QsffPG_textModeActivity"]) {
     animation: dshsvc-chip-in 180ms ease-out, dshsvc-chip-pill-blink 1200ms ease-in-out infinite;
   }
   html[data-dshsvc-mobile] [class*="QsffPG_root"] > [class*="QsffPG_menu"],
@@ -775,9 +790,9 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
   from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: none; }
 }
-@keyframes dshsvc-chip-blink {
-  0%, 100% { background-color: var(--dsw-alias-state-business-primary, #b48df5); }
-  50% { background-color: var(--dsw-alias-label-secondary, #8a8a8a); }
+@keyframes dshsvc-chip-icon-blink {
+  0%, 100% { color: var(--dsw-alias-state-business-primary, #b48df5); }
+  50% { color: var(--dsw-alias-label-secondary, #8a8a8a); }
 }
 @keyframes dshsvc-chip-pill-blink {
   0%, 100% { background-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #b48df5) 18%, var(--dsw-alias-bg-layer-2, #222)); }
@@ -785,9 +800,8 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
 }
 @media (prefers-reduced-motion: reduce) {
   html[data-dshsvc-mobile] [class*="QsffPG_trigger"],
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"] { animation: none !important; }
-  html[data-dshsvc-mobile] [class*="QsffPG_trigger"]::before,
-  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"]::before { animation: none !important; }
+  html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switcherTrigger"])) [class*="ZKlsPq_trigger"],
+  html[data-dshsvc-mobile] [class*="QsffPG_trigger"] [class*="QsffPG_activitySlot"] { animation: none !important; }
 }
 /* 模式芯片（创造/默认等预设名）恢复可见 —— 官方 0.1.7-rc.1 起的窄屏隐藏语义
    与移动端「模式=会话身份」的定稿冲突（todo-82 方案二：模式芯片留标题行）。
@@ -1160,12 +1174,12 @@ html[data-dshsvc-mobile][data-dshsvc-immersive] body:has([data-sidebar-opener]) 
          * 值不变就不写，避免 body 级观察器自激。
          */
         const decorateHeaderChips = () => {
-          const header = state.headerEl !== null && state.headerEl.isConnected
-            ? state.headerEl
-            : (() => { try { return document.querySelector('[data-dshsvc-chat-header]') } catch (_) { return null } })()
-          if (header === null || typeof header.querySelectorAll !== 'function') return
+          // rc.2 分界：chat-header 标记要等沉浸可用性路径（首次滚动）才打，未滚动时
+          // 旧实现拿不到 header 会让数字永远不出现（真机 390 复核 data-dshsvc-count
+          // 恒空）。计数 stem 全文档唯一（switcherTrigger 另有跳过守卫），直接全文档
+          // 查找，不再依赖 header 打标。
           let nodes = []
-          try { nodes = header.querySelectorAll('[class*="ZKlsPq_trigger"], [class*="QsffPG_trigger"]') } catch (_) { return }
+          try { nodes = document.querySelectorAll('[class*="ZKlsPq_trigger"], [class*="QsffPG_trigger"]') } catch (_) { return }
           for (const el of nodes) {
             const cls = typeof el.className === 'string' ? el.className : ''
             if (/ZKlsPq_switcherTrigger/.test(cls)) continue
