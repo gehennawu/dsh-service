@@ -79,12 +79,14 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     if (fingerprint(access) !== session.baseline) error('conflict')
     return access
   }
+  const protocolsFor = (access) => PROTOCOLS.filter((api) => api !== 'google-generative-ai' || access.protocols?.includes(api))
+  const requireProtocol = (access, api) => { if (api === 'google-generative-ai' && !access.protocols?.includes(api)) error('protocol-unsupported') }
   const sessionDTO = (access, route, raw) => ({
     route, profile: displayProfile(raw),
     inherited: displayProfile(access.inherited?.()?.providers?.[route] ?? {}),
     explicit: displayProfile(access.explicit?.()?.providers?.[route] ?? {}),
     effective: displayProfile(access.effective?.()?.providers?.[route] ?? {}),
-    schema: schemaVocabulary(),
+    schema: { ...schemaVocabulary(), protocols: protocolsFor(access), routeEnums: { ...schemaVocabulary().routeEnums, api: protocolsFor(access) } },
   })
   // A complete non-sensitive snapshot is a precondition, not a post-write promise.
   const snapshotValue = (raw) => {
@@ -122,6 +124,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     const access = latest(session)
     if (access.revisionTracked !== true) error('model-config-revision-unavailable')
     const before = routeRaw(access, session.route)
+    if (next?.api !== before?.api) requireProtocol(access, next?.api)
     if (remove && access.inheritedRoute(session.route)) error('model-config-inherited-route')
     if (remove || deletedIds?.length) if ((await references(session.route, remove ? undefined : deletedIds)).length) error('removal-blocked')
     if ((await storeLoad()).recovery?.[session.route]) error('recovery-pending')
@@ -209,7 +212,16 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         const options = group.options ?? group.candidates ?? []
         for (const option of options.filter((x) => x.readOnly === true || x.adoptable === false)) readonly.push({ field: group.field, value: option.value, source: option.sourceRef ?? option.source, kind: option.kind, evidence: option.evidence })
         for (const row of group.inexpressible ?? []) readonly.push({ field: group.field, ...row })
-        const adopted = options.filter((x) => x.adoptable === true && x.readOnly !== true)
+        const adopted = options.filter((x) => {
+          if (x.adoptable !== true || x.readOnly === true) return false
+          if (api === 'google-generative-ai' && group.field === 'reasoningEfforts') {
+            try { validateField('reasoningEfforts', x.value, { api }) } catch (_) {
+              readonly.push({ field: group.field, value: x.value, source: x.sourceRef ?? x.source, kind: 'protocol-inexpressible', reason: 'gemini-reasoning-invalid' })
+              return false
+            }
+          }
+          return true
+        })
         const keys = [...new Set(adopted.map((x) => x.key ?? null))]
         for (const key of keys) {
           const candidates = adopted.filter((x) => (x.key ?? null) === key).map((x) => ({ id: x.candidateId ?? x.id, value: x.value, source: redactSensitive(x.sourceRef ?? x.source), reference: x.evidence !== 'exact-channel-protocol', evidence: x.evidence }))
@@ -309,6 +321,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       })
       return {
         routes,
+        protocols: protocolsFor(access),
         templates,
         removedRoutes: Object.entries(state.removed ?? {}).filter(([, v]) => v.kind === 'removed' && v.before).map(([id, v]) => ({ route: id, displayName: v.before.displayName ?? id, at: v.at, taken: has(providers, id) })),
       }
@@ -428,7 +441,16 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         models: [],
       }
       const inherited = access.inherited?.()?.providers?.[session.route] ?? {}
+      if (has(payload.patch, 'api')) requireProtocol(access, payload.patch.api)
       const next = patchFields(raw, payload.patch ?? {}, payload.unset ?? [], ROUTE_FIELDS.filter((x) => x !== 'apiKeyEnv'), payload.patch?.api ?? raw.api, inherited)
+      if (raw.api !== next.api) requireProtocol(access, next.api)
+      if (next.api === 'google-generative-ai' && raw.api !== next.api) {
+        if (!next.apiKeyEnv) error('gemini-key-required')
+        let resolved
+        try { resolved = await ctx.get('credentials')?.resolve?.(next.apiKeyEnv) } catch (_) {}
+        if (typeof resolved?.value !== 'string' || !resolved.value.trim()) error('gemini-key-required')
+        for (const row of next.models ?? []) if (row.reasoningEfforts !== undefined) validateField('reasoningEfforts', row.reasoningEfforts, { api: next.api })
+      }
       if (has(payload.patch, 'headers')) next.headers = { ...Object.fromEntries(Object.entries(raw.headers ?? {}).filter(([key]) => sensitiveHeader(key))), ...next.headers }
       if ((payload.unset ?? []).includes('headers') && Object.keys(raw.headers ?? {}).some(sensitiveHeader)) error('sensitive-header')
       // Preserve unknown nested keys; the client never owns their write baseline.
@@ -539,6 +561,8 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       if (!MODELS_ROUTE_RE.test(id ?? '') || (id?.length ?? 0) > 64) error('bad-route')
       const access = modelSettingsFor(ctx)
       if (routeRaw(access, id)) error('route-taken')
+      requireProtocol(access, profile?.api)
+      if (profile?.api === 'google-generative-ai' && !(typeof key === 'string' && key.trim())) error('gemini-key-required')
       if (!object(profile) || Object.keys(profile).some((key) => ![...ROUTE_FIELDS.filter((x) => x !== 'apiKeyEnv'), 'models'].includes(key))) error('unknown-field')
       for (const [field, value] of Object.entries(profile)) if (field !== 'models') validateField(field, value, { api: profile.api })
       validateImageCountPair(profile)
@@ -551,7 +575,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-create-commit': route(async ({ planId }) => {
       const plan = get(plans, planId)
       if (plan.kind !== 'create') error('unknown-plan')
-      latest(plan)
+      requireProtocol(latest(plan), plan.next.api)
       if (plan.key && plan.credentialRef) {
         const service = ctx.get('credentials')
         if (!service?.set) error('credential-rejected')
@@ -578,6 +602,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         const catalogChannel = catalog.channels?.find((entry) => entry.id === session.route)
         targetURL = raw.baseURL ?? catalogChannel?.baseUrl ?? catalogModel?.baseUrl
         targetApi = raw.api ?? catalogModel?.api
+        requireProtocol(access, targetApi)
         if (raw.apiKeyEnv) {
           const credentials = ctx.get('credentials')
           try { targetKey = (await credentials?.resolve(raw.apiKeyEnv))?.value } catch (_) { error('credential-missing') }
@@ -585,6 +610,8 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         }
       } else if (!targetURL) {
         error('unknown-plan')
+      } else if (targetApi === 'google-generative-ai') {
+        requireProtocol(modelSettingsFor(ctx), targetApi)
       }
       if (!PROTOCOLS.includes(targetApi)) error('probe-protocol-unsupported')
       let rows
@@ -646,6 +673,8 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       const session = get(sessions, sessionId)
       const access = latest(session)
       const raw = routeRaw(access, session.route)
+      requireProtocol(access, raw?.api)
+      if (raw?.api === 'google-generative-ai' && !raw.apiKeyEnv) error('gemini-key-required')
       if (!raw?.models?.some((row) => row.id === modelId)) error('unknown-model')
       const planId = remember(plans, { ...session, kind: 'test', testModelId: modelId })
       return { planId, route: session.route, modelId, text: 'ping', system: 'Reply with OK.', maxTokens: 30000, timeoutMs: 120000, mayCharge: true, scope: 'basic-text-call' }
@@ -653,7 +682,9 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-test-commit': route(async ({ planId }) => {
       const plan = get(plans, planId)
       if (plan.kind !== 'test' || !plan.testModelId) error('unknown-plan')
-      latest(plan); plans.delete(planId)
+      const access = latest(plan)
+      requireProtocol(access, routeRaw(access, plan.route)?.api)
+      plans.delete(planId)
       const llm = ctx.get('llm')
       if (!llm?.stream) error('llm-service-missing')
       const signal = AbortSignal.timeout(120000)

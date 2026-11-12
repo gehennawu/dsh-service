@@ -10287,6 +10287,9 @@ function createSessionRpcMock({ onCall, ...overrides } = {}) {
       const ids = payload?.ids || []
       return { ok: true, value: { cleared: true, count: ids.length, ids } }
     },
+    'sessions-archive-plan': (payload) => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, sessions: payload.ids.map(id => ({ id, cwd: '/workspace', worktree: 'unknown' })) } }),
+    'sessions-archive': (payload) => ({ ok: true, value: { results: payload.planId.replace('archive:', '').split(',').map(id => ({ id, archived: true, cleanup: { status: 'unknown' } })) } }),
+    'sessions-archive-status': (payload) => ({ ok: true, value: { items: payload.ids.map(id => ({ id, archived: true, cleanup: { status: 'removed', revision: 1 } })) } }),
     'sessions-unarchive': (payload) => ({ ok: true, value: { archived: false, id: payload.id, archivedSessionIds: [] } }),
   }
   return async (channel, endpoint, payload) => {
@@ -11649,7 +11652,7 @@ test('session manager batch mode supports multi-select, actions, select all, cle
   const renderer = sessionManagerRenderer(createSessionRpcMock({
     onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
     'sessions-export': (payload) => ({ ok: true, value: { url: '/api/session.export?sessionId=' + payload.id + '&includeDescendants=true', includesDescendants: true } }),
-    'sessions-archive': (payload) => ({ ok: true, value: { archived: true, id: payload.id, archivedSessionIds: ['session-archived', payload.id] } }),
+    'sessions-archive': (payload) => ({ ok: true, value: { results: payload.planId.replace('archive:', '').split(',').map(id => ({ id, archived: true, cleanup: { status: 'unknown' } })) } }),
     'sessions-delete-plan': (payload) => ({ ok: true, value: { planId: 'plan-' + payload.id, session: { ...SESSION_LIST_VALUE.items.find((item) => item.id === payload.id), bytes: 1024, archived: true }, consequences: ['deletes-session-log'] } }),
     'sessions-delete': (payload) => ({ ok: true, value: { deleted: true, id: payload.planId.replace('plan-', '') } }),
   }))
@@ -11717,7 +11720,11 @@ test('session manager batch mode supports multi-select, actions, select all, cle
     assert.equal(renderer.findByTestId('sessions-batch-delete').props.disabled, true)
     await renderer.findByTestId('sessions-batch-archive').props.onClick()
     await renderer.flush()
-    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-archive').map((call) => call.payload.id), ['session-cold'])
+    assert.equal(renderer.hasTest('sessions-archive-modal'), true)
+    assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 0, 'preview must not archive')
+    await renderer.findByTestId('sessions-archive-confirm').props.onClick()
+    await renderer.flush()
+    assert.deepEqual(calls.filter((call) => call.endpoint === 'sessions-archive').map((call) => call.payload.planId), ['archive:session-cold'])
     assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true, 'batch archive updates the local row immediately')
 
     await renderer.findByTestId('sessions-select-all').props.onClick()
@@ -15932,6 +15939,59 @@ test('models page offers template dropdown, candidate models unchecked by defaul
   })
 })
 
+test('Gemini creation follows host protocol capabilities and requires a key without automatic discovery', async () => {
+  for (const supported of [false, true]) {
+    const protocols = [...MODELS3_SCHEMA.protocols, ...(supported ? ['google-generative-ai'] : [])]
+    const { calls, rpc } = models3Fixture({
+      'models3-snapshot': () => ({ ok: true, value: { ...MODELS3_SNAPSHOT, protocols } }),
+      'models3-create-preview': () => ({ ok: true, value: { planId: 'google-create' } }),
+    })
+    const renderer = createRenderer(rpc)
+    await renderer.load()
+    await openModelsPage(renderer)
+    renderer.findByTestId('model-route-create').props.onClick()
+    await settle(renderer)
+    const api = byAria(renderer, '协议')
+    assert.equal(nodeText(api).includes('google-generative-ai'), supported)
+    api.props.onChange({ target: { value: 'google-generative-ai' } })
+    byAria(renderer, '渠道标识（小写字母、数字、连字符）').props.onChange({ target: { value: 'google-test' } })
+    byAria(renderer, '手动模型 ID（空白或逗号分隔）').props.onChange({ target: { value: 'gemini-test' } })
+    await settle(renderer)
+    assert.match(byAria(renderer, 'API地址').props.placeholder, /v1beta/)
+    assert.equal(renderer.hasTest('model-create-gemini-hint'), true)
+    assert.equal(models3Calls(calls, 'models3-discover').length, 0)
+    renderer.findByTestId('model-create-save').props.onClick()
+    await settle(renderer)
+    assert.equal(models3Calls(calls, 'models3-create-preview').length, 0)
+    assert.match(nodeText(renderer.findByTestId('model-config-error')), supported ? /API Key/ : /当前宿主不支持/)
+    if (supported) {
+      byAria(renderer, 'API Key').props.onChange({ target: { value: 'fixture-key' } })
+      await settle(renderer)
+      renderer.findByTestId('model-create-save').props.onClick()
+      await settle(renderer)
+      assert.equal(models3Calls(calls, 'models3-create-preview')[0].payload.profile.api, 'google-generative-ai')
+    }
+  }
+})
+
+test('Gemini model editor offers four fixed reasoning wires and preserves legacy maps on unrelated edits', async () => {
+  const opened = structuredClone(MODELS3_OPEN_CPA)
+  opened.profile.api = 'google-generative-ai'
+  opened.profile.models[0].reasoningEfforts = { high: 'HIGH', max: 'unsupported-old-wire' }
+  const { calls, rpc } = models3Fixture({ 'models3-open': () => ({ ok: true, value: opened }) })
+  const renderer = createRenderer(rpc)
+  await renderer.load()
+  await openModelsRoute(renderer, 'cpa')
+  await openModelsModel(renderer, opened.profile.models[0].id)
+  assert.equal(renderer.hasTest('model-gemini-reasoning-hint'), true)
+  assert.equal(renderer.hasTest('model-gemini-legacy-wire'), true)
+  for (const level of ['minimal', 'low', 'medium', 'high']) assert.equal(renderer.hasTest('models-effort-' + level), true)
+  for (const level of ['xhigh', 'max']) assert.equal(renderer.hasTest('models-effort-' + level), false)
+  assert.equal(renderer.findByTestId('model-wire-high').props.readOnly, true)
+  assert.equal(renderer.findByTestId('model-wire-max').props.value, 'unsupported-old-wire')
+  assert.equal(models3Calls(calls, 'models3-save-model-preview').length, 0)
+})
+
 test('mixed-protocol catalogs surface the route-level api override hint in create and edit views', async () => {
   const AZURE_TMPL = { id: 'tmpl-ai', name: 'Template AI', api: 'azure-openai-responses', baseURL: '', apis: ['azure-openai-responses', 'openai-completions'], models: [{ id: 't1', name: 'T1' }, { id: 't2', name: 'T2' }] }
 
@@ -18062,4 +18122,124 @@ test('settings entry: plugin unload releases the row and the launcher subscripti
   renderer.slots.register({ name: 'settings.launcher', id: 'account-2' }, () => null)
   await renderer.flush()
   assert.equal(find(), false, 'no subscription survives unload to re-register the row')
+})
+
+
+test('session archive previews before execution, cancels safely and refreshes cleanup independently', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, sessions: payload.ids.map(id => ({ id, cwd: '/workspace', worktree: 'candidate', worktreeCandidate: { path: '/candidate-checkout', branch: 'topic' } })) } }),
+  }))
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), true)
+  assert.match(renderer.text('settings.section'), /不是已确认的清理目录/)
+  assert.match(renderer.text('settings.section'), /candidate-checkout.*topic/)
+  assert.equal(renderer.findByTestId('sessions-archive-modal').props['aria-labelledby'], 'dshsvc-archive-title')
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 0)
+  await renderer.findByTestId('sessions-archive-cancel').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 0)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-archive-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true)
+  assert.match(renderer.text('settings.section'), /归档成功（不代表清理成功）/)
+  assert.match(renderer.text('settings.section'), /清理状态未知/)
+  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /目录已移除；分支与提交保留/)
+})
+
+test('session archive never falls back to direct execution when preview is unsupported', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: endpoint => calls.push(endpoint),
+    'sessions-archive-plan': () => ({ ok: false, error: 'unknown-endpoint' }),
+  }))
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false)
+  assert.match(renderer.text('settings.section'), /不回退直接归档/)
+  assert.equal(calls.includes('sessions-archive'), false)
+})
+
+
+test('archive unknown execution is reconciled by status; status errors remain visible', async () => {
+  const calls = []
+  let statusFails = true
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive': () => { throw new Error('connection lost') },
+    'sessions-archive-status': payload => statusFails ? { ok: false, error: 'offline' } : { ok: true, value: { items: payload.ids.map(id => ({ id, archived: true, cleanup: { status: 'removed' } })) } },
+  }))
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-archive-confirm').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), false)
+  assert.match(renderer.text('settings.section'), /结果待核实/)
+  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-results'), true)
+  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive-status')[0].payload.ids, ['session-cold'])
+  statusFails = false
+  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true)
+  assert.match(renderer.text('settings.section'), /目录已移除/)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1)
+})
+
+test('changing scope invalidates an in-flight archive preview', async () => {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-archive-plan': async () => { await gate; return { ok: true, value: { planId: 'late', expiresAt: Date.now() + 300000, sessions: [{ id: 'session-cold' }] } } },
+  }))
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  const pending = renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.findByTestId('sessions-filter-archived').props.onClick()
+  release()
+  await pending
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false)
 })

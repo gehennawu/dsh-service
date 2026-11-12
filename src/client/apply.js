@@ -3008,6 +3008,30 @@
         const [archivingId, setArchivingId] = useState('')
         const [unarchivingId, setUnarchivingId] = useState('')
         const [archiveError, setArchiveError] = useState('')
+        const [archivePlan, setArchivePlan] = useState(null)
+        const [archiveResults, setArchiveResults] = useState([])
+        const archiveBusy = useRef(false)
+        const archiveGeneration = useRef(0)
+        const archiveDialog = useRef(null)
+        useEffect(() => () => { archiveGeneration.current += 1 }, [])
+        useEffect(() => {
+          if (archivePlan === null || typeof document === 'undefined') return
+          const previous = document.activeElement
+          const buttons = () => Array.from(archiveDialog.current?.querySelectorAll?.('button:not(:disabled)') || [])
+          buttons()[0]?.focus?.()
+          const keydown = event => {
+            if (event.key === 'Escape' && !archiveBusy.current) { event.preventDefault(); archiveGeneration.current += 1; setArchivePlan(null) }
+            if (event.key === 'Tab') {
+              const items = buttons()
+              if (!items.length) { event.preventDefault(); return }
+              const index = items.indexOf(document.activeElement)
+              if (event.shiftKey && index <= 0) { event.preventDefault(); items[items.length - 1].focus() }
+              else if (!event.shiftKey && (index < 0 || index === items.length - 1)) { event.preventDefault(); items[0].focus() }
+            }
+          }
+          document.addEventListener?.('keydown', keydown)
+          return () => { document.removeEventListener?.('keydown', keydown); if (previous?.isConnected !== false) previous?.focus?.() }
+        }, [archivePlan])
 
         const hint = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', marginTop: '8px', lineHeight: 1.5 }
         const sectionTitle = { fontSize: '14px', fontWeight: 700, margin: '0 0 8px', color: 'var(--dsw-alias-label-primary)' }
@@ -3063,6 +3087,8 @@
         const refreshList = () => void loadList(undefined, { force: true })
         const changeFilter = (key) => {
           if (key === filter) return
+          archiveGeneration.current += 1
+          setArchivePlan(null)
           setFilter(key)
           setBatchMode(false)
           setSelectedIds([])
@@ -3151,6 +3177,8 @@
         }, [search, searchScopeArchived, filter])
 
         const openDetail = (sessionId, view, hitItems, event, targetSeq) => {
+          archiveGeneration.current += 1
+          setArchivePlan(null)
           setBatchMode(false)
           setSelectedIds([])
           setBatchResult('')
@@ -3284,23 +3312,56 @@
             return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
           })
         }
-        const archiveSession = async (sessionId) => {
-          try {
-            const res = await rpcCall('sessions-archive', { id: sessionId })
-            if (!res.ok) return { ok: false, error: mapSessionError(translate, res.error || 'unknown') }
-            applyArchivedSession(sessionId)
-            return { ok: true }
-          } catch (_) {
-            return { ok: false, error: translate('sessions.error.network') }
-          }
-        }
-        const doArchive = async (sessionId) => {
-          setArchivingId(sessionId)
+        const requestArchive = async (ids) => {
+          if (ids.length > 200) { setArchiveError(translate('sessions.archive.limit')); return }
+          if (archiveBusy.current || archivePlan !== null) return
+          archiveBusy.current = true
+          const generation = ++archiveGeneration.current
           setArchiveError('')
-          const result = await archiveSession(sessionId)
-          if (!result.ok) setArchiveError(result.error)
-          setArchivingId('')
-          return result
+          setArchivingId(ids[0] || '')
+          try {
+            const res = await rpcCall('sessions-archive-plan', { ids })
+            if (generation !== archiveGeneration.current) return
+            if (!res.ok || typeof res.value?.planId !== 'string' || !Number.isFinite(res.value.expiresAt) || !Array.isArray(res.value.sessions) || res.value.sessions.length === 0) setArchiveError(translate('sessions.archive.unavailable'))
+            else setArchivePlan(res.value)
+          } catch (_) { if (generation === archiveGeneration.current) setArchiveError(translate('sessions.archive.unavailable')) }
+          finally { archiveBusy.current = false; setArchivingId('') }
+        }
+        const doArchive = (id) => requestArchive([id])
+        const refreshArchiveStatus = async () => {
+          setArchiveError('')
+          try {
+            const res = await rpcCall('sessions-archive-status', { ids: archiveResults.map(item => item.id) })
+            if (!res.ok || !Array.isArray(res.value?.items)) { setArchiveError(translate('sessions.error.network')); return }
+            const confirmed = res.value.items.filter(item => item.archived === true).map(item => item.id)
+            for (const id of confirmed) applyArchivedSession(id)
+            setSelectedIds(current => current.filter(id => !confirmed.includes(id)))
+            setArchiveResults(current => current.map(item => {
+              const status = res.value.items.find(value => value.id === item.id)
+              return status ? { ...item, archived: status.archived === true, cleanup: status.cleanup } : item
+            }))
+          } catch (_) { setArchiveError(translate('sessions.error.network')) }
+        }
+        const confirmArchive = async () => {
+          if (archiveBusy.current || archivePlan === null) return
+          if (Date.now() >= archivePlan.expiresAt) { setArchivePlan(null); setArchiveError(translate('sessions.archive.stale')); return }
+          archiveBusy.current = true
+          setBatchWorking('archive')
+          setArchiveError('')
+          try {
+            const res = await rpcCall('sessions-archive', { planId: archivePlan.planId })
+            setArchivePlan(null)
+            if (!res.ok || !Array.isArray(res.value?.results)) { setArchiveError(translate('sessions.archive.stale')); return }
+            setArchiveResults(res.value.results)
+            const completed = res.value.results.filter(item => item.archived === true).map(item => item.id)
+            for (const id of completed) applyArchivedSession(id)
+            setSelectedIds(current => current.filter(id => !completed.includes(id)))
+          } catch (_) {
+            setArchiveResults(archivePlan.sessions.map(item => ({ id: item.id, archived: false, error: 'archive-result-unknown', cleanup: { status: 'unknown' } })))
+            setArchivePlan(null)
+            setArchiveError(translate('sessions.archive.uncertain'))
+          }
+          finally { archiveBusy.current = false; setBatchWorking('') }
         }
 
         const applyUnarchivedSession = (sessionId) => {
@@ -3562,27 +3623,7 @@
           else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.export'), done: completed, total: batchExportItems.length, error: failure }))
           setBatchWorking('')
         }
-        const runBatchArchive = async () => {
-          if (batchWorking !== '' || batchArchiveItems.length === 0) return
-          setBatchWorking('archive')
-          setBatchResult('')
-          setBatchError('')
-          let completed = 0
-          let failure = ''
-          const ids = batchArchiveItems.map((item) => item.id)
-          const completedIds = []
-          for (const id of ids) {
-            const result = await archiveSession(id)
-            if (result.ok) {
-              completed += 1
-              completedIds.push(id)
-            } else if (failure === '') failure = result.error
-          }
-          if (completedIds.length > 0) setSelectedIds((current) => current.filter((id) => !completedIds.includes(id)))
-          if (failure === '') setBatchResult(translate('sessions.batch.completed', { action: translate('sessions.action.archive'), count: completed }))
-          else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.archive'), done: completed, total: ids.length, error: failure }))
-          setBatchWorking('')
-        }
+        const runBatchArchive = () => requestArchive(batchArchiveItems.map(item => item.id))
         const runBatchUnarchive = async () => {
           if (batchWorking !== '' || batchUnarchiveItems.length === 0) return
           setBatchWorking('unarchive')
@@ -3986,6 +4027,15 @@
                 React.createElement('button', { type: 'button', 'data-testid': 'sessions-clear-confirm', style: dangerSolidButton, disabled: clearing, onClick: () => void confirmClear() }, clearing ? translate('sessions.status.working') : translate('sessions.clear.confirm')))))
         }
 
+        const renderArchiveModal = () => archivePlan === null ? null : React.createElement('div', { 'data-testid': 'sessions-archive-modal', ref: archiveDialog, role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'dshsvc-archive-title', style: { position: 'fixed', inset: 0, zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)' } },
+          React.createElement('div', { style: { width: 'min(520px, calc(100vw - 32px))', maxHeight: '85vh', overflowY: 'auto', overflowWrap: 'anywhere', padding: '18px', background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '14px' } },
+            React.createElement('h3', { id: 'dshsvc-archive-title' }, translate('sessions.archive.title', { count: archivePlan.sessions.length })),
+            React.createElement('p', null, translate('sessions.archive.consequences')),
+            React.createElement('p', null, translate('sessions.archive.worktree')),
+            React.createElement('ul', null, archivePlan.sessions.map(item => React.createElement('li', { key: item.id }, item.title || item.id, ' · ', item.cwd || '—', ' · ', item.worktree === 'candidate' ? translate('sessions.archive.candidate', { path: item.worktreeCandidate?.path || '', branch: item.worktreeCandidate?.branch || '' }) : translate(item.worktree === 'none-recorded' ? 'sessions.archive.noneRecorded' : 'sessions.archive.unknown')))),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-archive-cancel', style: chipButton, disabled: batchWorking === 'archive', onClick: () => { archiveGeneration.current += 1; setArchivePlan(null) } }, translate('sessions.delete.cancel')),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-archive-confirm', style: dangerSolidButton, disabled: batchWorking === 'archive', onClick: () => void confirmArchive() }, translate('sessions.archive.confirm'))))
+
         const renderDeleteModal = () => {
           if (deletePlan === null) return null
           const batchSessions = deletePlan.batch === true && Array.isArray(deletePlan.sessions) ? deletePlan.sessions : null
@@ -4096,6 +4146,10 @@
             return legacyHost ? React.createElement('p', { 'data-testid': 'sessions-subagent-legacy-hint', style: { ...hint, color: 'var(--dsh-svc-warning)' } }, translate('sessions.subagent.hostLegacy')) : null
           })(),
           renderDetail() ?? renderListBody(),
+          archiveResults.length > 0 ? React.createElement('div', { 'data-testid': 'sessions-archive-results' },
+            archiveResults.map(item => React.createElement('p', { key: item.id }, item.id, ' · ', translate(item.archived ? 'sessions.archive.done' : 'sessions.archive.uncertain'), ' · ', translate('sessions.archive.cleanup.' + (item.cleanup?.status || 'unknown')))),
+            React.createElement('button', { type: 'button', 'data-testid': 'sessions-archive-status-refresh', onClick: () => void refreshArchiveStatus() }, translate('sessions.archive.refresh'))) : null,
+          renderArchiveModal(),
           renderDeleteModal(),
           renderClearModal())
       }

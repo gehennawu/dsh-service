@@ -2,7 +2,13 @@
 export const MODEL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
 export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImagePixelBudget', 'requestImageMaxBytes', 'retryPolicy']
 export const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages']
+export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai']
+export const GEMINI_LEVELS = ['minimal', 'low', 'medium', 'high']
+// Validate only newly supplied wire values; unrelated edits retain historical raw values.
+export function validateProtocolReasoning(value, api) {
+  if (api !== 'google-generative-ai' || value === undefined || value === false) return
+  if (!object(value) || Object.entries(value).some(([level, wire]) => !GEMINI_LEVELS.includes(level) || typeof wire !== 'string' || !GEMINI_LEVELS.includes(wire.toLowerCase()))) fail('gemini-reasoning-invalid')
+}
 const completions = ['supportsStore', 'supportsDeveloperRole', 'supportsReasoningEffort', 'supportsUsageInStreaming', 'supportsFinishReason', 'maxTokensField', 'requiresToolResultName', 'requiresAssistantAfterToolResult', 'requiresThinkingAsText', 'requiresReasoningContentOnAssistantMessages', 'thinkingFormat', 'chatTemplateKwargs', 'chatTemplateArgs', 'supportsThinkingTokenBudget', 'thinkingTokenBudgetField', 'vllmPriority', 'supportsStrictMode', 'cacheControlFormat', 'supportsLongCacheRetention']
 const responses = ['supportsDeveloperRole', 'supportsMaxOutputTokens', 'supportsStrictMode', 'supportsLongCacheRetention']
 export const COMPAT_GATES = {
@@ -96,6 +102,7 @@ export function validateField(field, value, { api, previous } = {}) {
   if (field === 'streamIdleTimeoutMs') { if (!timer(value)) fail(); return }
   if (field === 'input' || field === 'defaultInput') { if (!Array.isArray(value) || value.length === 0 || value.some((x) => !['text', 'image'].includes(x)) || new Set(value).size !== value.length) fail(); return }
   if (field === 'reasoningEfforts') {
+    validateProtocolReasoning(value, api)
     if (value === false) return
     if (!object(value) || Object.keys(value).some((k) => !LEVELS.includes(k)) || Object.entries(value).some(([k, v]) => !(k === 'off' && (v === null || v === '') || typeof v === 'string' && v.length > 0 && v.length <= 128)) || !Object.entries(value).some(([k, v]) => k !== 'off' && typeof v === 'string' && v.length > 0)) fail()
     return

@@ -5797,12 +5797,17 @@ function apply(ctx, featureConfig) {
     if (hasActivation) {
       subagents.startActivation = async (spec) => {
         await providerAvailability.loading
-        const { request: decorated, dispatch } = await applyInjection(spec.request)
+        // rc.2 uses a flat spec; alpha.2–rc.1 carry the request in an envelope.
+        // Select the consumed request layer without changing transport provider/name/signal.
+        const nested = spec?.request !== null && typeof spec?.request === 'object'
+        const request = nested ? spec.request : spec
+        const { request: decorated, dispatch } = await applyInjection(request)
         if (dispatch === undefined) return originalStartActivation.call(subagents, spec)
         const preset = await resolvePresetForSpec(spec, decorated)
         const finalRequest = preset !== undefined ? { ...decorated, agentPreset: preset } : decorated
         if (preset !== undefined) dispatch.preset = preset
-        return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, { ...spec, request: finalRequest }))
+        const finalSpec = finalRequest === request ? spec : nested ? { ...spec, request: finalRequest } : finalRequest
+        return runWithDispatch(dispatch, () => originalStartActivation.call(subagents, finalSpec))
       }
     } else {
       subagents.start = async (name, request) => {

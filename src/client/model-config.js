@@ -132,7 +132,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     const label = tr('models.smart.field.' + field) === 'models.smart.field.' + field ? field : tr('models.smart.field.' + field)
     const enums = schema?.routeEnums?.[field]
     const control = enums
-      ? el('select', { style: inputStyle, 'aria-label': label, 'data-testid': 'model-field-' + field, value: value ?? '', onChange: (e) => onChange(e.target.value) }, ...enums.map((x) => el('option', { key: x }, x)))
+      ? el('select', { style: inputStyle, 'aria-label': label, 'data-testid': 'model-field-' + field, value: value ?? '', onChange: (e) => onChange(e.target.value) }, ...(value && !enums.includes(value) ? [el('option', { key: value, value, disabled: true }, value)] : []), ...enums.map((x) => el('option', { key: x }, x)))
       : el('input', { style: inputStyle, 'aria-label': label, 'data-testid': testId ?? 'model-field-' + field, value: value === undefined ? '' : value, onChange: (e) => onChange(e.target.value) })
     return el('div', { style: { minWidth: 0 } }, el('label', { style: { display: 'block' } }, el('span', { style: labelStyle }, label), control))
   }
@@ -226,6 +226,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     // 继承层条目仍用于压缩预算估算（恢复继承后实际会生效的值）。
     const inheritedModel = currentOpened.inherited?.models?.find((entry) => entry.id === (currentBaseline.id ?? modelId)) ?? {}
     const resolvedApi = opened.profile.api || resolvedModel.api || opened.resolvedApi || opened.effective?.api || opened.catalogModels?.find((entry) => entry.api)?.api
+    const gemini = resolvedApi === 'google-generative-ai'
+    const effortLevels = gemini ? REASONING_LEVELS.slice(0, 4) : REASONING_LEVELS
     const sequence = useRef(0)
     const dirty = !equal(draft, initialTexts(currentBaseline, modelFields)) || modelId !== (currentBaseline.id ?? '')
     useLeaveGuard(dirty, tr)
@@ -526,7 +528,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
         ),
         el('div', { className: 'dsh-model-efforts', 'data-testid': 'model-efforts-row', style: { display: 'flex', flexWrap: 'nowrap', gap: '2px', alignItems: 'stretch', margin: '6px 0', minWidth: 0 } },
           el('style', null, `.dsh-model-efforts { container-type:inline-size; } .dsh-model-efforts .dsh-model-effort-label { width:100%; box-sizing:border-box; justify-content:center; font-size:clamp(6px, 2.7cqw, 14px); gap:clamp(1px, .4cqw, 4px); padding:8px 1px; } .dsh-model-efforts .dsh-model-effort-check { width:clamp(8px, 2.9cqw, 16px); height:clamp(8px, 2.9cqw, 16px); }`),
-          REASONING_LEVELS.map((lvl) => {
+          effortLevels.map((lvl) => {
             const checked = isEffortChecked(lvl)
             return el('span', { key: lvl, style: { display: 'flex', alignItems: 'stretch', minWidth: 0, flex: '1 1 0' } },
               el('label', {
@@ -543,6 +545,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
             )
           })
         ),
+        gemini ? el('p', { role: 'note', 'data-testid': 'model-gemini-reasoning-hint', style: muted }, tr('models.smart.geminiReasoning')) : null,
+        gemini && Object.entries(effortMap).some(([level, wire]) => !effortLevels.includes(level) || typeof wire !== 'string' || wire.toLowerCase() !== level) ? el('p', { role: 'alert', 'data-testid': 'model-gemini-legacy-wire', style: muted }, tr('models.smart.geminiExistingWire')) : null,
         // wire 值默认折叠：普通用户只用档位按钮；协议映射需要展开后再改。
         Object.keys(effortMap).length > 0 ? el('details', { 'data-testid': 'model-reasoning-wire-editor', style: { marginTop: '4px' } },
           el('summary', { style: { cursor: 'pointer', ...muted } }, tr('models.smart.wireEditor')),
@@ -554,6 +558,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
                 'aria-label': level + ' wire',
                 'data-testid': 'model-wire-' + level,
                 value: typeof effortMap[level] === 'string' ? effortMap[level] : '',
+                readOnly: gemini,
                 placeholder: tr('models.smart.wireRequired'),
                 onChange: (e) => setEffortWire(level, e.target.value),
               })))),
@@ -927,7 +932,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     )
   }
 
-  function CreateRoute({ onBack, onCreated, templates = [] }) {
+  function CreateRoute({ onBack, onCreated, templates = [], protocols = ['openai-completions', 'openai-responses', 'anthropic-messages'] }) {
     const tr = useTranslation()
     const [template, setTemplate] = useState('')
     const [id, setId] = useState('')
@@ -1032,13 +1037,15 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       el('div', { style: grid2 },
         el('div', null,
           el('label', { style: labelStyle }, tr('models.smart.field.api')),
-          el('select', { style: inputStyle, 'aria-label': tr('models.smart.field.api'), value: api, onChange: changed(setApi) }, ...['openai-completions', 'openai-responses', 'anthropic-messages'].map((x) => el('option', { key: x }, x)))
+          el('select', { style: inputStyle, 'aria-label': tr('models.smart.field.api'), value: api, onChange: changed(setApi) }, ...protocols.map((x) => el('option', { key: x }, x)))
         ),
         el('div', null,
           el('label', { style: labelStyle }, tr('models.smart.field.baseURL')),
-          el('input', { style: inputStyle, value: url, 'aria-label': tr('models.smart.field.baseURL'), placeholder: 'https://api.openai.com/v1', onChange: changed(setURL) })
+          el('input', { style: inputStyle, value: url, 'aria-label': tr('models.smart.field.baseURL'), placeholder: api === 'google-generative-ai' ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.openai.com/v1', onChange: changed(setURL) })
         )
       ),
+
+      api === 'google-generative-ai' ? el('p', { 'data-testid': 'model-create-gemini-hint', role: 'note', style: muted }, tr('models.smart.geminiCreate')) : null,
 
       // API Key Field
       el('div', { style: { marginBottom: '12px' } },
@@ -1077,6 +1084,8 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
 
       dirty ? el('p', { role: 'status', style: muted }, tr('models.smart.unsaved')) : null,
       el(Button, { id: 'model-create-save', disabled: !dirty || saving, style: { ...svcButtonStyle(dirty ? 'primary' : 'neutral'), ...(!dirty ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }, onClick: async () => {
+        if (!protocols.includes(api)) { setError('protocol-unsupported'); return }
+        if (api === 'google-generative-ai' && !key.trim()) { setError('gemini-key-required'); return }
         const allIds = [...new Set([...picked, ...ids.split(/[\s,]+/).filter(Boolean)])]
         if (allIds.length === 0) { setError('noModelsSelected'); return }
         setSaving(true); setError('')
@@ -1156,7 +1165,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
       } catch (_) { setForget(null); setError('operation-failed') } finally { setForgetBusy(false) }
     }
 
-    if (creating) return el(CreateRoute, { onBack: () => setCreating(false), onCreated: (route) => { setCreating(false); setSelected({ route, displayName: route }); void reload() }, templates: snapshot?.templates ?? [] })
+    if (creating) return el(CreateRoute, { onBack: () => setCreating(false), onCreated: (route) => { setCreating(false); setSelected({ route, displayName: route }); void reload() }, templates: snapshot?.templates ?? [], protocols: snapshot?.protocols })
     const routes = snapshot?.routes ?? []
     const active = selected ? routes.find((row) => row.route === selected.route) ?? selected : null
     const select = (row) => { if (canLeave()) setSelected(row.route === active?.route ? null : row) }

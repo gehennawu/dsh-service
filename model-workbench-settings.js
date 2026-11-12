@@ -225,13 +225,28 @@ function assertSameModernOwner(ctx, editor, captured) {
   if (entry.fiber !== undefined && entry.fiber.state !== 2) throw fail('model-config-inactive')
 }
 
+/** Read only the provider api union from a Schemastery reference graph. */
+export function modelProtocolCapabilities(schema) {
+  try {
+    const refs = schema?.refs
+    const node = (id) => refs?.[id]
+    const root = node(schema.uid)
+    const providers = node(root.dict.providers)
+    const profile = node(providers.inner)
+    const api = node(profile.dict.api)
+    if (api.type !== 'union' || !Array.isArray(api.list)) return null
+    const values = api.list.map((id) => node(id)).filter((n) => n?.type === 'const' && typeof n.value === 'string').map((n) => n.value)
+    return values.length ? [...new Set(values)] : null
+  } catch (_) { return null }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Facade
 // ─────────────────────────────────────────────────────────────────────────────
 
 function facade({
   settings, ns, mode, entryName, raw, explicit, inherited, effective, revision,
-  verifyOwner,
+  verifyOwner, schema,
 }) {
   const revisionTracked = Number.isSafeInteger(revision)
   const identity = Object.freeze({ mode, package: PACKAGE, entryId: ns, entryName: entryName ?? null })
@@ -239,6 +254,7 @@ function facade({
 
   const access = {
     namespace: ns,
+    protocols: modelProtocolCapabilities(schema),
     revision,
     revisionTracked,
     identity,
@@ -384,6 +400,7 @@ export function modelSettingsFor(ctx) {
     inherited,
     effective,
     revision: descriptor.revision,
+    schema: descriptor.schema,
     verifyOwner: () => assertSameModernOwner(ctx, editor, captured),
   })
 }

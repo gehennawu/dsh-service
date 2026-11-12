@@ -60,6 +60,33 @@ function host({ profiles, inherited = {}, providerAvailability, secret = {}, fai
   const open = async () => (await call('models3-open', { route: 'relay' })).value
   return { raw, state, calls, keys, credentialCalls, call, open, bump: () => revision++, services }
 }
+test('Gemini unknown host capability blocks creation before credentials and preserves raw edits', async () => {
+  const env = host({ profiles: { relay: { api: 'google-generative-ai', apiKeyEnv: 'KEY', models: [{ id: 'one', reasoningEfforts: { max: 'legacy-wire' }, unknown: 7 }], vendor: true } } })
+  const create = await env.call('models3-create-preview', { route: 'google', key: 'isolated-key', profile: { api: 'google-generative-ai', baseURL: 'https://gateway.example/v1beta', models: [{ id: 'new' }] } })
+  assert.equal(create.error, 'protocol-unsupported')
+  assert.equal(env.credentialCalls.length, 0)
+  const opened = await env.open()
+  assert.equal((await env.call('models3-save-model', { sessionId: opened.sessionId, modelId: 'one', patch: { name: 'Changed' } })).ok, true)
+  assert.deepEqual(env.raw.providers.relay.models[0].reasoningEfforts, { max: 'legacy-wire' })
+  assert.equal(env.raw.providers.relay.models[0].unknown, 7)
+  const again = await env.open()
+  const invalid = await env.call('models3-save-model', { sessionId: again.sessionId, modelId: 'one', patch: { reasoningEfforts: { high: 'arbitrary' } } })
+  assert.equal(invalid.error, 'gemini-reasoning-invalid')
+})
+test('restoring inherited Google api cannot bypass unknown host capability', async () => {
+  const env = host({ profiles: { relay: { api: 'openai-completions', apiKeyEnv: 'KEY', models: [{ id: 'one' }] } }, inherited: { providers: { relay: { api: 'google-generative-ai' } } }, secret: { KEY: 'isolated-key' } })
+  const opened = await env.open()
+  const saved = await env.call('models3-save-route', { sessionId: opened.sessionId, patch: {}, unset: ['api'] })
+  assert.equal(saved.error, 'protocol-unsupported')
+  assert.equal(env.calls.length, 0)
+})
+test('Gemini smart fill never offers invalid wire mappings as adoptable', async () => {
+  const env = host({ profiles: { relay: { api: 'google-generative-ai', models: [{ id: 'one' }] } }, smartFill: async () => ({ groups: [{ field: 'reasoningEfforts', candidates: [{ value: { max: 'maximum' }, adoptable: true, source: {} }] }] }) })
+  const result = await env.call('models3-fill', { route: 'relay', modelId: 'one' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value.groups, [])
+  assert.equal(result.value.readonly[0].reason, 'gemini-reasoning-invalid')
+})
 test('new Profile editor: rejects prototype routes and treats dangerous model IDs only as own data keys', async () => {
   const env = host({ smartFill: async () => ({ groups: [{ field: 'contextWindow', options: [{ candidateId: 'cap', value: 128000, source: 'pi-ai', adoptable: true }] }], sources: [] }) })
   for (const id of ['__proto__', 'constructor', 'prototype']) {

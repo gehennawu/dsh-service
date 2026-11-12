@@ -85,6 +85,7 @@ const THINKING_LEVELS_SET = new Set(['off', 'minimal', 'low', 'medium', 'high', 
 const MODELS_PROBE_PROTOCOLS = new Set(['openai-completions', 'openai-responses'])
 /** 自定义路由可声明的协议白名单（llm-pi-ai supportedProtocols 同款）。 */
 const MODELS_PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages']
+const MODEL_CONFIG_DISCOVERY_PROTOCOLS = [...MODELS_PROTOCOLS, 'google-generative-ai']
 /** 官方 CustomProviderCard 同款 route 正则。 */
 const MODELS_ROUTE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 /** 凭据 ref 文法 = POSIX shell 标识符（credentials 服务同款校验）。 */
@@ -516,40 +517,58 @@ export function probeBaseURLCheck(baseURL) {
  * 列表解析产出 {id, name, contextWindow, maxTokens}，超长/重复 id 跳过不截断。
  */
 export async function fetchModelsProbe(baseURL, apiKey, api = 'openai-completions') {
-  if (!MODELS_PROTOCOLS.includes(api)) throw new Error('probe-protocol-unsupported')
+  const controller = new AbortController()
+  let timer
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => { reject(new Error('probe-timeout')); controller.abort() }, MODELS_PROBE_TIMEOUT_MS)
+  })
+  try { return await Promise.race([fetchModelsProbeBounded(baseURL, apiKey, api, controller.signal), expired]) }
+  finally { clearTimeout(timer) }
+}
+
+async function fetchModelsProbeBounded(baseURL, apiKey, api, deadline) {
+  if (!MODEL_CONFIG_DISCOVERY_PROTOCOLS.includes(api)) throw new Error('probe-protocol-unsupported')
+  if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.length > 4096 || /[^\x20-\x7e]/.test(apiKey))) throw new Error('bad-key')
   const checked = probeBaseURLCheck(baseURL)
   if (!checked.ok) throw new Error(checked.code)
   const parsed = checked.parsed
   const addresses = await assertPublicHost(checked.host)
+  if (deadline.aborted) throw new Error('probe-timeout')
   const pinned = typeof addresses[0]?.address === 'string' ? addresses[0].address : ''
   if (pinned === '') throw new Error('probe-dns-empty')
   const basePath = parsed.pathname.replace(/\/+$/, '')
   const query = new URLSearchParams(parsed.search)
   if (api === 'anthropic-messages') query.set('limit', '1000')
+  if (api === 'google-generative-ai') { query.set('pageSize', '1000'); query.delete('pageToken') }
   const listingPath = api === 'anthropic-messages' ? `${basePath.endsWith('/v1') ? basePath.slice(0, -3) : basePath}/v1/models` : `${basePath}/models`
   const path = `${listingPath}${query.size ? '?' + query.toString() : ''}`
-  const headers = { host: parsed.hostname, accept: 'application/json' }
+  const headers = { host: parsed.hostname, accept: 'application/json', 'accept-encoding': 'identity' }
   if (api === 'anthropic-messages') {
     headers['anthropic-version'] = '2023-06-01'
     if (typeof apiKey === 'string' && apiKey !== '') headers['x-api-key'] = apiKey
+  } else if (api === 'google-generative-ai') {
+    if (typeof apiKey === 'string' && apiKey !== '') headers['x-goog-api-key'] = apiKey
   } else if (typeof apiKey === 'string' && apiKey !== '') headers.authorization = `Bearer ${apiKey}`
   const body = await new Promise((resolve, reject) => {
     const request = https.request(
       {
         host: pinned, port: 443, path, method: 'GET', headers, timeout: MODELS_PROBE_TIMEOUT_MS,
         // 证书按 Host 头校验的目标域名验证，直连 IP 不改变 TLS 身份。
-        servername: parsed.hostname,
+        servername: parsed.hostname, signal: deadline,
       },
       (response) => {
         const status = response.statusCode ?? 0
+        if (response.headers?.['content-encoding'] && response.headers['content-encoding'] !== 'identity') {
+          request.destroy(); reject(new Error('probe-encoding-unsupported')); return
+        }
         // 不跟随重定向：3xx 视为失败（拦 SSRF 跳板）。
         if (status >= 300 && status < 400) {
-          response.resume()
+          request.destroy()
           reject(new Error(`probe-redirect:${status}`))
           return
         }
         if (status < 200 || status >= 300) {
-          response.resume()
+          request.destroy()
           reject(new Error(`probe-status:${status}`))
           return
         }
@@ -572,7 +591,27 @@ export async function fetchModelsProbe(baseURL, apiKey, api = 'openai-completion
     request.end()
   })
   if (Buffer.byteLength(body, 'utf8') > MAX_MODELS_PROBE_INFLATED_BYTES) throw new Error('probe-too-large')
-  return parseModelListing(body)
+  return api === 'google-generative-ai' ? parseGeminiModelListing(body) : parseModelListing(body)
+}
+
+export function parseGeminiModelListing(body) {
+  let payload
+  try { payload = JSON.parse(body) } catch (_) { throw new Error('probe-bad-json') }
+  if (!Array.isArray(payload?.models)) throw new Error('probe-bad-listing')
+  const rows = []
+  const seen = new Set()
+  for (const entry of payload.models) {
+    if (!isPlainObject(entry)) continue
+    if (Array.isArray(entry.supportedGenerationMethods) && !entry.supportedGenerationMethods.includes('generateContent')) continue
+    const id = typeof entry.name === 'string' ? entry.name.replace(/^models\//, '').trim() : ''
+    if (!MODEL_ID_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    const row = { id, name: typeof entry.displayName === 'string' && entry.displayName.trim() ? entry.displayName.trim().slice(0, 128) : id }
+    if (Number.isSafeInteger(entry.inputTokenLimit) && entry.inputTokenLimit > 0) row.contextWindow = entry.inputTokenLimit
+    if (Number.isSafeInteger(entry.outputTokenLimit) && entry.outputTokenLimit > 0) row.maxTokens = entry.outputTokenLimit
+    rows.push(row)
+  }
+  return rows
 }
 
 /** {baseURL}/models 响应 → 规范化候选行（宽容各家字段名，id 必需）。 */

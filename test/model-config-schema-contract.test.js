@@ -1,8 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { MODEL_FIELDS, ROUTE_FIELDS, COMPAT_GATES, validateImageCountPair } from '../model-config-schema.js'
+import { MODEL_FIELDS, ROUTE_FIELDS, PROTOCOLS, COMPAT_GATES, validateImageCountPair } from '../model-config-schema.js'
 import vm from 'node:vm'
+import { modelProtocolCapabilities } from '../model-workbench-settings.js'
+
+test('protocol capabilities follow only the exact provider api schema graph and fail closed', () => {
+  const schema = { uid: 1, refs: { 1: { type: 'object', dict: { providers: 2 } }, 2: { type: 'dict', inner: 3 }, 3: { type: 'object', dict: { api: 4 } }, 4: { type: 'union', list: [5] }, 5: { type: 'const', value: 'openai-completions' }, 6: { type: 'const', value: 'google-generative-ai' } } }
+  assert.deepEqual(modelProtocolCapabilities(schema), ['openai-completions'])
+  schema.refs[4].list.push(6)
+  assert.deepEqual(modelProtocolCapabilities(schema), ['openai-completions', 'google-generative-ai'])
+  for (const value of [undefined, {}, { uid: 1, refs: {} }]) assert.equal(modelProtocolCapabilities(value), null)
+})
 
 test('image-count rejection has actionable Chinese and English messages', async () => {
   const source = await readFile(new URL('../src/client/model-config-i18n.js', import.meta.url), 'utf8')
@@ -15,6 +24,11 @@ test('image-count rejection has actionable Chinese and English messages', async 
 })
 
 const sourcePath = '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js'
+test('plugin protocols exactly track installed real Config api union', async (t) => {
+  let Config
+  try { ({ Config } = await import('file://' + sourcePath)) } catch (_) { t.skip('Installed pi-ai unavailable'); return }
+  assert.deepEqual(modelProtocolCapabilities(Config.toJSON()), PROTOCOLS)
+})
 const keys = (block) => [...block.matchAll(/^\s+([A-Za-z][A-Za-z0-9]*):/gm)].map((x) => x[1])
 test('image-count guard agrees with installed pi-ai default resolution', async (t) => {
   let source; try { source = await readFile(sourcePath, 'utf8') } catch (_) { t.skip('Installed pi-ai unavailable'); return }

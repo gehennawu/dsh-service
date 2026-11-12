@@ -30,6 +30,57 @@ export function createSessionsRoutes({
   sessionIsLive,
   viewSessionPage,
 }) {
+  const archivePlans = new Map()
+  const cleanupStates = new Map()
+  const ttl = 5 * 60 * 1000
+  const maxIds = 200
+  let disposed = false
+  let executing = false
+  const disposeCleanup = ctx.on?.('worktree/cleanup', (info) => {
+    if (disposed || typeof info?.sessionId !== 'string' || !Number.isSafeInteger(info?.cleanup?.revision)
+      || !['scheduled', 'retained', 'removed', 'failed'].includes(info.cleanup.status)) return
+    const previous = cleanupStates.get(info.sessionId)
+    if (previous && (previous.revision > info.cleanup.revision || (previous.revision === info.cleanup.revision && previous.status !== 'scheduled'))) return
+    if (cleanupStates.size >= 1000 && !cleanupStates.has(info.sessionId)) cleanupStates.delete(cleanupStates.keys().next().value)
+    cleanupStates.set(info.sessionId, { revision: info.cleanup.revision, status: info.cleanup.status })
+  })
+  ctx.effect?.(() => () => { disposed = true; if (typeof disposeCleanup === 'function') disposeCleanup(); archivePlans.clear(); cleanupStates.clear() }, 'dsh-service archive confirmations')
+  const archiveFailure = (error) => ['archive-preview-unavailable', 'session-not-found', 'live-session-rejected', 'archive-plan-stale'].includes(error?.message)
+    ? { ok: false, error: error.message }
+    : typeof rpcTechnicalFailure === 'function' ? rpcTechnicalFailure(new Error('archive-preview-unavailable')) : { ok: false, error: 'archive-preview-unavailable' }
+  const archiveRecords = async (ids) => {
+    const query = ctx.get('sessionQuery')
+    if (typeof query?.listSessions !== 'function') throw new Error('archive-preview-unavailable')
+    const records = await query.listSessions()
+    const titles = typeof query.readTitleSnapshots === 'function' ? await query.readTitleSnapshots(ids) : []
+    if (titles.some(item => item.status === 'rejected')) throw new Error('archive-preview-unavailable')
+    const archived = ctx.get('workspaceRegistry')?.archivedSessionIds || []
+    return await Promise.all(ids.map(async (id) => {
+      const record = records.find((item) => item.header.id === id)
+      if (!record) throw new Error('session-not-found')
+      if (record.live || sessionIsLive(ctx, id)) throw new Error('live-session-rejected')
+      if (archived.includes(id)) throw new Error('archive-plan-stale')
+      const title = titles.find(item => item.sessionId === id)?.value?.title?.title
+      let worktree = 'unknown'
+      let worktreeCandidate
+      if (typeof query.readSession === 'function') {
+        const snapshot = await query.readSession(id)
+        if (Number.isSafeInteger(snapshot?.inheritedEventCount) && snapshot.inheritedEventCount >= 0 && Array.isArray(snapshot.events)) {
+          worktree = 'none-recorded'
+          const keys = ['path', 'branch', 'baseCommit', 'repositoryRoot']
+          const event = snapshot.events.find(event => event?.type === 'plugin:worktree/created' && event.ignorable === true
+            && Number.isSafeInteger(event.seq) && event.seq >= snapshot.inheritedEventCount
+            && event.data && typeof event.data === 'object' && !Array.isArray(event.data)
+            && Object.keys(event.data).length === keys.length && keys.every(key => typeof event.data[key] === 'string' && event.data[key].length > 0))
+          if (event) {
+            worktree = 'candidate'
+            worktreeCandidate = Object.fromEntries(keys.map(key => [key, event.data[key]]))
+          }
+        }
+      }
+      return { id, title: typeof title === 'string' ? title : id, archived: false, cwd: record.header.cwd ?? null, createdAt: record.header.createdAt ?? null, worktree, ...(worktreeCandidate ? { worktreeCandidate } : {}) }
+    }))
+  }
   return {
     'sessions-list': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
       const scope = payload?.scope === 'archived' || payload?.scope === 'deleted' ? payload.scope : 'all'
@@ -99,25 +150,57 @@ export function createSessionsRoutes({
       }
 
     } },
-    'sessions-archive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
-      const id = typeof payload?.id === 'string' ? payload.id : ''
-      if (id === '') return { ok: false, error: 'invalid-session-id' }
-      const workspaceRegistry = ctx.get('workspaceRegistry')
-      if (workspaceRegistry === undefined || typeof workspaceRegistry.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
+    'sessions-archive-plan': { feature: 'sessionManager', handle: async (payload) => {
+      const raw = payload?.ids
+      if (!Array.isArray(raw) || raw.length === 0 || raw.length > maxIds || raw.some(id => typeof id !== 'string' || id.trim() === '')) return { ok: false, error: 'invalid-session-ids' }
+      if (disposed) return { ok: false, error: 'archive-preview-unavailable' }
+      const registry = ctx.get('workspaceRegistry')
+      if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
+      for (const [key, plan] of archivePlans) if (Date.now() >= plan.expiresAt) archivePlans.delete(key)
+      if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
       try {
-        await workspaceRegistry.archiveSession(id)
-        return {
-          ok: true,
-          value: {
-            archived: true,
-            archivedSessionIds: Array.isArray(workspaceRegistry.archivedSessionIds) ? [...workspaceRegistry.archivedSessionIds] : [id],
-          },
+        const sessions = await archiveRecords([...new Set(raw)])
+        if (disposed) return { ok: false, error: 'archive-preview-unavailable' }
+        if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
+        const planId = randomUUID()
+        const plan = { sessions, expiresAt: Date.now() + ttl }
+        archivePlans.set(planId, plan)
+        return { ok: true, value: { planId, ...plan, consequences: ['hides-session', 'removes-pin', 'conditional-worktree-removal', 'unarchive-does-not-restore-files'], cleanup: 'unknown' } }
+      } catch (error) { return archiveFailure(error) }
+    } },
+    'sessions-archive': { feature: 'sessionManager', audit: true, handle: async (payload) => {
+      if (typeof payload?.planId !== 'string' || payload?.id !== undefined || payload?.ids !== undefined) return { ok: false, error: 'archive-confirmation-required' }
+      const plan = archivePlans.get(payload.planId)
+      if (!plan) return { ok: false, error: 'unknown-archive-plan' }
+      archivePlans.delete(payload.planId)
+      if (Date.now() >= plan.expiresAt) return { ok: false, error: 'archive-plan-expired' }
+      if (disposed || executing) return { ok: false, error: 'archive-plan-stale' }
+      executing = true
+      try {
+        const records = await archiveRecords(plan.sessions.map(item => item.id))
+        if (JSON.stringify(records) !== JSON.stringify(plan.sessions) || disposed) return { ok: false, error: 'archive-plan-stale' }
+        const registry = ctx.get('workspaceRegistry')
+        if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
+        const results = []
+        for (const item of records) {
+          if (disposed) { results.push({ id: item.id, archived: false, error: 'archive-plan-stale' }); continue }
+          try {
+            if (sessionIsLive(ctx, item.id)) throw new Error('live-session-rejected')
+            cleanupStates.delete(item.id)
+            await registry.archiveSession(item.id)
+            results.push({ id: item.id, archived: true, cleanup: cleanupStates.get(item.id) ?? { status: 'unknown' } })
+          } catch (error) {
+            results.push({ id: item.id, archived: false, error: error?.name === 'WorkspaceActiveSessionError' ? 'active-session-rejected' : error?.name === 'WorkspaceUnknownSessionError' ? 'session-not-found' : 'archive-result-unknown' })
+          }
         }
-      } catch (error) {
-        if (error?.name === 'WorkspaceUnknownSessionError') return { ok: false, error: 'session-not-found' }
-        return rpcTechnicalFailure(error)
-      }
-
+        return { ok: true, value: { results } }
+      } catch (error) { return archiveFailure(error) }
+      finally { executing = false }
+    } },
+    'sessions-archive-status': { feature: 'sessionManager', handle: async (payload) => {
+      if (!Array.isArray(payload?.ids) || payload.ids.length > maxIds || payload.ids.some(id => typeof id !== 'string' || !id)) return { ok: false, error: 'invalid-session-ids' }
+      const archived = ctx.get('workspaceRegistry')?.archivedSessionIds || []
+      return { ok: true, value: { items: [...new Set(payload.ids)].map(id => ({ id, archived: archived.includes(id), cleanup: archived.includes(id) ? cleanupStates.get(id) ?? { status: 'unknown' } : { status: 'unknown' } })) } }
     } },
     'sessions-unarchive': { feature: 'sessionManager', audit: true, handle: async (payload, rpcEndpoint) => {
       const id = typeof payload?.id === 'string' ? payload.id : ''

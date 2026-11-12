@@ -2250,7 +2250,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
 
-  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive', 'sessions-unarchive', 'sessions-delete-plan', 'sessions-delete', 'file-read', 'file-write']) {
+  for (const endpoint of ['diagnostics', 'permissions-plan', 'permissions-deep', 'permissions-repair', 'plugin-restart', 'usage', 'usage-refresh', 'quota', 'quota-refresh', 'quota-config', 'quota-reset-card', 'backup-list', 'backup-create', 'backup-export', 'backup-delete', 'backup-inspect', 'backup-restore-prepare', 'backup-restore-commit', 'backup-restore', 'backup-import', 'subagent-route', 'subagent-route-save', 'subagent-dispatches', 'sessions-list', 'sessions-bytes', 'sessions-view', 'sessions-search', 'sessions-export', 'sessions-archive-plan', 'sessions-archive-status', 'sessions-archive', 'sessions-unarchive', 'sessions-delete-plan', 'sessions-delete', 'file-read', 'file-write']) {
     assert.deepEqual(await handler(endpoint, {}), { ok: false, error: 'feature-disabled' }, endpoint)
   }
 
@@ -7832,6 +7832,71 @@ test('subagent-route seam：新版 startActivation 注入并记录派发，保�
   assert.equal((await host.handler('subagent-route', {})).value.available, false)
 })
 
+test('subagent-route seam：rc.2 顶层参数实际消费路由、等级、记录与失败短名单，保留所有启动字段', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-flat-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const llm = fakeLlm([['primary', 'Primary', ['m1']], ['fallback', 'Fallback', ['m2']]])
+  llm.setModelInfo('primary', 'm1', { reasoning: { efforts: [{ id: 'high' }] } })
+  let host
+  const calls = [], agents = []
+  const registry = {
+    async startActivation(spec) {
+      assert.equal(this, registry)
+      assert.equal(Object.hasOwn(spec, 'request'), false, 'rc.2 不消费嵌套 request')
+      calls.push(spec)
+      const agent = { id: `flat-${calls.length}`, options: spec.agentOptions ?? {}, session: {}, model: { select() {}, current: () => spec.agentOptions } }
+      agents.push(agent)
+      await host.fire('agent/created', { agent })
+      return { childId: agent.id, name: spec.name, result: Promise.resolve({}), dispose: async () => {} }
+    },
+  }
+  const native = registry.startActivation
+  host = createHost({ featureSettings: {}, services: { subagents: registry, llm }, env: { DSH_HOME: dshHome } })
+  t.after(() => host.dispose())
+  const parent = { id: 'flat-parent', session: { id: 'flat-parent', events: [{ data: { turn: 4 } }], requestHeader: () => ({ config: { provider: 'primary', model: 'm1' } }) } }
+  const spec = { provider: 'spawn', name: 'named', childId: 'reserved', label: 'flat', parent, prompt: [{ type: 'text', text: 'hello' }], cwd: '/workspace', maxDepth: 5, outputSchema: { type: 'object' }, signal: new AbortController().signal, delivery: 'caller' }
+  await host.handler('subagent-route', {})
+  await registry.startActivation(spec)
+  assert.equal(calls[0], spec, 'inherit 保留原对象')
+  await host.handler('subagent-route-save', { mode: 'follow' })
+  await registry.startActivation(spec)
+  assert.deepEqual(calls[1], { ...spec, agentOptions: { provider: 'primary', model: 'm1' } })
+  await host.handler('subagent-route-save', { mode: 'custom', provider: 'primary', model: 'm1', reasoningEffort: 'high', fallbacks: [{ provider: 'fallback', model: 'm2' }] })
+  const withOptions = { ...spec, agentOptions: { maxTokens: 123 } }
+  await registry.startActivation(withOptions)
+  assert.deepEqual(calls[2], { ...withOptions, agentOptions: { maxTokens: 123, provider: 'primary', model: 'm1', reasoningEffort: 'high' } })
+  assert.deepEqual(withOptions.agentOptions, { maxTokens: 123 }, '不修改调用方字段')
+  let records = (await host.handler('subagent-dispatches', { parentId: parent.id })).value.records
+  assert.equal(records[0].childId, 'flat-3')
+  assert.equal(records[0].source, 'routed')
+  assert.equal(records[0].reasoningEffort, 'high')
+  assert.equal(records[0].turn, 4)
+  const proposal = { provider: 'primary', model: 'm1', reasoningEffort: 'high' }
+  assert.equal(await host.fire('agent/request', { agent: agents[2], signal: spec.signal }, async () => proposal), proposal, '新宿主 proposal 只读')
+  await host.fire('agent/request-error', { agent: agents[2], provider: 'primary', failure: { code: 'RATE_LIMIT', status: 429 }, signal: spec.signal }, async () => undefined)
+  await registry.startActivation(spec)
+  assert.deepEqual(calls[3].agentOptions, { provider: 'fallback', model: 'm2' }, '下一派发跳过失败路由')
+  const explicit = { ...spec, agentOptions: { provider: 'primary', model: 'm1', reasoningEffort: 'high' } }
+  await registry.startActivation(explicit)
+  assert.equal(calls[4], explicit, '显式路由不被失败短名单覆盖')
+  records = (await host.handler('subagent-dispatches', { parentId: parent.id })).value.records
+  assert.equal(records[0].source, 'explicit')
+  for (const agentOptions of [{ provider: 'primary' }, { model: 'm1' }]) {
+    const partial = { ...spec, agentOptions }
+    await registry.startActivation(partial)
+    assert.equal(calls.at(-1), partial, '半显式路由也必须让位')
+  }
+  await host.updateFeatureSettings({ subagentRoute: false })
+  await registry.startActivation(spec)
+  assert.equal(calls.at(-1), spec)
+  await host.updateFeatureSettings({ subagentRoute: true })
+  assert.equal((await host.handler('subagent-dispatches', {})).value.records.length, records.length + 2, '功能关闭不建记录')
+  host.dispose()
+  assert.equal(registry.startActivation, native)
+  await registry.startActivation(spec)
+  assert.equal(calls.at(-1), spec)
+})
+
 test('subagent-route seam：混合接口优先包装 startActivation，不重复包装旧入口', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-mixed-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -7851,7 +7916,8 @@ test('subagent-route seam：混合接口优先包装 startActivation，不重复
   assert.equal(registry.startContinuable, legacyContinuable)
 })
 
-test('subagent-route preset：独立 Agent 预设按 provider 能力注入，显式指定优先，失效清单零注入', async (t) => {
+for (const flat of [false, true]) {
+test(`subagent-route preset：${flat ? 'rc.2 顶层' : '历史嵌套'}独立预设能力门、显式优先与失效回落`, async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-preset-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
   const llm = fakeLlm([['cpa', 'CPA', ['gpt-5.6-sol']]])
@@ -7881,7 +7947,9 @@ test('subagent-route preset：独立 Agent 预设按 provider 能力注入，显
   }
   host = createHost({ featureSettings: {}, services: { subagents: registry, llm, agentPresets }, env: { DSH_HOME: dshHome } })
   const parent = { session: { id: 'preset-parent', requestHeader: () => ({ config: { provider: 'cpa', model: 'gpt-5.6-sol' } }) } }
-  const spec = (provider) => ({ provider, label: 'x', request: { parent, prompt: [{ type: 'text', text: 'hi' }] }, signal: new AbortController().signal, delivery: 'parent' })
+  const requestOf = (spec) => flat ? spec : spec.request
+  const withRequest = (spec, patch) => flat ? { ...spec, ...patch } : { ...spec, request: { ...spec.request, ...patch } }
+  const spec = (provider) => ({ provider, label: 'x', ...(flat ? { parent, prompt: [{ type: 'text', text: 'hi' }] } : { request: { parent, prompt: [{ type: 'text', text: 'hi' }] } }), signal: new AbortController().signal, delivery: 'parent' })
 
   // 快照：清单下发（broken 带标记）、默认无预设、presetSupported:true。
   const snapshot = await host.handler('subagent-route', {})
@@ -7909,18 +7977,23 @@ test('subagent-route preset：独立 Agent 预设按 provider 能力注入，显
 
   // 注入：支持独立预设的 provider 注入并记录；继承父代上下文的不注入；显式指定永远赢。
   await registry.startActivation(spec('spawn'))
-  assert.equal(calls[0].request.agentPreset, 'researcher')
+  assert.equal(requestOf(calls[0]).agentPreset, 'researcher')
   assert.equal((await host.handler('subagent-dispatches', { parentId: parent.id })).value.records[0].preset, 'researcher', '派发记录带预设')
   await registry.startActivation(spec('fork'))
-  assert.equal(calls[1].request.agentPreset, undefined, '继承父代上下文的 provider 不注入')
-  await registry.startActivation({ ...spec('spawn'), request: { ...spec('spawn').request, agentPreset: 'mine' } })
-  assert.equal(calls[2].request.agentPreset, 'mine', '调用方显式预设优先')
+  assert.equal(requestOf(calls[1]).agentPreset, undefined, '继承父代上下文的 provider 不注入')
+  await registry.startActivation(withRequest(spec('spawn'), { agentPreset: 'mine' }))
+  assert.equal(requestOf(calls[2]).agentPreset, 'mine', '调用方显式预设优先')
   assert.equal((await host.handler('subagent-dispatches', { parentId: parent.id })).value.records[0].preset, undefined, '显式来源不记预设')
 
   // 预设从清单消失 → 自动回落跟随父代，派生不失败。
   presetIds.current = []
   await registry.startActivation(spec('spawn'))
-  assert.equal(calls[3].request.agentPreset, undefined)
+  assert.equal(requestOf(calls[3]).agentPreset, undefined)
+  presetIds.current = ['researcher']
+  await host.updateFeatureSettings({ subagentRoute: false })
+  const unmodified = spec('spawn')
+  await registry.startActivation(unmodified)
+  assert.equal(calls[4], unmodified, '关闭功能不注入预设')
 
   // 无 agentPresets 服务的宿主：快照 presetSupported:false、保存拒绝、派生零注入（磁盘上的 preset 仍保留）。
   host.dispose()
@@ -7939,9 +8012,10 @@ test('subagent-route preset：独立 Agent 预设按 provider 能力注入，显
   await legacyHost.handler('subagent-route-save', { mode: 'custom', provider: 'cpa', model: 'gpt-5.6-sol', preset: 'researcher' }).catch(() => {})
   assert.equal((await legacyHost.handler('subagent-route-save', { mode: 'inherit' })).ok, true)
   await legacyRegistry.startActivation(spec('spawn'))
-  assert.equal(legacyCalls[0].request.agentPreset, undefined, '服务缺席时零注入')
+  assert.equal(requestOf(legacyCalls[0]).agentPreset, undefined, '服务缺席时零注入')
   legacyHost.dispose()
 })
+}
 
 test('subagent-route runtime fallback：retryable model errors rotate, while cancellation and client errors do not', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-subagent-runtime-429-'))
@@ -9780,16 +9854,21 @@ test('session management export validates existence and reuses official ZIP URL'
   assert.deepEqual(badId, { ok: false, error: 'invalid-session-id' })
 })
 
-test('session management archive calls workspace registry and maps unknown session', async (t) => {
+test('session management archive requires host plan before calling workspace registry', async (t) => {
   const services = sessionManagerServices()
-  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry } })
-
-  const ok = await handler('sessions-archive', { id: 'session-alpha' })
+  services.workspaceRegistry.archivedSessionIds = []
+  const host = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions } })
+  t.after(() => host.dispose())
+  const { handler } = host
+  assert.deepEqual(await handler('sessions-archive', { id: 'session-beta' }), { ok: false, error: 'archive-confirmation-required' })
+  const plan = await handler('sessions-archive-plan', { ids: ['session-beta'] })
+  assert.equal(plan.ok, true)
+  assert.deepEqual(services.workspaceRegistry.archivedSessionIds, [], '预览零变更')
+  const ok = await handler('sessions-archive', { planId: plan.value.planId })
   assert.equal(ok.ok, true)
-  assert.equal(ok.value.archived, true)
-  assert.deepEqual(ok.value.archivedSessionIds, ['session-beta', 'session-alpha'])
-
-  const missing = await handler('sessions-archive', { id: 'session-missing' })
+  assert.equal(ok.value.results[0].archived, true)
+  assert.deepEqual(services.workspaceRegistry.archivedSessionIds, ['session-beta'])
+  const missing = await handler('sessions-archive-plan', { ids: ['session-missing'] })
   assert.deepEqual(missing, { ok: false, error: 'session-not-found' })
 })
 

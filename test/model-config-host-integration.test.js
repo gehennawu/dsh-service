@@ -39,6 +39,54 @@ function makeHost(services = {}) {
   const routes = createModelConfigRoutes({ ctx: { get: (key) => ({ settings, configEditor: editor, ...services })[key] }, workbenchStore, providerAvailability, loadPiCatalog: async () => ({ channelIds: new Set(), byModelId: new Map() }) })
   return { raw, entry, editor, settings, state, routes, count: () => swaps }
 }
+test('installed schema exposes Gemini capability and guarded creation requires a key', { skip: !SettingsForms || !Config }, async () => {
+  const host = makeHost()
+  const snapshot = await host.routes['models3-snapshot'].handle({})
+  assert.ok(snapshot.value.protocols.includes('google-generative-ai'))
+  const profile = { api: 'google-generative-ai', baseURL: 'https://gateway.example/v1beta', models: [{ id: 'gemini-example' }] }
+  assert.equal((await host.routes['models3-create-preview'].handle({ route: 'gemini', profile })).error, 'gemini-key-required')
+  const preview = await host.routes['models3-create-preview'].handle({ route: 'gemini', profile, key: 'isolated-key' })
+  assert.equal(preview.ok, true, preview.error)
+  assert.equal(host.count(), 0)
+})
+test('Gemini redundant api patch retains historical wire while a real switch requires resolved key', { skip: !SettingsForms || !Config }, async () => {
+  const host = makeHost()
+  Object.assign(host.raw.providers.relay, { api: 'google-generative-ai', apiKeyEnv: 'MISSING' })
+  host.raw.providers.relay.models[0].reasoningEfforts = { max: 'legacy' }
+  const opened = await host.routes['models3-open'].handle({ route: 'relay' })
+  const saved = await host.routes['models3-save-route'].handle({ sessionId: opened.value.sessionId, patch: { api: 'google-generative-ai', displayName: 'Changed' } })
+  assert.equal(saved.ok, true, saved.error)
+  assert.deepEqual(host.raw.providers.relay.models[0].reasoningEfforts, { max: 'legacy' })
+  const switching = makeHost()
+  switching.raw.providers.relay.apiKeyEnv = 'MISSING'
+  const session = await switching.routes['models3-open'].handle({ route: 'relay' })
+  assert.equal((await switching.routes['models3-save-route'].handle({ sessionId: session.value.sessionId, patch: { api: 'google-generative-ai' } })).error, 'gemini-key-required')
+  assert.equal(switching.count(), 0)
+})
+test('installed Gemini saved discovery uses protected credential and preserves complete raw', { skip: !SettingsForms || !Config }, async (t) => {
+  const host = makeHost({ credentials: { resolve: async () => ({ value: 'isolated-key' }) } })
+  Object.assign(host.raw.providers.relay, { api: 'google-generative-ai', baseURL: 'https://gateway.example/v1beta', apiKeyEnv: 'KEY' })
+  const before = clone(host.raw)
+  t.mock.method(modelsProbeLookup, 'impl', async () => [{ address: '8.8.8.8', family: 4 }])
+  let options
+  t.mock.method(https, 'request', (input, callback) => {
+    options = input
+    const request = new EventEmitter()
+    request.destroy = (error) => request.emit('error', error)
+    request.end = () => queueMicrotask(() => {
+      const response = new EventEmitter(); response.statusCode = 200; response.resume = () => {}
+      callback(response); response.emit('data', Buffer.from(JSON.stringify({ models: [{ name: 'models/gemini-example', displayName: 'Example' }] }))); response.emit('end')
+    })
+    return request
+  })
+  const opened = await host.routes['models3-open'].handle({ route: 'relay' })
+  const result = await host.routes['models3-discover'].handle({ sessionId: opened.value.sessionId })
+  assert.equal(result.ok, true, result.error)
+  assert.deepEqual(result.value.candidates, [{ id: 'gemini-example', name: 'Example' }])
+  assert.equal(options.headers['x-goog-api-key'], 'isolated-key')
+  assert.equal(JSON.stringify(result).includes('isolated-key'), false)
+  assert.deepEqual(host.raw, before); assert.equal(host.count(), 0)
+})
 test('installed SettingsForms: saved Anthropic discovery resolves credentials without writing configuration', { skip: !SettingsForms || !Config }, async (t) => {
   let ref
   const host = makeHost({ credentials: { resolve: async (key) => { ref = key; return { value: 'isolated-secret' } } } })
