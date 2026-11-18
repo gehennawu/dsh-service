@@ -7511,7 +7511,7 @@
         let observer = null
         try {
           observer = new MutationObserver(schedule)
-          observer.observe(doc.documentElement ?? doc.body ?? doc, { childList: true, subtree: true, characterData: true })
+          observer.observe(doc.documentElement ?? doc.body ?? doc, { childList: true, subtree: true })
         } catch (_) { observer = null }
         return () => {
           try { observer?.disconnect() } catch (_) {}
@@ -8176,8 +8176,19 @@
           } catch (_) {}
           mount()
           if (state.observer !== null) return
+          // 流式输出期间 documentElement 每批变更都会来这里：只置脏，按帧合并成一次
+          // mount + 显隐测量，避免每个 token 都触发全量行扫描与强制布局。
+          const scheduleSync = () => {
+            if (typeof requestAnimationFrame !== 'function') { mount(); updateVisibility(); return }
+            if (state.rafId !== null) return
+            state.rafId = requestAnimationFrame(() => {
+              state.rafId = null
+              mount()
+              updateVisibility()
+            })
+          }
           try {
-            state.observer = new MutationObserver(() => { mount(); updateVisibility() })
+            state.observer = new MutationObserver(scheduleSync)
             state.observer.observe(document.documentElement, { childList: true, subtree: true })
           } catch (_) {
             state.observer = null

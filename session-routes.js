@@ -19,6 +19,7 @@ export function createSessionsRoutes({
   SESSIONS_VIEW_PAGE_SIZE,
   listSessionsForManage,
   loadDeletedSessions,
+  persistenceListSnapshots,
   name,
   resolveSessionBytesForIds,
   resolveSessionForDelete,
@@ -48,19 +49,52 @@ export function createSessionsRoutes({
   const archiveFailure = (error) => ['archive-preview-unavailable', 'session-not-found', 'live-session-rejected', 'archive-plan-stale'].includes(error?.message)
     ? { ok: false, error: error.message }
     : typeof rpcTechnicalFailure === 'function' ? rpcTechnicalFailure(new Error('archive-preview-unavailable')) : { ok: false, error: 'archive-preview-unavailable' }
+  const revisionKeyOf = (value) => (typeof value === 'string' ? value : JSON.stringify(value))
+  // 归档预览/提交的「日志未变」判据：官方 revision 随日志变化，取不到就返回 null 走全量重读。
+  const archiveRevisions = async (ids) => {
+    if (typeof persistenceListSnapshots !== 'function') return null
+    const persistence = ctx.get('sessionPersistence')
+    if (persistence === undefined || persistence === null) return null
+    try {
+      const snapshots = await persistenceListSnapshots(persistence)
+      const byId = new Map()
+      for (const snapshot of Array.isArray(snapshots) ? snapshots : []) {
+        const id = typeof snapshot?.header?.id === 'string' ? snapshot.header.id : ''
+        if (id !== '') byId.set(id, revisionKeyOf(snapshot.revision))
+      }
+      if (!ids.every((id) => byId.has(id))) return null
+      return Object.fromEntries(ids.map((id) => [id, byId.get(id)]))
+    } catch (_) {
+      return null
+    }
+  }
   const archiveRecords = async (ids) => {
     const query = ctx.get('sessionQuery')
     if (typeof query?.listSessions !== 'function') throw new Error('archive-preview-unavailable')
     const records = await query.listSessions()
-    const titles = typeof query.readTitleSnapshots === 'function' ? await query.readTitleSnapshots(ids) : []
-    if (titles.some(item => item.status === 'rejected')) throw new Error('archive-preview-unavailable')
+    // 标题优先用已加载的会话标题缓存；只对缓存没有的 id 才回读标题快照（后者每条约一次整份日志读）。
+    const titleById = new Map()
+    const missingTitles = []
+    for (const id of ids) {
+      const cached = typeof sessionTitleCache?.get === 'function' ? sessionTitleCache.get(id) : undefined
+      if (typeof cached?.title === 'string') titleById.set(id, cached.title)
+      else missingTitles.push(id)
+    }
+    if (missingTitles.length > 0 && typeof query.readTitleSnapshots === 'function') {
+      const titles = await query.readTitleSnapshots(missingTitles)
+      if (titles.some(item => item.status === 'rejected')) throw new Error('archive-preview-unavailable')
+      for (const item of titles) {
+        const title = item?.value?.title?.title
+        if (typeof title === 'string') titleById.set(item.sessionId, title)
+      }
+    }
     const archived = ctx.get('workspaceRegistry')?.archivedSessionIds || []
     return await Promise.all(ids.map(async (id) => {
       const record = records.find((item) => item.header.id === id)
       if (!record) throw new Error('session-not-found')
       if (record.live || sessionIsLive(ctx, id)) throw new Error('live-session-rejected')
       if (archived.includes(id)) throw new Error('archive-plan-stale')
-      const title = titles.find(item => item.sessionId === id)?.value?.title?.title
+      const title = titleById.get(id)
       let worktree = 'unknown'
       let worktreeCandidate
       if (typeof query.readSession === 'function') {
@@ -159,11 +193,14 @@ export function createSessionsRoutes({
       for (const [key, plan] of archivePlans) if (Date.now() >= plan.expiresAt) archivePlans.delete(key)
       if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
       try {
-        const sessions = await archiveRecords([...new Set(raw)])
+        const ids = [...new Set(raw)]
+        const sessions = await archiveRecords(ids)
         if (disposed) return { ok: false, error: 'archive-preview-unavailable' }
         if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
+        const revisions = await archiveRevisions(ids)
+        if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
         const planId = randomUUID()
-        const plan = { sessions, expiresAt: Date.now() + ttl }
+        const plan = { sessions, revisions, expiresAt: Date.now() + ttl }
         archivePlans.set(planId, plan)
         return { ok: true, value: { planId, ...plan, consequences: ['hides-session', 'removes-pin', 'conditional-worktree-removal', 'unarchive-does-not-restore-files'], cleanup: 'unknown' } }
       } catch (error) { return archiveFailure(error) }
@@ -177,9 +214,27 @@ export function createSessionsRoutes({
       if (disposed || executing) return { ok: false, error: 'archive-plan-stale' }
       executing = true
       try {
-        const records = await archiveRecords(plan.sessions.map(item => item.id))
-        if (JSON.stringify(records) !== JSON.stringify(plan.sessions) || disposed) return { ok: false, error: 'archive-plan-stale' }
+        const ids = plan.sessions.map(item => item.id)
         const registry = ctx.get('workspaceRegistry')
+        let records
+        const revisions = await archiveRevisions(ids)
+        if (revisions !== null && plan.revisions !== undefined && JSON.stringify(revisions) === JSON.stringify(plan.revisions)) {
+          // 日志 revision 全等 ⇒ 归档内容（含 worktree 创建事件）不可能变化：只复检会漂移的
+          // 状态（存在/live/归档），复用预览结果，省掉提交时每个会话一次整份日志读。
+          const listed = typeof ctx.get('sessionQuery')?.listSessions === 'function' ? await ctx.get('sessionQuery').listSessions() : null
+          if (listed === null) return { ok: false, error: 'archive-preview-unavailable' }
+          const archivedIds = registry?.archivedSessionIds || []
+          const byId = new Map(listed.map(item => [item.header.id, item]))
+          const drifted = ids.some((id) => {
+            const live = byId.get(id)
+            return live === undefined || live.live === true || sessionIsLive(ctx, id) || archivedIds.includes(id)
+          })
+          if (drifted || disposed) return { ok: false, error: 'archive-plan-stale' }
+          records = plan.sessions
+        } else {
+          records = await archiveRecords(ids)
+          if (JSON.stringify(records) !== JSON.stringify(plan.sessions) || disposed) return { ok: false, error: 'archive-plan-stale' }
+        }
         if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'workspace-unavailable' }
         const results = []
         for (const item of records) {

@@ -195,6 +195,9 @@ const BACKUP_META_DIR = 'meta'
 const BACKUP_META_FILE = 'backup.json'
 const BACKUP_META_VERSION = 1
 const USAGE_INDEX_VERSION = 7
+// 深度权限检查的并发度：每个条目两次系统调用，12 路足以把 14 s 的等待压到秒级，
+// 又不至于把瞬时 fd 占用抬得太高。
+const DEEP_CHECK_CONCURRENCY = 12
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
 // 迁移发生在加载期（不落盘）；首个成功刷新必须把版本升级写回，否则每次启动都要再迁移。
 const migratedUsageIndexes = new WeakSet()
@@ -3309,7 +3312,8 @@ async function deepCheckPermissions(dshHome, plans, planId) {
   if (paths === undefined) return undefined
   const startedAt = Date.now()
   const result = { scanned: 0, ownerIssues: 0, directoryModeIssues: 0, fileModeIssues: 0, unreadable: 0, samples: [] }
-  const visit = async (path) => {
+  const queue = []
+  const inspect = async (path) => {
     let info
     try {
       info = await lstat(path)
@@ -3343,7 +3347,7 @@ async function deepCheckPermissions(dshHome, plans, planId) {
     }
     for (const entry of entries) {
       if (entry.name === '.git') continue
-      await visit(join(path, entry.name))
+      queue.push(join(path, entry.name))
     }
   }
   // 工作区注册表常含嵌套路径（如 /workspace 与 /workspace/projects/<x>）：被其他根
@@ -3353,7 +3357,17 @@ async function deepCheckPermissions(dshHome, plans, planId) {
     if (roots.some((root) => isAtOrUnderPath(root, path))) continue
     roots.push(path)
   }
-  for (const path of roots) await visit(path)
+  // 深度检查是用户主动触发的长操作（本机 33.9 万条目串行约 14 s）：用固定并发池
+  // 摊平每文件两次系统调用的等待，计数与样本上限语义不变（JS 单线程，结果不交错）。
+  queue.push(...roots)
+  const workers = Math.min(DEEP_CHECK_CONCURRENCY, queue.length)
+  await Promise.all(Array.from({ length: workers }, async () => {
+    for (;;) {
+      const path = queue.pop()
+      if (path === undefined) return
+      await inspect(path)
+    }
+  }))
   result.durationMs = Date.now() - startedAt
   return result
 }
@@ -6658,7 +6672,7 @@ function apply(ctx, featureConfig) {
   const rpcEndpoints = mergeRouteTables([
     coreRoutes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
-    createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
+    createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, persistenceListSnapshots, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, providerAvailability, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, listRecentRouteFailures: () => subagentRouteFailureViews(subagentRouteFailures), rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, listLocalProfiles, name, rpcFailure }),

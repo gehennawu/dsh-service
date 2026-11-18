@@ -508,12 +508,22 @@
           state.observerCreated = true
           try {
             // 会话切换/新会话创建会重建 composer 座；模型切换走上面的 store 订阅。
-            state.observer = new MutationObserver(() => {
+            let scheduled = false
+            const schedule = () => {
+              if (scheduled || state.disposed) return
+              scheduled = true
+              if (typeof requestAnimationFrame !== 'function') { scheduled = false; apply(); return }
+              requestAnimationFrame(() => { scheduled = false; if (!state.disposed) apply() })
+            }
+            state.observer = new MutationObserver((records) => {
               if (state.seat !== null && typeof doc.contains === 'function' && !doc.contains(state.seat)) {
                 state.seat = null
                 state.lastProvider = null
+              } else if (Array.isArray(records) && state.seat !== null && records.every((record) => !record.addedNodes || record.addedNodes.length === 0)) {
+                // 座还在、也没有新节点挂载（纯流式文本/删除旧节点）：装饰无需重扫。
+                return
               }
-              apply()
+              schedule()
             })
             state.observer.observe(doc.documentElement, { childList: true, subtree: true })
           } catch (_) {

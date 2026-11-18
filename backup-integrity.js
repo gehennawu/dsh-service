@@ -368,7 +368,44 @@ function parseTar(expanded, options = {}) {
   return { entries, sections: state.sections, logicalBytes, entryCount: entries.length, archiveFormat, metadata: state.metadata ?? null }
 }
 
+// 预检（不含条目内容）会被 UI 反复触发：同一归档在同一 mtime/size 下直接复用报告，
+// 省掉重复 readFile + gunzip + tar 解析。含数据的条目模式（prepareRestore/verify）不缓存，
+// 避免把整包内容留在内存里。
+const INSPECT_CACHE_TTL_MS = 5 * 60 * 1000
+const INSPECT_CACHE_MAX = 2
+const inspectCache = new Map()
+
 async function inspectArchive(source, options = {}) {
+  const cacheable = options.collectEntries !== true && options.digestEntries !== true
+  let cacheKey = null
+  if (cacheable) {
+    // 键用内容 sha256：归档可能被同尺寸原地重写（导入/替换），只靠 mtime 在粗粒度文件系统上
+    // 会串报告。流式哈希 ~0.2 s，换来命中时跳过 gunzip + tar 解析（~1.5–2 s）。
+    try {
+      const sha256 = await hashFile(source.path)
+      cacheKey = `${source.id}|${source.name}|${String(source.nameVersion)}|${sha256}|${options.collectPaths === true ? 'paths' : 'plain'}|${options.platform ?? process.platform}|${options.dshHome ?? ''}`
+    } catch (_) {
+      cacheKey = null
+    }
+  }
+  if (cacheKey !== null) {
+    const hit = inspectCache.get(cacheKey)
+    if (hit !== undefined && Date.now() - hit.at < INSPECT_CACHE_TTL_MS) {
+      inspectCache.delete(cacheKey)
+      inspectCache.set(cacheKey, hit)
+      return { report: { ...hit.value.report, inspectedAt: new Date().toISOString() }, parsed: hit.value.parsed }
+    }
+    if (hit !== undefined) inspectCache.delete(cacheKey)
+  }
+  const value = await inspectArchiveUncached(source, options)
+  if (cacheKey !== null && value.report.validForRestore) {
+    inspectCache.set(cacheKey, { at: Date.now(), value })
+    while (inspectCache.size > INSPECT_CACHE_MAX) inspectCache.delete(inspectCache.keys().next().value)
+  }
+  return value
+}
+
+async function inspectArchiveUncached(source, options = {}) {
   const base = {
     id: source.id,
     name: source.name,

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createSessionsRoutes } from '../session-routes.js'
 
-function fixture() {
+function fixture({ persistenceListSnapshots } = {}) {
   const listeners = new Map()
   const disposers = []
   const calls = []
@@ -10,7 +10,7 @@ function fixture() {
   const registry = { archivedSessionIds: [], async archiveSession(id) { calls.push(id); this.archivedSessionIds.push(id) } }
   const services = { sessionQuery: { async listSessions() { return records } }, workspaceRegistry: registry }
   const ctx = { get: key => services[key], on: (key, fn) => { listeners.set(key, fn); return () => listeners.delete(key) }, effect: fn => disposers.push(fn()) }
-  const routes = createSessionsRoutes({ ctx, sessionIsLive: () => false })
+  const routes = createSessionsRoutes({ ctx, sessionIsLive: () => false, persistenceListSnapshots })
   const invoke = (key, payload) => routes[key].handle(payload)
   return { invoke, calls, records, registry, services, listeners, emit: info => listeners.get('worktree/cleanup')(info), dispose: () => disposers.forEach(fn => fn()) }
 }
@@ -50,6 +50,35 @@ test('archive expired, changed, live, missing and disposed plans never execute',
   f.dispose()
   assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).ok, false)
   assert.deepEqual(f.calls, [])
+})
+
+test('archive submit reuses the preview when log revisions are unchanged', async () => {
+  let revisions = { a: 'r1' }
+  const f = fixture({ persistenceListSnapshots: async () => Object.entries(revisions).map(([id, revision]) => ({ header: { id }, revision })) })
+  f.services.sessionPersistence = {}
+  let reads = 0
+  f.services.sessionQuery.readSession = async () => {
+    reads += 1
+    return {
+      inheritedEventCount: 0,
+      events: [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/owned', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }],
+    }
+  }
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal(plan.value.sessions[0].worktree, 'candidate')
+  assert.equal(reads, 1)
+  const result = await f.invoke('sessions-archive', { planId: plan.value.planId })
+  assert.equal(result.value.results[0].archived, true)
+  assert.equal(reads, 1, 'an unchanged revision must not re-read the session log at submit')
+
+  // revision 变化 → 回落全量重读并重比；日志内容确已变化时拒绝执行。
+  const snapshot = { inheritedEventCount: 0, events: [] }
+  f.services.sessionQuery.readSession = async () => snapshot
+  f.registry.archivedSessionIds = []
+  const stalePlan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  revisions = { a: 'r2' }
+  snapshot.events = [{ type: 'plugin:worktree/created', seq: 2, ignorable: true, data: { path: '/other', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }]
+  assert.equal((await f.invoke('sessions-archive', { planId: stalePlan.value.planId })).error, 'archive-plan-stale')
 })
 
 test('archive batch reports partial failure without rollback; cleanup events are revision guarded', async () => {
