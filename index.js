@@ -196,6 +196,8 @@ const BACKUP_META_FILE = 'backup.json'
 const BACKUP_META_VERSION = 1
 const USAGE_INDEX_VERSION = 7
 const USAGE_INDEX_FILE = 'dsh-service-usage-index.json'
+// 迁移发生在加载期（不落盘）；首个成功刷新必须把版本升级写回，否则每次启动都要再迁移。
+const migratedUsageIndexes = new WeakSet()
 // 桶口径已对齐（= 当前折叠口径）的最低索引版本：口径在 v5 定稿，v5/v6 的折叠函数与当前
 // **逐字节相同**（v6 只加了 detached / failedSessions 记账字段），故加载 v5 及以后的桶可
 // 直接沿用；**低于它的必须重折**（v4 及更早把「无 usage 的步骤」也计为步骤）。
@@ -243,6 +245,7 @@ const SESSIONS_VIEW_PAGE_SIZE = 100
 const SESSIONS_VIEW_CONTEXT = 15
 const SESSIONS_SEARCH_PER_SESSION_LIMIT = 5
 const SESSIONS_SEARCH_TOTAL_LIMIT = 50
+const SESSIONS_SEARCH_INDEX_LIMIT = 20
 const SESSIONS_DELETE_PLAN_TTL_MS = 5 * 60 * 1000
 // sessions-bytes 宿主缓存（v0.36 懒加载：去掉「—」占位、行体积按需拉取）：apply() 状态，
 // 宿主不重启就在，浏览器刷新/面板重开直接命中不重扫。
@@ -1562,7 +1565,11 @@ async function loadUsageIndex(dshHome) {
   try {
     const parsed = JSON.parse(await readFile(join(dshHome, USAGE_INDEX_FILE), 'utf8'))
     if (typeof parsed?.sessions !== 'object' || parsed.sessions === null) return createUsageIndex()
-    if (parsed.version !== USAGE_INDEX_VERSION) return migrateUsageIndex(parsed)
+    if (parsed.version !== USAGE_INDEX_VERSION) {
+      const migrated = migrateUsageIndex(parsed)
+      migratedUsageIndexes.add(migrated)
+      return migrated
+    }
     return parsed
   } catch (error) {
     if (error?.code === 'ENOENT') return createUsageIndex()
@@ -2665,12 +2672,36 @@ function addToolError(session, event) {
 }
 
 function pruneSessionErrors(session, cutoff) {
+  let changed = false
   for (const field of ['modelErrors', 'toolErrors']) {
     for (const [key, error] of Object.entries(session[field] || {})) {
-      error.recentTimes = (error.recentTimes || []).filter((time) => time >= cutoff)
-      if (error.recentTimes.length === 0) delete session[field][key]
+      const recent = Array.isArray(error.recentTimes) ? error.recentTimes : []
+      const kept = recent.filter((time) => time >= cutoff)
+      if (kept.length !== recent.length) changed = true
+      error.recentTimes = kept
+      if (kept.length === 0) {
+        delete session[field][key]
+        changed = true
+      }
     }
   }
+  return changed
+}
+
+// 就地刷新时只复制会被改写的会话对象；错误桶要连条目一起浅拷贝，避免把旧索引共享的
+// 对象改坏（保存失败时旧索引仍必须可用）。
+function cloneUsageSessionForMutation(session) {
+  const copy = { ...session }
+  for (const field of ['modelErrors', 'toolErrors']) {
+    const errors = session[field]
+    if (errors === undefined || errors === null) continue
+    const cloned = {}
+    for (const [key, error] of Object.entries(errors)) {
+      cloned[key] = { ...error, recentTimes: Array.isArray(error.recentTimes) ? [...error.recentTimes] : [] }
+    }
+    copy[field] = cloned
+  }
+  return copy
 }
 
 function validSessionOffset(value) {
@@ -2767,6 +2798,42 @@ function foldUsageEvents(ctx, record, previous, events, inheritedEventCount = 0)
 // The index file is external input: a hand-edited or truncated cache must never break the RPC.
 function usageFailedSessions(index) {
   return Array.isArray(index?.failedSessions) ? index.failedSessions.filter((failure) => failure !== null && typeof failure === 'object') : []
+}
+
+// publicUsage 是全索引的展开（548 会话 / 225 KB 量级），同一份索引在「读缓存 + 刷新」
+// 两条路径上被连续取两次；按索引对象 + updatedAt + 时区记忆一槽即可，60 s 后失效以让
+// 48 h 报错窗口自然滚出。WeakMap 不快照，索引换代后旧条目可回收。
+const PUBLIC_USAGE_CACHE_TTL_MS = 60 * 1000
+const publicUsageCache = new WeakMap()
+function cachedPublicUsage(index, timezoneOffsetMinutes = 0) {
+  const offset = Number.isFinite(timezoneOffsetMinutes) ? timezoneOffsetMinutes : 0
+  // `projects[].missing` 来自磁盘存在性，不是索引内容；项目目录被删/恢复时索引可以零变化，
+  // 所以缓存键必须带上各项目路径的存在位，否则会继续下发旧的 missing。
+  const visibility = usageProjectVisibilityKey(index)
+  const cached = publicUsageCache.get(index)
+  if (cached !== undefined
+    && cached.updatedAt === index.updatedAt
+    && cached.offset === offset
+    && cached.visibility === visibility
+    && Date.now() - cached.at < PUBLIC_USAGE_CACHE_TTL_MS) return cached.value
+  const value = publicUsage(index, offset)
+  publicUsageCache.set(index, { updatedAt: index.updatedAt, offset, visibility, at: Date.now(), value })
+  return value
+}
+
+function usageProjectVisibilityKey(index) {
+  const paths = new Set()
+  for (const session of Object.values(index.sessions)) {
+    const projectPath = session?.project?.path
+    if (typeof projectPath === 'string' && projectPath.length > 0) paths.add(projectPath)
+  }
+  let key = ''
+  for (const projectPath of [...paths].sort()) {
+    let exists = true
+    try { exists = existsSync(projectPath) } catch (_) { exists = true }
+    key += exists ? '1' : '0'
+  }
+  return key
 }
 
 function publicUsage(index, timezoneOffsetMinutes = 0) {
@@ -2874,39 +2941,58 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
   const persistence = ctx.get('sessionPersistence')
   if (persistence == null || (typeof persistence.open !== 'function' && typeof persistence.readFrom !== 'function')) throw new Error('session-persistence-unavailable')
   const snapshots = await persistenceListSnapshots(persistence)
-  // This is our JSON-only usage cache, not a live Host object. Publish only after save succeeds.
-  const index = structuredClone(currentIndex)
-  index.failedSessions = []
+  // This is our JSON-only usage cache, not a live Host object. Publish only after save succeeds:
+  // the top-level map is copied, and any session object we rewrite is copied first, so a failed
+  // save leaves the previously published index untouched.
+  const index = { ...currentIndex, sessions: { ...currentIndex.sessions } }
+  const failedSessions = []
+  let changed = false
   // 快照缺 header（后端换代/损坏目录）时只跳过该条，不让整个折叠任务中断：
   // 一条脏记录不该把其余健康会话的 Token 统计一起拖掉。
   const usableSnapshots = snapshots.filter((record) => record?.header !== undefined && record.header !== null)
   for (const record of snapshots) {
     if (record?.header !== undefined && record.header !== null) continue
-    index.failedSessions.push({ id: 'unknown', code: 'session-read-failed', message: 'Session metadata was unreadable.', stale: false })
+    failedSessions.push({ id: 'unknown', code: 'session-read-failed', message: 'Session metadata was unreadable.', stale: false })
   }
   const liveIds = new Set(usableSnapshots.map((record) => String(record.header.id)))
   // 保留策略：会话被删（或项目文件夹被删）都不再扣减已统计的贡献——条目永久留在索引里，
   // 只打 detached 标记供界面区分，hours/lastSeq 等桶数据一字不动；会话回来时自动摘掉标记。
   // 这样总量与热力图始终是「索引建立以来的完整历史」，不再随删除缩水。
   const detachedAt = Date.now()
+  const recentCutoff = detachedAt - USAGE_ERROR_WINDOW_MS
   for (const [id, session] of Object.entries(index.sessions)) {
     if (liveIds.has(id)) {
+      // live 会话的 rebuildPending 只能由成功重折清除（失败要跨重启继续重试）。
       if (session.detached === true) {
-        delete session.detached
-        delete session.detachedAt
+        const copy = cloneUsageSessionForMutation(session)
+        delete copy.detached
+        delete copy.detachedAt
+        index.sessions[id] = copy
+        changed = true
       }
       continue
     }
-    if (session.detached !== true) {
-      session.detached = true
-      session.detachedAt = detachedAt
-    }
-    if (session.rebuildPending) {
-      delete session.rebuildPending
+    if (session.detached !== true || session.rebuildPending) {
+      const copy = cloneUsageSessionForMutation(session)
+      if (session.detached !== true) {
+        copy.detached = true
+        copy.detachedAt = detachedAt
+      }
+      delete copy.rebuildPending
+      index.sessions[id] = copy
+      changed = true
     }
   }
-  const recentCutoff = Date.now() - USAGE_ERROR_WINDOW_MS
-  for (const session of Object.values(index.sessions)) pruneSessionErrors(session, recentCutoff)
+  for (const [id, session] of Object.entries(index.sessions)) {
+    const hasErrors = Object.keys(session.modelErrors || {}).length > 0 || Object.keys(session.toolErrors || {}).length > 0
+    if (!hasErrors) continue
+    const copy = cloneUsageSessionForMutation(session)
+    const pruned = pruneSessionErrors(copy, recentCutoff)
+    if (pruned) {
+      index.sessions[id] = copy
+      changed = true
+    }
+  }
   for (const record of usableSnapshots) {
     const id = String(record.header.id)
     const revision = revisionKey(record.revision)
@@ -2925,10 +3011,24 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
       next.revision = revision
       delete next.rebuildPending
       index.sessions[id] = next
+      changed = true
     } catch (error) {
-      index.failedSessions.push(usageSessionFailure(id, error, stage, previous !== undefined))
+      failedSessions.push(usageSessionFailure(id, error, stage, previous !== undefined))
     }
   }
+  const failuresChanged = failedSessions.length !== currentIndex.failedSessions.length
+    || failedSessions.some((failure, position) => {
+      const current = currentIndex.failedSessions[position]
+      return current === undefined
+        || current.id !== failure.id
+        || current.code !== failure.code
+        || current.stale !== failure.stale
+        || current.message !== failure.message
+    })
+  // 零变化（含空刷新）不落盘、不推进 updatedAt：publicUsage 的缓存键与界面「上次更新」
+  // 都据此判断，避免每次切回标签页都重写整个索引。
+  if (!changed && !failuresChanged && !migratedUsageIndexes.has(currentIndex)) return currentIndex
+  index.failedSessions = failedSessions
   index.updatedAt = Date.now()
   await saveUsageIndex(dshHome, index)
   return index
@@ -3402,13 +3502,13 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
   }
 }
 
-async function collectHealth(ctx) {
+function collectHealth(ctx) {
   const sessionsService = ctx.get('sessions')
-  const sessionQueryService = ctx.get('sessionQuery')
   const activity = collectActiveWork(ctx)
-  const sessionRecords = sessionQueryService === undefined ? [] : await sessionQueryService.listSessions()
   const memory = process.memoryUsage()
 
+  // 面板每 30 s 轮询一次；这里只读内存态。持久会话计数需要全量枚举目录（数百次
+  // open/read），已从卡片移除，避免为一个展示数字反复扫盘。
   return {
     uptimeSeconds: process.uptime(),
     rssBytes: memory.rss,
@@ -3416,7 +3516,6 @@ async function collectHealth(ctx) {
     arch: process.arch,
     nodeVersion: process.version,
     liveSessions: sessionsService === undefined ? 0 : sessionsService.list().length,
-    persistedSessions: sessionRecords.filter((record) => record.persisted === true).length,
     activeAgents: activity.items.filter((item) => item.type === 'agent').length,
     activeJobs: activity.items.filter((item) => item.type === 'job').length,
   }
@@ -5013,7 +5112,7 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
 // 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
 async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCache = null) {
   const sessionQuery = ctx.get('sessionQuery')
-  const result = { available: sessionQuery !== undefined && typeof sessionQuery.filterEvents === 'function', query, scope, hits: [] }
+  const result = { available: sessionQuery !== undefined && (typeof sessionQuery.searchSessions === 'function' || typeof sessionQuery.filterEvents === 'function'), query, scope, hits: [] }
   if (!result.available) return result
   const q = typeof query === 'string' ? query.trim() : ''
   if (q === '') return result
@@ -5025,6 +5124,41 @@ async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCa
     : listed.items
   const scopeSet = new Set(targets.map((item) => item.id))
   const titleById = new Map(listed.items.map((item) => [item.id, item.title]))
+  // 官方 FTS5 索引优先（`dsh-session-query-sqlite` 随 profile 挂载时可用）：只扫索引，
+  // 命中会话再按会话取前 N 条事件；不可用/抛错（未挂载 sqlite、老宿主）时才回落逐会话
+  // filterEvents——那条路对无命中查询要把全部日志读一遍，是最后一个兜底而不是默认。
+  if (typeof sessionQuery.searchSessions === 'function') {
+    let page
+    try {
+      page = await sessionQuery.searchSessions({ query: q, limit: SESSIONS_SEARCH_INDEX_LIMIT })
+    } catch (_) {
+      page = undefined
+    }
+    if (page !== undefined) {
+      const hits = []
+      for (const hit of Array.isArray(page.items) ? page.items : []) {
+        const id = typeof hit?.header?.id === 'string' ? hit.header.id : ''
+        if (id === '' || !scopeSet.has(id)) continue
+        // `searchEvents` 每次都会重跑整语料 reconcile（官方实现里与 searchSessions 同价），
+        // 逐会话再调 20 次会把一次搜索拖成几分钟；索引路径只取官方已返回的最强匹配。
+        const doc = hit.bestMatch
+        if (doc === undefined || doc === null) continue
+        hits.push({
+          sessionId: id,
+          title: titleById.get(id) ?? '',
+          items: [{
+            seq: Number(doc.seq),
+            type: doc.type,
+            snippet: typeof doc.snippet === 'string' ? doc.snippet : typeof doc.text === 'string' ? doc.text : sessionEventText(doc),
+          }],
+        })
+        if (hits.length >= SESSIONS_SEARCH_INDEX_LIMIT) break
+      }
+      result.hits = hits
+      return result
+    }
+  }
+  if (typeof sessionQuery.filterEvents !== 'function') return result
   let total = 0
   for (const item of targets) {
     if (total >= SESSIONS_SEARCH_TOTAL_LIMIT) break
@@ -6393,7 +6527,7 @@ function apply(ctx, featureConfig) {
 
     } },
     'usage': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {
-      return { ok: true, value: publicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
+      return { ok: true, value: cachedPublicUsage(await usageIndexPromise, payload?.timezoneOffsetMinutes) }
 
     } },
     'usage-refresh': { feature: 'modelUsage', handle: async (payload, rpcEndpoint) => {
@@ -6403,7 +6537,7 @@ function apply(ctx, featureConfig) {
           return index
         }).finally(() => { usageRefreshPromise = undefined })
       }
-      return { ok: true, value: publicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
+      return { ok: true, value: cachedPublicUsage(await usageRefreshPromise, payload?.timezoneOffsetMinutes) }
 
     } },
     'permissions-plan': { feature: 'healthDiagnostics', audit: true, handle: async (payload, rpcEndpoint) => {

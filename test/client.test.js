@@ -663,7 +663,7 @@ function createRenderer(rpcCall, options = {}) {
       return timer.delay
     },
     async advanceNonHealthTimer() {
-      const index = timers.findIndex((timer) => timer.delay !== 5000)
+      const index = timers.findIndex((timer) => timer.delay !== 30000)
       const [timer] = index < 0 ? [] : timers.splice(index, 1)
       assert.ok(timer, 'no pending non-health timer')
       timer.resolve()
@@ -1133,7 +1133,7 @@ test('plugin registers balanced zh and en dictionaries', async () => {
   assert.ok(Object.keys(dictionaries.zh).length >= 25)
 })
 
-test('health panel loads immediately, refreshes every five seconds, and stops after unmount', async () => {
+test('health panel loads immediately, refreshes every thirty seconds, and stops after unmount', async () => {
   let healthCalls = 0
   const renderer = createRenderer(async (channel, endpoint) => {
     assert.equal(channel, '/dsh-service')
@@ -1163,11 +1163,11 @@ test('health panel loads immediately, refreshes every five seconds, and stops af
   assert.equal(healthCalls, 1)
   assert.match(renderer.text('settings.section'), /运行时间.*1 小时 1 分钟/)
   assert.match(renderer.text('settings.section'), /内存 RSS.*150 MB/)
-  assert.deepEqual(renderer.pendingTimerDelays(), [5000])
+  assert.deepEqual(renderer.pendingTimerDelays(), [30000])
 
-  assert.equal(await renderer.advanceTimer(), 5000)
+  assert.equal(await renderer.advanceTimer(), 30000)
   assert.equal(healthCalls, 2)
-  assert.deepEqual(renderer.pendingTimerDelays(), [5000])
+  assert.deepEqual(renderer.pendingTimerDelays(), [30000])
 
   renderer.unmount('settings.section')
   assert.deepEqual(renderer.pendingTimerDelays(), [])
@@ -3611,7 +3611,7 @@ test('backup restore inspects, prepares, renders consequences, and commits only 
   await renderer.findButton('确认恢复').props.onClick()
   await renderer.flush()
   assert.equal(calls.filter((call) => call.endpoint === 'backup-restore-commit').length, 1)
-  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [1000])
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 30000), [1000])
 })
 
 test('backup restore surfaces cross-platform notices and lets the user pick the target profile', async () => {
@@ -3809,7 +3809,7 @@ test('backup restore manual result shows restart instructions without starting r
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /恢复完成，需要手动重启.*Ctrl\+C/)
   assert.equal(versionCalls, 1)
-  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [], 'recovery polling did not start')
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 30000), [], 'recovery polling did not start')
 })
 
 test('desktop backup restore asks for a desktop app restart instead of the terminal instructions', async () => {
@@ -3838,7 +3838,7 @@ test('desktop backup restore asks for a desktop app restart instead of the termi
   assert.match(renderer.text('settings.section'), /请在桌面端退出应用后重新打开/)
   assert.doesNotMatch(renderer.text('settings.section'), /Ctrl\+C/)
   assert.equal(versionCalls, 1)
-  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 5000), [], 'recovery polling did not start')
+  assert.deepEqual(renderer.pendingTimerDelays().filter((delay) => delay !== 30000), [], 'recovery polling did not start')
 })
 
 test('service panel lists active work and requires an explicit force restart', async () => {
@@ -4532,7 +4532,7 @@ test('manual-launch environment confirms before upgrade and shows hand-restart g
   assert.equal(upgradeCalls, 1)
   assert.match(renderer.text('settings.section'), /升级完成，需要手动重启/)
   assert.match(renderer.text('settings.section'), /重新启动 dsh/)
-  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, 'no recovery polling while the process keeps running')
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 30000).length, 0, 'no recovery polling while the process keeps running')
 
   // 重启标签：确认流程展示同源警告；发出后等待文案换成手动拉起说明。
   await renderer.findButton('维护').props.onClick()
@@ -4603,7 +4603,7 @@ test('desktop restart guides to the desktop app and starts no recovery polling',
   await renderer.flush()
   assert.equal(webRestarts, 1)
   assert.match(renderer.text('settings.section'), /请在桌面端退出应用后重新打开/)
-  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, '桌面端不会有新实例，不启动恢复轮询')
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 30000).length, 0, '桌面端不会有新实例，不启动恢复轮询')
 })
 
 // 已装好待重启（installedVersion 领先运行版本）是宿主事实而不是点击残留：重挂载/刷新页面后
@@ -4688,7 +4688,7 @@ test('an upgrade that lands without a restart switches the card to the restart-p
   assert.doesNotMatch(renderer.text('settings.section'), /升级插件/)
   assert.match(renderer.text('settings.section'), /已安装 1\.5\.2，重启后生效/)
   assert.equal(renderer.hasTest('upgrade-manual-pending'), true)
-  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length, 0, 'no recovery polling while the process keeps running')
+  assert.equal(renderer.pendingTimerDelays().filter((delay) => delay !== 30000).length, 0, 'no recovery polling while the process keeps running')
 })
 
 test('managed environment upgrades immediately, keeps recovery polling, and labels the supervisor', async () => {
@@ -4708,7 +4708,7 @@ test('managed environment upgrades immediately, keeps recovery polling, and labe
   await renderer.flush()
   assert.equal(upgradeCalls, 1, 'no confirmation gate when a process manager is detected')
   assert.doesNotMatch(renderer.text('settings.section'), /需要手动重启/)
-  assert.ok(renderer.pendingTimerDelays().some((delay) => delay !== 5000), 'recovery polling is armed as before')
+  assert.ok(renderer.pendingTimerDelays().some((delay) => delay !== 30000), 'recovery polling is armed as before')
 })
 
 test('version responses without the runtime env field keep the legacy upgrade behavior', async () => {
@@ -15291,7 +15291,8 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     await renderer.flush()
 
     // 挂载即无条件补拉，不因「索引比 5 分钟新」而跳过——旧的 300000 门槛在此必然短路。
-    assert.equal(usageCalls, 1, 'mount reads the cached snapshot once')
+    // 且只发一次请求：usage-refresh 本身就返回完整投影，不再先读一次缓存再折一次。
+    assert.equal(usageCalls, 0, 'mount must not read the cached snapshot before folding')
     assert.equal(refreshCalls, 1, 'mount MUST fold once even though the index is under five minutes old')
 
     await renderer.findButton('模型统计').props.onClick()
@@ -15302,17 +15303,14 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     // 关键：**没有固定周期**——统计页不再挂任何分钟级轮询定时器。
     // 排除既有的 5s 健康轮询（本功能之外的固定存在），只看统计自己有没有排分钟级轮询。
     assert.equal(
-      renderer.pendingTimerDelays().filter((delay) => delay !== 5000).length,
+      renderer.pendingTimerDelays().filter((delay) => delay !== 30000).length,
       1,
       'only the day-boundary timer may be parked while the usage page is open (no polling chain)',
     )
 
-    // 时间流逝（推进健康轮询）不会带来任何额外折叠：这正是不再周期性重折的保证。
+    // 统计页没有 30 s 轮询（健康轮询只在概览页挂链）；空闲不会带来任何额外折叠。
     const afterEnter = refreshCalls
-    await renderer.advanceTimer(5000)
-    await renderer.flush()
-    await renderer.advanceTimer(5000)
-    await renderer.flush()
+    assert.equal(renderer.pendingTimerDelays().filter((delay) => delay === 30000).length, 0, 'no 30 s poll on the usage page')
     assert.equal(refreshCalls, afterEnter, 'idling on the usage page must not refold on a timer')
 
     // 边沿①：从后台切回前台（visibilitychange → 可见）补一次。
@@ -15326,7 +15324,7 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
 
     // 边沿②：跨本地零点。排的是「到下一个本地 0:00:01」的定时器，触发后补一次。
     const beforeMidnight = refreshCalls
-    const midnightDelays = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    const midnightDelays = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 30000)
     assert.equal(midnightDelays.length, 1, 'exactly one day-boundary timer is parked')
     // 2026-10-11 14:30 本地 → 次日 0:00:01 = 9h30m01s = 34201000ms
     assert.equal(midnightDelays[0], 34201000, 'the timer is aligned to the next local midnight (+1s grace)')
@@ -15334,19 +15332,19 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     await renderer.flush()
     assert.equal(refreshCalls, beforeMidnight + 1, 'crossing local midnight folds once')
     // 触发后重排下一天：不会退化成周期轮询。
-    const nextMidnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    const nextMidnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 30000)
     assert.equal(nextMidnight.length, 1, 'the day-boundary timer re-arms for the following day')
 
     // 切走统计页 → 断链：零点定时器与可见性监听一并撤掉。
     await renderer.findButton('概览').props.onClick()
     await renderer.flush()
     assert.equal(
-      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000).length,
+      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 30000).length,
       0,
       'leaving the usage page must withdraw the day-boundary timer',
     )
     const afterLeaving = refreshCalls
-    await renderer.advanceTimer(5000)
+    await renderer.advanceTimer(30000)
     await renderer.flush()
     assert.equal(refreshCalls, afterLeaving, 'no fold is issued once the usage page is left')
 
@@ -15355,7 +15353,7 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     await renderer.flush()
     assert.equal(refreshCalls, afterLeaving + 1, 'returning to the usage page folds once')
     assert.equal(
-      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000).length,
+      renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 30000).length,
       1,
       'the day-boundary timer is re-armed on return',
     )
@@ -15421,21 +15419,18 @@ test('usage does not refold on any timer while the page idles, but a midnight cr
 
     // 敞着不动：**没有任何分钟级轮询定时器**被挂上——唯一的非健康定时器是跨零点那个，
     // 量级 > 1 小时。旧 60s 自续链会在这里挂一个 60000 的定时器，本断言即红。
-    const parked = renderer.pendingTimerDelays().filter((delay) => delay !== 5000)
+    const parked = renderer.pendingTimerDelays().filter((delay) => delay !== 30000)
     assert.equal(parked.length, 1, 'exactly one non-health timer is parked')
     assert.ok(parked[0] > 3600000, `the parked timer must be the day boundary, not a polling chain (got ${parked[0]})`)
 
-    // 推进健康轮询不得带来任何额外折叠。
+    // 统计页不挂 30 s 轮询，空闲不得带来任何额外折叠。
     const settled = refreshCalls
-    await renderer.advanceTimer(5000)
-    await renderer.flush()
-    await renderer.advanceTimer(5000)
-    await renderer.flush()
+    assert.equal(renderer.pendingTimerDelays().filter((delay) => delay === 30000).length, 0, 'no 30 s poll on the usage page')
     assert.equal(refreshCalls, settled, 'idling must not refold on a timer')
 
     // 跨过零点并触发那天唯一一个零点定时器。
     nowMs = new Date(realToday.getTime() + 24 * 60 * 60 * 1000 + 2000).getTime()
-    const midnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 5000)
+    const midnight = renderer.pendingTimerDelays().filter((delay) => delay > 0 && delay !== 30000)
     assert.equal(midnight.length, 1, 'the day-boundary timer is parked')
     await renderer.advanceTimer(midnight[0])
     await renderer.flush()

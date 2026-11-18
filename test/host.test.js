@@ -2050,8 +2050,8 @@ test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection
 test('RPC dispatcher records unexpected handler failures as technical errors', async () => {
   const host = createHost({
     services: {
-      sessionQuery: {
-        async listSessions() { throw new Error('database-offline') },
+      agents: {
+        list() { throw new Error('database-offline') },
       },
     },
   })
@@ -2564,7 +2564,7 @@ test('plugin-restart endpoint reloads only failed fibers of listed entries', asy
   assert.ok(logs.info.some((line) => String(line).includes('endpoint=plugin-restart')), 'restart is audited')
 })
 
-test('health RPC reports process and service metrics with persisted-only session count', async () => {
+test('health RPC reports process and service metrics without scanning the session corpus', async () => {
   const runningAgent = { id: 'agent-running', status: 'running' }
   const idleAgent = { id: 'agent-idle', status: 'idle' }
   const sharedJob = { id: 'job-1', label: 'build', status: 'running' }
@@ -2573,13 +2573,6 @@ test('health RPC reports process and service metrics with persisted-only session
   const { handler } = createHost({
     services: {
       sessions: { list: () => [{ id: 'live-1' }, { id: 'live-2' }] },
-      sessionQuery: {
-        listSessions: async () => [
-          { header: { id: 'persisted-1' }, live: true, persisted: true },
-          { header: { id: 'persisted-2' }, live: false, persisted: true },
-          { header: { id: 'live-only' }, live: true, persisted: false },
-        ],
-      },
       agents: { list: () => [runningAgent, idleAgent] },
       jobs: {
         list(caller) {
@@ -2596,15 +2589,14 @@ test('health RPC reports process and service metrics with persisted-only session
   assert.equal(result.ok, true)
   assert.deepEqual({
     liveSessions: result.value.liveSessions,
-    persistedSessions: result.value.persistedSessions,
     activeAgents: result.value.activeAgents,
     activeJobs: result.value.activeJobs,
   }, {
     liveSessions: 2,
-    persistedSessions: 2,
     activeAgents: 1,
     activeJobs: 1,
   })
+  assert.equal('persistedSessions' in result.value, false, 'the health card no longer scans the corpus for a count')
   assert.ok(result.value.uptimeSeconds >= beforeUptime)
   assert.ok(result.value.uptimeSeconds <= process.uptime())
   assert.ok(Number.isInteger(result.value.rssBytes))
@@ -2623,27 +2615,27 @@ test('health RPC uses zero for unavailable optional services', async () => {
   assert.equal(result.ok, true)
   assert.deepEqual({
     liveSessions: result.value.liveSessions,
-    persistedSessions: result.value.persistedSessions,
     activeAgents: result.value.activeAgents,
     activeJobs: result.value.activeJobs,
   }, {
     liveSessions: 0,
-    persistedSessions: 0,
     activeAgents: 0,
     activeJobs: 0,
   })
 })
 
-test('health RPC reports session query failures instead of inventing persisted metrics', async () => {
+test('health RPC no longer touches the session corpus', async () => {
+  let scanned = 0
   const { handler } = createHost({
     services: {
-      sessionQuery: { listSessions: async () => { throw new Error('storage unavailable') } },
+      sessionQuery: { listSessions: async () => { scanned += 1; throw new Error('storage unavailable') } },
     },
   })
 
   const result = await handler('health', {})
 
-  assert.deepEqual(result, { ok: false, error: 'storage unavailable' })
+  assert.equal(result.ok, true)
+  assert.equal(scanned, 0, 'health must stay a memory-only read; corpus enumeration moved out with persistedSessions')
 })
 
 test('activity RPC reports running agents, jobs, and agent-scoped terminals without duplicates', async () => {
@@ -9783,6 +9775,31 @@ test('session management view centers a hit window around a seq with clamped bou
   assert.ok(page.value.centerSeq === undefined, 'cursor paging does not report centerSeq')
 })
 
+test('usage refresh skips rewriting the index when nothing changed', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-stable-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const now = Date.now()
+  const persistence = {
+    listSnapshots: async () => [{ header: { id: 'stable', version: 0, createdAt: now, cwd: '/workspace/project' }, revision: 'r1' }],
+    readFrom: async () => ({
+      events: [
+        { type: 'request/header', seq: 0, time: now, data: { header: { config: { provider: 'test', model: 'test-model' } } } },
+        { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+      ],
+    }),
+  }
+  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+  const first = await handler('usage-refresh', {})
+  assert.equal(first.ok, true)
+  const before = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  const second = await handler('usage-refresh', {})
+  assert.equal(second.ok, true)
+  // updatedAt 只在真的有变化时推进：空刷新不落盘、也不刷新「上次更新」。
+  assert.equal(second.value.updatedAt, first.value.updatedAt)
+  const after = JSON.parse(await readFile(join(dshHome, 'dsh-service-usage-index.json'), 'utf8'))
+  assert.deepEqual(after, before)
+})
+
 test('session management search scans cold and archived sessions with budget bounds and respects scope', async (t) => {
   const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-'))
   t.after(() => rm(dshHome, { recursive: true, force: true }))
@@ -9837,6 +9854,56 @@ test('session management search enforces a global fifty-hit budget', async (t) =
   assert.equal(result.value.hits.flatMap((hit) => hit.items).length, 50)
   assert.equal(result.value.hits.length, 10)
   assert.equal(result.value.hits.some((hit) => hit.sessionId === 'session-10'), false)
+})
+
+test('session management search prefers the official FTS index and falls back only without it', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-sessions-search-index-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const services = sessionManagerServices()
+  let filterCalls = 0
+  let indexedQuery
+  let indexed = true
+  const originalFilter = services.sessionQuery.filterEvents
+  services.sessionQuery.filterEvents = async (...args) => { filterCalls += 1; return originalFilter(...args) }
+  services.sessionQuery.searchSessions = async (request) => {
+    if (!indexed) throw new Error('session search is unavailable')
+    indexedQuery = request
+    return {
+      items: [{
+        header: { id: 'session-alpha' },
+        live: false,
+        persisted: true,
+        bestMatch: { sessionId: 'session-alpha', seq: 2, type: 'assistant/message', time: 1002, surface: 'current', snippet: '索引片段' },
+      }],
+    }
+  }
+  let eventSearches = 0
+  services.sessionQuery.searchEvents = async ({ sessionId }) => {
+    eventSearches += 1
+    return { items: [{ sessionId, seq: 2, type: 'assistant/message', time: 1002, surface: 'current', snippet: '索引片段' }] }
+  }
+  const { handler } = createHost({ services: { sessionQuery: services.sessionQuery, workspaceRegistry: services.workspaceRegistry, sessions: services.sessions }, env: { DSH_HOME: dshHome } })
+
+  const hit = await handler('sessions-search', { query: '查询', scope: 'all' })
+  assert.equal(hit.ok, true)
+  assert.equal(indexedQuery.query, '查询')
+  assert.equal(filterCalls, 0, 'the indexed path must not read per-session logs')
+  assert.equal(hit.value.hits[0].sessionId, 'session-alpha')
+  assert.equal(hit.value.hits[0].items[0].snippet, '索引片段')
+  // 每次 searchEvents 都会重跑整语料 reconcile，索引路径不得逐命中再调。
+  assert.equal(eventSearches, 0, 'the indexed path must not re-reconcile the corpus per hit')
+
+  // 归档区过滤仍按插件既有语义：索引命中但不在归档集合里的会话不出现。
+  const archived = await handler('sessions-search', { query: '查询', scope: 'archived' })
+  assert.equal(archived.ok, true)
+  assert.deepEqual(archived.value.hits, [])
+
+  // 索引不可用（未挂载 sqlite / 老宿主）→ 回落逐会话 filterEvents。
+  indexed = false
+  const fallback = await handler('sessions-search', { query: '查询', scope: 'all' })
+  assert.equal(fallback.ok, true)
+  assert.ok(filterCalls > 0, 'without the index the scan fallback must still run')
+  assert.ok(fallback.value.hits.length > 0)
 })
 
 test('session management export validates existence and reuses official ZIP URL', async (t) => {

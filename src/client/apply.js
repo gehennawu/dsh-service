@@ -3012,6 +3012,8 @@
         const [archiveResults, setArchiveResults] = useState([])
         const archiveBusy = useRef(false)
         const archiveGeneration = useRef(0)
+        // 搜索代际：慢的旧查询返回时不得覆盖新查询的结果或收起「搜索中」。
+        const searchGeneration = useRef(0)
         const archiveDialog = useRef(null)
         useEffect(() => () => { archiveGeneration.current += 1 }, [])
         useEffect(() => {
@@ -3154,19 +3156,23 @@
         }, [list])
 
         const runSearch = async (query) => {
-          if (query.trim() === '') { setSearchResult(null); return }
+          if (query.trim() === '') { searchGeneration.current += 1; setSearchResult(null); setSearchRunning(false); return }
+          const generation = searchGeneration.current + 1
+          searchGeneration.current = generation
           setSearchRunning(true)
           try {
             const res = await rpcCall('sessions-search', {
               query: query.trim(),
               scope: searchScopeArchived ? 'archived' : 'all',
             })
+            if (searchGeneration.current !== generation) return
             if (res.ok) setSearchResult(res.value)
             else setSearchResult({ available: true, query, scope: 'all', hits: [], error: res.error })
           } catch (_) {
+            if (searchGeneration.current !== generation) return
             setSearchResult({ available: true, query, scope: searchScopeArchived ? 'archived' : 'all', hits: [], error: 'network' })
           } finally {
-            setSearchRunning(false)
+            if (searchGeneration.current === generation) setSearchRunning(false)
           }
         }
         // 防抖 300ms
@@ -5350,31 +5356,30 @@
           let active = true
           // interactive=true 只决定「失败要不要显式报错」；自动同步与手动刷新**都**点亮
           // usageBusy——自动那次同样可能触发数十秒冷折叠，用户需要看到反馈。
+          // 一次拉取就够：usage-refresh 返回与 usage 相同的完整投影，先读缓存再补拉会让
+          // 面板每次挂载都传两份 225 KB 量级的 payload。失败时保留画面，错误只对主动触发可见。
           const sync = async (interactive) => {
             if (usageInflightRef.current) return
             usageInflightRef.current = true
             setUsageBusy(true)
             try {
-              const base = await rpcCall('usage', usageRequestPayload)
+              const refreshed = await rpcCall('usage-refresh', usageRequestPayload).catch(() => null)
               if (!active) return
-              if (!base || base.ok === false) {
-                // 读缓存失败：只有用户主动触发的那一次把错误态显式化；
-                // 后台轮询保持既有画面，避免一次瞬时抖动把统计区换成错误行。
-                if (interactive) setUsageError(translate('usage.error'))
+              if (!refreshed || refreshed.ok === false) {
+                // 刷新失败不再先拉缓存（那会让成功路径也不得不多一次请求）：只有失败时才
+                // 回落到只读缓存，既保住画面也不把双份 payload 带到常态路径。
+                const cached = await rpcCall('usage', usageRequestPayload).catch(() => null)
+                if (!active) return
+                if (cached && cached.ok !== false) {
+                  setUsageError(null)
+                  setUsageFailureDetails(false)
+                  setUsage(cached.value)
+                } else if (interactive) setUsageError(translate('usage.error'))
                 return
               }
               setUsageError(null)
               setUsageFailureDetails(false)
-              setUsage(base.value)
-              // 补拉失败**永不**降级：缓存已经渲染出来了，刷新只是锦上添花
-              // （这也是改动前的口径——refresh 异常被静默吞掉），失败留给下一轮再试。
-              const refreshed = await rpcCall('usage-refresh', usageRequestPayload).catch(() => null)
-              if (!active) return
-              if (refreshed && refreshed.ok) {
-                setUsageError(null)
-                setUsageFailureDetails(false)
-                setUsage(refreshed.value)
-              }
+              setUsage(refreshed.value)
             } catch (_) {
               if (active && interactive) setUsageError(translate('usage.error'))
             } finally {
@@ -5462,28 +5467,46 @@
           })
           return () => { active = false }
         }, [features.backupMaintenance])
+        // 运行状况卡只读内存态，30 s 一次足够；页面在后台/隐藏时完全不发请求，
+        // 回到前台立即补一次（不等下一个周期），避免为一个数字常驻轮询。
         useEffect(() => {
+          // 卡片只属于概览页：离开概览立即停链，别让 30 s 定时器在其它页常驻。
+          if (activeTab !== 'overview') return () => {}
           let active = true
           let cancelNext = () => {}
+          const pageVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
           const poll = async () => {
-            try {
-              const res = await rpcCall('health', {})
-              if (!active) return
-              if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
-              setHealth(res.value)
-              setHealthError(null)
-            } catch (_) {
-              if (!active) return
-              setHealthError(translate('health.error'))
+            if (!active) return
+            if (pageVisible()) {
+              try {
+                const res = await rpcCall('health', {})
+                if (!active) return
+                if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
+                setHealth(res.value)
+                setHealthError(null)
+              } catch (_) {
+                if (active) setHealthError(translate('health.error'))
+              }
             }
-            if (active) cancelNext = ctx.timer.timeout(poll, 5000)
+            if (active) cancelNext = ctx.timer.timeout(poll, 30000)
+          }
+          const onVisibilityChange = () => {
+            if (!active || !pageVisible()) return
+            try { cancelNext() } catch (_) {}
+            void poll()
           }
           poll()
+          if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', onVisibilityChange)
+          }
           return () => {
             active = false
             cancelNext()
+            if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+              document.removeEventListener('visibilitychange', onVisibilityChange)
+            }
           }
-        }, [])
+        }, [activeTab])
 
         const runDiagnostics = async (force = false) => {
           if (!featureEnabled('healthDiagnostics')) return
@@ -6436,7 +6459,6 @@
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
                 metric('health.rss', formatBytes(health.rssBytes)),
                 metric('health.liveSessions', String(health.liveSessions)),
-                metric('health.persistedSessions', String(health.persistedSessions)),
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))
