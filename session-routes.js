@@ -6,6 +6,10 @@
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 
+// Cordis 可以为同一个服务返回不同的代理。只解包比较身份，调用仍走代理保留上下文。
+const cordisOriginal = Symbol.for('cordis.original')
+const serviceIdentity = (service) => service?.[cordisOriginal] ?? service
+
 export function createSessionsRoutes({
   ctx,
   dshHome,
@@ -203,7 +207,8 @@ export function createSessionsRoutes({
               continue
             }
             if (risk.worktree !== item.worktree || JSON.stringify(risk.worktreeCandidate) !== JSON.stringify(item.worktreeCandidate)
-              || disposed || Date.now() >= plan.expiresAt || ctx.get('workspaceRegistry') !== registry || registry.archivedSessionIds?.includes(item.id)) {
+              || disposed || Date.now() >= plan.expiresAt || serviceIdentity(ctx.get('workspaceRegistry')) !== serviceIdentity(registry)
+              || registry.archivedSessionIds?.includes(item.id)) {
               results.push({ id: item.id, archived: false, error: 'archive-plan-stale' })
               continue
             }

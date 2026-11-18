@@ -34,6 +34,51 @@ test('archive requires a one-time Host plan; preview is read-only and rejects ID
   assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'unknown-archive-plan')
 })
 
+// Cordis returns a fresh service wrapper at each lookup, not the provided object.
+function withRegistryWrappers(f) {
+  let target = f.registry
+  Object.defineProperty(f.services, 'workspaceRegistry', {
+    get: () => new Proxy(target, {
+      get: (service, key, receiver) => key === Symbol.for('cordis.original') ? service : Reflect.get(service, key, receiver),
+    }),
+    set: value => { target = value },
+  })
+}
+
+test('single and batch archive accept fresh wrappers of the same registry', async () => {
+  for (const ids of [['a'], ['a', 'b']]) {
+    const f = fixture()
+    withRegistryWrappers(f)
+    f.services.sessionQuery.readSession = async () => ({ inheritedEventCount: 0, events: [] })
+    const plan = await f.invoke('sessions-archive-plan', { ids })
+    assert.equal(plan.value.requiresConfirmation, false)
+    const result = await f.invoke('sessions-archive', { planId: plan.value.planId, withoutConfirmation: true })
+    assert.deepEqual(result.value.results.map(({ id, archived, error }) => ({ id, archived, error })),
+      ids.map(id => ({ id, archived: true, error: undefined })))
+    assert.deepEqual(f.calls, ids)
+  }
+})
+
+test('batch archive stops remaining items when the registered service is replaced', async () => {
+  const f = fixture()
+  withRegistryWrappers(f)
+  f.services.sessionQuery.readSession = async () => ({ inheritedEventCount: 0, events: [] })
+  const replacementCalls = []
+  const replacement = { archivedSessionIds: [], async archiveSession(id) { replacementCalls.push(id) } }
+  const archive = f.registry.archiveSession.bind(f.registry)
+  f.registry.archiveSession = async id => {
+    await archive(id)
+    f.services.workspaceRegistry = replacement
+  }
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a', 'b'] })
+  assert.equal(plan.value.requiresConfirmation, false)
+  const result = await f.invoke('sessions-archive', { planId: plan.value.planId, withoutConfirmation: true })
+  assert.equal(result.value.results[0].archived, true)
+  assert.deepEqual(result.value.results[1], { id: 'b', archived: false, error: 'archive-plan-stale' })
+  assert.deepEqual(f.calls, ['a'])
+  assert.deepEqual(replacementCalls, [])
+})
+
 test('only a verified hiding-only archive plan permits execution without confirmation', async () => {
   const f = fixture()
   const candidate = { type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/owned', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }
