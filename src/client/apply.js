@@ -3010,6 +3010,19 @@
         const [archiveError, setArchiveError] = useState('')
         const [archivePlan, setArchivePlan] = useState(null)
         const [archiveResults, setArchiveResults] = useState([])
+        const [archiveAnnouncement, setArchiveAnnouncement] = useState('')
+        const archiveFocus = useRef(null)
+        useEffect(() => {
+          const pending = archiveFocus.current
+          if (pending === null || archiveAnnouncement === '' || typeof document === 'undefined') return
+          archiveFocus.current = null
+          const active = document.activeElement
+          if (active && active !== document.body && active !== pending.trigger) return
+          const buttons = pending.row?.querySelectorAll?.('button') || []
+          const replacement = Array.from(buttons).find(button => button.getAttribute?.('data-testid') === 'sessions-row-unarchive-' + pending.id)
+          const next = replacement || buttons[0]
+          next?.focus?.()
+        }, [archiveAnnouncement])
         const archiveBusy = useRef(false)
         const archiveGeneration = useRef(0)
         // 搜索代际：慢的旧查询返回时不得覆盖新查询的结果或收起「搜索中」。
@@ -3334,56 +3347,151 @@
             return { ...current, items: current.items.map((item) => item.id === sessionId ? { ...item, archived: true } : item) }
           })
         }
-        const requestArchive = async (ids) => {
+        // 归档结果只保留「是否归档 + 失败原因/下一步」；不再展示工作树清理状态，也不
+        // 提供状态刷新入口。旧宿主返回的 cleanup 字段兼容保留但一律忽略。
+        const archiveKnownErrorKey = (code) => {
+          if (code === 'archive-confirmation-required') return 'sessions.archive.error.confirmation-required'
+          if (code === 'archive-plan-stale' || code === 'archive-plan-expired' || code === 'unknown-archive-plan') return 'sessions.archive.stale'
+          if (code === 'archive-plan-limit') return 'sessions.archive.limit'
+          if (code === 'live-session-rejected') return 'sessions.archive.error.live'
+          if (code === 'session-not-found') return 'sessions.error.session-not-found'
+          if (code === 'invalid-session-ids') return 'sessions.error.invalid-session-ids'
+          if (code === 'feature-disabled') return 'sessions.error.feature-disabled'
+          return ''
+        }
+        const archivePlanError = (code) => {
+          const key = archiveKnownErrorKey(code)
+          return key !== '' ? translate(key) : translate('sessions.archive.unavailable')
+        }
+        const archiveItemError = (code) => {
+          if (code === 'active-session-rejected') return translate('sessions.archive.error.active-session')
+          if (code === 'live-session-rejected') return translate('sessions.archive.error.live')
+          if (code === 'session-not-found') return translate('sessions.error.session-not-found')
+          if (code === 'archive-confirmation-required') return translate('sessions.archive.error.confirmation-required')
+          if (code === 'archive-plan-stale' || code === 'archive-plan-expired') return translate('sessions.archive.stale')
+          if (code === 'archive-result-unknown') return translate('sessions.archive.error.result-unknown')
+          return mapSessionError(translate, typeof code === 'string' && code !== '' ? code : 'archive-result-unknown')
+        }
+        const settleArchiveResults = (plan, results) => {
+          const byId = new Map(results.map(item => [item?.id, item]))
+          const normalized = plan.sessions.map((item) => {
+            const result = byId.get(item.id) || {}
+            const archived = result.archived === true
+            return {
+              id: item.id,
+              title: item.title || item.id,
+              archived,
+              error: archived ? '' : (typeof result.error === 'string' && result.error !== '' ? result.error : 'archive-result-unknown'),
+            }
+          })
+          const completed = normalized.filter(item => item.archived).map(item => item.id)
+          for (const id of completed) applyArchivedSession(id)
+          if (completed.length > 0) setSelectedIds(current => current.filter(id => !completed.includes(id)))
+          // 全部成功只更新列表，不再占用一行动作结果；只有混合/失败才展示摘要与
+          // 逐项原因（失败项保留标题，便于定位后重试）。
+          const hasFailures = normalized.some(item => !item.archived)
+          setArchiveResults(hasFailures ? normalized : [])
+          if (!hasFailures) setArchiveAnnouncement(translate('sessions.archive.results.summary', { done: completed.length, total: normalized.length }))
+        }
+        // 只有宿主明确拒绝/计划失效这类“确定未执行”的错误才直接提示；其余（连接异常、
+        // 畸形回执、无错误码）都按结果未知处理，用只读 status 回读核实一次，绝不重试写。
+        const archiveSubmitError = (code) => {
+          const key = archiveKnownErrorKey(code)
+          return key !== '' ? translate(key) : ''
+        }
+        const reconcileArchiveOutcome = async (plan) => {
+          let items = null
+          try {
+            const status = await rpcCall('sessions-archive-status', { ids: plan.sessions.map(item => item.id) })
+            if (status.ok && Array.isArray(status.value?.items)) items = status.value.items
+          } catch (_) {}
+          // 连只读回读都失败：整体结果未知，只给一条「下一步」提示，不编造逐项状态。
+          if (items === null) { setArchiveError(translate('sessions.archive.uncertain')); return }
+          const archived = new Set(items.filter(item => item?.archived === true).map(item => item?.id))
+          const results = plan.sessions.map(item => ({
+            id: item.id,
+            archived: archived.has(item.id),
+            error: archived.has(item.id) ? '' : 'archive-result-unknown',
+          }))
+          settleArchiveResults(plan, results)
+        }
+        const executeArchive = async (plan, withoutConfirmation) => {
+          setArchiveError('')
+          setArchiveResults([])
+          let results = null
+          try {
+            const res = await rpcCall('sessions-archive', withoutConfirmation
+              ? { planId: plan.planId, withoutConfirmation: true }
+              : { planId: plan.planId })
+            if (!res?.ok) {
+              const message = archiveSubmitError(typeof res?.error === 'string' ? res.error : '')
+              if (message !== '') setArchiveError(message)
+              else await reconcileArchiveOutcome(plan)
+              return
+            }
+            if (!Array.isArray(res.value?.results)) { await reconcileArchiveOutcome(plan); return }
+            results = res.value.results
+          } catch (_) {
+            await reconcileArchiveOutcome(plan)
+            return
+          }
+          if (results !== null) settleArchiveResults(plan, results)
+        }
+        const requestArchive = async (ids, options = {}) => {
           if (ids.length > 200) { setArchiveError(translate('sessions.archive.limit')); return }
           if (archiveBusy.current || archivePlan !== null) return
+          const batch = options.batch === true
+          const trigger = options.trigger
+          const focusTarget = !batch && trigger && typeof document !== 'undefined' && document.activeElement === trigger
+            ? { trigger, id: ids[0], row: trigger.parentElement }
+            : null
+          archiveFocus.current = null
+          setArchiveAnnouncement('')
           archiveBusy.current = true
           const generation = ++archiveGeneration.current
           setArchiveError('')
-          setArchivingId(ids[0] || '')
+          setArchiveResults([])
+          if (batch) setBatchWorking('archive')
+          else setArchivingId(ids[0] || '')
           try {
             const res = await rpcCall('sessions-archive-plan', { ids })
             if (generation !== archiveGeneration.current) return
-            if (!res.ok || typeof res.value?.planId !== 'string' || !Number.isFinite(res.value.expiresAt) || !Array.isArray(res.value.sessions) || res.value.sessions.length === 0) setArchiveError(translate('sessions.archive.unavailable'))
-            else setArchivePlan(res.value)
-          } catch (_) { if (generation === archiveGeneration.current) setArchiveError(translate('sessions.archive.unavailable')) }
-          finally { archiveBusy.current = false; setArchivingId('') }
+            const plan = res?.ok ? res.value : null
+            if (!plan || typeof plan.planId !== 'string' || !Number.isFinite(plan.expiresAt) || !Array.isArray(plan.sessions) || plan.sessions.length === 0) {
+              setArchiveError(archivePlanError(typeof res?.error === 'string' ? res.error : ''))
+              return
+            }
+            // 只有宿主字面声明 false（已核实仅隐藏会话）才一键执行；true、缺失
+            // （旧宿主）或任何其它值都回到既有确认模态，不在客户端推断风险。
+            if (plan.requiresConfirmation === false) {
+              if (Date.now() >= plan.expiresAt) { setArchiveError(translate('sessions.archive.stale')); return }
+              archiveFocus.current = focusTarget
+              await executeArchive(plan, true)
+              return
+            }
+            setArchivePlan(plan)
+          } catch (_) {
+            if (generation === archiveGeneration.current) setArchiveError(translate('sessions.error.network'))
+          } finally {
+            archiveBusy.current = false
+            if (batch) setBatchWorking('')
+            else setArchivingId('')
+          }
         }
-        const doArchive = (id) => requestArchive([id])
-        const refreshArchiveStatus = async () => {
-          setArchiveError('')
-          try {
-            const res = await rpcCall('sessions-archive-status', { ids: archiveResults.map(item => item.id) })
-            if (!res.ok || !Array.isArray(res.value?.items)) { setArchiveError(translate('sessions.error.network')); return }
-            const confirmed = res.value.items.filter(item => item.archived === true).map(item => item.id)
-            for (const id of confirmed) applyArchivedSession(id)
-            setSelectedIds(current => current.filter(id => !confirmed.includes(id)))
-            setArchiveResults(current => current.map(item => {
-              const status = res.value.items.find(value => value.id === item.id)
-              return status ? { ...item, archived: status.archived === true, cleanup: status.cleanup } : item
-            }))
-          } catch (_) { setArchiveError(translate('sessions.error.network')) }
-        }
+        const doArchive = (id, event) => requestArchive([id], { trigger: event?.currentTarget })
         const confirmArchive = async () => {
           if (archiveBusy.current || archivePlan === null) return
-          if (Date.now() >= archivePlan.expiresAt) { setArchivePlan(null); setArchiveError(translate('sessions.archive.stale')); return }
+          const plan = archivePlan
+          if (Date.now() >= plan.expiresAt) { setArchivePlan(null); setArchiveError(translate('sessions.archive.stale')); return }
           archiveBusy.current = true
           setBatchWorking('archive')
-          setArchiveError('')
           try {
-            const res = await rpcCall('sessions-archive', { planId: archivePlan.planId })
+            await executeArchive(plan, false)
+          } finally {
+            archiveBusy.current = false
+            setBatchWorking('')
             setArchivePlan(null)
-            if (!res.ok || !Array.isArray(res.value?.results)) { setArchiveError(translate('sessions.archive.stale')); return }
-            setArchiveResults(res.value.results)
-            const completed = res.value.results.filter(item => item.archived === true).map(item => item.id)
-            for (const id of completed) applyArchivedSession(id)
-            setSelectedIds(current => current.filter(id => !completed.includes(id)))
-          } catch (_) {
-            setArchiveResults(archivePlan.sessions.map(item => ({ id: item.id, archived: false, error: 'archive-result-unknown', cleanup: { status: 'unknown' } })))
-            setArchivePlan(null)
-            setArchiveError(translate('sessions.archive.uncertain'))
           }
-          finally { archiveBusy.current = false; setBatchWorking('') }
         }
 
         const applyUnarchivedSession = (sessionId) => {
@@ -3645,7 +3753,7 @@
           else setBatchError(translate('sessions.batch.failed', { action: translate('sessions.action.export'), done: completed, total: batchExportItems.length, error: failure }))
           setBatchWorking('')
         }
-        const runBatchArchive = () => requestArchive(batchArchiveItems.map(item => item.id))
+        const runBatchArchive = () => requestArchive(batchArchiveItems.map(item => item.id), { batch: true })
         const runBatchUnarchive = async () => {
           if (batchWorking !== '' || batchUnarchiveItems.length === 0) return
           setBatchWorking('unarchive')
@@ -3790,7 +3898,7 @@
             actions.push(React.createElement('button', { key: 'view', type: 'button', 'data-testid': 'sessions-row-view-' + id, style: chipButton, onClick: (event) => openDetail(id, 'events', null, event) }, translate('sessions.action.view')))
             actions.push(React.createElement('button', { key: 'export', type: 'button', 'data-testid': 'sessions-row-export-' + id, style: chipButton, disabled: exportingId === id, onClick: () => void doExport(id) }, exportingId === id ? translate('sessions.detail.exporting') : translate('sessions.action.export')))
             if (!live && !archived) {
-              actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: () => void doArchive(id) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
+              actions.push(React.createElement('button', { key: 'archive', type: 'button', 'data-testid': 'sessions-row-archive-' + id, style: chipButton, disabled: archivingId === id, onClick: (event) => void doArchive(id, event) }, archivingId === id ? translate('sessions.status.working') : translate('sessions.action.archive')))
             }
             if (archived && list?.canUnarchive !== false) {
               actions.push(React.createElement('button', { key: 'unarchive', type: 'button', 'data-testid': 'sessions-row-unarchive-' + id, style: chipButton, disabled: unarchivingId === id, onClick: () => void doUnarchive(id) }, unarchivingId === id ? translate('sessions.status.working') : translate('sessions.action.unarchive')))
@@ -4163,7 +4271,8 @@
             React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', userSelect: 'none', cursor: 'pointer' } },
               React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-filter-subagent', checked: subagentOnly, onChange: (event) => setSubagentOnly(event.target.checked) }),
               translate('sessions.filter.subagent'))) : null,
-          archiveError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + (list?.canUnarchive !== false ? '' : (' · ' + translate('sessions.oneWayHint')))) : null,
+          React.createElement('span', { role: 'status', 'aria-live': 'polite', 'data-testid': 'sessions-archive-announcement', style: { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap' } }, archiveAnnouncement),
+          archiveError !== '' ? React.createElement('p', { role: 'alert', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, archiveError + (list?.canUnarchive !== false ? '' : (' · ' + translate('sessions.oneWayHint')))) : null,
           exportError !== '' ? React.createElement('p', { style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, exportError) : null,
           batchResult !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-result', style: { ...hint, color: 'var(--dsw-alias-state-success-primary)' } }, batchResult) : null,
           batchError !== '' ? React.createElement('p', { 'data-testid': 'sessions-batch-error', style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, batchError) : null,
@@ -4174,10 +4283,10 @@
             const legacyHost = subagentOnly && filter !== 'deleted' && items.length > 0 && items.every((item) => item.subagent === undefined)
             return legacyHost ? React.createElement('p', { 'data-testid': 'sessions-subagent-legacy-hint', style: { ...hint, color: 'var(--dsh-svc-warning)' } }, translate('sessions.subagent.hostLegacy')) : null
           })(),
+          archiveResults.length > 0 ? React.createElement('div', { 'data-testid': 'sessions-archive-results', role: 'status', 'aria-live': 'polite' },
+            React.createElement('p', { style: { ...hint, color: archiveResults.every(item => item.archived) ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-secondary)' } }, translate('sessions.archive.results.summary', { done: archiveResults.filter(item => item.archived).length, total: archiveResults.length })),
+            archiveResults.filter(item => !item.archived).map(item => React.createElement('p', { key: item.id, style: { ...hint, color: 'var(--dsw-alias-state-error-primary)' } }, translate('sessions.archive.results.failure', { title: item.title || item.id, error: archiveItemError(item.error) })))) : null,
           renderDetail() ?? renderListBody(),
-          archiveResults.length > 0 ? React.createElement('div', { 'data-testid': 'sessions-archive-results' },
-            archiveResults.map(item => React.createElement('p', { key: item.id }, item.id, ' · ', translate(item.archived ? 'sessions.archive.done' : 'sessions.archive.uncertain'), ' · ', translate('sessions.archive.cleanup.' + (item.cleanup?.status || 'unknown')))),
-            React.createElement('button', { type: 'button', 'data-testid': 'sessions-archive-status-refresh', onClick: () => void refreshArchiveStatus() }, translate('sessions.archive.refresh'))) : null,
           renderArchiveModal(),
           renderDeleteModal(),
           renderClearModal())

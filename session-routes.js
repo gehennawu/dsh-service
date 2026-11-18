@@ -61,25 +61,30 @@ export function createSessionsRoutes({
       if (record.live || sessionIsLive(ctx, id)) throw new Error('live-session-rejected')
       if (archived.includes(id)) throw new Error('archive-plan-stale')
       const title = titles.find(item => item.sessionId === id)?.value?.title?.title
-      let worktree = 'unknown'
-      let worktreeCandidate
-      if (typeof query.readSession === 'function') {
-        const snapshot = await query.readSession(id)
-        if (Number.isSafeInteger(snapshot?.inheritedEventCount) && snapshot.inheritedEventCount >= 0 && Array.isArray(snapshot.events)) {
-          worktree = 'none-recorded'
-          const keys = ['path', 'branch', 'baseCommit', 'repositoryRoot']
-          const event = snapshot.events.find(event => event?.type === 'plugin:worktree/created' && event.ignorable === true
-            && Number.isSafeInteger(event.seq) && event.seq >= snapshot.inheritedEventCount
-            && event.data && typeof event.data === 'object' && !Array.isArray(event.data)
-            && Object.keys(event.data).length === keys.length && keys.every(key => typeof event.data[key] === 'string' && event.data[key].length > 0))
-          if (event) {
-            worktree = 'candidate'
-            worktreeCandidate = Object.fromEntries(keys.map(key => [key, event.data[key]]))
-          }
-        }
-      }
-      return { id, title: typeof title === 'string' ? title : id, archived: false, cwd: record.header.cwd ?? null, createdAt: record.header.createdAt ?? null, worktree, ...(worktreeCandidate ? { worktreeCandidate } : {}) }
+      const risk = await archiveWorktreeRisk(query, id)
+      return { id, title: typeof title === 'string' ? title : id, archived: false, cwd: record.header.cwd ?? null, createdAt: record.header.createdAt ?? null, ...risk }
     }))
+  }
+  const archiveWorktreeRisk = async (query, id) => {
+    if (typeof query?.readSession !== 'function') return { worktree: 'unknown' }
+    const snapshot = await query.readSession(id)
+    const { inheritedEventCount, events } = snapshot ?? {}
+    if (!Number.isSafeInteger(inheritedEventCount) || inheritedEventCount < 0 || !Array.isArray(events)) return { worktree: 'unknown' }
+    // 和 DSH 的 worktree 投影一致：继承的创建记录仅是引用，不是本会话创建的目录。
+    const keys = ['path', 'branch', 'baseCommit', 'repositoryRoot']
+    let unknown = false
+    for (const event of events) {
+      if (event?.type !== 'plugin:worktree/created' || event.ignorable !== true) continue
+      if (!Number.isSafeInteger(event.seq) || event.seq < 0) { unknown = true; continue }
+      if (event.seq < inheritedEventCount) continue
+      const data = event.data
+      if (data && typeof data === 'object' && !Array.isArray(data)
+        && Object.keys(data).length === keys.length && keys.every(key => typeof data[key] === 'string' && data[key].length > 0)) {
+        return { worktree: 'candidate', worktreeCandidate: Object.fromEntries(keys.map(key => [key, data[key]])) }
+      }
+      unknown = true
+    }
+    return { worktree: unknown ? 'unknown' : 'none-recorded' }
   }
   return {
     'sessions-list': { feature: 'sessionManager', handle: async (payload, rpcEndpoint) => {
@@ -163,17 +168,23 @@ export function createSessionsRoutes({
         if (disposed) return { ok: false, error: 'archive-preview-unavailable' }
         if (archivePlans.size >= 100) return { ok: false, error: 'archive-plan-limit' }
         const planId = randomUUID()
-        const plan = { sessions, expiresAt: Date.now() + ttl }
+        const requiresConfirmation = sessions.some(item => item.worktree !== 'none-recorded')
+        const plan = { sessions, expiresAt: Date.now() + ttl, requiresConfirmation }
         archivePlans.set(planId, plan)
-        return { ok: true, value: { planId, sessions: plan.sessions, expiresAt: plan.expiresAt, consequences: ['hides-session', 'removes-pin', 'conditional-worktree-removal', 'unarchive-does-not-restore-files'], cleanup: 'unknown' } }
+        const consequences = ['hides-session', 'removes-pin']
+        if (requiresConfirmation) consequences.push('conditional-worktree-removal', 'unarchive-does-not-restore-files')
+        return { ok: true, value: { planId, sessions, expiresAt: plan.expiresAt, requiresConfirmation, consequences, cleanup: 'unknown' } }
       } catch (error) { return archiveFailure(error) }
     } },
     'sessions-archive': { feature: 'sessionManager', audit: true, handle: async (payload) => {
-      if (typeof payload?.planId !== 'string' || payload?.id !== undefined || payload?.ids !== undefined) return { ok: false, error: 'archive-confirmation-required' }
+      if (typeof payload?.planId !== 'string' || payload?.id !== undefined || payload?.ids !== undefined
+        || (payload.withoutConfirmation !== undefined && payload.withoutConfirmation !== true)) return { ok: false, error: 'archive-confirmation-required' }
       const plan = archivePlans.get(payload.planId)
       if (!plan) return { ok: false, error: 'unknown-archive-plan' }
+      if (Date.now() >= plan.expiresAt) { archivePlans.delete(payload.planId); return { ok: false, error: 'archive-plan-expired' } }
+      const withoutConfirmation = payload.withoutConfirmation === true
+      if (withoutConfirmation && plan.requiresConfirmation !== false) return { ok: false, error: 'archive-confirmation-required' }
       archivePlans.delete(payload.planId)
-      if (Date.now() >= plan.expiresAt) return { ok: false, error: 'archive-plan-expired' }
       if (disposed || executing) return { ok: false, error: 'archive-plan-stale' }
       executing = true
       try {
@@ -185,7 +196,21 @@ export function createSessionsRoutes({
         for (const item of records) {
           if (disposed) { results.push({ id: item.id, archived: false, error: 'archive-plan-stale' }); continue }
           try {
-            if (sessionIsLive(ctx, item.id)) throw new Error('live-session-rejected')
+            // 批量逐项 await：前一项执行期间，后一项的日志或运行态还可能变化。
+            const risk = records.length > 1 ? await archiveWorktreeRisk(ctx.get('sessionQuery'), item.id) : item
+            if (withoutConfirmation && risk.worktree !== 'none-recorded') {
+              results.push({ id: item.id, archived: false, error: 'archive-confirmation-required' })
+              continue
+            }
+            if (risk.worktree !== item.worktree || JSON.stringify(risk.worktreeCandidate) !== JSON.stringify(item.worktreeCandidate)
+              || disposed || Date.now() >= plan.expiresAt || ctx.get('workspaceRegistry') !== registry || registry.archivedSessionIds?.includes(item.id)) {
+              results.push({ id: item.id, archived: false, error: 'archive-plan-stale' })
+              continue
+            }
+            if (sessionIsLive(ctx, item.id)) {
+              results.push({ id: item.id, archived: false, error: 'live-session-rejected' })
+              continue
+            }
             cleanupStates.delete(item.id)
             await registry.archiveSession(item.id)
             results.push({ id: item.id, archived: true, cleanup: cleanupStates.get(item.id) ?? { status: 'unknown' } })

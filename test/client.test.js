@@ -18556,12 +18556,7 @@ test('settings entry: plugin unload releases the row and the launcher subscripti
 })
 
 
-test('session archive previews before execution, cancels safely and refreshes cleanup independently', async () => {
-  const calls = []
-  const renderer = sessionManagerRenderer(createSessionRpcMock({
-    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
-    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, sessions: payload.ids.map(id => ({ id, cwd: '/workspace', worktree: 'candidate', worktreeCandidate: { path: '/candidate-checkout', branch: 'topic' } })) } }),
-  }))
+async function openSessionManagerList(renderer) {
   await renderer.load()
   renderer.mount('settings.section')
   await renderer.flush()
@@ -18571,6 +18566,15 @@ test('session archive previews before execution, cancels safely and refreshes cl
   await renderer.flush()
   await renderer.findByTestId('sessions-filter-all').props.onClick()
   await renderer.flush()
+}
+
+test('risky worktree archive previews consequences, cancels safely, and never shows cleanup status', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: true, sessions: payload.ids.map(id => ({ id, cwd: '/workspace', worktree: 'candidate', worktreeCandidate: { path: '/candidate-checkout', branch: 'topic' } })) } }),
+  }))
+  await openSessionManagerList(renderer)
   await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-archive-modal'), true)
@@ -18587,11 +18591,63 @@ test('session archive previews before execution, cancels safely and refreshes cl
   await renderer.findByTestId('sessions-archive-confirm').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true)
-  assert.match(renderer.text('settings.section'), /归档成功（不代表清理成功）/)
-  assert.match(renderer.text('settings.section'), /清理状态未知/)
-  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
+  assert.equal(renderer.hasTest('sessions-archive-results'), false, 'success only syncs the list')
+  assert.equal(renderer.hasTest('sessions-archive-status-refresh'), false)
+  assert.doesNotMatch(renderer.text('settings.section'), /清理状态|目录已移除|清理已安排|归档成功/)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 0)
+})
+
+test('verified hiding-only archive executes in one click and only syncs the list', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: 'Cold session', cwd: '/workspace/projects', worktree: 'none-recorded' })) } }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
   await renderer.flush()
-  assert.match(renderer.text('settings.section'), /目录已移除；分支与提交保留/)
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false, 'hiding-only archive must not ask for a second confirmation')
+  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive').map(call => call.payload), [{ planId: 'archive:session-cold', withoutConfirmation: true }])
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true)
+  assert.equal(renderer.hasTest('sessions-archive-results'), false)
+  assert.equal(renderer.findByTestId('sessions-archive-announcement').props['aria-live'], 'polite')
+  assert.match(renderer.findByTestId('sessions-archive-announcement').children.join(''), /1\/1/)
+  assert.equal(renderer.hasTest('sessions-archive-status-refresh'), false)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 0)
+})
+
+test('legacy archive plans without requiresConfirmation keep the confirmation modal', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, sessions: payload.ids.map(id => ({ id, cwd: '/workspace', worktree: 'unknown' })) } }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), true)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 0)
+})
+
+test('one-click archive surfaces a Host rejection and never retries the write', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: 'Cold session', cwd: '/workspace/projects', worktree: 'none-recorded' })) } }),
+    'sessions-archive': () => ({ ok: false, error: 'archive-confirmation-required' }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false)
+  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive').map(call => call.payload), [{ planId: 'archive:session-cold', withoutConfirmation: true }])
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), false)
+  assert.match(renderer.text('settings.section'), /重新选择并确认/)
+  assert.match(renderer.text('settings.section'), /不会自动重试/)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 0)
+  await renderer.flush()
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1, 'a rejected auto attempt is never retried')
 })
 
 test('session archive never falls back to direct execution when preview is unsupported', async () => {
@@ -18617,39 +18673,95 @@ test('session archive never falls back to direct execution when preview is unsup
 })
 
 
-test('archive unknown execution is reconciled by status; status errors remain visible', async () => {
+test('ambiguous one-click outcome is reconciled once by status and only syncs the list', async () => {
   const calls = []
-  let statusFails = true
   const renderer = sessionManagerRenderer(createSessionRpcMock({
     onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: 'Cold session', cwd: '/workspace/projects', worktree: 'none-recorded' })) } }),
     'sessions-archive': () => { throw new Error('connection lost') },
-    'sessions-archive-status': payload => statusFails ? { ok: false, error: 'offline' } : { ok: true, value: { items: payload.ids.map(id => ({ id, archived: true, cleanup: { status: 'removed' } })) } },
+    'sessions-archive-status': payload => ({ ok: true, value: { items: payload.ids.map(id => ({ id, archived: true })) } }),
   }))
-  await renderer.load()
-  renderer.mount('settings.section')
-  await renderer.flush()
-  await renderer.findButton('维护').props.onClick()
-  await renderer.flush()
-  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
-  await renderer.flush()
-  await renderer.findByTestId('sessions-filter-all').props.onClick()
-  await renderer.flush()
+  await openSessionManagerList(renderer)
   await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
   await renderer.flush()
-  await renderer.findByTestId('sessions-archive-confirm').props.onClick()
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true, 'read-only status confirms the archived state')
+  assert.equal(renderer.hasTest('sessions-archive-results'), false, 'success only syncs the list')
+  assert.equal(renderer.hasTest('sessions-archive-status-refresh'), false)
+  assert.doesNotMatch(renderer.text('settings.section'), /结果待核实/)
+  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive-status').map(call => call.payload.ids), [['session-cold']])
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1, 'an unknown result is never re-submitted')
+})
+
+test('ambiguous one-click outcome stays actionable when status reconciliation fails', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: 'Cold session', cwd: '/workspace/projects', worktree: 'none-recorded' })) } }),
+    'sessions-archive': () => { throw new Error('connection lost') },
+    'sessions-archive-status': () => ({ ok: false, error: 'offline' }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), false)
-  assert.match(renderer.text('settings.section'), /结果待核实/)
-  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
-  await renderer.flush()
-  assert.equal(renderer.hasTest('sessions-archive-results'), true)
-  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive-status')[0].payload.ids, ['session-cold'])
-  statusFails = false
-  await renderer.findByTestId('sessions-archive-status-refresh').props.onClick()
+  assert.equal(renderer.hasTest('sessions-archive-results'), false)
+  assert.equal(renderer.hasTest('sessions-archive-status-refresh'), false)
+  assert.match(renderer.text('settings.section'), /归档结果待核实/)
+  assert.match(renderer.text('settings.section'), /不要重复归档/)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 1)
+})
+
+test('malformed archive submission is reconciled by status like a transport failure', async () => {
+  const calls = []
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: 'Cold session', cwd: '/workspace/projects', worktree: 'none-recorded' })) } }),
+    'sessions-archive': () => ({ ok: true, value: {} }),
+    'sessions-archive-status': payload => ({ ok: true, value: { items: payload.ids.map(id => ({ id, archived: true })) } }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-row-archive-session-cold').props.onClick()
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-tag-archived-session-cold'), true)
-  assert.match(renderer.text('settings.section'), /目录已移除/)
   assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1)
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 1)
+})
+
+test('one-click batch stops at a later risky target and asks for one fresh confirmation without retry', async () => {
+  const calls = []
+  const items = [
+    { id: 'session-one', title: 'First cold', cwd: '/workspace', createdAt: 2000, live: false, persisted: true, archived: false, bytes: 1024 },
+    { id: 'session-two', title: 'Second cold', cwd: '/workspace', createdAt: 1000, live: false, persisted: true, archived: false, bytes: 2048 },
+  ]
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    onCall: (endpoint, payload) => calls.push({ endpoint, payload }),
+    'sessions-list': payload => payload?.scope === 'deleted'
+      ? { ok: true, value: { available: true, items: [], archivedIds: [], deleted: [] } }
+      : { ok: true, value: { available: true, items, archivedIds: [], deleted: [] } },
+    'sessions-bytes': payload => ({ ok: true, value: { bytes: Object.fromEntries((payload?.ids || []).map(id => [id, 1024])) } }),
+    'sessions-archive-plan': payload => ({ ok: true, value: { planId: 'archive:' + payload.ids.join(','), expiresAt: Date.now() + 300000, requiresConfirmation: false, sessions: payload.ids.map(id => ({ id, title: id === 'session-one' ? 'First cold' : 'Second cold', cwd: '/workspace', worktree: 'none-recorded' })) } }),
+    'sessions-archive': () => ({ ok: true, value: { results: [{ id: 'session-one', archived: true }, { id: 'session-two', archived: false, error: 'archive-confirmation-required' }] } }),
+  }))
+  await openSessionManagerList(renderer)
+  await renderer.findByTestId('sessions-batch-toggle').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('sessions-select-session-one').props.onChange({ target: { checked: true } })
+  await renderer.findByTestId('sessions-select-session-two').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  await renderer.findByTestId('sessions-batch-archive').props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-archive-modal'), false)
+  assert.deepEqual(calls.filter(call => call.endpoint === 'sessions-archive').map(call => call.payload), [{ planId: 'archive:session-one,session-two', withoutConfirmation: true }])
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-one'), true, 'the completed item syncs locally')
+  assert.equal(renderer.hasTest('sessions-tag-archived-session-two'), false)
+  assert.equal(renderer.hasTest('sessions-archive-results'), true)
+  const text = renderer.text('settings.section')
+  assert.match(text, /归档结果：1\/2 个会话/)
+  assert.match(text, /Second cold：.*重新选择并确认/)
+  assert.equal((text.match(/重新选择并确认/g) || []).length, 1, 'confirmation-required must be reported once')
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive').length, 1, 'a partially rejected batch is never retried')
+  assert.equal(calls.filter(call => call.endpoint === 'sessions-archive-status').length, 0)
 })
 
 test('changing scope invalidates an in-flight archive preview', async () => {

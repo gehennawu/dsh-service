@@ -23,6 +23,8 @@ test('archive requires a one-time Host plan; preview is read-only and rejects ID
   const plan = await f.invoke('sessions-archive-plan', { ids: ['a', 'a'] })
   assert.equal(plan.value.sessions.length, 1)
   assert.equal(plan.value.sessions[0].worktree, 'unknown')
+  assert.equal(plan.value.requiresConfirmation, true, 'missing log capabilities must not allow one-click archive')
+  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId, withoutConfirmation: true })).error, 'archive-confirmation-required')
   assert.deepEqual(f.calls, [])
   assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId, id: 'b' })).ok, false)
   const result = await f.invoke('sessions-archive', { planId: plan.value.planId })
@@ -30,6 +32,43 @@ test('archive requires a one-time Host plan; preview is read-only and rejects ID
   assert.equal(result.value.results[0].cleanup.status, 'unknown')
   assert.deepEqual(f.calls, ['a'])
   assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'unknown-archive-plan')
+})
+
+test('only a verified hiding-only archive plan permits execution without confirmation', async () => {
+  const f = fixture()
+  const candidate = { type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/owned', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }
+  f.services.sessionQuery.readSession = async id => ({ inheritedEventCount: 0, events: id === 'b' ? [candidate] : [] })
+  const mixed = await f.invoke('sessions-archive-plan', { ids: ['a', 'b'] })
+  assert.equal(mixed.value.requiresConfirmation, true)
+  assert.equal((await f.invoke('sessions-archive', { planId: mixed.value.planId, withoutConfirmation: true })).error, 'archive-confirmation-required')
+  assert.deepEqual(f.calls, [], 'no item in a mixed batch is archived before confirmation')
+
+  f.services.sessionQuery.readSession = async () => ({ inheritedEventCount: 2, events: [candidate] })
+  const safe = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal(safe.value.requiresConfirmation, false, 'an inherited worktree reference is not owned by this session')
+  const result = await f.invoke('sessions-archive', { planId: safe.value.planId, withoutConfirmation: true })
+  assert.deepEqual(result.value.results.map(({ id, archived }) => ({ id, archived })), [{ id: 'a', archived: true }])
+  assert.deepEqual(f.calls, ['a'])
+
+  f.services.sessionQuery.readSession = async () => ({ inheritedEventCount: 0, events: [{ ...candidate, data: { path: '/legacy' } }] })
+  const uncertain = await f.invoke('sessions-archive-plan', { ids: ['b'] })
+  assert.equal(uncertain.value.requiresConfirmation, true, 'unrecognized owned records are not treated as proof of safety')
+})
+
+test('one-click archive stops a later item that gains a worktree candidate during the batch', async () => {
+  const f = fixture()
+  let eventsForB = []
+  f.services.sessionQuery.readSession = async id => ({ inheritedEventCount: 0, events: id === 'b' ? eventsForB : [] })
+  const archive = f.registry.archiveSession.bind(f.registry)
+  f.registry.archiveSession = async id => {
+    await archive(id)
+    if (id === 'a') eventsForB = [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/new', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }]
+  }
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a', 'b'] })
+  assert.equal(plan.value.requiresConfirmation, false)
+  const result = await f.invoke('sessions-archive', { planId: plan.value.planId, withoutConfirmation: true })
+  assert.deepEqual(f.calls, ['a'])
+  assert.deepEqual(result.value.results[1], { id: 'b', archived: false, error: 'archive-confirmation-required' })
 })
 
 test('archive expired, changed, live, missing and disposed plans never execute', async () => {
@@ -71,7 +110,7 @@ test('archive submit re-reads and strictly revalidates the preview', async () =>
   assert.equal(reads, 1)
   assert.equal(titleReads, 1)
   // 预览对象不得携带内部 revision 等缓存字段。
-  assert.deepEqual(Object.keys(plan.value).sort(), ['cleanup', 'consequences', 'expiresAt', 'planId', 'sessions'].sort())
+  assert.deepEqual(Object.keys(plan.value).sort(), ['cleanup', 'consequences', 'expiresAt', 'planId', 'requiresConfirmation', 'sessions'].sort())
   const result = await f.invoke('sessions-archive', { planId: plan.value.planId })
   assert.equal(result.value.results[0].archived, true)
   assert.equal(reads, 2, 'submit must re-read the session log')
@@ -95,9 +134,9 @@ test('archive confirmation rejects a changed log even when persistence exposes n
   let snapshot = { inheritedEventCount: 0, events: [] }
   f.services.sessionQuery.readSession = async () => snapshot
   const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
-  assert.equal(plan.value.sessions[0].worktree, 'none-recorded')
+  assert.equal(plan.value.requiresConfirmation, false)
   snapshot = { inheritedEventCount: 0, events: [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/new', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }] }
-  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'archive-plan-stale')
+  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId, withoutConfirmation: true })).error, 'archive-plan-stale')
   assert.deepEqual(f.calls, [])
 })
 
