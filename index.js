@@ -3019,9 +3019,10 @@ async function refreshUsageIndex(ctx, dshHome, currentIndex) {
       failedSessions.push(usageSessionFailure(id, error, stage, previous !== undefined))
     }
   }
-  const failuresChanged = failedSessions.length !== currentIndex.failedSessions.length
+  const previousFailures = usageFailedSessions(currentIndex)
+  const failuresChanged = failedSessions.length !== previousFailures.length
     || failedSessions.some((failure, position) => {
-      const current = currentIndex.failedSessions[position]
+      const current = previousFailures[position]
       return current === undefined
         || current.id !== failure.id
         || current.code !== failure.code
@@ -5123,7 +5124,7 @@ async function viewSessionPage(ctx, id, cursor, cacheRef, limit = SESSIONS_VIEW_
   }
 }
 
-// 内容搜索：逐会话 filterEvents 文本谓词（语义、大小写不敏感、空白灵活），带预算约束。
+// 内容搜索：优先官方全文索引；不支持索引时回落到有预算的逐会话文本扫描。
 async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCache = null) {
   const sessionQuery = ctx.get('sessionQuery')
   const result = { available: sessionQuery !== undefined && (typeof sessionQuery.searchSessions === 'function' || typeof sessionQuery.filterEvents === 'function'), query, scope, hits: [] }
@@ -5136,15 +5137,17 @@ async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCa
   const targets = scope === 'archived'
     ? listed.items.filter((item) => item.archived && !item.live)
     : listed.items
-  const scopeSet = new Set(targets.map((item) => item.id))
-  const titleById = new Map(listed.items.map((item) => [item.id, item.title]))
-  // 官方 FTS5 索引优先（`dsh-session-query-sqlite` 随 profile 挂载时可用）：只扫索引，
-  // 命中会话再按会话取前 N 条事件；不可用/抛错（未挂载 sqlite、老宿主）时才回落逐会话
-  // filterEvents——那条路对无命中查询要把全部日志读一遍，是最后一个兜底而不是默认。
+  if (targets.length === 0) return result
+  const titleById = new Map(targets.map((item) => [item.id, item.title]))
+  // 先让 FTS 按归档会话 ID 限定语料，再排名 / 截断；否则归档结果可能全被全局前 N 条挤掉。
   if (typeof sessionQuery.searchSessions === 'function') {
     let page
     try {
-      page = await sessionQuery.searchSessions({ query: q, limit: SESSIONS_SEARCH_INDEX_LIMIT })
+      page = await sessionQuery.searchSessions({
+        query: q,
+        limit: SESSIONS_SEARCH_INDEX_LIMIT,
+        ...(scope === 'archived' ? { sessionFilters: [{ kind: 'id', values: [...titleById.keys()] }] } : {}),
+      })
     } catch (_) {
       page = undefined
     }
@@ -5152,7 +5155,7 @@ async function searchSessionsContent(ctx, dshHome, query, scope = 'all', titleCa
       const hits = []
       for (const hit of Array.isArray(page.items) ? page.items : []) {
         const id = typeof hit?.header?.id === 'string' ? hit.header.id : ''
-        if (id === '' || !scopeSet.has(id)) continue
+        if (id === '' || !titleById.has(id)) continue
         // `searchEvents` 每次都会重跑整语料 reconcile（官方实现里与 searchSessions 同价），
         // 逐会话再调 20 次会把一次搜索拖成几分钟；索引路径只取官方已返回的最强匹配。
         const doc = hit.bestMatch
@@ -6672,7 +6675,7 @@ function apply(ctx, featureConfig) {
   const rpcEndpoints = mergeRouteTables([
     coreRoutes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
-    createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, persistenceListSnapshots, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
+    createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),
     createSubagentRoutes({ ctx, providerAvailability, dispatchRing, serializeSubagentRouteWrite, subagentRouteRef, subagentRouteLoadPromise, subagentSeamRef, MAX_SUBAGENT_ROUTE_FIELD, SUBAGENT_ROUTE_FALLBACK_MAX, SUBAGENT_ROUTE_MODES, listSubagentDispatches, listSubagentModels, listRecentRouteFailures: () => subagentRouteFailureViews(subagentRouteFailures), rpcTechnicalFailure }),
     createBackupRoutes({ ctx, backupIntegrity, backupProgress, clearBackupProgress, downloadTokens, dshHome, dshVersion, setBackupProgress, withBackupLock, backupNameVersionSuffix, createBackup, deleteBackup, exportBackup, formatBackupTimestamp, importBackup, listBackups, listLocalProfiles, name, rpcFailure }),

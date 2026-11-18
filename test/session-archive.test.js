@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createSessionsRoutes } from '../session-routes.js'
 
-function fixture({ persistenceListSnapshots } = {}) {
+function fixture({ persistenceListSnapshots, sessionTitleCache } = {}) {
   const listeners = new Map()
   const disposers = []
   const calls = []
@@ -10,7 +10,9 @@ function fixture({ persistenceListSnapshots } = {}) {
   const registry = { archivedSessionIds: [], async archiveSession(id) { calls.push(id); this.archivedSessionIds.push(id) } }
   const services = { sessionQuery: { async listSessions() { return records } }, workspaceRegistry: registry }
   const ctx = { get: key => services[key], on: (key, fn) => { listeners.set(key, fn); return () => listeners.delete(key) }, effect: fn => disposers.push(fn()) }
-  const routes = createSessionsRoutes({ ctx, sessionIsLive: () => false, persistenceListSnapshots })
+  // persistenceListSnapshots 是兼容夹具：现实现已不使用，保留注入以便同一组用例
+  // 能在修复前的 revision 快路上复现红测（塌成 `{}` 的缺失 revision / 读取后新 revision）。
+  const routes = createSessionsRoutes({ ctx, sessionIsLive: () => false, persistenceListSnapshots, sessionTitleCache })
   const invoke = (key, payload) => routes[key].handle(payload)
   return { invoke, calls, records, registry, services, listeners, emit: info => listeners.get('worktree/cleanup')(info), dispose: () => disposers.forEach(fn => fn()) }
 }
@@ -52,33 +54,91 @@ test('archive expired, changed, live, missing and disposed plans never execute',
   assert.deepEqual(f.calls, [])
 })
 
-test('archive submit reuses the preview when log revisions are unchanged', async () => {
+test('archive submit re-reads and strictly revalidates the preview', async () => {
+  const f = fixture()
+  // 模拟持久化清单存在但没有 revision：perf 版会把两次 undefined 折成 `{}` 误判未变化。
+  f.services.sessionPersistence = { async listSnapshots() { return [{ header: { id: 'a' } }] } }
+  let reads = 0
+  let titleReads = 0
+  let title = 'Preview title'
+  f.services.sessionQuery.readSession = async () => { reads += 1; return { inheritedEventCount: 0, events: [] } }
+  f.services.sessionQuery.readTitleSnapshots = async ids => {
+    titleReads += 1
+    return ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title } } }))
+  }
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal(plan.value.sessions[0].title, 'Preview title')
+  assert.equal(reads, 1)
+  assert.equal(titleReads, 1)
+  // 预览对象不得携带内部 revision 等缓存字段。
+  assert.deepEqual(Object.keys(plan.value).sort(), ['cleanup', 'consequences', 'expiresAt', 'planId', 'sessions'].sort())
+  const result = await f.invoke('sessions-archive', { planId: plan.value.planId })
+  assert.equal(result.value.results[0].archived, true)
+  assert.equal(reads, 2, 'submit must re-read the session log')
+  assert.equal(titleReads, 2, 'submit must re-read the official title snapshots')
+})
+
+test('archive confirmation rejects a changed title without consulting the stale title cache', async () => {
+  const f = fixture({ sessionTitleCache: new Map([['a', { title: 'Stale cached title', revision: 'r1' }]]) })
+  let title = 'Preview title'
+  f.services.sessionQuery.readTitleSnapshots = async ids => ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title } } }))
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal(plan.value.sessions[0].title, 'Preview title', 'archive preview uses official snapshots, not the cache')
+  title = 'Changed title'
+  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'archive-plan-stale')
+  assert.deepEqual(f.calls, [])
+})
+
+test('archive confirmation rejects a changed log even when persistence exposes no revision', async () => {
+  const f = fixture({ persistenceListSnapshots: async service => service.listSnapshots() })
+  f.services.sessionPersistence = { async listSnapshots() { return [{ header: { id: 'a' } }] } }
+  let snapshot = { inheritedEventCount: 0, events: [] }
+  f.services.sessionQuery.readSession = async () => snapshot
+  const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal(plan.value.sessions[0].worktree, 'none-recorded')
+  snapshot = { inheritedEventCount: 0, events: [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/new', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }] }
+  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'archive-plan-stale')
+  assert.deepEqual(f.calls, [])
+})
+
+test('archive confirmation rejects a log change landing between the preview read and revision capture', async () => {
   let revisions = { a: 'r1' }
   const f = fixture({ persistenceListSnapshots: async () => Object.entries(revisions).map(([id, revision]) => ({ header: { id }, revision })) })
   f.services.sessionPersistence = {}
+  let snapshot = { inheritedEventCount: 0, events: [] }
   let reads = 0
   f.services.sessionQuery.readSession = async () => {
     reads += 1
-    return {
-      inheritedEventCount: 0,
-      events: [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/owned', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }],
-    }
+    const current = snapshot
+    // 旧实现先读清单、再读日志、最后才取 revision；这里模拟日志在两次观测之间前进到 r2。
+    if (reads === 1) revisions = { a: 'r2' }
+    return current
   }
+  f.services.sessionQuery.readTitleSnapshots = async ids => ids.map(sessionId => ({ sessionId, status: 'fulfilled', value: { title: { title: 'Preview title' } } }))
   const plan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
-  assert.equal(plan.value.sessions[0].worktree, 'candidate')
-  assert.equal(reads, 1)
-  const result = await f.invoke('sessions-archive', { planId: plan.value.planId })
-  assert.equal(result.value.results[0].archived, true)
-  assert.equal(reads, 1, 'an unchanged revision must not re-read the session log at submit')
+  assert.equal(plan.value.sessions[0].worktree, 'none-recorded')
+  snapshot = { inheritedEventCount: 0, events: [{ type: 'plugin:worktree/created', seq: 1, ignorable: true, data: { path: '/new', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }] }
+  assert.equal((await f.invoke('sessions-archive', { planId: plan.value.planId })).error, 'archive-plan-stale')
+  assert.deepEqual(f.calls, [])
+})
 
-  // revision 变化 → 回落全量重读并重比；日志内容确已变化时拒绝执行。
-  const snapshot = { inheritedEventCount: 0, events: [] }
-  f.services.sessionQuery.readSession = async () => snapshot
-  f.registry.archivedSessionIds = []
-  const stalePlan = await f.invoke('sessions-archive-plan', { ids: ['a'] })
-  revisions = { a: 'r2' }
-  snapshot.events = [{ type: 'plugin:worktree/created', seq: 2, ignorable: true, data: { path: '/other', branch: 'topic', baseCommit: 'abc', repositoryRoot: '/repo' } }]
-  assert.equal((await f.invoke('sessions-archive', { planId: stalePlan.value.planId })).error, 'archive-plan-stale')
+test('archive confirmation rechecks identity state and disposal after awaits', async () => {
+  const archived = fixture()
+  const archivedPlan = await archived.invoke('sessions-archive-plan', { ids: ['a'] })
+  archived.registry.archivedSessionIds = ['a']
+  assert.equal((await archived.invoke('sessions-archive', { planId: archivedPlan.value.planId })).error, 'archive-plan-stale')
+  assert.deepEqual(archived.calls, [])
+
+  const disposed = fixture()
+  let reads = 0
+  disposed.services.sessionQuery.readSession = async () => {
+    reads += 1
+    if (reads === 2) disposed.dispose()
+    return { inheritedEventCount: 0, events: [] }
+  }
+  const disposedPlan = await disposed.invoke('sessions-archive-plan', { ids: ['a'] })
+  assert.equal((await disposed.invoke('sessions-archive', { planId: disposedPlan.value.planId })).error, 'archive-plan-stale')
+  assert.deepEqual(disposed.calls, [])
 })
 
 test('archive batch reports partial failure without rollback; cleanup events are revision guarded', async () => {

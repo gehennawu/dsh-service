@@ -3096,8 +3096,8 @@
           setSelectedIds([])
           setBatchResult('')
           setBatchError('')
+          invalidateSearch()
           setSearch('')
-          setSearchResult(null)
           setDetail(null)
           setClearPlan(null)
           setClearError('')
@@ -3155,31 +3155,47 @@
           }
         }, [list])
 
-        const runSearch = async (query) => {
-          if (query.trim() === '') { searchGeneration.current += 1; setSearchResult(null); setSearchRunning(false); return }
-          const generation = searchGeneration.current + 1
-          searchGeneration.current = generation
-          setSearchRunning(true)
+        // 同步作废当前查询代际并清掉旧 hits：输入/清空/scope/过滤一变就先失效，
+        // 不依赖旧请求完成来收尾（否则慢响应会继续显示上一查询的结果、或把「搜索中」提前收起）。
+        const invalidateSearch = (nextRunning = false) => {
+          searchGeneration.current += 1
+          setSearchResult(null)
+          // 换查询时立即给出「搜索中」反馈；清空/切筛选时才落回非忙碌态。
+          setSearchRunning(nextRunning)
+        }
+        const runSearch = async (query, generation, archivedOnly) => {
+          // 定时器排队期间输入/scope 可能又变了：代际已前进就直接放弃，不再白打一次请求。
+          if (searchGeneration.current !== generation) return
           try {
             const res = await rpcCall('sessions-search', {
               query: query.trim(),
-              scope: searchScopeArchived ? 'archived' : 'all',
+              scope: archivedOnly ? 'archived' : 'all',
             })
             if (searchGeneration.current !== generation) return
             if (res.ok) setSearchResult(res.value)
-            else setSearchResult({ available: true, query, scope: 'all', hits: [], error: res.error })
+            else setSearchResult({ available: true, query, scope: archivedOnly ? 'archived' : 'all', hits: [], error: res.error })
           } catch (_) {
             if (searchGeneration.current !== generation) return
-            setSearchResult({ available: true, query, scope: searchScopeArchived ? 'archived' : 'all', hits: [], error: 'network' })
+            setSearchResult({ available: true, query, scope: archivedOnly ? 'archived' : 'all', hits: [], error: 'network' })
           } finally {
             if (searchGeneration.current === generation) setSearchRunning(false)
           }
         }
-        // 防抖 300ms
+        // 防抖 300ms。每次输入/scope/过滤变更（含卸载）先把旧代作废：旧响应落地时
+        // generation 已前进，既不回填 hits 也不改「搜索中」。
         useEffect(() => {
-          if (filter === 'deleted') return
-          if (search.trim() === '') { setSearchResult(null); return }
-          return ctx.timer.timeout(() => { void runSearch(search) }, 300)
+          const generation = (searchGeneration.current += 1)
+          setSearchResult(null)
+          if (filter === 'deleted' || search.trim() === '') {
+            setSearchRunning(false)
+            return () => { searchGeneration.current += 1 }
+          }
+          setSearchRunning(true)
+          const dispose = ctx.timer.timeout(() => { void runSearch(search, generation, searchScopeArchived) }, 300)
+          return () => {
+            searchGeneration.current += 1
+            if (typeof dispose === 'function') dispose()
+          }
         }, [search, searchScopeArchived, filter])
 
         const openDetail = (sessionId, view, hitItems, event, targetSeq) => {
@@ -4121,7 +4137,14 @@
                 type: 'text',
                 placeholder: translate('sessions.search.placeholder'),
                 value: search,
-                onChange: (event) => { if (batchMode) exitBatchMode(); setSearch(event.target.value) },
+                onChange: (event) => {
+                  const next = event.target.value
+                  // 同值事件不重跑 effect：此处若清空/作废会永久无结果，先按值守卫。
+                  if (next === search) return
+                  if (batchMode) exitBatchMode()
+                  invalidateSearch(next.trim() !== '')
+                  setSearch(next)
+                },
                 style: Object.assign({}, inputStyle, { paddingLeft: '28px', paddingRight: search !== '' ? '28px' : '10px' }),
               }),
               search !== '' ? React.createElement('button', {
@@ -4129,11 +4152,11 @@
                 'data-testid': 'sessions-search-clear',
                 title: translate('sessions.search.clear'),
                 'aria-label': translate('sessions.search.clear'),
-                onClick: () => { setSearch(''); setSearchResult(null) },
+                onClick: () => { if (search === '') return; invalidateSearch(); setSearch('') },
                 style: { position: 'absolute', right: '7px', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, border: 0, borderRadius: '50%', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', lineHeight: 1, cursor: 'pointer' },
               }, '×') : null),
             filter === 'all' ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', userSelect: 'none', cursor: 'pointer' } },
-              React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => setSearchScopeArchived(event.target.checked) }),
+              React.createElement('input', { type: 'checkbox', 'data-testid': 'sessions-search-archived', checked: searchScopeArchived, onChange: (event) => { const next = event.target.checked; if (next === searchScopeArchived) return; invalidateSearch(search.trim() !== ''); setSearchScopeArchived(next) } }),
               translate('sessions.search.archivedOnly')) : null,
             // 仅子代理：与「仅搜归档」同款复选框（收纳：两个「仅…」限定条件归一行、同一控件语言）；
             // 正交于 scope，批量态可用且不退出批量；已删除视图整行隐藏（墓碑记录无该标志）。
@@ -5356,40 +5379,56 @@
           let active = true
           // interactive=true 只决定「失败要不要显式报错」；自动同步与手动刷新**都**点亮
           // usageBusy——自动那次同样可能触发数十秒冷折叠，用户需要看到反馈。
-          // 一次拉取就够：usage-refresh 返回与 usage 相同的完整投影，先读缓存再补拉会让
-          // 面板每次挂载都传两份 225 KB 量级的 payload。失败时保留画面，错误只对主动触发可见。
-          const sync = async (interactive) => {
+          //
+          // 首屏先读一次持久索引（纯读约 32ms）立即出画，再折叠补到最新：折叠可能是数十秒
+          // 的冷折叠，没有缓存首屏的话面板会空白等到折叠结束。`withCache` 只给挂载首轮用，
+          // 后续边沿已有画面，不再多传一份 payload。
+          const sync = async (interactive, withCache = false) => {
             if (usageInflightRef.current) return
             usageInflightRef.current = true
             setUsageBusy(true)
+            let cachedShown = false
             try {
-              const refreshed = await rpcCall('usage-refresh', usageRequestPayload).catch(() => null)
-              if (!active) return
-              if (!refreshed || refreshed.ok === false) {
-                // 刷新失败不再先拉缓存（那会让成功路径也不得不多一次请求）：只有失败时才
-                // 回落到只读缓存，既保住画面也不把双份 payload 带到常态路径。
+              if (withCache) {
                 const cached = await rpcCall('usage', usageRequestPayload).catch(() => null)
                 if (!active) return
                 if (cached && cached.ok !== false) {
+                  cachedShown = true
                   setUsageError(null)
                   setUsageFailureDetails(false)
                   setUsage(cached.value)
-                } else if (interactive) setUsageError(translate('usage.error'))
+                }
+              }
+              const refreshed = await rpcCall('usage-refresh', usageRequestPayload).catch(() => null)
+              if (!active) return
+              if (!refreshed || refreshed.ok === false) {
+                // 折叠失败保留已画出的缓存；没有缓存首屏时回落到只读缓存，保住画面。
+                if (!cachedShown) {
+                  const cached = await rpcCall('usage', usageRequestPayload).catch(() => null)
+                  if (!active) return
+                  if (cached && cached.ok !== false) {
+                    cachedShown = true
+                    setUsageError(null)
+                    setUsageFailureDetails(false)
+                    setUsage(cached.value)
+                  }
+                }
+                if (!cachedShown && interactive) setUsageError(translate('usage.error'))
                 return
               }
               setUsageError(null)
               setUsageFailureDetails(false)
               setUsage(refreshed.value)
             } catch (_) {
-              if (active && interactive) setUsageError(translate('usage.error'))
+              if (active && interactive && !cachedShown) setUsageError(translate('usage.error'))
             } finally {
               usageInflightRef.current = false
               if (active) setUsageBusy(false)
             }
           }
           usageSyncRef.current = sync
-          // 首轮：面板挂载即无条件补一次（不再看 updatedAt 新鲜度），失败要让错误态可见。
-          sync(true)
+          // 首轮：先缓存出画、再无条件折叠补最新（不看 updatedAt 新鲜度），失败要让错误态可见。
+          sync(true, true)
           return () => {
             active = false
             usageSyncRef.current = null
@@ -5469,39 +5508,66 @@
         }, [features.backupMaintenance])
         // 运行状况卡只读内存态，30 s 一次足够；页面在后台/隐藏时完全不发请求，
         // 回到前台立即补一次（不等下一个周期），避免为一个数字常驻轮询。
+        //
+        // 单飞 + 单 timer：请求在飞时再触发可见性边沿不再并发第二次（否则两个响应各自
+        // 排一条 30 s 链，切几次后台就叠出几条）；隐藏时直接摘掉链，恢复可见才重新起。
         useEffect(() => {
           // 卡片只属于概览页：离开概览立即停链，别让 30 s 定时器在其它页常驻。
           if (activeTab !== 'overview') return () => {}
           let active = true
-          let cancelNext = () => {}
+          let cancelNext = null
+          let inflight = false
           const pageVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+          const clearTimer = () => {
+            if (typeof cancelNext === 'function') cancelNext()
+            cancelNext = null
+          }
+          const schedule = () => {
+            clearTimer()
+            if (!active || !pageVisible()) return
+            cancelNext = ctx.timer.timeout(() => {
+              cancelNext = null
+              void poll()
+            }, 30000)
+          }
           const poll = async () => {
             if (!active) return
-            if (pageVisible()) {
-              try {
-                const res = await rpcCall('health', {})
-                if (!active) return
-                if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
-                setHealth(res.value)
-                setHealthError(null)
-              } catch (_) {
-                if (active) setHealthError(translate('health.error'))
-              }
+            clearTimer()
+            // 隐藏期间不实拉、也不留空转定时器；恢复可见由 visibilitychange 立即补一次。
+            if (!pageVisible()) return
+            // 单飞：在飞请求已经覆盖这一时刻，不并发第二条请求/第二条链。
+            if (inflight) return
+            inflight = true
+            try {
+              const res = await rpcCall('health', {})
+              if (!active) return
+              if (!res || res.ok === false) throw new Error(res && res.error ? res.error : 'health failed')
+              setHealth(res.value)
+              setHealthError(null)
+            } catch (_) {
+              if (active) setHealthError(translate('health.error'))
+            } finally {
+              inflight = false
+              // 请求落地时页面可能已隐藏：隐藏就停链，别把定时器带进后台。
+              if (active) schedule()
             }
-            if (active) cancelNext = ctx.timer.timeout(poll, 30000)
           }
           const onVisibilityChange = () => {
-            if (!active || !pageVisible()) return
-            try { cancelNext() } catch (_) {}
+            if (!active) return
+            if (!pageVisible()) {
+              clearTimer()
+              return
+            }
+            if (inflight) return
             void poll()
           }
-          poll()
+          void poll()
           if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
             document.addEventListener('visibilitychange', onVisibilityChange)
           }
           return () => {
             active = false
-            cancelNext()
+            clearTimer()
             if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
               document.removeEventListener('visibilitychange', onVisibilityChange)
             }

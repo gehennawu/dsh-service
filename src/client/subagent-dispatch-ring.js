@@ -62,7 +62,9 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
       //   · 空闲且有记录 → 120s 低频心跳，只兜「漏掉 running 边沿」的宿主异常；
       //   · 空闲且无记录 → 彻底停表，等 running 边沿或会话切换再起（旧口径在此 20s 空转）；
       //   · 宿主没有客户端会话快照服务 → 退回旧 20s 常驻口径，不降级功能。
-      // 页面不可见时只续链不实拉：后台标签不再空转，切回前台后的下一轮自然补上。
+      // 页面不可见时彻底停表（不再留空 tick）；恢复可见时无条件补拉一次（含 trailing
+      // 强拉，避免「边沿前的在途请求」用旧数据把边沿吃掉），即使此前没有任何记录、
+      // 整段回合都在后台完成，也能补上首次派发。
       const SUBAGENT_DOCK_POLL_MS = 20 * 1000
       const SUBAGENT_DOCK_IDLE_MS = 120 * 1000
       function SubagentModelsDock(props) {
@@ -72,6 +74,7 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           let cancelled = false
           let pollChain = undefined
           let unsubscribeSessions = null
+          let unsubscribeVisibility = null
           const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
           if (sessionId === undefined) {
             setText('')
@@ -114,7 +117,7 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           }
           // 实拉一次：成功后按当前运行态重排轮询链；失败保留旧缓存（不闪断），
           // 由调用方决定是否继续挂链（轮内失败继续、首拉失败静默不常驻）。
-          const pull = (force) => refreshSubagentDispatches(sessionId, force === true).then((records) => {
+          const pullOnce = (force) => refreshSubagentDispatches(sessionId, force === true).then((records) => {
             if (cancelled) return null
             setFromCache()
             return records
@@ -122,15 +125,25 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
             if (!cancelled) setText('')
             return null
           })
+          // 边沿强拉：若调用时已有一次在途请求，它会带着「边沿之前」的数据落地——
+          // 可见性/回合结束边沿必须再补一次 trailing 强拉，否则这个边沿被旧响应吃掉、
+          // 新派发永远看不到（单飞只保证不并发，不保证覆盖新事实）。无在途时不重复拉。
+          const pull = (force) => {
+            const trailing = force === true && dispatchInflight.has(sessionId)
+            const first = pullOnce(force)
+            if (!trailing) return first
+            return first.then(() => {
+              // 在途落地前又切后台/卸载：trailing 强拉一并取消，等下一次可见边沿。
+              if (cancelled || !pageVisible()) return null
+              return pullOnce(true)
+            })
+          }
           const tick = () => {
             pollChain = undefined
             if (cancelled) return
-            // 页面不可见时只续链不实拉（后台标签的空转收敛为一次空 tick；浏览器本身
-            // 已把后台定时器节流到 ≥1 分钟，切回前台后下一轮自然补上）。
-            if (!pageVisible()) {
-              arm()
-              return
-            }
+            // 页面不可见时彻底停表：后台标签不再空转，避免「hidden 期间的完整回合」
+            // 结束后仍把心跳留到前台；恢复可见由 visibilitychange 先补拉一次再重排。
+            if (!pageVisible()) return
             // 轮内失败也续链（旧缓存照旧显示，下轮再试）。
             pull(true).then(() => { if (!cancelled) arm() })
           }
@@ -141,7 +154,8 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           }
           const arm = () => {
             clearChain()
-            if (cancelled) return
+            // 隐藏时前一次 in-flight 才落地：不得把新定时器带进后台。
+            if (cancelled || !pageVisible()) return
             const delay = pollDelay()
             if (delay === null) return
             pollChain = ctx.timer?.timeout?.(tick, delay)
@@ -153,10 +167,23 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
             const next = readRunning()
             if (next === running) return
             running = next
+            // 后台只记账不实拉：回来时的可见性边沿会无条件补拉一次（即使此前没有任何
+            // 记录、整段回合都在后台完成，也不会漏掉首次派发）。
             if (!pageVisible()) {
-              arm()
+              clearChain()
               return
             }
+            pull(true).then(() => { if (!cancelled) arm() })
+          }
+          // 可见性边沿：隐藏即停表；恢复可见无条件补拉一次再按当前运行态重排。
+          // 这是「后台完整回合/后台首次派发」的兜底——不依赖 running 边沿是否被完整观察到。
+          const onVisibilityChange = () => {
+            if (cancelled) return
+            if (!pageVisible()) {
+              clearChain()
+              return
+            }
+            // 失败也按当前状态重排（有记录 → 120s 心跳重试；无记录且空闲 → 停表）。
             pull(true).then(() => { if (!cancelled) arm() })
           }
           try {
@@ -165,13 +192,22 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
           } catch (_) {
             unsubscribeSessions = null
           }
-          // 首拉只发一次（旧实现同一 tick 发两次）；成功才起链，宿主不可用时静默、
-          // 不常驻定时器（重进会话或页面刷新后自愈）。
-          pull(false).then((records) => { if (!cancelled && records !== null) arm() })
+          try {
+            if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+              document.addEventListener('visibilitychange', onVisibilityChange)
+              unsubscribeVisibility = () => document.removeEventListener('visibilitychange', onVisibilityChange)
+            }
+          } catch (_) {
+            unsubscribeVisibility = null
+          }
+          // 首拉只发一次（旧实现同一 tick 发两次）；后台挂载不拉，交给可见性边沿。
+          // 成功才起链，宿主不可用时静默、不常驻定时器（重进会话或页面刷新后自愈）。
+          if (pageVisible()) pull(false).then((records) => { if (!cancelled && records !== null) arm() })
           return () => {
             cancelled = true
             clearChain()
             if (typeof unsubscribeSessions === 'function') unsubscribeSessions()
+            if (typeof unsubscribeVisibility === 'function') unsubscribeVisibility()
           }
         }, [props.sessionId])
         if (text === '') return null

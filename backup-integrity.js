@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { constants, createReadStream } from 'node:fs'
+import { lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { gunzip } from 'node:zlib'
@@ -368,58 +368,84 @@ function parseTar(expanded, options = {}) {
   return { entries, sections: state.sections, logicalBytes, entryCount: entries.length, archiveFormat, metadata: state.metadata ?? null }
 }
 
-// 预检（不含条目内容）会被 UI 反复触发：同一归档在同一 mtime/size 下直接复用报告，
-// 省掉重复 readFile + gunzip + tar 解析。含数据的条目模式（prepareRestore/verify）不缓存，
-// 避免把整包内容留在内存里。
+// 预检（不含条目内容）会被 UI 反复触发：同一归档在同一份字节上直接复用报告，
+// 省掉重复 gunzip + tar 解析。含数据的条目模式（prepareRestore/verify）不缓存，
+// 避免把整包内容留在内存里；缓存只留报告，不保留逐条目数组或压缩字节。
 const INSPECT_CACHE_TTL_MS = 5 * 60 * 1000
 const INSPECT_CACHE_MAX = 2
 const inspectCache = new Map()
 
-async function inspectArchive(source, options = {}) {
-  const cacheable = options.collectEntries !== true && options.digestEntries !== true
-  let cacheKey = null
-  if (cacheable) {
-    // 键用内容 sha256：归档可能被同尺寸原地重写（导入/替换），只靠 mtime 在粗粒度文件系统上
-    // 会串报告。流式哈希 ~0.2 s，换来命中时跳过 gunzip + tar 解析（~1.5–2 s）。
-    try {
-      const sha256 = await hashFile(source.path)
-      cacheKey = `${source.id}|${source.name}|${String(source.nameVersion)}|${sha256}|${options.collectPaths === true ? 'paths' : 'plain'}|${options.platform ?? process.platform}|${options.dshHome ?? ''}`
-    } catch (_) {
-      cacheKey = null
-    }
-  }
-  if (cacheKey !== null) {
-    const hit = inspectCache.get(cacheKey)
-    if (hit !== undefined && Date.now() - hit.at < INSPECT_CACHE_TTL_MS) {
-      inspectCache.delete(cacheKey)
-      inspectCache.set(cacheKey, hit)
-      return { report: { ...hit.value.report, inspectedAt: new Date().toISOString() }, parsed: hit.value.parsed }
-    }
-    if (hit !== undefined) inspectCache.delete(cacheKey)
-  }
-  const value = await inspectArchiveUncached(source, options)
-  if (cacheKey !== null && value.report.validForRestore) {
-    inspectCache.set(cacheKey, { at: Date.now(), value })
-    while (inspectCache.size > INSPECT_CACHE_MAX) inspectCache.delete(inspectCache.keys().next().value)
-  }
-  return value
+// 归档读取的两道硬闸：
+//   ① 先 lstat 拒绝非普通文件（目录/FIFO/链接）与超过 512 MiB 的归档，**在读之前**返回；
+//   ② 打开后按句柄 stat 的精确大小一次性读入，最多只读该大小，并用读后 stat 检测读取期间
+//      的尺寸/mtime 变化——不依赖 readFile 的隐式无限读取，文件在检查后增长也不会被吞下。
+// 返回的 bytes 同时用于 sha256、gzip 解压和报告字段，缓存键与解析报告因此来自同一份字节。
+const ARCHIVE_OPEN_FLAGS = constants.O_RDONLY
+  | (constants.O_NOFOLLOW ?? 0)
+  // 非阻塞避免 lstat 之后被换成 FIFO 时 open 永久阻塞；随后 fstat 会拒绝非普通文件。
+  | (constants.O_NONBLOCK ?? 0)
+
+function sameArchiveIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino
+    && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs
 }
 
-async function inspectArchiveUncached(source, options = {}) {
-  const base = {
+async function readArchiveBytes(path) {
+  const pre = await lstat(path)
+  if (pre.isSymbolicLink() || !pre.isFile()) throw domainError('backup-not-regular')
+  if (pre.size <= 0 || pre.size > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
+  let handle
+  try {
+    handle = await open(path, ARCHIVE_OPEN_FLAGS)
+  } catch (error) {
+    if (error?.code === 'ELOOP') throw domainError('backup-not-regular')
+    throw error
+  }
+  try {
+    const before = await handle.stat()
+    if (!before.isFile()) throw domainError('backup-not-regular')
+    if (before.size <= 0 || before.size > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
+    // lstat 与 open 之间可能发生替换：句柄身份必须与预检一致，否则拒绝读该文件的字节。
+    if (!sameArchiveIdentity(pre, before)) throw domainError('backup-source-changed')
+    const bytes = Buffer.allocUnsafe(before.size)
+    let total = 0
+    while (total < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, total, bytes.length - total, total)
+      if (bytesRead === 0) break
+      total += bytesRead
+    }
+    const after = await handle.stat()
+    const final = await lstat(path).catch(() => null)
+    if (total !== bytes.length || !sameArchiveIdentity(before, after)
+      || final === null || final.isSymbolicLink() || !final.isFile() || !sameArchiveIdentity(before, final)) {
+      throw domainError('backup-source-changed')
+    }
+    return { bytes, sizeBytes: total, mtimeMs: after.mtimeMs }
+  } finally {
+    await handle.close()
+  }
+}
+
+// 报告基础形状恒定：失败路径也返回同样的字段，客户端不必按存在性写防御分支。
+function emptyArchiveReport(source, loaded, sha256) {
+  return {
     id: source.id,
     name: source.name,
     format: 'tar.gz',
-    source: { name: source.name, sizeBytes: source.sizeBytes, sha256: '', mtimeMs: source.mtimeMs },
+    source: {
+      name: source.name,
+      sizeBytes: loaded?.sizeBytes ?? source.sizeBytes,
+      sha256: sha256 ?? '',
+      mtimeMs: loaded?.mtimeMs ?? source.mtimeMs,
+    },
     validForRestore: false,
     status: 'error',
-    archive: { entryCount: 0, compressedBytes: source.sizeBytes, logicalBytes: 0 },
+    archive: { entryCount: 0, compressedBytes: loaded?.sizeBytes ?? source.sizeBytes, logicalBytes: 0 },
     archiveFormat: 'v1',
     // 文件名里的版本段（老归档为 null）与归档内记录的版本（缺 meta 为 null）分开报，
     // 界面优先显示后者；前者是廉价但可能与内容不符的镜像。
     nameVersion: typeof source.nameVersion === 'string' ? source.nameVersion : null,
     metadata: null,
-    // 形状恒定：坏归档也给 null / 空数组，客户端不必按存在性写防御分支。
     sourcePlatform: null,
     sourceArch: null,
     notices: [],
@@ -429,28 +455,70 @@ async function inspectArchiveUncached(source, options = {}) {
     issuesTruncated: false,
     inspectedAt: new Date().toISOString(),
   }
+}
+
+function archiveErrorResult(source, error) {
+  const report = emptyArchiveReport(source, null)
+  const issue = issueFrom(error, typeof error?.detail === 'string' ? error.detail : undefined)
+  report.issues = [issue].slice(0, MAX_ISSUES)
+  report.issueCount = 1
+  return { report, parsed: null }
+}
+
+async function inspectArchive(source, options = {}) {
+  // commit 走 fresh：破坏性动作不信任缓存，重新读取并核对当前可信指纹。
+  const cacheable = options.fresh !== true && options.collectEntries !== true && options.digestEntries !== true
+  let loaded
   try {
-    const info = await lstat(source.path)
-    if (!info.isFile()) throw domainError('backup-not-regular')
-    if (info.size <= 0 || info.size > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
-    base.source.sizeBytes = info.size
-    base.source.mtimeMs = info.mtimeMs
-    const compressed = await readFile(source.path)
-    if (compressed.length === 0 || compressed.length > MAX_COMPRESSED_BYTES) throw domainError('backup-size-limit')
-    base.archive.compressedBytes = compressed.length
-    base.source.sizeBytes = compressed.length
-    base.source.sha256 = createHash('sha256').update(compressed).digest('hex')
+    loaded = await readArchiveBytes(source.path)
+  } catch (error) {
+    return archiveErrorResult(source, error)
+  }
+  const sha256 = createHash('sha256').update(loaded.bytes).digest('hex')
+  const cacheKey = cacheable
+    ? `${source.id}|${source.name}|${String(source.nameVersion)}|${sha256}|${options.platform ?? process.platform}|${options.dshHome ?? ''}`
+    : null
+  if (cacheKey !== null) {
+    const hit = inspectCache.get(cacheKey)
+    if (hit !== undefined && Date.now() - hit.at < INSPECT_CACHE_TTL_MS) {
+      inspectCache.delete(cacheKey)
+      inspectCache.set(cacheKey, hit)
+      return {
+        report: {
+          ...hit.report,
+          // 命中时仍用本次读取的 stat 刷新来源元数据，避免把旧的 mtime 留在报告里。
+          source: { ...hit.report.source, sizeBytes: loaded.sizeBytes, mtimeMs: loaded.mtimeMs, sha256 },
+          inspectedAt: new Date().toISOString(),
+        },
+        parsed: null,
+      }
+    }
+    if (hit !== undefined) inspectCache.delete(cacheKey)
+  }
+  const value = await parseArchiveBytes(source, loaded, sha256, options)
+  if (cacheKey !== null && value.report.validForRestore) {
+    inspectCache.set(cacheKey, { at: Date.now(), report: value.report })
+    while (inspectCache.size > INSPECT_CACHE_MAX) inspectCache.delete(inspectCache.keys().next().value)
+  }
+  return value
+}
+
+async function parseArchiveBytes(source, loaded, sha256, options) {
+  const report = emptyArchiveReport(source, loaded, sha256)
+  try {
     let expanded
-    try { expanded = await gunzipArchive(compressed, { maxOutputLength: MAX_EXPANDED_BYTES }) } catch (error) {
+    try {
+      expanded = await gunzipArchive(loaded.bytes, { maxOutputLength: MAX_EXPANDED_BYTES })
+    } catch (error) {
       throw domainError(error?.code === 'ERR_BUFFER_TOO_LARGE' ? 'backup-size-limit' : 'backup-gzip-invalid')
     }
     const parsed = parseTar(expanded, { ...options, collectPaths: true })
     return {
       report: {
-        ...base,
+        ...report,
         validForRestore: true,
         status: 'ok',
-        archive: { entryCount: parsed.entryCount, compressedBytes: compressed.length, logicalBytes: parsed.logicalBytes },
+        archive: { entryCount: parsed.entryCount, compressedBytes: loaded.sizeBytes, logicalBytes: parsed.logicalBytes },
         archiveFormat: parsed.archiveFormat,
         // 元数据非法/缺席时退回文件名里的版本段，保证「只要有一处记了版本」就看得见。
         metadata: parsed.metadata ?? null,
@@ -470,9 +538,9 @@ async function inspectArchiveUncached(source, options = {}) {
     }
   } catch (error) {
     const issue = issueFrom(error, typeof error?.detail === 'string' ? error.detail : undefined)
-    base.issues = [issue].slice(0, MAX_ISSUES)
-    base.issueCount = 1
-    return { report: base, parsed: null }
+    report.issues = [issue].slice(0, MAX_ISSUES)
+    report.issueCount = 1
+    return { report, parsed: null }
   }
 }
 
@@ -870,7 +938,8 @@ export function createBackupIntegrity(options) {
     if (activity?.hasActive === true) { await rm(plan.staging, { recursive: true, force: true }); throw domainError('active-work') }
     const source = await resolveSource(plan.source.id)
     if (source === undefined) { await rm(plan.staging, { recursive: true, force: true }); throw domainError('restore-source-changed') }
-    const inspected = await inspectArchive(source, { platform, dshHome })
+    // 提交是不可逆动作：绕过预检缓存重新读取当前字节并核对指纹，不信任缓存报告。
+    const inspected = await inspectArchive(source, { platform, dshHome, fresh: true })
     if (!inspected.report.validForRestore || inspected.report.source.sha256 !== plan.sourceFingerprint) {
       await rm(plan.staging, { recursive: true, force: true })
       throw domainError('restore-source-changed')

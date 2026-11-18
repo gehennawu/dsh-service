@@ -1087,27 +1087,31 @@ test('usage index version mismatch preserves old summary on rebuild failure and 
   assert.equal(stored2.sessions.fragile.rebuildPending, undefined)
 })
 
-test('usage index tolerates a malformed persisted failure list instead of failing the RPC', async (t) => {
-  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-tampered-'))
-  t.after(() => rm(dshHome, { recursive: true, force: true }))
-  const now = Date.now()
-  const tampered = {
-    version: 7,
-    updatedAt: now,
-    failedSessions: 'not-an-array',
-    sessions: { kept: { revision: 'r', lastSeq: 0, project: { id: 'p', title: 'Kept' }, currentModel: null, hours: {} } },
+test('usage index tolerates missing and malformed persisted failure lists in both RPCs', async (t) => {
+  for (const [label, failedSessions] of [['missing', undefined], ['null', null], ['not an array', 'not-an-array'], ['null entry', [null]]]) {
+    await t.test(label, async (t) => {
+      const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-usage-tampered-'))
+      t.after(() => rm(dshHome, { recursive: true, force: true }))
+      const tampered = {
+        version: 7,
+        updatedAt: Date.now(),
+        failedSessions,
+        sessions: { kept: { revision: 'r', lastSeq: 0, project: { id: 'p', title: 'Kept' }, currentModel: null, hours: {} } },
+      }
+      await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(tampered))
+      const persistence = { listSnapshots: async () => [{ header: { id: 'unreadable' }, revision: 'r' }], readFrom: async () => { throw new Error('fixture unavailable') } }
+      const host = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
+      t.after(() => host.dispose())
+      const cached = await host.handler('usage', {})
+      assert.equal(cached.ok, true)
+      assert.deepEqual(cached.value.failedSessions, [])
+      assert.equal(cached.value.indexedSessions, 1)
+      const refreshed = await host.handler('usage-refresh', {})
+      assert.equal(refreshed.ok, true)
+      assert.deepEqual(refreshed.value.failedSessions.map(({ id }) => id), ['unreadable'])
+      assert.equal(refreshed.value.indexedSessions, 1)
+    })
   }
-  await mkdir(dshHome, { recursive: true })
-  await writeFile(join(dshHome, 'dsh-service-usage-index.json'), JSON.stringify(tampered))
-  const persistence = { listSnapshots: async () => [], readFrom: async () => ({ meta: {}, events: [] }) }
-  const { handler } = createHost({ services: { sessionPersistence: persistence }, env: { DSH_HOME: dshHome } })
-  const cached = await handler('usage', {})
-  assert.equal(cached.ok, true)
-  assert.deepEqual(cached.value.failedSessions, [])
-  assert.equal(cached.value.indexedSessions, 1)
-  const refreshed = await handler('usage-refresh', {})
-  assert.equal(refreshed.ok, true)
-  assert.deepEqual(refreshed.value.failedSessions, [])
 })
 
 test('backup creation tolerates tar volatile-source warnings when the archive provably covers staging', async (t) => {
@@ -9904,6 +9908,26 @@ test('session management search prefers the official FTS index and falls back on
   assert.equal(fallback.ok, true)
   assert.ok(filterCalls > 0, 'without the index the scan fallback must still run')
   assert.ok(fallback.value.hits.length > 0)
+})
+
+test('archived search finds a hit even when the first global page has only unarchived matches', async (t) => {
+  const dshHome = await mkdtemp(join(tmpdir(), 'dsh-service-archived-search-'))
+  t.after(() => rm(dshHome, { recursive: true, force: true }))
+  const records = Array.from({ length: 21 }, (_, i) => ({ header: { id: `session-${i}`, createdAt: i }, live: false, persisted: true }))
+  const host = createHost({ env: { DSH_HOME: dshHome }, services: {
+    workspaceRegistry: { archivedSessionIds: ['session-20'] },
+    sessionQuery: {
+      listSessions: async () => records,
+      searchSessions: async ({ limit, sessionFilters = [] }) => ({ items: records
+        .filter(({ header }) => sessionFilters.every((filter) => filter.kind === 'id' && filter.values.includes(header.id)))
+        .slice(0, limit)
+        .map((record) => ({ ...record, bestMatch: { seq: 2, type: 'assistant/message', snippet: 'common term' } })) }),
+    },
+  } })
+  t.after(() => host.dispose())
+  const response = await host.handler('sessions-search', { query: 'common term', scope: 'archived' })
+  assert.equal(response.ok, true)
+  assert.deepEqual(response.value.hits.map((hit) => hit.sessionId), ['session-20'])
 })
 
 test('session management export validates existence and reuses official ZIP URL', async (t) => {

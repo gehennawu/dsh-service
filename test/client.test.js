@@ -1175,6 +1175,75 @@ test('health panel loads immediately, refreshes every thirty seconds, and stops 
   assert.equal(healthCalls, 2)
 })
 
+test('health visibility edges keep a single-flight request and exactly one poll chain', async () => {
+  let healthCalls = 0
+  const pending = []
+  const visListeners = new Set()
+  globalThis.document = {
+    visibilityState: 'visible',
+    addEventListener(type, handler) { if (type === 'visibilitychange') visListeners.add(handler) },
+    removeEventListener(type, handler) { if (type === 'visibilitychange') visListeners.delete(handler) },
+  }
+  const fireVisibility = (state) => {
+    globalThis.document.visibilityState = state
+    for (const handler of [...visListeners]) handler()
+  }
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'health-visibility' } }
+      if (endpoint === 'health') {
+        healthCalls += 1
+        return new Promise((resolve) => pending.push(() => resolve({
+          ok: true,
+          value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, activeAgents: 0, activeJobs: 0 },
+        })))
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    }, { initiallyUnmounted: ['settings.section'] })
+
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    assert.equal(healthCalls, 1, 'the overview issues exactly one immediate health request')
+    assert.deepEqual(renderer.pendingTimerDelays(), [], 'no timer is armed while the request is still in flight')
+
+    // 请求在飞时切后台再回前台：前台补拉不得并发第二次请求，也不得留下第二条链。
+    fireVisibility('hidden')
+    await renderer.flush()
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(healthCalls, 1, 'the in-flight request already covers the foreground edge')
+    assert.deepEqual(renderer.pendingTimerDelays(), [], 'still no timer before the request settles')
+
+    pending.shift()()
+    await renderer.flush()
+    assert.equal(healthCalls, 1)
+    assert.deepEqual(renderer.pendingTimerDelays(), [30000], 'exactly one poll chain is armed after settling')
+
+    // 隐藏期间不轮询、不留空转定时器；恢复可见立即补一次。
+    fireVisibility('hidden')
+    await renderer.flush()
+    assert.deepEqual(renderer.pendingTimerDelays(), [], 'hiding clears the poll chain')
+    assert.equal(healthCalls, 1)
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(healthCalls, 2, 'returning to the foreground refreshes immediately')
+    pending.shift()()
+    await renderer.flush()
+    assert.deepEqual(renderer.pendingTimerDelays(), [30000])
+
+    renderer.unmount('settings.section')
+    await renderer.flush()
+    assert.deepEqual(renderer.pendingTimerDelays(), [], 'unmount clears the poll chain')
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(healthCalls, 2, 'unmount removes the health visibility listener')
+  } finally {
+    delete globalThis.document
+  }
+})
+
 test('service panel puts versions first and renders switchable provider-prefixed usage charts by project', async () => {
   const day = new Date().toLocaleDateString('en-CA')
   let refreshes = 0
@@ -9364,6 +9433,132 @@ test('subagent models dock row: hosts without a running field fall back to the l
   assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 3)
 })
 
+test('subagent models dock row: a full turn spent in the background is caught up once when visible again', async () => {
+  const calls = []
+  let records = []
+  const dockTimers = () => renderer.pendingTimerDelays().filter((delay) => delay === 20000 || delay === 120000)
+  const visListeners = new Set()
+  globalThis.document = {
+    visibilityState: 'hidden',
+    addEventListener(type, handler) { if (type === 'visibilitychange') visListeners.add(handler) },
+    removeEventListener(type, handler) { if (type === 'visibilitychange') visListeners.delete(handler) },
+  }
+  const fireVisibility = (state) => {
+    globalThis.document.visibilityState = state
+    for (const handler of [...visListeners]) handler()
+  }
+  const dispatches = () => calls.filter((entry) => entry === 'subagent-dispatches').length
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  try {
+    await renderer.load()
+    renderer.mount('conversation.composer.dock')
+    await renderer.flush()
+    // 挂载时页面在后台：首拉延后到可见边沿，不在后台空拉一次。
+    assert.equal(dispatches(), 0, 'a hidden mount must not fetch in the background')
+    assert.deepEqual(dockTimers(), [])
+
+    // 一个完整回合（running 起 → 落）都在后台发生，并且这是该会话的首次派发。
+    renderer.setSessions({ 'session-1': { id: 'session-1', running: true } })
+    await renderer.flush()
+    records = [{ childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' }]
+    renderer.setSessions({ 'session-1': { id: 'session-1', running: false } })
+    await renderer.flush()
+    assert.equal(dispatches(), 0, 'background edges must not fetch')
+    assert.deepEqual(dockTimers(), [])
+
+    // 回到前台：即使此前没有任何记录，也必须补拉一次并显示这一回合的派发。
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(dispatches(), 1, 'the foreground edge performs exactly one catch-up pull')
+    assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh)')
+    assert.deepEqual(dockTimers(), [120000], 'idle with records arms the low-frequency heartbeat')
+
+    // 再切后台不轮询；再次回前台仍只补拉一次（不叠加链/不重复请求）。
+    fireVisibility('hidden')
+    await renderer.flush()
+    assert.deepEqual(dockTimers(), [], 'hiding stops the chain')
+    const beforeReturn = dispatches()
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(dispatches(), beforeReturn + 1)
+    assert.deepEqual(dockTimers(), [120000])
+
+    // 记录清空后，前台补拉读到空集合即停表（不保留空转心跳）。
+    records = []
+    fireVisibility('hidden')
+    await renderer.flush()
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(renderer.hasTest('subagent-models-dock'), false)
+    assert.deepEqual(dockTimers(), [])
+  } finally {
+    renderer.unmount('conversation.composer.dock')
+    delete globalThis.document
+  }
+})
+
+test('subagent models dock row: a foreground edge trailing-pulls over an older in-flight request', async () => {
+  const calls = []
+  let records = []
+  const pending = []
+  const dockTimers = () => renderer.pendingTimerDelays().filter((delay) => delay === 20000 || delay === 120000)
+  const visListeners = new Set()
+  globalThis.document = {
+    visibilityState: 'visible',
+    addEventListener(type, handler) { if (type === 'visibilitychange') visListeners.add(handler) },
+    removeEventListener(type, handler) { if (type === 'visibilitychange') visListeners.delete(handler) },
+  }
+  const fireVisibility = (state) => {
+    globalThis.document.visibilityState = state
+    for (const handler of [...visListeners]) handler()
+  }
+  const dispatches = () => calls.filter((entry) => entry === 'subagent-dispatches').length
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') {
+      // 每次请求捕获发起时刻的记录快照：旧在途请求必须带回「边沿之前」的旧数据。
+      const snapshot = records
+      return new Promise((resolve) => pending.push(() => resolve({ ok: true, value: { records: snapshot } })))
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  try {
+    await renderer.load()
+    renderer.mount('conversation.composer.dock')
+    await renderer.flush()
+    assert.equal(dispatches(), 1, 'the visible mount starts its first pull')
+    assert.equal(pending.length, 1)
+
+    // 首个派发在这条请求在飞时发生；随后切后台再回前台。
+    records = [{ childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' }]
+    fireVisibility('hidden')
+    await renderer.flush()
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(dispatches(), 1, 'the old in-flight request is shared, not duplicated')
+
+    // 旧请求只带回空集：若没有 trailing 强拉，前台边沿会被这条旧数据吃掉并停表。
+    pending.shift()()
+    await renderer.flush()
+    assert.equal(dispatches(), 2, 'the foreground edge issues a trailing pull after the old request settles')
+    assert.equal(renderer.hasTest('subagent-models-dock'), false, 'the stale empty snapshot must not paint a row')
+
+    pending.shift()()
+    await renderer.flush()
+    assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh)')
+    assert.deepEqual(dockTimers(), [120000])
+  } finally {
+    renderer.unmount('conversation.composer.dock')
+    delete globalThis.document
+  }
+})
+
 test('subagent models dock row: svcStyle claims a full line only on 0.1.6 dock rows, never inside the old host column', async () => {
   // 注入样式捕获：主渲染器环境没有 document，挂最小桩接住 svcStyle 文本（同 version card 用例）。
   const injectedStyles = []
@@ -12436,6 +12631,115 @@ test('session manager search opens a hit window with highlight, context, and mat
   assert.equal(renderer.findByTestId('sessions-jump-next').props.disabled, true, 'no next match with a single hit')
 })
 
+test('session manager invalidates stale searches on query, scope, filter, clear, and unmount', async () => {
+  const pending = []
+  let searchCalls = 0
+  const renderer = sessionManagerRenderer(createSessionRpcMock({
+    'sessions-search': (payload) => {
+      searchCalls += 1
+      return new Promise((resolve) => pending.push({
+        payload,
+        resolve: () => resolve({
+          ok: true,
+          value: {
+            available: true,
+            query: payload.query,
+            scope: payload.scope,
+            hits: [{ sessionId: 'session-' + payload.query, title: 'Hit ' + payload.query, items: [{ seq: 1, type: 'user/message', snippet: payload.query }] }],
+          },
+        }),
+      }))
+    },
+  }))
+
+  await renderer.load()
+  renderer.mount('settings.section')
+  await renderer.flush()
+  await renderer.findButton('维护').props.onClick()
+  await renderer.flush()
+  await renderer.findByTestId('maintenance-tab-sessions').props.onClick()
+  await renderer.flush()
+  // 默认落在「仅归档」；切到「全部」才有 scope 复选框，且与搜索正交。
+  await renderer.findByTestId('sessions-filter-all').props.onClick()
+  await renderer.flush()
+  const input = () => renderer.findByTestId('sessions-search-input')
+
+  input().props.onChange({ target: { value: 'a' } })
+  await renderer.flush()
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 1)
+  assert.equal(pending[0].payload.query, 'a')
+
+  // 输入变化：旧响应在飞时立即作废旧代并清掉旧 hits（不靠旧响应完成才清）。
+  input().props.onChange({ target: { value: 'ab' } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-a'), false, 'typing clears the previous query hits immediately')
+  pending[0].resolve()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-a'), false, 'a stale response must not render after the query changed')
+  assert.equal(renderer.hasTest('sessions-hit-session-ab'), false, 'the new query has not resolved yet')
+
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 2)
+  assert.equal(pending[1].payload.query, 'ab')
+  pending[1].resolve()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-ab'), true)
+
+  // scope 变更：立即清掉上一查询的 hits，旧响应不得回填。
+  renderer.findByTestId('sessions-search-archived').props.onChange({ target: { checked: true } })
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-ab'), false, 'scope change clears the previous hits immediately')
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 3)
+  assert.equal(pending[2].payload.scope, 'archived')
+  pending[2].resolve()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-ab'), true)
+
+  // 清空按钮：在飞请求作废，清空后不得再显示它的 hits。
+  input().props.onChange({ target: { value: 'c' } })
+  await renderer.flush()
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 4)
+  renderer.findByTestId('sessions-search-clear').props.onClick()
+  await renderer.flush()
+  assert.equal(input().props.value, '')
+  pending[3].resolve()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-c'), false, 'clearing invalidates an in-flight response')
+
+  // 筛选变更：同样立即作废在飞查询。
+  input().props.onChange({ target: { value: 'd' } })
+  await renderer.flush()
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 5)
+  await renderer.findByTestId('sessions-filter-archived').props.onClick()
+  await renderer.flush()
+  pending[4].resolve()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('sessions-hit-session-d'), false, 'changing the filter invalidates an in-flight response')
+  // 测试替身不批处理 setState：过滤变更的两个 set 会留下一个中间态 300ms 定时器
+  // （真实 React 同一次事件会合并成一次渲染）。先排空它，避免 advanceTimer 吃掉新定时器。
+  while (renderer.pendingTimerDelays().includes(300)) await renderer.advanceTimer(300)
+
+  // 卸载：在飞响应落地不得抛错/回填（此后渲染树中不再有搜索行）。
+  input().props.onChange({ target: { value: 'e' } })
+  await renderer.flush()
+  await renderer.advanceTimer(300)
+  await renderer.flush()
+  assert.equal(searchCalls, 6)
+  renderer.unmount('settings.section')
+  pending[5].resolve()
+  await renderer.flush()
+  assert.equal(renderer.text().includes('session-e'), false, 'a response landing after unmount is dropped')
+})
+
 test('session manager hit window navigates between matches via card chips, prev/next, and navigator chips', async () => {
   const calls = []
   const centers = []
@@ -15288,6 +15592,7 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
   Date.now = () => now.getTime()
   let usageCalls = 0
   let refreshCalls = 0
+  const usageCallOrder = []
   let todayInput = 1000
   const buildUsage = () => {
     const totals = { steps: 1, inputTokens: todayInput, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 }
@@ -15318,9 +15623,10 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
       if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
       if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
       if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
-      if (endpoint === 'usage') { usageCalls += 1; return { ok: true, value: buildUsage() } }
+      if (endpoint === 'usage') { usageCalls += 1; usageCallOrder.push('usage'); return { ok: true, value: buildUsage() } }
       if (endpoint === 'usage-refresh') {
         refreshCalls += 1
+        usageCallOrder.push('refresh')
         todayInput += 1000 // 每次折叠都把今天的用量往前推一档
         return { ok: true, value: buildUsage() }
       }
@@ -15332,9 +15638,10 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     await renderer.flush()
 
     // 挂载即无条件补拉，不因「索引比 5 分钟新」而跳过——旧的 300000 门槛在此必然短路。
-    // 且只发一次请求：usage-refresh 本身就返回完整投影，不再先读一次缓存再折一次。
-    assert.equal(usageCalls, 0, 'mount must not read the cached snapshot before folding')
+    // 先读一次缓存把首屏画出来，再折叠一次补到最新；两步按序发生，且折叠只发一次。
+    assert.equal(usageCalls, 1, 'mount reads the cached snapshot first for the first paint')
     assert.equal(refreshCalls, 1, 'mount MUST fold once even though the index is under five minutes old')
+    assert.deepEqual(usageCallOrder.slice(0, 2), ['usage', 'refresh'], 'the cached read precedes the fold')
 
     await renderer.findButton('模型统计').props.onClick()
     await renderer.flush()
@@ -15355,7 +15662,7 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
     assert.equal(refreshCalls, afterEnter, 'idling on the usage page must not refold on a timer')
 
     // 边沿①：从后台切回前台（visibilitychange → 可见）补一次。
-    assert.equal(visListeners.size, 1, 'the usage page subscribes to visibilitychange')
+    assert.ok(visListeners.size >= 1, 'the usage page subscribes to visibilitychange')
     fireVisibility('hidden')
     await renderer.flush()
     assert.equal(refreshCalls, afterEnter, 'becoming hidden must not fold')
@@ -15401,10 +15708,80 @@ test('usage syncs unconditionally on mount, on entering the page, and only on re
 
     renderer.unmount('settings.section')
     assert.equal(renderer.pendingTimerDelays().length, 0, 'unmounting leaves no timer behind')
-    assert.equal(visListeners.size, 0, 'unmounting withdraws the visibility listener')
+    const afterUnmount = refreshCalls
+    fireVisibility('visible')
+    await renderer.flush()
+    assert.equal(refreshCalls, afterUnmount, 'unmounting withdraws the usage visibility listener')
   } finally {
     Date.now = realNow
     delete globalThis.document
+  }
+})
+
+test('usage paints the cached snapshot first and folds behind it', async () => {
+  const pad = (value) => String(value).padStart(2, '0')
+  const dayKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  const now = new Date()
+  now.setHours(10, 0, 0, 0)
+  const realNow = Date.now
+  Date.now = () => now.getTime()
+  const totals = (inputTokens) => ({ steps: 1, inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheHitRate: 0 })
+  const payload = (updatedAt, inputTokens) => {
+    const dayTotals = totals(inputTokens)
+    return {
+      updatedAt,
+      indexedSessions: 1,
+      successfulSessions: 1,
+      failedSessions: [],
+      totals: dayTotals,
+      projects: [{ id: 'p1', title: 'P1', path: '/p1' }],
+      errors: { models: [], tools: [] },
+      days: { [dayKey(now)]: { totals: dayTotals, projects: [{ id: 'p1', title: 'P1', path: '/p1', totals: dayTotals, models: [] }] } },
+    }
+  }
+  const cachedUsage = payload(now.getTime() - 120000, 1000)
+  const freshUsage = payload(now.getTime(), 3000)
+  let usageCalls = 0
+  let refreshCalls = 0
+  let releaseRefresh = null
+  try {
+    const renderer = createRenderer(async (channel, endpoint) => {
+      assert.equal(channel, '/dsh-service')
+      if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'usage-first-paint' } }
+      if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+      if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 1, activeAgents: 0, activeJobs: 0 } }
+      if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+      if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+      if (endpoint === 'usage') { usageCalls += 1; return { ok: true, value: cachedUsage } }
+      if (endpoint === 'usage-refresh') {
+        refreshCalls += 1
+        return new Promise((resolve) => { releaseRefresh = () => resolve({ ok: true, value: freshUsage }) })
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`)
+    })
+
+    await renderer.load()
+    renderer.mount('settings.section')
+    await renderer.flush()
+    assert.equal(usageCalls, 1, 'the cached snapshot is read on mount')
+    assert.equal(refreshCalls, 1, 'the fold is already running')
+    assert.equal(typeof releaseRefresh, 'function')
+
+    await renderer.findButton('模型统计').props.onClick()
+    await renderer.flush()
+    // 折叠还在飞：首屏已经用缓存画出来，并明确显示「刷新中…」而不是空白等待。
+    assert.match(renderer.text('settings.section'), /输入 token\s*1K/, 'the cached value paints before the fold settles')
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新中…')
+    assert.equal(renderer.findByTestId('usage-refresh').props.disabled, true)
+
+    releaseRefresh()
+    await renderer.flush()
+    assert.match(renderer.text('settings.section'), /输入 token\s*3K/, 'the fold replaces the cached value when it lands')
+    assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新统计')
+    assert.equal(renderer.findByTestId('usage-refresh').props.disabled, false)
+    assert.equal(usageCalls, 1, 'the cached snapshot is not re-read on later folds')
+  } finally {
+    Date.now = realNow
   }
 })
 
@@ -15556,7 +15933,7 @@ test('a manual usage refresh shares the busy flag and never overlaps an automati
     assert.equal(renderer.findByTestId('usage-refresh').children[0], '刷新统计', 'the busy label clears once the fold settles')
 
     // 自动（边沿）同步同样必须点亮「刷新中…」：折叠可长达数十秒，静默等待看起来就像没刷新。
-    assert.equal(visListeners.size, 1, 'visibilitychange is subscribed')
+    assert.ok(visListeners.size >= 1, 'visibilitychange is subscribed')
     const beforeEdge = refreshCalls
     fireVisibility('visible')
     await renderer.flush()
