@@ -40,6 +40,7 @@ import {
   undoScopeOf,
   routeRestoreValue,
   createFreshnessManager,
+  createPiCatalogCache,
   deriveKeyRefFor,
   diffModelLists,
   fetchModelsProbe,
@@ -67,20 +68,6 @@ import {
   undoPreviewModels,
   planIdFor,
 } from './model-workbench.js'
-
-/** 幂等目录缓存：目录随 DSH 升级才变，进程内一次足够。 */
-function createPiCatalogCache(loadCatalog) {
-  let promise = null
-  return () => {
-    if (promise === null) {
-      promise = loadCatalog().catch(() => {
-        promise = null
-        throw new Error('catalog-unavailable')
-      })
-    }
-    return promise
-  }
-}
 
 export function createModelWorkbenchRoutes({
   ctx,

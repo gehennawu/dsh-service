@@ -14,6 +14,35 @@ test('built-in provider accepts and persists models outside its installed catalo
   assert.ok(reopened.value.profile.models.some((model) => model.id === 'outside-installed-catalog'))
 })
 
+test('pi-ai catalog is parsed once per process across models3 endpoints', async () => {
+  const env = host({ profiles: { relay: { api: 'openai-completions', models: [{ id: 'one' }] } } })
+  assert.equal((await env.call('models3-snapshot', {})).ok, true)
+  const opened = await env.call('models3-open', { route: 'relay' })
+  assert.equal((await env.call('models3-fill', { route: 'relay', modelId: 'one' })).ok, true)
+  assert.equal((await env.call('models3-add-models', { sessionId: opened.value.sessionId, modelIds: ['two'] })).ok, true)
+  assert.equal((await env.call('models3-snapshot', {})).ok, true)
+  // 目录（1 MB 上下、单次解析约 30 ms）按进程缓存：一次操作里多个端点不再各解析一遍。
+  assert.equal(env.catalogCalls(), 1)
+})
+
+test('pi-ai catalog load failure is not cached and the next endpoint retries', async () => {
+  let attempt = 0
+  const env = host({
+    profiles: {},
+    catalogLoader: async () => {
+      attempt += 1
+      if (attempt === 1) throw new Error('disk')
+      return { channelIds: new Set(['builtin']), byModelId: new Map() }
+    },
+  })
+  const first = await env.call('models3-snapshot', {})
+  assert.equal(first.ok, false)
+  assert.equal(first.error, 'catalog-unavailable')
+  const second = await env.call('models3-snapshot', {})
+  assert.equal(second.ok, true)
+  assert.equal(attempt, 2)
+})
+
 test('smart fill matches model identity without requiring a built-in provider protocol', async () => {
   let target
   const env = host({
@@ -31,7 +60,7 @@ test('smart fill matches model identity without requiring a built-in provider pr
 })
 
 const clone = (x) => structuredClone(x)
-function host({ profiles, inherited = {}, providerAvailability, secret = {}, failSave = false, failSnapshot = false, ref = {}, smartFill, storeMutate, catalog = { channelIds: new Set(['builtin']), byModelId: new Map() } } = {}) {
+function host({ profiles, inherited = {}, providerAvailability, secret = {}, failSave = false, failSnapshot = false, ref = {}, smartFill, storeMutate, catalogLoader, catalog = { channelIds: new Set(['builtin']), byModelId: new Map() } } = {}) {
   const raw = { providers: clone(profiles ?? { relay: { api: 'openai-completions', baseURL: 'http://127.0.0.1/v1', models: [{ id: 'one', unknown: { keep: 3 } }, { id: 'two' }], vendorExtra: true } }) }
   let revision = 1
   const calls = []
@@ -55,10 +84,15 @@ function host({ profiles, inherited = {}, providerAvailability, secret = {}, fai
   const credentials = { describe: async (id) => ({ configured: Object.hasOwn(keys, id), writable: true }), set: async (id, key) => { credentialCalls.push({ id }); keys[id] = key }, resolve: async (id) => ({ value: keys[id] }), unset: async () => { throw new Error('must never delete') } }
   const services = { settings, configEditor: { configuration: () => [{ entry, inherited, override: raw }] }, credentials }
   const ctx = new Proxy({ get: (id) => services[id] }, { get: (target, key) => { if (key !== 'get') throw new Error('undeclared service'); return target[key] } })
-  const routes = createModelConfigRoutes({ ctx, workbenchStore: store, providerAvailability, smartFill, loadPiCatalog: async () => catalog, loadSubagentRoute: async () => ref.subagent, loadAgentDefaultModelSelection: () => ref.main })
+  let catalogCalls = 0
+  const loadPiCatalog = async () => {
+    catalogCalls += 1
+    return catalogLoader === undefined ? catalog : catalogLoader(catalogCalls)
+  }
+  const routes = createModelConfigRoutes({ ctx, workbenchStore: store, providerAvailability, smartFill, loadPiCatalog, loadSubagentRoute: async () => ref.subagent, loadAgentDefaultModelSelection: () => ref.main })
   const call = async (id, data) => routes[id].handle(data)
   const open = async () => (await call('models3-open', { route: 'relay' })).value
-  return { raw, state, calls, keys, credentialCalls, call, open, bump: () => revision++, services }
+  return { raw, state, calls, keys, credentialCalls, call, open, bump: () => revision++, services, catalogCalls: () => catalogCalls }
 }
 test('Gemini unknown host capability blocks creation before credentials and preserves raw edits', async () => {
   const env = host({ profiles: { relay: { api: 'google-generative-ai', apiKeyEnv: 'KEY', models: [{ id: 'one', reasoningEfforts: { max: 'legacy-wire' }, unknown: 7 }], vendor: true } } })

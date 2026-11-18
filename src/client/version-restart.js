@@ -87,8 +87,11 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
       // version 快照全插件只取一次：ServicePanel 与左列入口无论谁先挂载都共享同一请求，
       // 升级前取 instanceId/运行环境也复用它。失败清缓存，下一个消费者重试。
       let versionSnapshotPromise = null
+      // 在飞标记：刷新请求不能把「同一 tick 里刚发出、还没回来」的那次请求丢掉重发。
+      let versionSnapshotPending = false
       const fetchVersionSnapshot = () => {
         if (versionSnapshotPromise === null) {
+          versionSnapshotPending = true
           versionSnapshotPromise = rpcCall('version', {})
             .then((res) => {
               if (res && res.ok) {
@@ -101,14 +104,25 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
               versionSnapshotPromise = null
               return null
             })
+            .finally(() => {
+              versionSnapshotPending = false
+            })
         }
         return versionSnapshotPromise
       }
       // 升级落地后必须重取：缓存快照里的 installedVersion 还是升级前那份，不刷新就还会
-      // 显示升级按钮（用户报的「以为没升级成功」，2026-09-12）。
+      // 显示升级按钮（用户报的「以为没升级成功」，2026-09-12）。在飞时不弃旧重发，
+      // 但要等它落地后再实拉一次：两次贴着落地的请求只多付一次往返，绝不让「升级后仍读到
+      // 升级前的事实」的旧结果顶掉新状态。
       const refreshVersionSnapshot = () => {
-        versionSnapshotPromise = null
-        return fetchVersionSnapshot()
+        if (!versionSnapshotPending) {
+          versionSnapshotPromise = null
+          return fetchVersionSnapshot()
+        }
+        return versionSnapshotPromise.then(() => {
+          versionSnapshotPromise = null
+          return fetchVersionSnapshot()
+        })
       }
       // 页面加载时的进程身份基线：/restart 是**宿主命令**（commands.register → exit(42)），
       // 不经过客户端「重启」按钮，客户端拿不到 previousInstanceId；于是每个连接世代建立时
@@ -117,9 +131,10 @@ function createVersionRestartFlow({ ctx, rpcCall, t, useTranslation, restartNavT
       // 判据仍然只有一条：instanceId 变化 = 新进程；断线重连本身绝不触发刷新（AGENTS.md 不变量）。
       let bootInstanceId = null
       const syncProcessIdentity = async (fresh) => {
-        // 重连时必须实拉（缓存里那份还是老进程的），首次建立基线则可以复用共享快照，
-        // 避免与设置面板的首帧请求重复一次。
-        const res = await (fresh === true ? refreshVersionSnapshot() : fetchVersionSnapshot())
+        // 重连时必须实拉（缓存里那份还是老进程的）。但**基线建立之前**的 reset 一律复用共享
+        // 快照：那次 reset 只是本次连接自己的世代建立，instanceId 不可能变；此时实拉等于
+        // 启动期把同一个 version 请求发两遍（8 ms + 199 ms 两条资源条目）。
+        const res = await (fresh === true && bootInstanceId !== null ? refreshVersionSnapshot() : fetchVersionSnapshot())
         const nextInstanceId = res && res.ok ? res.value && res.value.instanceId : undefined
         if (typeof nextInstanceId !== 'string' || nextInstanceId.length === 0) return
         if (bootInstanceId === null) {

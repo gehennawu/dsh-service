@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createMetadataCache, createSourceFetcher, loadPiEvidenceFromDir, querySmartFill } from './model-smart-fill.js'
 import { modelSettingsFor, redactSensitive } from './model-workbench-settings.js'
-import { loadPiAiCatalog, locateDshPackageJson, profileFingerprint, selfCheckModelsPatch, fetchModelsProbe, deriveKeyRefFor, MODEL_ID_RE, MODELS_ROUTE_RE, MODELS_KEY_REF_RE, WORKBENCH_PLAN_TTL_MS } from './model-workbench.js'
+import { createPiCatalogCache, loadPiAiCatalog, locateDshPackageJson, profileFingerprint, selfCheckModelsPatch, fetchModelsProbe, deriveKeyRefFor, MODEL_ID_RE, MODELS_ROUTE_RE, MODELS_KEY_REF_RE, WORKBENCH_PLAN_TTL_MS } from './model-workbench.js'
 import { MODEL_FIELDS, ROUTE_FIELDS, PROTOCOLS, object, displayProfile, containsSensitive, sensitiveHeader, patchFields, schemaVocabulary, validateField, validateImageCountPair } from './model-config-schema.js'
 
 const clone = (value) => structuredClone(value)
@@ -31,6 +31,9 @@ export function modelTestFailure(failure, fallback = 'stream-failed') {
 
 /** No product write path uses normalized catalog/display values as a baseline. */
 export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = loadPiAiCatalog, loadSubagentRoute, loadAgentDefaultModelSelection, smartFill, providerAvailability, notifyProviderAvailability = () => {}, uuid = randomUUID }) {
+  // 目录（1 MB 上下、单次解析约 30 ms）按进程缓存一次：models3 各端点每次点开都要它的
+  // 能力字段，直连 loadPiCatalog 会让一次操作重复付 7 次解析钱。
+  const ensurePiCatalog = createPiCatalogCache(loadPiCatalog)
   const sessions = new Map()
   const plans = new Map()
   const queries = new Map()
@@ -199,7 +202,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
       if (payload.enabled === false) return { groups: [], sources: [], readonly: [], mode: 'off' }
       const access = modelSettingsFor(ctx)
       const raw = routeRaw(access, payload.route)
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const records = [...catalog.byModelId.values()].flat().filter((entry) => entry.channel === payload.route)
       const catalogApis = [...new Set(records.map((entry) => entry.api).filter(Boolean))]
       const exactApi = (catalog.byModelId.get(payload.modelId) ?? []).find((entry) => entry.channel === payload.route)?.api
@@ -275,7 +278,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-snapshot': route(async () => {
       const access = modelSettingsFor(ctx)
       const providers = access.get('llm-pi-ai')?.providers ?? {}
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const state = await storeLoad()
       if (providerAvailability) await providerAvailability.loading
       const llm = ctx.get('llm')
@@ -328,7 +331,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     }),
     'models3-open': route(async ({ route: id }) => {
       const access = modelSettingsFor(ctx)
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const raw = routeRaw(access, id)
       if (!raw && !builtin(catalog, id)) error('route-gone')
       const defaultEntry = catalog.channels?.find((c) => c.id === id) || [...catalog.byModelId.values()].flat().find((x) => x.channel === id)
@@ -377,7 +380,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-save-model': route(async (payload) => {
       const session = get(sessions, payload.sessionId)
       const access = latest(session)
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const defaultEntry = catalog.channels?.find((c) => c.id === session.route) || [...catalog.byModelId.values()].flat().find((x) => x.channel === session.route)
       const raw = routeRaw(access, session.route) ?? {
         displayName: defaultEntry?.name ?? session.route,
@@ -412,7 +415,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-add-models': route(async ({ sessionId, modelIds }) => {
       const session = get(sessions, sessionId)
       const access = latest(session)
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const defaultEntry = catalog.channels?.find((c) => c.id === session.route) || [...catalog.byModelId.values()].flat().find((x) => x.channel === session.route)
       const raw = routeRaw(access, session.route) ?? {
         displayName: defaultEntry?.name ?? session.route,
@@ -432,7 +435,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
     'models3-save-route': route(async (payload) => {
       const session = get(sessions, payload.sessionId)
       const access = latest(session)
-      const catalog = await loadPiCatalog()
+      const catalog = await ensurePiCatalog()
       const defaultEntry = catalog.channels?.find((c) => c.id === session.route) || [...catalog.byModelId.values()].flat().find((x) => x.channel === session.route)
       const raw = routeRaw(access, session.route) ?? {
         displayName: defaultEntry?.name ?? session.route,
@@ -597,7 +600,7 @@ export function createModelConfigRoutes({ ctx, workbenchStore, loadPiCatalog = l
         const raw = routeRaw(access, session.route)
         if (!raw) error('route-gone')
         routeName = session.route
-        const catalog = await loadPiCatalog()
+        const catalog = await ensurePiCatalog()
         const catalogModel = [...catalog.byModelId.values()].flat().find((entry) => entry.channel === session.route && entry.api)
         const catalogChannel = catalog.channels?.find((entry) => entry.id === session.route)
         targetURL = raw.baseURL ?? catalogChannel?.baseUrl ?? catalogModel?.baseUrl

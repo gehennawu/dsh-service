@@ -1054,8 +1054,9 @@ test('plugin configuration card saves feature switches and disabled features dis
 
   await renderer.setFeature('taskNotifications', true)
   assert.equal(renderer.hasSlot('conversation.input.left'), true)
-  // 任务通知（既有）与模型厂家图标（v1.8，按会话切换重算渠道图标）各持一份会话订阅。
-  assert.equal(renderer.sessionSubscriptionCount(), 2)
+  // 三份会话订阅各自跟着功能挂/卸：任务通知（既有）、模型厂家图标（v1.8，按会话切换重算
+  // 渠道图标）、子代理累计行（P3：用会话快照的 running 边沿决定要不要轮询派发记录）。
+  assert.equal(renderer.sessionSubscriptionCount(), 3)
 
   await renderer.setFeature('quotaLookup', true)
   assert.match(renderer.text('settings.section'), /额度查询/)
@@ -4127,6 +4128,8 @@ test('host-side /restart reloads the page on the next connection generation with
   })
   await renderer.load()
   assert.equal(renderer.reloadCount(), 0)
+  // 启动期只拉一次 version：进程身份基线与设置面板共享同一份快照（P3）。
+  assert.equal(versionCalls, 1)
 
   // 老进程退出前的一次重连：instanceId 未变，绝不刷新。
   renderer.emitConnectionReset()
@@ -9251,11 +9254,10 @@ test('subagent line: route aggregation and line text assembly', async () => {
 
 test('subagent models dock row: session-level aggregate renders from dispatch records, polls on the timer chain, and is feature-gated', async () => {
   const calls = []
-  let records = [
-    { childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
-    { childId: 'c2', parentId: 'session-1', turn: 2, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
-  ]
+  let records = []
   let fail = false
+  const dispatches = () => calls.filter((entry) => entry === 'subagent-dispatches').length
+  const dockTimers = () => renderer.pendingTimerDelays().filter((delay) => delay === 20000 || delay === 120000)
   const renderer = createRenderer(async (channel, endpoint) => {
     calls.push(endpoint)
     if (endpoint === 'subagent-dispatches') {
@@ -9268,9 +9270,22 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   assert.ok(renderer.registrations()['conversation.composer.dock'].some((entry) => entry.id === 'dsh-service-subagent-models-dock'))
   renderer.mount('conversation.composer.dock')
   await renderer.flush()
-  // 初始拉取 + 聚合文本（跨回合累计、×n 计数）。
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
+  // 首拉只发一次（旧实现同一 tick 又发一次）；从未派发过且会话空闲 → 完全不留轮询表，
+  // 旧口径在这里每 20s 空转一次 RPC（P3）。
+  assert.equal(dispatches(), 1)
+  assert.equal(renderer.hasTest('subagent-models-dock'), false)
+  assert.deepEqual(dockTimers(), [])
+
+  // 回合开始（running 边沿来自客户端会话快照推送）：立刻实拉并起 20s 链。
+  records = [
+    { childId: 'c1', parentId: 'session-1', turn: 1, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+    { childId: 'c2', parentId: 'session-1', turn: 2, provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'routed' },
+  ]
+  renderer.setSessions({ 'session-1': { id: 'session-1', running: true } })
+  await renderer.flush()
+  assert.equal(dispatches(), 2)
   assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×2')
+  assert.deepEqual(dockTimers(), [20000])
   // 布局契约：行挂输入卡下方 dock 行；「独占一行」的 flex:0 0 100% **不写在行内**——
   // 由 svcStyle 按形态限定（见下方 svcStyle 断言）：老宿主（0.1.5-rc.1/rc.2）上同槽位
   // 渲染为 uV2eYG_root（flex-direction:column）子项，行内 flex-basis:100% 在那里解析成
@@ -9285,7 +9300,7 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
 
   // 轮询自续链：advanceTimer(20000) 推进一次（force 强刷绕过 TTL 去重）。
   await renderer.advanceTimer(20000)
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 2)
+  assert.equal(dispatches(), 3)
 
   // 缺 turn 的派发记录（宿主允许缺 turn）同样计入累计行（v1.1.2 发布前评审修复）。
   records = [
@@ -9293,23 +9308,29 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
     { childId: 'c3', parentId: 'session-1', provider: 'cpa', model: 'gpt-5.6-luna', reasoningEffort: 'xhigh', source: 'default' },
   ]
   await renderer.advanceTimer(20000)
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 3)
+  assert.equal(dispatches(), 4)
   assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×3')
 
-  // 轮询轮内 RPC 失败：沿用旧缓存、已显示的行不闪断（v1.1.2 发布前评审修复）。
+  // 轮询轮内 RPC 失败：沿用旧缓存、已显示的行不闪断（v1.1.2 发布前评审修复），链继续。
   fail = true
   await renderer.advanceTimer(20000)
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 4)
+  assert.equal(dispatches(), 5)
   assert.equal(renderer.findByTestId('subagent-models-dock').children.join(''), '子代理：cpa/gpt-5.6-luna (xhigh) ×3')
   fail = false
 
-  // 记录无 → 空渲染（null），不再有文本。
+  // 回合结束（running 边沿）：补拉一次收尾，随后空闲转 120s 低频心跳（不再 20s）。
+  renderer.setSessions({ 'session-1': { id: 'session-1', running: false } })
+  await renderer.flush()
+  assert.equal(dispatches(), 6)
+  assert.deepEqual(dockTimers(), [120000])
+
+  // 记录无 → 空渲染（null）；空闲且无记录时心跳读到空即彻底停表。
   records = []
-  await renderer.advanceTimer(20000)
-  await renderer.advanceTimer(20000)
-  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 6)
+  await renderer.advanceTimer(120000)
+  assert.equal(dispatches(), 7)
   assert.equal(renderer.text('conversation.composer.dock'), '')
   assert.equal(renderer.hasTest('subagent-models-dock'), false)
+  assert.deepEqual(dockTimers(), [])
 
   // 路由功能关闭：条目注销。
   await renderer.setFeature('subagentRoute', false)
@@ -9321,6 +9342,26 @@ test('subagent models dock row: session-level aggregate renders from dispatch re
   assert.equal((renderer.registrations()['conversation.composer.dock'] ?? []).filter((item) => item.id === 'dsh-service-subagent-models-dock').length, 0)
   await renderer.setFeature('subagentModelsDock', true)
   assert.equal(renderer.registrations()['conversation.composer.dock'].some((item) => item.id === 'dsh-service-subagent-models-dock'), true)
+})
+
+test('subagent models dock row: hosts without a running field fall back to the legacy 20s chain', async () => {
+  const calls = []
+  const renderer = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    if (endpoint === 'subagent-dispatches') return { ok: true, value: { records: [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  renderer.mount('conversation.composer.dock')
+  await renderer.flush()
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 1)
+  // 快照行里没有 running 字段（更老的宿主）：运行态不可知，不能当成「空闲」而停表，
+  // 退回旧 20s 常驻口径（功能不降级）。
+  renderer.setSessions({ 'session-1': { id: 'session-1' } })
+  await renderer.flush()
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 2)
+  await renderer.advanceTimer(20000)
+  assert.equal(calls.filter((entry) => entry === 'subagent-dispatches').length, 3)
 })
 
 test('subagent models dock row: svcStyle claims a full line only on 0.1.6 dock rows, never inside the old host column', async () => {

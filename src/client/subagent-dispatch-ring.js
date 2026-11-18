@@ -53,14 +53,25 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
 
       // 会话级累计行（v1.2）：输入框下方常驻「本会话子代理」模型行，独占官方统计的下一行。
       // 由宿主派发记录驱动，不依赖回合数据、不受事件流折叠影响，任何视图/任意回合都能
-      // 看到。轮询走 ctx.timer 自续链（20s，测试桩可推进、卸载即断）。
+      // 看到。轮询走 ctx.timer 自续链（20s/120s 两档，测试桩可推进、卸载即断）。
+      //
+      // 轮询口径（P3，2026-11-18）：派发记录只在回合内写入（宿主 `agent/created` 时入环），
+      // 而客户端 `ctx.sessions.list` 快照的 `running` 是推送式事实源，据此把「从未派发过」
+      // 的空会话从 20s 常驻轮询里摘出去：
+      //   · 回合进行中 → 20s/轮，紧跟新派发（回合开始/结束各补一次实拉，边沿即刷新）；
+      //   · 空闲且有记录 → 120s 低频心跳，只兜「漏掉 running 边沿」的宿主异常；
+      //   · 空闲且无记录 → 彻底停表，等 running 边沿或会话切换再起（旧口径在此 20s 空转）；
+      //   · 宿主没有客户端会话快照服务 → 退回旧 20s 常驻口径，不降级功能。
+      // 页面不可见时只续链不实拉：后台标签不再空转，切回前台后的下一轮自然补上。
       const SUBAGENT_DOCK_POLL_MS = 20 * 1000
+      const SUBAGENT_DOCK_IDLE_MS = 120 * 1000
       function SubagentModelsDock(props) {
         const translate = useTranslation()
         const [text, setText] = useState('')
         useEffect(() => {
           let cancelled = false
-          let pollDispose = undefined
+          let pollChain = undefined
+          let unsubscribeSessions = null
           const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
           if (sessionId === undefined) {
             setText('')
@@ -72,35 +83,95 @@ function createSubagentDispatchRing({ ctx, rpcCall, useTranslation }) {
             const entries = aggregateSubagentRoutes(records)
             setText(entries.length === 0 ? '' : `${translate('subagent.dock.label')}${subagentRouteListText(entries)}`)
           }
-          const refresh = () => refreshSubagentDispatches(sessionId).then((records) => {
-            if (cancelled) return false
+          const hasRecords = () => (dispatchByParent.get(sessionId) ?? []).length > 0
+          // true=回合进行中，false=空闲，null=宿主没有客户端会话快照服务（退回旧口径）。
+          const readRunning = () => {
+            try {
+              const list = ctx.sessions?.list
+              if (list === undefined || typeof list.getSnapshot !== 'function') return null
+              const snapshot = list.getSnapshot()
+              if (snapshot === undefined || snapshot === null || snapshot.byId === null || typeof snapshot.byId !== 'object') return null
+              const row = snapshot.byId[sessionId]
+              if (row === undefined) return false
+              // 行上没有 running 字段（更老的宿主）= 没有可用的运行态事实，退回旧口径，
+              // 不能把「不知道」当成「空闲」。
+              return 'running' in row ? row.running === true : null
+            } catch (_) {
+              return null
+            }
+          }
+          const pageVisible = () => {
+            try {
+              return typeof document === 'undefined' || document.visibilityState !== 'hidden'
+            } catch (_) {
+              return true
+            }
+          }
+          let running = readRunning()
+          const clearChain = () => {
+            if (typeof pollChain === 'function') pollChain()
+            pollChain = undefined
+          }
+          // 实拉一次：成功后按当前运行态重排轮询链；失败保留旧缓存（不闪断），
+          // 由调用方决定是否继续挂链（轮内失败继续、首拉失败静默不常驻）。
+          const pull = (force) => refreshSubagentDispatches(sessionId, force === true).then((records) => {
+            if (cancelled) return null
             setFromCache()
-            return records !== null
+            return records
           }).catch(() => {
             if (!cancelled) setText('')
-            return false
+            return null
           })
-          refresh()
-          // 首拉成功才启动轮询链：宿主不可用/RPC 失败时静默且不常驻定时器
-          // （重进会话或页面刷新后自愈）。轮询轮内失败保留链，下轮再试。
           const tick = () => {
+            pollChain = undefined
             if (cancelled) return
-            refreshSubagentDispatches(sessionId, true).then(() => {
-              if (cancelled) return
-              setFromCache()
-            }).catch(() => {
-              if (!cancelled) setText('')
-            })
-            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
+            // 页面不可见时只续链不实拉（后台标签的空转收敛为一次空 tick；浏览器本身
+            // 已把后台定时器节流到 ≥1 分钟，切回前台后下一轮自然补上）。
+            if (!pageVisible()) {
+              arm()
+              return
+            }
+            // 轮内失败也续链（旧缓存照旧显示，下轮再试）。
+            pull(true).then(() => { if (!cancelled) arm() })
           }
-          let pollChain = undefined
-          Promise.resolve(refresh()).then((ok) => {
-            if (cancelled || !ok) return
-            pollChain = ctx.timer?.timeout?.(tick, SUBAGENT_DOCK_POLL_MS)
-          })
+          const pollDelay = () => {
+            if (running === true) return SUBAGENT_DOCK_POLL_MS
+            if (running === null) return SUBAGENT_DOCK_POLL_MS
+            return hasRecords() ? SUBAGENT_DOCK_IDLE_MS : null
+          }
+          const arm = () => {
+            clearChain()
+            if (cancelled) return
+            const delay = pollDelay()
+            if (delay === null) return
+            pollChain = ctx.timer?.timeout?.(tick, delay)
+          }
+          // running 边沿（任意方向都实拉一次）：回合开始立刻看到新派发，回合结束补拉收尾
+          // （最后一个派发可能落在上次轮询之后），随后按空闲节奏重排（无记录即停表）。
+          const onSessionsChanged = () => {
+            if (cancelled) return
+            const next = readRunning()
+            if (next === running) return
+            running = next
+            if (!pageVisible()) {
+              arm()
+              return
+            }
+            pull(true).then(() => { if (!cancelled) arm() })
+          }
+          try {
+            const list = ctx.sessions?.list
+            if (list !== undefined && typeof list.subscribe === 'function') unsubscribeSessions = list.subscribe(onSessionsChanged)
+          } catch (_) {
+            unsubscribeSessions = null
+          }
+          // 首拉只发一次（旧实现同一 tick 发两次）；成功才起链，宿主不可用时静默、
+          // 不常驻定时器（重进会话或页面刷新后自愈）。
+          pull(false).then((records) => { if (!cancelled && records !== null) arm() })
           return () => {
             cancelled = true
-            if (typeof pollChain === 'function') pollChain()
+            clearChain()
+            if (typeof unsubscribeSessions === 'function') unsubscribeSessions()
           }
         }, [props.sessionId])
         if (text === '') return null

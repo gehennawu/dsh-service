@@ -369,6 +369,22 @@ export async function loadPiAiCatalog() {
   }
 }
 
+/** 幂等目录缓存：pi-ai 目录（1 MB 上下、单次解析约 30 ms）只随 DSH 升级变化，
+ *  进程内解析一次足够。失败不缓存（promise 归零），下一个消费者重试。
+ *  宿主半与客户端半同包发布：DSH 就地升级后能力字段要等宿主重启才变，与本缓存口径一致。 */
+export function createPiCatalogCache(loadCatalog) {
+  let promise = null
+  return () => {
+    if (promise === null) {
+      promise = Promise.resolve().then(loadCatalog).catch(() => {
+        promise = null
+        throw new Error('catalog-unavailable')
+      })
+    }
+    return promise
+  }
+}
+
 /** 目录元数据候选（统一形状，供仲裁）：一个模型 id 可能跨多个渠道存在。 */
 export function modelMetaCandidates(piIndex, modelId) {
   const metas = []
