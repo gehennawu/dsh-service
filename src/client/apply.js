@@ -5231,6 +5231,8 @@
         const { value: features } = useFeatures()
         const [health, setHealth] = useState(null)
         const [healthError, setHealthError] = useState(null)
+        // 概览「持久化会话」按需值：null = 尚未取到/不可用，渲染为「—」。
+        const [persistedSessions, setPersistedSessions] = useState(null)
         const [diagnostics, setDiagnostics] = useState(null)
         const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
         const [diagnosticsLoadedAt, setDiagnosticsLoadedAt] = useState(0)
@@ -5681,6 +5683,18 @@
               document.removeEventListener('visibilitychange', onVisibilityChange)
             }
           }
+        }, [activeTab])
+        // 概览「持久化会话」按需一次：该计数需要一次会话目录枚举（每条 stat、不解析标题），
+        // 因此只在进入概览时取一次，不进 health 的 30 s 轮询；离开概览即作废，回来重新取。
+        useEffect(() => {
+          if (activeTab !== 'overview') return () => {}
+          let active = true
+          rpcCall('sessions-count', {}).then((res) => {
+            if (!active) return
+            const value = res && res.ok !== false ? res.value : null
+            setPersistedSessions(value && value.available !== false && Number.isFinite(Number(value.persisted)) ? Number(value.persisted) : null)
+          }).catch(() => { if (active) setPersistedSessions(null) })
+          return () => { active = false }
         }, [activeTab])
 
         const runDiagnostics = async (force = false) => {
@@ -6634,6 +6648,7 @@
                 metric('health.uptime', formatUptime(health.uptimeSeconds)),
                 metric('health.rss', formatBytes(health.rssBytes)),
                 metric('health.liveSessions', String(health.liveSessions)),
+                metric('health.persistedSessions', persistedSessions === null ? '—' : String(persistedSessions)),
                 metric('health.activeAgents', String(health.activeAgents)),
                 metric('health.activeJobs', String(health.activeJobs)))
             : React.createElement('p', { style: hint }, healthError || translate('version.loading')))

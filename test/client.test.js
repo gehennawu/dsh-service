@@ -18786,3 +18786,47 @@ test('changing scope invalidates an in-flight archive preview', async () => {
   await renderer.flush()
   assert.equal(renderer.hasTest('sessions-archive-modal'), false)
 })
+
+test('overview restores the persisted-session count from the on-demand sessions-count RPC', async () => {
+  let counts = 0
+  const usage = { updatedAt: Date.now(), indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'sessions-count') { counts += 1; return { ok: true, value: { available: true, persisted: 12345 } } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /存活会话.*?持久化会话.*?12345/)
+  assert.equal(counts, 1, 'overview loads the persisted count exactly once')
+
+  // 离开概览不请求；回到概览重新取一次（数字按需刷新，不参与健康轮询）。
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  assert.equal(counts, 1)
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  assert.equal(counts, 2)
+})
+
+test('overview renders a placeholder when the persisted-session count is unavailable', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 2, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'sessions-count') return { ok: true, value: { available: false, persisted: 0 } }
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /持久化会话.*?—/)
+})

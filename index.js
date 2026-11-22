@@ -3517,13 +3517,30 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
   }
 }
 
+// 概览「持久化会话」的按需计数（2026-11-22 恢复）：只取 sessionQuery.listSessions() 的
+// header（一次目录遍历 + 每条 stat），不解析标题与日志；独立端点，**绝不进 30 s health
+// 轮询**——health 保持纯内存读取（此前把该字段塞进 health，每 5~30 s 触发数百次 open/read）。
+async function collectPersistedSessionCount(ctx) {
+  const sessionQuery = ctx.get('sessionQuery')
+  if (sessionQuery === undefined || typeof sessionQuery.listSessions !== 'function') {
+    return { available: false, persisted: 0 }
+  }
+  try {
+    const records = await sessionQuery.listSessions()
+    if (!Array.isArray(records)) return { available: false, persisted: 0 }
+    return { available: true, persisted: records.filter((record) => record?.persisted === true).length }
+  } catch (_) {
+    return { available: false, persisted: 0 }
+  }
+}
+
 function collectHealth(ctx) {
   const sessionsService = ctx.get('sessions')
   const activity = collectActiveWork(ctx)
   const memory = process.memoryUsage()
 
-  // 面板每 30 s 轮询一次；这里只读内存态。持久会话计数需要全量枚举目录（数百次
-  // open/read），已从卡片移除，避免为一个展示数字反复扫盘。
+  // 面板每 30 s 轮询一次；这里只读内存态。持久会话计数已拆到独立的 `sessions-count`
+  // 端点（客户端进入概览时按需取一次），health 不再触达会话语料。
   return {
     uptimeSeconds: process.uptime(),
     rssBytes: memory.rss,
@@ -6522,6 +6539,10 @@ function apply(ctx, featureConfig) {
     'activity': { handle: async (payload, rpcEndpoint) => {
       return { ok: true, value: collectActiveWork(ctx) }
 
+    } },
+    // 概览「持久化会话」按需计数：客户端只在进入概览时打一次，不参与 health 的 30 s 轮询。
+    'sessions-count': { handle: async () => {
+      return { ok: true, value: await collectPersistedSessionCount(ctx) }
     } },
     'health': { handle: async (payload, rpcEndpoint) => {
       const value = await collectHealth(ctx)

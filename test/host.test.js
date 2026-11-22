@@ -2676,6 +2676,50 @@ test('health RPC no longer touches the session corpus', async () => {
   assert.equal(scanned, 0, 'health must stay a memory-only read; corpus enumeration moved out with persistedSessions')
 })
 
+test('sessions-count RPC counts persisted records on demand and stays out of health', async () => {
+  let calls = 0
+  const { handler } = createHost({
+    services: {
+      sessionQuery: {
+        listSessions: async () => {
+          calls += 1
+          return [
+            { header: { id: 'persisted-a' }, persisted: true },
+            { header: { id: 'live-b' }, persisted: false },
+            { header: { id: 'persisted-c' }, persisted: true },
+          ]
+        },
+      },
+    },
+  })
+
+  const counted = await handler('sessions-count', {})
+  assert.equal(counted.ok, true)
+  assert.deepEqual(counted.value, { available: true, persisted: 2 })
+  assert.equal(calls, 1)
+
+  const health = await handler('health', {})
+  assert.equal(health.ok, true)
+  assert.equal(Object.hasOwn(health.value, 'persistedSessions'), false, 'health stays memory-only')
+  assert.equal(calls, 1, 'health must not enumerate the corpus')
+
+  const again = await handler('sessions-count', {})
+  assert.deepEqual(again.value, { available: true, persisted: 2 })
+  assert.equal(calls, 2, 'every on-demand call re-reads the corpus once')
+})
+
+test('sessions-count RPC degrades to unavailable without sessionQuery or on failure', async () => {
+  const { handler } = createHost({})
+  assert.deepEqual((await handler('sessions-count', {})).value, { available: false, persisted: 0 })
+
+  const { handler: failing } = createHost({
+    services: { sessionQuery: { listSessions: async () => { throw new Error('storage unavailable') } } },
+  })
+  const failed = await failing('sessions-count', {})
+  assert.equal(failed.ok, true)
+  assert.deepEqual(failed.value, { available: false, persisted: 0 })
+})
+
 test('activity RPC reports running agents, jobs, and agent-scoped terminals without duplicates', async () => {
   let runningAgent
   const terminalService = {
