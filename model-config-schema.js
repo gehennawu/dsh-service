@@ -1,6 +1,6 @@
 // Editable vocabulary for pi-ai Profile configuration, not a projection of defaults.
 export const MODEL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
-export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImagePixelBudget', 'requestImageMaxBytes', 'retryPolicy']
+export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImageBudgetCount', 'requestImagePixelBudget', 'requestImageMaxDimension', 'requestImageMaxBytes', 'retryPolicy']
 export const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai']
 export const GEMINI_LEVELS = ['minimal', 'low', 'medium', 'high']
