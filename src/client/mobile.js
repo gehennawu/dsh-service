@@ -665,6 +665,19 @@ html[data-dshsvc-mobile] [class*="ZKlsPq_root"]:not(:has([class*="ZKlsPq_switche
      未来版本仍须复核哈希。 */
 @media (max-width: 560px) {
   html[data-dshsvc-mobile] [data-dshsvc-center] header:not([class*="wSkVaW_headerBlank"]) { position: relative !important; }
+  /* 0.2.3-alpha.1 起官方把任务/子代理头部芯片并入会话面板，开关（稳定属性
+     data-session-panel-toggle）独占 headerUtilities 的 36px（28px 按钮 + 8px 间距）。
+     ≤560 视觉搬到标签行右缘旧子代理位（right:16 / bottom:4）：headerUtilities 只剩
+     「更多」，标题 crumbs 实测 +36px（390 164→200、360 134→170、320 94→130），
+     开关与 More/标签/右栏钮都不在同一垂直带、零重叠。只位移官方按钮本体（DOM 仍在
+     headerUtilities）：开合、aria、蓝点、tooltip 全部沿用；锚官方稳定属性，不依赖
+     类哈希。561+ 保持官方位置；老宿主无该属性，规则空转。 */
+  html[data-dshsvc-mobile] [data-dshsvc-center] header:not([class*="wSkVaW_headerBlank"]) [data-session-panel-toggle] {
+    position: absolute !important;
+    right: 16px !important;
+    bottom: 4px !important;
+    z-index: 2 !important;
+  }
   html[data-dshsvc-mobile] [class*="wSkVaW_tabs"] { gap: 20px !important; }
   /* 会话标题紧凑态：文本 14→13px（官方 .wSkVaW_crumb 自带 14px，不继承 nav，
      写 nav 字号是无效改动），crumbs 改 flex:1 1 auto 吸收 cluster 富余、单行省略，

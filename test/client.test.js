@@ -9796,6 +9796,15 @@ test('mobile adaptation engine mounts drawer furniture on narrow viewport, wires
     )
     assert.notEqual(parkingGroup, null, 'header chip parking must be gated by the 560px media query')
     assert.match(parkingGroup[0], /\[class\*="wSkVaW_tabs"\] \{ gap: 20px !important; \}/)
+    // 0.2.3-alpha.1 起任务/子代理头部芯片并入会话面板：开关（稳定属性）≤560 视觉搬到
+    // 标签行右缘旧子代理位，headerUtilities 只剩「更多」——标题 crumbs 实测 +36px。
+    // 只位移官方按钮本体（不改尺寸/外观/开合逻辑），561+ 保持官方位置。
+    assert.match(parkingGroup[0], /\[data-dshsvc-center\] header:not\(\[class\*="wSkVaW_headerBlank"\]\) \[data-session-panel-toggle\] \{[^}]*position: absolute !important/s)
+    assert.match(parkingGroup[0], /\[data-session-panel-toggle\] \{[^}]*right: 16px !important/s)
+    assert.match(parkingGroup[0], /\[data-session-panel-toggle\] \{[^}]*bottom: 4px !important/s)
+    assert.match(parkingGroup[0], /\[data-session-panel-toggle\] \{[^}]*z-index: 2 !important/s)
+    assert.doesNotMatch(parkingGroup[0], /\[data-session-panel-toggle\][^{]*\{[^}]*(width|height|border-radius)/s, 'panel toggle relocation must only move the official button')
+    assert.doesNotMatch(styleTag.textContent, /\nhtml\[data-dshsvc-mobile\] \[data-session-panel-toggle\]/, 'panel toggle relocation must be gated by the 560px media query')
     // alpha.2 起官方给 titleCluster 加 overflow:clip + 右缘渐隐 mask；插件把两枚芯片
     // 绝对定位到标题行下方的 tab 行（落在 cluster 盒外），会被整块裁掉（真机 390：
     // 芯片 rect y43..71 vs cluster clip y7..43）。芯片在场时必须解除该层 clip/mask，
