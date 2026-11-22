@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createModelConfigRoutes } from '../model-config-routes.js'
-import { MODEL_FIELDS, ROUTE_FIELDS, COMPAT_GATES, displayProfile, containsSensitive, sensitiveHeader, validateField, patchFields } from '../model-config-schema.js'
+import { MODEL_FIELDS, ROUTE_FIELDS, ROUTE_READONLY_FIELDS, COMPAT_GATES, displayProfile, containsSensitive, sensitiveHeader, validateField, patchFields } from '../model-config-schema.js'
 
 test('built-in provider accepts and persists models outside its installed catalog', async () => {
   const env = host({ profiles: { builtin: { models: [{ id: 'existing' }] } } })
@@ -158,6 +158,60 @@ test('new Profile editor: request image-count limits round-trip through the rout
   assert.equal(bad.ok, false)
   assert.equal(bad.error, 'image-offload-exceeds-limit')
   assert.equal(env.raw.providers.relay.imageOffloadCountQuantum, 5, 'a rejected patch must not touch the profile')
+})
+
+// pi-ai 0.2.3-alpha 起 `requestImageBudgetCount` / `requestImageMaxDimension` 属路由作用域：
+// 快照必须携带、普通编辑原样保留，但插件没有对应编辑器与写入校验，写路径必须拒绝 set/unset，
+// 不能借 unset 静默删除既有取值。
+test('new Profile editor: pi image budget fields pass through snapshots but reject writes', async () => {
+  const budget = { requestImageBudgetCount: 12, requestImageMaxDimension: 2000 }
+  const env = host({ profiles: { relay: { api: 'openai-completions', baseURL: 'http://127.0.0.1/v1', models: [{ id: 'one' }], ...budget } } })
+  const opened = await env.open()
+  assert.equal(opened.profile.requestImageBudgetCount, 12, 'snapshot carries the stored budget count')
+  assert.equal(opened.profile.requestImageMaxDimension, 2000, 'snapshot carries the stored max dimension')
+
+  // 普通编辑只提交被改字段；未触及的图片预算原样留在配置里。
+  const saved = await env.call('models3-save-route', { sessionId: opened.sessionId, patch: { baseURL: 'http://127.0.0.1/v2' } })
+  assert.equal(saved.ok, true, saved.error)
+  assert.equal(env.raw.providers.relay.requestImageBudgetCount, 12, 'ordinary edits pass the budget count through')
+  assert.equal(env.raw.providers.relay.requestImageMaxDimension, 2000, 'ordinary edits pass the max dimension through')
+  assert.deepEqual(env.calls.at(-1).ops, [{ op: 'set', path: ['providers', 'relay', 'baseURL'], value: 'http://127.0.0.1/v2' }])
+
+  const unset = await env.call('models3-save-route', { sessionId: (await env.open()).sessionId, unset: ['requestImageMaxDimension'] })
+  assert.equal(unset.ok, false, 'a client unset cannot delete the max dimension')
+  assert.equal(unset.error, 'field-read-only')
+  const set = await env.call('models3-save-route', { sessionId: (await env.open()).sessionId, patch: { requestImageBudgetCount: 5 } })
+  assert.equal(set.ok, false, 'a client patch cannot author the budget count')
+  assert.equal(set.error, 'field-read-only')
+  assert.equal(env.calls.length, 1, 'rejected writes never reach the settings mutation')
+  assert.equal(env.state.providers.relay.after.requestImageBudgetCount, 12)
+  assert.equal(env.state.providers.relay.after.requestImageMaxDimension, 2000)
+  assert.deepEqual(env.raw.providers.relay, { api: 'openai-completions', baseURL: 'http://127.0.0.1/v2', models: [{ id: 'one' }], ...budget })
+})
+
+test('new Profile editor: route creation cannot author pi image budget fields', async () => {
+  const env = host()
+  for (const field of ['requestImageBudgetCount', 'requestImageMaxDimension']) {
+    const result = await env.call('models3-create-preview', { route: 'new-route', profile: { api: 'openai-completions', baseURL: 'https://example.com/v1', models: [{ id: 'one' }], [field]: 10 } })
+    assert.equal(result.ok, false, `creating a route cannot set ${field}`)
+    assert.equal(result.error, 'field-read-only')
+  }
+  assert.equal(env.calls.length, 0)
+  assert.deepEqual(env.state.providers, {})
+})
+
+test('new Profile editor: pi image budget fields are read-only in the patch vocabulary', () => {
+  assert.deepEqual([...ROUTE_READONLY_FIELDS].sort(), ['requestImageBudgetCount', 'requestImageMaxDimension'])
+  for (const field of ROUTE_READONLY_FIELDS) {
+    assert.ok(ROUTE_FIELDS.includes(field), `${field} stays in the installed vocabulary contract`)
+    assert.throws(() => validateField(field, 10), /field-read-only/)
+    assert.throws(() => patchFields({}, { [field]: 10 }, [], ROUTE_FIELDS), /field-read-only/)
+    assert.throws(() => patchFields({ [field]: 10 }, {}, [field], ROUTE_FIELDS), /field-read-only/)
+  }
+  // 不在 patch/unset 里的既有值仍原样透传。
+  const next = patchFields({ requestImageBudgetCount: 12, requestImageMaxDimension: 2000, models: [] }, { displayName: 'relay' }, [], ROUTE_FIELDS)
+  assert.equal(next.requestImageBudgetCount, 12)
+  assert.equal(next.requestImageMaxDimension, 2000)
 })
 
 test('new Profile editor: image-count defaults reject invalid saves before any write', async () => {

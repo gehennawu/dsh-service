@@ -411,7 +411,7 @@ Requirements: Node.js `>=22` (DSH `0.2.2` and later require Node.js `>=24.9` on 
 | --- | --- |
 | Input | The browser cannot supply URLs, package names, commands, or file paths. **One exception**: right-Sidebar file editing accepts only a `dsh-resource://file/session/<session>/<path>` resource address (decoded per segment; every other shape is refused); the session and workspace root are always resolved host-side, and writes are fenced by the session's sandbox policy |
 | Network | Update checks only access fixed npm registry endpoints |
-| RPC | Loopback-only; data never leaves the machine |
+| RPC | Maintenance RPCs and backup downloads require both a loopback connection and a loopback HTTP Host. RPCs still require host authentication, even if remote login is enabled. Reverse proxies must not forward these routes to remote clients |
 | Data | The usage index stores no messages, prompts, tool arguments, or credentials; API keys are used inside the host process only |
 | Actions | Destructive operations (restart, delete, permission repair) all require two-step confirmation |
 | Credentials | Stored in the DSH credential store (`$DSH_HOME/.credentials.yaml`), sent to fixed endpoints only |

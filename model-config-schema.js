@@ -1,6 +1,12 @@
-// Editable vocabulary for pi-ai Profile configuration, not a projection of defaults.
+// Vocabulary of installed pi-ai Profile configuration, not a projection of defaults.
+// The list is the schema contract; endpoints choose which fields they accept writes for.
 export const MODEL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts', 'compat']
 export const ROUTE_FIELDS = ['displayName', 'api', 'baseURL', 'apiKeyEnv', 'defaultContextWindow', 'defaultMaxTokens', 'defaultInput', 'compat', 'headers', 'reasoning', 'thinkingBudgets', 'cacheRetention', 'transport', 'timeoutMs', 'websocketConnectTimeoutMs', 'streamIdleTimeoutMs', 'maxRequestImageBytes', 'maxRequestImages', 'imageOffloadCountQuantum', 'requestImageBudgetCount', 'requestImagePixelBudget', 'requestImageMaxDimension', 'requestImageMaxBytes', 'retryPolicy']
+// Route-scoped fields this plugin carries but never authors. No editor or write
+// validation exists for them, so snapshots and untouched edits keep their stored
+// values while patch/unset reject them instead of silently rewriting or dropping
+// configuration that belongs to the host schema.
+export const ROUTE_READONLY_FIELDS = ['requestImageBudgetCount', 'requestImageMaxDimension']
 export const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 export const PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai']
 export const GEMINI_LEVELS = ['minimal', 'low', 'medium', 'high']
@@ -88,6 +94,9 @@ export function validateCompat(value, api, previous = {}) {
 }
 export function validateField(field, value, { api, previous } = {}) {
   if (value === undefined) return
+  // Pass-through-only fields have no plugin-side wire validation; refuse them so a
+  // value the host schema owns is never reinterpreted by this write surface.
+  if (ROUTE_READONLY_FIELDS.includes(field)) fail('field-read-only')
   if (ROUTE_ENUMS[field]) { if (!ROUTE_ENUMS[field].includes(value)) fail(); return }
   if (field === 'name' || field === 'displayName') { if (typeof value !== 'string' || value.trim() === '' || value.length > 128) fail(); return }
   if (field === 'baseURL') {
@@ -126,7 +135,12 @@ export function validateField(field, value, { api, previous } = {}) {
   fail('unknown-field')
 }
 export function patchFields(raw, patch, unset, fields, api, inherited = {}) {
-  if (!object(patch) || !Array.isArray(unset) || unset.some((k) => !fields.includes(k)) || Object.keys(patch).some((k) => !fields.includes(k)) || unset.some((k) => Object.hasOwn(patch, k))) fail('unknown-field')
+  if (!object(patch) || !Array.isArray(unset)) fail('unknown-field')
+  // Snapshot-only fields are not client-authorable: check them before the generic
+  // vocabulary gate so an unset can never delete a stored value that this plugin
+  // cannot later restore or validate.
+  if ([...Object.keys(patch), ...unset].some((field) => ROUTE_READONLY_FIELDS.includes(field))) fail('field-read-only')
+  if (unset.some((k) => !fields.includes(k)) || Object.keys(patch).some((k) => !fields.includes(k)) || unset.some((k) => Object.hasOwn(patch, k))) fail('unknown-field')
   const next = structuredClone(raw)
   // Settings object-path unset restores the inherited value, rather than always deleting it.
   for (const field of unset) {

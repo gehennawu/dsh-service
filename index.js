@@ -6,6 +6,7 @@ import { Buffer } from 'node:buffer'
 import { constants as fsConstants, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { access, chmod, cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { BlockList } from 'node:net'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -3517,9 +3518,8 @@ async function collectDiagnostics(ctx, dshHome, runtimeEnv, options = {}) {
   }
 }
 
-// 概览「持久化会话」的按需计数（2026-11-22 恢复）：只取 sessionQuery.listSessions() 的
-// header（一次目录遍历 + 每条 stat），不解析标题与日志；独立端点，**绝不进 30 s health
-// 轮询**——health 保持纯内存读取（此前把该字段塞进 health，每 5~30 s 触发数百次 open/read）。
+// 按需枚举会话记录。JSONL 后端会遍历目录并 stat；首行 header 未缓存或修订变化时
+// 还要打开并读取文件，但不会扫描标题或事件。此成本不进入 health 的 30 s 轮询。
 async function collectPersistedSessionCount(ctx) {
   const sessionQuery = ctx.get('sessionQuery')
   if (sessionQuery === undefined || typeof sessionQuery.listSessions !== 'function') {
@@ -5495,79 +5495,76 @@ async function quotaCredentialEndpoint(ctx, refreshQuotaConfig, throttle, payloa
   }
 }
 
-// 0.1.5-rc.1 上游 bug 防御：HostConnectionService.prototype.register 内部执行
-// owner.effect(() => owner.webServer.register(route))，其中 owner 虽为读取者上下文，
-// 但在 Cordis createShadowMethod 下其 [symbols.shadow] 仍回溯到 connection 服务的
-// 构造 context；而 0.1.5-rc.1 的 connection 声明 inject = ['credentials']，未声明
-// webServer（改为内部局域动态注入），导致访问 owner.webServer 时因缺少 inject 守卫失败，
-// 抛出：cannot get property "webServer" without inject。
-// 防御：在调用前对 connection 的原型 register 打补丁，将传入的 owner 代理一层，
-// 拦截 owner.webServer 属性访问并平滑回退到 target.get('webServer') ?? ctx.get('webServer')，
-// 绕开 Cordis 的属性守卫。
-function ensureConnectionRpcWebServerSeam(ctx) {
-  const connection = ctx.get('connection') || ctx.connection
-  if (!connection) return
-  const proto = Object.getPrototypeOf(connection)
-  if (!proto || typeof proto.register !== 'function' || proto.__dshServiceRpcWebServerPatched) return
-  proto.__dshServiceRpcWebServerPatched = true
-  const originalRegister = proto.register
-  proto.register = function (owner, channel, handler) {
-    const safeOwner = owner && typeof owner === 'object'
-      ? new Proxy(owner, {
-        get(target, prop, receiver) {
-          if (prop === 'webServer') {
-            return target.get?.('webServer') ?? ctx.get?.('webServer')
-          }
-          return Reflect.get(target, prop, receiver)
-        },
-      })
-      : owner
-    return originalRegister.call(this, safeOwner, channel, handler)
+const SERVICE_RPC_CHANNEL = '/dsh-service'
+const loopbackAddresses = new BlockList()
+loopbackAddresses.addSubnet('127.0.0.0', 8)
+loopbackAddresses.addAddress('::1', 'ipv6')
+
+function isLoopbackAddress(address) {
+  return typeof address === 'string' && loopbackAddresses.check(address, address.includes(':') ? 'ipv6' : 'ipv4')
+}
+
+function isLoopbackHttpRequest(req) {
+  const host = req.headers?.host
+  if (typeof host !== 'string' || !/^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?$/i.test(host)) return false
+  return isLoopbackAddress(req.socket?.remoteAddress)
+}
+
+function loopbackHttpHandler(handler) {
+  return function (req, res, ...args) {
+    if (isLoopbackHttpRequest(req)) return handler.call(this, req, res, ...args)
+    res.writeHead(403)
+    res.end()
   }
 }
 
-function registerDirectRpcWebRoute(ctx, webServer, channel, dispatchRpc) {
-  const prefix = channel.endsWith('/') ? channel : `${channel}/`
-  const route = {
-    kind: 'prefix',
-    path: channel,
-    handler: async (req, res) => {
-      const host = String(req.headers.host || '').split(':')[0]
-      const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
-      if (!isLoopback) {
-        res.writeHead(403)
-        res.end('forbidden')
-        return
-      }
-      if (req.method !== 'POST') {
-        res.writeHead(405)
-        res.end()
-        return
-      }
-      const url = new URL(req.url, 'http://localhost')
-      if (!url.pathname.startsWith(prefix)) {
-        res.writeHead(404)
-        res.end()
-        return
-      }
-      const endpoint = url.pathname.slice(prefix.length)
-      let body = ''
-      req.on('data', (chunk) => { body += chunk })
-      req.on('end', async () => {
-        try {
-          const json = JSON.parse(body || '{}')
-          const rpcId = json.rpcId || 'direct-rpc'
-          const result = await dispatchRpc(endpoint, json.payload)
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ type: 'server-response', rpcId, result }))
-        } catch (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ type: 'server-response', rpcId: 'direct-rpc', result: { ok: false, error: { code: 'internal', message: String(err) } } }))
-        }
+// Connection owns the RPC protocol and authentication. Interpose only on our own
+// route registration, without retaining a Context or touching other channels.
+// Older Connection reads owner.webServer through Cordis's property guard;
+// current Connection uses owner.get('webServer') and ignores the authority option.
+function mountLoopbackRpc(ctx, dispatch) {
+  const connection = ctx.get('connection') ?? ctx.connection
+  const proto = connection && Object.getPrototypeOf(connection)
+  if (!proto || typeof proto.register !== 'function') throw new Error('dsh-service: unsupported Connection RPC registration')
+  const originalRegister = proto.register
+  let guarded = false
+  proto.register = function (owner, channel, ...args) {
+    if (channel !== SERVICE_RPC_CHANNEL) return originalRegister.call(this, owner, channel, ...args)
+    const resolveServer = () => {
+      const server = owner.get?.('webServer') ?? ctx.get('webServer')
+      if (server === undefined) throw new Error('dsh-service: RPC requires a WebServer')
+      return new Proxy(server, {
+        get(target, prop) {
+          if (prop === 'register') return (route) => {
+            if (route.path !== SERVICE_RPC_CHANNEL || typeof route.handler !== 'function') {
+              throw new Error('dsh-service: unsupported RPC WebServer registration')
+            }
+            const dispose = target.register({ ...route, handler: loopbackHttpHandler(route.handler) })
+            guarded = true
+            return dispose
+          }
+          return Reflect.get(target, prop, target)
+        },
       })
-    },
+    }
+    const guardedOwner = new Proxy(owner, {
+      get(target, prop, receiver) {
+        if (prop === 'webServer') return resolveServer()
+        if (prop === 'get') return (name, ...rest) => name === 'webServer' ? resolveServer() : target.get(name, ...rest)
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    return originalRegister.call(this, guardedOwner, channel, ...args)
   }
-  ctx.effect(() => webServer.register(route), `dsh-service: ${channel} direct rpc route`)
+  try {
+    const dispose = connection.rpc.handle(SERVICE_RPC_CHANNEL, dispatch, { authority: 'loopback' })
+    if (!guarded) {
+      if (typeof dispose === 'function') void dispose()
+      throw new Error('dsh-service: Connection did not register a guarded WebServer route')
+    }
+  } finally {
+    proto.register = originalRegister
+  }
 }
 
 function apply(ctx, featureConfig) {
@@ -6365,7 +6362,7 @@ function apply(ctx, featureConfig) {
     ownerCtx.effect(() => webServer.register({
       kind: 'exact',
       path: '/dsh-backup-download',
-      handler: async (req, res) => {
+      handler: loopbackHttpHandler(async (req, res) => {
         const url = new URL(req.url, 'http://localhost')
         const token = url.searchParams.get('token')
         if (!token) { res.writeHead(400); res.end(); return }
@@ -6380,16 +6377,8 @@ function apply(ctx, featureConfig) {
           res.writeHead(500)
           res.end()
         }
-      },
+      }),
     }), 'dsh-service backup download route')
-  }
-  // webServer 可能晚于本插件激活（alpha.1 起 connection 不再等待 webServer）：
-  // 有就立即挂，没有就等它上线后再挂，避免 /healthz 与备份下载静默缺失。
-  const webServer = ctx.get('webServer')
-  if (webServer !== undefined) {
-    mountWebServerRoutes(ctx, webServer)
-  } else {
-    ctx.inject(['webServer'], (webCtx) => mountWebServerRoutes(webCtx, webCtx.get?.('webServer') ?? webCtx.webServer))
   }
 
   // 「本次更新内容」的共用落库：两个入口（当前运行版本 / 可用新版本）只在「版本号从哪来」上
@@ -6736,34 +6725,17 @@ function apply(ctx, featureConfig) {
     if (endpoint === 'quota' || endpoint === 'quota-reset-card' || endpoint === 'health') rememberQuotaClientOffset(payload)
     return dispatchEndpoint(endpoint, payload)
   }
-  let rpcMountError
-  const mountRpcChannel = (ownerCtx) => {
+  // Always bind HTTP routes to the WebServer dependency's lifetime, regardless of startup order.
+  ctx.inject(['webServer'], (webCtx) => {
+    const webServer = webCtx.get('webServer')
+    mountWebServerRoutes(webCtx, webServer)
     try {
-      ensureConnectionRpcWebServerSeam(ownerCtx)
-      ownerCtx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
-      return true
+      mountLoopbackRpc(webCtx, dispatchRpc)
     } catch (error) {
-      rpcMountError = error
-      const webServer = ownerCtx.get('webServer')
-      if (webServer !== undefined) {
-        ownerCtx.logger?.error?.(`dsh-service: connection rpc handle failed (${error?.message || error}), falling back to direct webServer route`)
-        registerDirectRpcWebRoute(ownerCtx, webServer, '/dsh-service', dispatchRpc)
-        return true
-      }
-      return false
+      // No direct route: a host without a compatible authenticated registration fails closed.
+      webCtx.logger?.error?.(`dsh-service: connection RPC not mounted (${error?.message || error})`)
     }
-  }
-  // alpha.1 起 connection 不再等待 webServer，且第三个参数（authority）被移除：
-  // webServer 未上线时 register 会抛 "RPC channels require a WebServer"。先尝试一次
-  // （兼容不依赖 webServer 的宿主与测试替身），仅在确认缺少 webServer 时等它就绪再挂。
-  if (!mountRpcChannel(ctx)) {
-    ctx.inject(['webServer'], (webCtx) => {
-      if (mountRpcChannel(webCtx)) return
-      webCtx.logger?.error?.(`dsh-service: connection rpc handle failed (${rpcMountError?.message || rpcMountError}), falling back to direct webServer route`)
-      const webServer = webCtx.get('webServer')
-      if (webServer !== undefined) registerDirectRpcWebRoute(webCtx, webServer, '/dsh-service', dispatchRpc)
-    })
-  }
+  })
 }
 
 export {

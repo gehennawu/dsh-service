@@ -163,6 +163,19 @@ function createHost(overrides = {}) {
   let updateFeatureSettings = async () => {}
   const services = new Map(Object.entries(overrides.services || {}))
   const injectors = []
+  if (!Object.hasOwn(overrides.services ?? {}, 'webServer') && !services.has('connection')) {
+    services.set('webServer', { register: () => () => {} })
+  }
+  class FixtureConnection {
+    get rpc() {
+      return { handle: (...args) => this.register(this.owner, ...args) }
+    }
+    register(owner, channel, handler, options) {
+      handlers.push({ channel, handler, options })
+      owner.effect(() => owner.get('webServer').register({ kind: 'prefix', path: channel, handler }))
+    }
+  }
+  const fixtureConnection = new FixtureConnection()
   let settingsService
   // 新版 Config 实参（settingsKind: 'forms'）：键为开关名，值为返回 { get() } 的引用对象
   // （与真机 volatile 字段同形）；setters 用于模拟宿主就地提交新值。
@@ -279,27 +292,35 @@ function createHost(overrides = {}) {
       return services.get('subagents')
     },
     get connection() {
-      return services.get('connection') ?? {
-        rpc: {
-          handle(channel, handler, options) {
-            handlers.push({ channel, handler, options })
-            return () => {}
-          },
-        },
-      }
+      fixtureConnection.owner = this
+      return services.get('connection') ?? fixtureConnection
     },
     get(service) {
       return services.get(service)
     },
     inject(required, callback) {
       const names = Array.isArray(required) ? required : [required]
-      const run = () => {
-        if (!names.every((service) => services.has(service))) return false
-        callback(ctx)
-        return true
+      const entry = { names, effects: [], active: false }
+      const scope = Object.create(ctx)
+      scope.effect = (setup) => {
+        const dispose = setup()
+        if (typeof dispose === 'function') entry.effects.push(dispose)
+        return dispose
       }
-      if (!run()) injectors.push({ names, callback })
-      return () => {}
+      entry.run = () => {
+        if (entry.active || !names.every((service) => services.has(service))) return
+        entry.active = true
+        const dispose = callback(scope)
+        if (typeof dispose === 'function') entry.effects.push(dispose)
+      }
+      entry.stop = () => {
+        entry.active = false
+        for (const dispose of entry.effects.splice(0).reverse()) dispose()
+      }
+      injectors.push(entry)
+      disposers.push(entry.stop)
+      entry.run()
+      return entry.stop
     },
     effect(callback) {
       const dispose = callback()
@@ -333,11 +354,12 @@ function createHost(overrides = {}) {
   }
   const provideService = (name, value) => {
     services.set(name, value)
-    for (let index = injectors.length - 1; index >= 0; index -= 1) {
-      const injector = injectors[index]
-      if (!injector.names.every((service) => services.has(service))) continue
-      injectors.splice(index, 1)
-      injector.callback(ctx)
+    for (const injector of [...injectors].reverse()) injector.run()
+  }
+  const withdrawService = (name) => {
+    services.delete(name)
+    for (const injector of [...injectors].reverse()) {
+      if (injector.names.includes(name)) injector.stop()
     }
   }
   const provideSettings = () => {
@@ -368,7 +390,7 @@ function createHost(overrides = {}) {
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, provideService, fire, emit: (event, ...args) => ctx.emit(event, ...args), dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, provideService, withdrawService, fire, emit: (event, ...args) => ctx.emit(event, ...args), dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
     // 新版（settingsKind: 'forms'）热更新替身：就地改 Config 引用值再发 loader/volatile-update，
     // 与真机 Entry._commitVolatile 的事件形态一致（监听器只关心「变了」，值从引用读）。
     pushVolatileConfig: async (patch) => {
@@ -1988,7 +2010,7 @@ test('RPC dispatcher registers one loopback channel and normalizes every wire fa
   }
 })
 
-test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection webServer inject bug, and falls back to webServer directly if handle throws', async () => {
+test('RPC uses the authenticated host route, scopes it to loopback and fails closed if registration fails', async () => {
   const routes = []
   const webServer = {
     register(route) {
@@ -2015,8 +2037,12 @@ test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection
       }
     }
     register(owner, channel, handler) {
-      // 真实 rc.1 rpc-host.ts 的 588 行
-      return owner.effect(() => owner.webServer.register({ kind: 'prefix', path: channel, handler }))
+      // 真实 rc.1 通过 owner.webServer 挂载；保留一个可观测的原生处理结果。
+      return owner.effect(() => owner.webServer.register({ kind: 'prefix', path: channel, auth: 'required', handler: async (req, res) => {
+        const result = await handler('health', {})
+        res.writeHead(200)
+        res.end(result.ok ? 'native RPC' : 'failed')
+      } }))
     }
   }
 
@@ -2027,9 +2053,24 @@ test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection
       webServer,
     },
   })
-  assert.ok(routes.some((r) => r.path === '/dsh-service'), 'the seam transparently proxies owner.webServer to resolve from get()')
+  const rpc = routes.find((route) => route.path === '/dsh-service')
+  assert.ok(rpc, 'the seam transparently supplies the declared WebServer')
+  assert.equal(rpc.auth, 'required')
+  const call = async (host, remoteAddress) => {
+    let status
+    let body
+    await rpc.handler({ headers: { host }, socket: { remoteAddress } }, {
+      writeHead(code) { status = code }, end(value) { body = value },
+    })
+    return { status, body }
+  }
+  assert.deepEqual(await call('example.test', '127.0.0.1'), { status: 403, body: undefined })
+  assert.deepEqual(await call('localhost:3080', '192.0.2.1'), { status: 403, body: undefined })
+  assert.deepEqual(await call('localhost:3080', undefined), { status: 403, body: undefined })
+  assert.deepEqual(await call('127.0.0.1:3080', '::ffff:127.0.0.1'), { status: 200, body: 'native RPC' })
+  assert.deepEqual(await call('[::1]:3080', '::1'), { status: 200, body: 'native RPC' })
 
-  // 进一步测试极端回退分支：当 connection.rpc.handle 完全拒绝时，直接兜底 webServer.register
+  // 注册失败不能退回一个不确定是否经过宿主鉴权的直接路由。
   const fallbackRoutes = []
   const fallbackWebServer = {
     register(route) {
@@ -2040,18 +2081,40 @@ test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection
       }
     },
   }
-  const brokenConnection = {
-    rpc: {
-      handle() { throw new Error('completely-broken-transport') },
-    },
+  class BrokenConnection {
+    rpc = { handle: (...args) => this.register(...args) }
+    register() { throw new Error('completely-broken-transport') }
   }
+  const brokenConnection = new BrokenConnection()
   const fallbackHost = createHost({
     services: {
       connection: brokenConnection,
       webServer: fallbackWebServer,
     },
   })
-  assert.ok(fallbackRoutes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the direct webServer fallback registers the prefix route')
+  assert.equal(fallbackRoutes.some((r) => r.path === '/dsh-service'), false)
+  assert.match(fallbackHost.logs.error.join('\n'), /completely-broken-transport/)
+})
+
+test('RPC and auxiliary routes follow an initially present WebServer through replacement', () => {
+  const makeServer = () => ({
+    routes: new Map(),
+    register(route) {
+      this.routes.set(route.path, route)
+      return () => this.routes.delete(route.path)
+    },
+  })
+  const first = makeServer()
+  const second = makeServer()
+  const host = createHost({ services: { webServer: first }, featureSettings: {} })
+  const auxiliary = ['/dsh-backup-download', '/dsh-service', '/healthz']
+  assert.deepEqual([...first.routes.keys()].sort(), auxiliary)
+  host.withdrawService('webServer')
+  assert.equal(first.routes.size, 0)
+  host.provideService('webServer', second)
+  assert.deepEqual([...second.routes.keys()].sort(), auxiliary)
+  host.dispose()
+  assert.equal(second.routes.size, 0)
 })
 
 test('RPC channel waits for webServer when connection activates before it (DSH 0.2.3-alpha.1)', () => {
@@ -2067,20 +2130,18 @@ test('RPC channel waits for webServer when connection activates before it (DSH 0
   }
   // alpha.1 的 HostConnectionService.register：webServer 缺席时直接抛
   // "connection: RPC channels require a WebServer"，不再用属性守卫掩盖。
-  const connection = {
-    __webServer: undefined,
-    rpc: {
-      handle(channel, handler) {
-        if (connection.__webServer === undefined) throw new Error('connection: RPC channels require a WebServer')
-        connection.__webServer.register({ kind: 'prefix', path: channel, handler })
-      },
-    },
+  class Connection {
+    rpc = { handle: (...args) => this.register({ get: () => this.webServer }, ...args) }
+    register(owner, channel, handler) {
+      owner.get('webServer').register({ kind: 'prefix', path: channel, handler })
+    }
   }
+  const connection = new Connection()
   const host = createHost({ services: { connection }, featureSettings: {} })
   assert.equal(routes.length, 0, 'nothing is registered before webServer exists')
   assert.equal(host.logs.error.length, 0, 'the retry path does not report a failure before the service arrives')
 
-  connection.__webServer = webServer
+  connection.webServer = webServer
   host.provideService('webServer', webServer)
   assert.ok(routes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the channel is registered once webServer arrives')
 })
