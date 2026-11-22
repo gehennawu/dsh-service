@@ -580,6 +580,11 @@ function createRenderer(rpcCall, options = {}) {
                 return () => statusListeners.delete(listener)
               },
             }
+            // 旧宿主（≤0.2.2）拓扑：状态只是 uiSession 的普通属性，点号服务名不存在。
+            // 注意本替身的 inject 不建模「依赖缺席 ⇒ 回调不触发」，只用来验证属性路径本身。
+            if (options.legacySessionStatusProperty === true) {
+              return service === 'uiSession' ? { sessionStatus: status } : undefined
+            }
             return service === 'uiSession' ? { sessionStatus: status } : status
           }
           return options.services?.[service]
@@ -4494,6 +4499,40 @@ test('legacy runtime without uiSession keeps completion notifications and stays 
   assert.deepEqual(renderer.notifications(), [
     { title: '任务完成', body: '旧运行时 已完成本轮任务' },
   ], 'completion path works without the status service')
+})
+
+test('legacy host exposing sessionStatus as a plain uiSession property still rings interaction notifications', async () => {
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted', legacySessionStatusProperty: true })
+
+  await renderer.load()
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  // 打开「授权与提问通知」（总开关此时默认开，第一个开关即该子项）。
+  renderer.findSwitches()[0].props.onClick()
+  await renderer.flush()
+
+  // 只在待审状态上出现边沿（基线先由空快照建立），完成通知路径与它无关。
+  renderer.setSessions({ 's1': { id: 's1', displayTitle: '旧版属性', running: false } })
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: undefined }]])
+  assert.deepEqual(renderer.notifications(), [], 'baseline snapshot rings nothing')
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'legacy-a', sessionId: 's1' } }]])
+  assert.deepEqual(renderer.notifications(), [
+    { title: '需要你的确认', body: '旧版属性（等待授权）' },
+  ], 'the plain uiSession.sessionStatus property drives the pending edge')
+
+  // 连接重置后属性源同样只重建基线，不补响铃。
+  renderer.emitConnectionReset()
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'question', key: 'legacy-q', sessionId: 's1' } }]])
+  assert.equal(renderer.notifications().length, 1, 'first snapshot after reset only rebuilds the baseline')
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: undefined }]])
+  renderer.setSessionStatus([['s1', { running: false, pendingInteraction: { kind: 'question', key: 'legacy-q2', sessionId: 's1' } }]])
+  assert.equal(renderer.notifications().length, 2, 'edges after re-baseline ring again')
+  assert.deepEqual(renderer.notifications()[1], { title: '需要你的确认', body: '旧版属性（等待选择答案）' })
 })
 
 test('upgrade failure surfaces the host error detail instead of only the generic message', async () => {
@@ -18838,4 +18877,54 @@ test('overview renders a placeholder when the persisted-session count is unavail
   await renderer.load()
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /持久化会话.*?—/)
+})
+
+test('overview re-entry starts from the placeholder and drops the previous visit response', async () => {
+  const pending = []
+  const usage = { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    assert.equal(channel, '/dsh-service')
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
+    if (endpoint === 'check-update') return { ok: true, value: { current: '0.1.0-rc.7', latest: '0.1.0-rc.7', upToDate: true } }
+    if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 60, rssBytes: 1048576, liveSessions: 1, activeAgents: 0, activeJobs: 0 } }
+    if (endpoint === 'sessions-count') return await new Promise((resolve) => { pending.push(resolve) })
+    if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+    if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+    if (endpoint === 'usage') return { ok: true, value: usage }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  })
+  await renderer.load()
+  await renderer.flush()
+  assert.equal(pending.length, 1, 'entering the overview requests the count once')
+  assert.match(renderer.text('settings.section'), /持久化会话.*?—/, 'first visit starts at the placeholder')
+
+  pending.shift()({ ok: true, value: { available: true, persisted: 111 } })
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /持久化会话.*?111/)
+
+  // 离开再回来：旧值不作当前值展示，先回到占位符；本轮只发起一次新请求。
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  assert.equal(pending.length, 1, 're-entry issues one new request')
+  assert.match(renderer.text('settings.section'), /持久化会话.*?—/, 're-entry starts from the placeholder again')
+
+  // 在飞时再离开再回来：上一轮的响应晚到，必须被丢弃，不能覆盖新一轮的占位符/结果。
+  await renderer.findButton('模型统计').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('概览').props.onClick()
+  await renderer.flush()
+  assert.equal(pending.length, 2, 'each overview entry keeps exactly one in-flight request')
+  assert.match(renderer.text('settings.section'), /持久化会话.*?—/)
+
+  // pending[0] 属于上一轮（已离开的概览），先落地也必须被忽略。
+  pending.shift()({ ok: true, value: { available: true, persisted: 222 } })
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /持久化会话.*?—/, 'the previous visit response is ignored')
+
+  // 本轮响应落地才更新显示。
+  pending.shift()({ ok: true, value: { available: true, persisted: 333 } })
+  await renderer.flush()
+  assert.match(renderer.text('settings.section'), /持久化会话.*?333/)
 })

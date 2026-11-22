@@ -5684,11 +5684,15 @@
             }
           }
         }, [activeTab])
-        // 概览「持久化会话」按需一次：该计数需要一次会话目录枚举（每条 stat、不解析标题），
-        // 因此只在进入概览时取一次，不进 health 的 30 s 轮询；离开概览即作废，回来重新取。
+        // 概览「持久化会话」按需一次：宿主侧走 `sessionQuery.listSessions()`——枚举会话目录、
+        // 逐会话 stat 并读取文件首行的 header（同一进程内按文件 revision 记忆，未变更的文件不
+        // 重读；标题与日志正文不解析），所以只在进入概览时取一次，不进 health 的 30 s 轮询。
+        // 每次进入先回到「—」占位符（上一次的计数是旧快照，不当当前值展示）；离开概览时本轮
+        // 请求随 active 作废，晚到的旧响应不得覆盖新一轮的值。
         useEffect(() => {
           if (activeTab !== 'overview') return () => {}
           let active = true
+          setPersistedSessions(null)
           rpcCall('sessions-count', {}).then((res) => {
             if (!active) return
             const value = res && res.ok !== false ? res.value : null
