@@ -571,16 +571,16 @@ function createRenderer(rpcCall, options = {}) {
           // `settingsBackend: 'memory'` 模拟两方皆无的引导竞态/精简环境。
           if (service === 'settingsScope') { settingsProbes.settingsScope += 1; return settingsBackend === 'settingsScope' ? { bind: (spec) => { assert.equal(spec.namespace, 'dsh-service'); settingsBinds.settingsScope += 1; return featureScope } } : undefined }
           if (service === 'configForms') { settingsProbes.configForms += 1; return settingsBackend === 'configForms' ? { get: (entryId) => { assert.equal(entryId, 'dsh-service'); settingsBinds.configForms += 1; return featureScope } } : undefined }
-          if (service === 'uiSession') {
-            return options.legacyRuntime ? undefined : {
-              sessionStatus: {
-                getSnapshot: () => statusSnapshot,
-                subscribe(listener) {
-                  statusListeners.add(listener)
-                  return () => statusListeners.delete(listener)
-                },
+          if (service === 'uiSession' || service === 'uiSession.sessionStatus') {
+            if (options.legacyRuntime) return undefined
+            const status = {
+              getSnapshot: () => statusSnapshot,
+              subscribe(listener) {
+                statusListeners.add(listener)
+                return () => statusListeners.delete(listener)
               },
             }
+            return service === 'uiSession' ? { sessionStatus: status } : status
           }
           return options.services?.[service]
         },

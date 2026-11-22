@@ -331,15 +331,18 @@ function createHost(overrides = {}) {
   if (!services.has('connection')) {
     assert.equal(handlers.length, 1)
   }
-  const provideSettings = () => {
-    if (settingsService === undefined) throw new Error('featureSettings fixture is required')
-    services.set('settings', settingsService)
+  const provideService = (name, value) => {
+    services.set(name, value)
     for (let index = injectors.length - 1; index >= 0; index -= 1) {
       const injector = injectors[index]
       if (!injector.names.every((service) => services.has(service))) continue
       injectors.splice(index, 1)
       injector.callback(ctx)
     }
+  }
+  const provideSettings = () => {
+    if (settingsService === undefined) throw new Error('featureSettings fixture is required')
+    provideService('settings', settingsService)
   }
   // 事件派发替身：emit 事件逐个调用监听器；waterfall 事件提供 next 链（最外层 listener 先执行）。
   const fire = async (event, payload, baseNext) => {
@@ -365,7 +368,7 @@ function createHost(overrides = {}) {
     }
     return result
   }
-  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, fire, emit: (event, ...args) => ctx.emit(event, ...args), dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
+  return { handler: publicHandler, rawHandler: activeHandler.handler, rpcRegistration: activeHandler, logs, scheduled, emitted, registeredCommands, registeredSettings, updateFeatureSettings: (...args) => updateFeatureSettings(...args), provideSettings, provideService, fire, emit: (event, ...args) => ctx.emit(event, ...args), dispose: () => disposers.splice(0).reverse().forEach((fn) => fn()),
     // 新版（settingsKind: 'forms'）热更新替身：就地改 Config 引用值再发 loader/volatile-update，
     // 与真机 Entry._commitVolatile 的事件形态一致（监听器只关心「变了」，值从引用读）。
     pushVolatileConfig: async (patch) => {
@@ -2049,6 +2052,37 @@ test('RPC channel registration safely bypasses the DSH 0.1.5 upstream connection
     },
   })
   assert.ok(fallbackRoutes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the direct webServer fallback registers the prefix route')
+})
+
+test('RPC channel waits for webServer when connection activates before it (DSH 0.2.3-alpha.1)', () => {
+  const routes = []
+  const webServer = {
+    register(route) {
+      routes.push(route)
+      return () => {
+        const idx = routes.indexOf(route)
+        if (idx >= 0) routes.splice(idx, 1)
+      }
+    },
+  }
+  // alpha.1 的 HostConnectionService.register：webServer 缺席时直接抛
+  // "connection: RPC channels require a WebServer"，不再用属性守卫掩盖。
+  const connection = {
+    __webServer: undefined,
+    rpc: {
+      handle(channel, handler) {
+        if (connection.__webServer === undefined) throw new Error('connection: RPC channels require a WebServer')
+        connection.__webServer.register({ kind: 'prefix', path: channel, handler })
+      },
+    },
+  }
+  const host = createHost({ services: { connection }, featureSettings: {} })
+  assert.equal(routes.length, 0, 'nothing is registered before webServer exists')
+  assert.equal(host.logs.error.length, 0, 'the retry path does not report a failure before the service arrives')
+
+  connection.__webServer = webServer
+  host.provideService('webServer', webServer)
+  assert.ok(routes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the channel is registered once webServer arrives')
 })
 
 test('RPC dispatcher records unexpected handler failures as technical errors', async () => {

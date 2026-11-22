@@ -6317,8 +6317,7 @@ function apply(ctx, featureConfig) {
       },
     }), 'dsh-service restart command')
   }
-  const webServer = ctx.get('webServer')
-  if (webServer !== undefined) {
+  const mountWebServerRoutes = (ownerCtx, webServer) => {
     let healthzDispose = null
     const syncHealthzRoute = () => {
       if (healthzDispose !== null) {
@@ -6342,11 +6341,11 @@ function apply(ctx, featureConfig) {
     }
     syncHealthzRoute()
     featureSettingsListeners.add(syncHealthzRoute)
-    ctx.effect(() => () => {
+    ownerCtx.effect(() => () => {
       featureSettingsListeners.delete(syncHealthzRoute)
       if (healthzDispose !== null) healthzDispose()
     }, 'dsh-service healthz route')
-    ctx.effect(() => webServer.register({
+    ownerCtx.effect(() => webServer.register({
       kind: 'exact',
       path: '/dsh-backup-download',
       handler: async (req, res) => {
@@ -6366,6 +6365,14 @@ function apply(ctx, featureConfig) {
         }
       },
     }), 'dsh-service backup download route')
+  }
+  // webServer 可能晚于本插件激活（alpha.1 起 connection 不再等待 webServer）：
+  // 有就立即挂，没有就等它上线后再挂，避免 /healthz 与备份下载静默缺失。
+  const webServer = ctx.get('webServer')
+  if (webServer !== undefined) {
+    mountWebServerRoutes(ctx, webServer)
+  } else {
+    ctx.inject(['webServer'], (webCtx) => mountWebServerRoutes(webCtx, webCtx.get?.('webServer') ?? webCtx.webServer))
   }
 
   // 「本次更新内容」的共用落库：两个入口（当前运行版本 / 可用新版本）只在「版本号从哪来」上
@@ -6708,15 +6715,33 @@ function apply(ctx, featureConfig) {
     if (endpoint === 'quota' || endpoint === 'quota-reset-card' || endpoint === 'health') rememberQuotaClientOffset(payload)
     return dispatchEndpoint(endpoint, payload)
   }
-  try {
-    ensureConnectionRpcWebServerSeam(ctx)
-    ctx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
-  } catch (error) {
-    ctx.logger?.error?.(`dsh-service: connection rpc handle failed (${error?.message || error}), falling back to direct webServer route`)
-    const webServer = ctx.get('webServer')
-    if (webServer !== undefined) {
-      registerDirectRpcWebRoute(ctx, webServer, '/dsh-service', dispatchRpc)
+  let rpcMountError
+  const mountRpcChannel = (ownerCtx) => {
+    try {
+      ensureConnectionRpcWebServerSeam(ownerCtx)
+      ownerCtx.connection.rpc.handle('/dsh-service', dispatchRpc, { authority: 'loopback' })
+      return true
+    } catch (error) {
+      rpcMountError = error
+      const webServer = ownerCtx.get('webServer')
+      if (webServer !== undefined) {
+        ownerCtx.logger?.error?.(`dsh-service: connection rpc handle failed (${error?.message || error}), falling back to direct webServer route`)
+        registerDirectRpcWebRoute(ownerCtx, webServer, '/dsh-service', dispatchRpc)
+        return true
+      }
+      return false
     }
+  }
+  // alpha.1 起 connection 不再等待 webServer，且第三个参数（authority）被移除：
+  // webServer 未上线时 register 会抛 "RPC channels require a WebServer"。先尝试一次
+  // （兼容不依赖 webServer 的宿主与测试替身），仅在确认缺少 webServer 时等它就绪再挂。
+  if (!mountRpcChannel(ctx)) {
+    ctx.inject(['webServer'], (webCtx) => {
+      if (mountRpcChannel(webCtx)) return
+      webCtx.logger?.error?.(`dsh-service: connection rpc handle failed (${rpcMountError?.message || rpcMountError}), falling back to direct webServer route`)
+      const webServer = webCtx.get('webServer')
+      if (webServer !== undefined) registerDirectRpcWebRoute(webCtx, webServer, '/dsh-service', dispatchRpc)
+    })
   }
 }
 

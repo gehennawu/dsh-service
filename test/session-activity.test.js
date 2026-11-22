@@ -11,8 +11,9 @@ import { fileURLToPath } from 'node:url'
 // 所以用 vm 把该分片当函数表达式求值（`(` + 文本 + `)`）直接拿到工厂本身。本文件独立于
 // test/client.test.js 的整链 renderer harness，只构造状态观察路径需要的最小面。
 //
-// 覆盖的契约（Cordis 语义，0.1.6-alpha.2 @deepseek-ai/cordis 源码核实）：
-//   ctx.inject(['uiSession'], cb) = 以 cb 为 apply 启动子 fiber——服务可用即执行，cb 返回的
+// 覆盖的契约（Cordis 语义，0.1.6-alpha.2 @deepseek-ai/cordis 源码核实；0.2.3-alpha.1 起
+// 状态独立为 `uiSession.sessionStatus` 服务，故注入键换成该嵌套服务名）：
+//   ctx.inject(['uiSession.sessionStatus'], cb) = 以 cb 为 apply 启动子 fiber——服务可用即执行，cb 返回的
 //   函数被收为该 fiber 的 disposable：uiSession 撤销或更换时先跑 disposer，再以新服务重跑 cb。
 //   因此注入回调必须返回 disposer 清理状态订阅/连接重置监听/基线/服务引用，否则：
 //     - 撤销后旧 sessionStatus 订阅泄漏在旧源上（外层 fiber 收尾前一直活着）；
@@ -79,15 +80,17 @@ function createObserverHarness({ summariesById = {} } = {}) {
   }
   const provideUiSession = (service) => {
     services.set('uiSession', service)
+    if (service.sessionStatus !== undefined) services.set('uiSession.sessionStatus', service.sessionStatus)
     for (const entry of injectRegistrations) {
-      if (entry.active || !entry.names.includes('uiSession')) continue
+      if (entry.active || !entry.names.includes('uiSession.sessionStatus')) continue
       entry.active = true
-      const result = entry.callback({ uiSession: service })
+      const result = entry.callback({ get: (name) => services.get(name) })
       entry.dispose = typeof result === 'function' ? result : null
     }
   }
   const withdrawUiSession = () => {
     services.delete('uiSession')
+    services.delete('uiSession.sessionStatus')
     for (const entry of injectRegistrations) {
       if (!entry.active) continue
       entry.active = false

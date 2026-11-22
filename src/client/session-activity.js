@@ -7,9 +7,9 @@
 // 上——list 行从不携带该字段（projectList 的三条行构造路径都不写），待审边沿只能从
 // 状态源取。两路各自维护基线与边沿，连接重置时各自重建（首快照只建基线，均不响铃）。
 //
-// 架构约束：uiSession 是宿主会话 UI 扩展服务，未在插件声明 inject 中；在 Cordis 运行时中
-// 严禁直接访问 ctx.uiSession（会触发 Proxy 抛出 cannot get property without inject 导致客户端崩溃），
-// 必须通过 ctx.get('uiSession') 或 ctx.inject(['uiSession']) 安全感知。旧运行时无此服务时状态路优雅降级。
+// 架构约束：状态服务 0.2.3-alpha.1 起从 ui-session 拆到独立包，服务名仍是
+// `uiSession.sessionStatus`；读取必须按该服务名 inject / get，只注 `uiSession`
+// 再读属性会被属性守卫拒绝。旧运行时同样提供嵌套服务，缺席时状态路优雅降级。
 function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled, featureScope, notifyState, fireNotification, NOTIFY_KIND_KEYS }) {
       if (ctx.sessions && typeof ctx.sessions.list?.subscribe === 'function') {
         const observed = new Map()
@@ -17,15 +17,22 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         let sessionsDispose = null
         let resetDispose = null
 
-        const getUiSession = (scope) => {
-          if (scope != null && scope.uiSession !== undefined) return scope.uiSession
+        // 0.2.3-alpha.1 起会话状态独立为 `uiSession.sessionStatus` 服务：只注
+        // uiSession 再读 `.sessionStatus` 会被属性守卫拒绝（cannot get property
+        // without inject）。这里直接按服务名取，老宿主同样提供该嵌套服务，
+        // 缺席时走既有降级（不订阅、不响铃）。
+        const getSessionStatus = (scope) => {
           try {
-            if (typeof ctx.get === 'function') return ctx.get('uiSession')
+            if (scope != null && typeof scope.get === 'function') {
+              const status = scope.get('uiSession.sessionStatus')
+              if (status !== undefined) return status
+            }
+            if (typeof ctx.get === 'function') return ctx.get('uiSession.sessionStatus')
           } catch (_) {}
           return undefined
         }
 
-        let injectedUiSession = undefined
+        let injectedStatus = undefined
         let uninjectUiSession = null
         const statusObserved = new Map()
         let statusBaselined = false
@@ -41,7 +48,7 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
           statusBaselined = false
         }
 
-        const resolveUiSession = () => injectedUiSession ?? getUiSession()
+        const resolveSessionStatus = () => injectedStatus ?? getSessionStatus()
 
         const observeSessions = () => {
           const snapshot = ctx.sessions.list.getSnapshot()
@@ -68,9 +75,9 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         }
 
         const observeStatus = () => {
-          const uiSession = resolveUiSession()
-          if (!uiSession || typeof uiSession.sessionStatus?.subscribe !== 'function') return
-          const snapshot = uiSession.sessionStatus.getSnapshot()
+          const status = resolveSessionStatus()
+          if (!status || typeof status.subscribe !== 'function') return
+          const snapshot = status.getSnapshot()
           if (!snapshot || typeof snapshot.entries !== 'function') return
           if (!statusBaselined) {
             statusBaselined = true
@@ -105,10 +112,10 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         }
 
         const syncStatusObservation = () => {
-          const uiSession = resolveUiSession()
-          if (uiSession && typeof uiSession.sessionStatus?.subscribe === 'function' && featureEnabled('taskNotifications')) {
+          const status = resolveSessionStatus()
+          if (status && typeof status.subscribe === 'function' && featureEnabled('taskNotifications')) {
             if (statusDispose === null) {
-              statusDispose = uiSession.sessionStatus.subscribe(() => observeStatus())
+              statusDispose = status.subscribe(() => observeStatus())
               statusResetDispose = ctx.on('connection/reset', () => { statusObserved.clear(); statusBaselined = false })
               observeStatus()
             }
@@ -131,13 +138,13 @@ function createSessionActivityObserver({ ctx, sessionActivity, t, featureEnabled
         if (typeof ctx.inject === 'function') {
           // 订阅归属 inject 子 Fiber：服务撤销时先清理，再为新服务重建订阅和基线。
           // 只在外层插件收尾会让旧 statusDispose 挡住新源接管。
-          uninjectUiSession = ctx.inject(['uiSession'], (scope) => {
+          uninjectUiSession = ctx.inject(['uiSession.sessionStatus'], (scope) => {
             // 防御性先拆：若运行时未先 unload 就以新服务重入回调，旧订阅先释放再重建。
             stopStatusObservation()
-            injectedUiSession = getUiSession(scope)
+            injectedStatus = getSessionStatus(scope)
             syncStatusObservation()
             return () => {
-              injectedUiSession = undefined
+              injectedStatus = undefined
               stopStatusObservation()
             }
           })
