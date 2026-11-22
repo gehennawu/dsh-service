@@ -9,7 +9,7 @@
   <em>A service-control &amp; operations plugin for DeepSeek Harness (DSH) Web.</em>
 </p>
 
-[![Version](https://img.shields.io/badge/version-2.1.7-3b82f6.svg?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.8-3b82f6.svg?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg?style=flat-square)](LICENSE)
 [![DSH Compatibility](https://img.shields.io/badge/DSH-%E2%89%A50.1.1--rc.2%20%C2%B7%20%E6%97%A0%E4%B8%8A%E7%95%8C-6366f1.svg?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Cordis](https://img.shields.io/badge/Cordis-v4.x-f59e0b.svg?style=flat-square)](https://cordis.moe/)
@@ -329,7 +329,7 @@ flowchart TB
 1. 打开左侧边栏的「**插件**」页。
 2. 点右上角的「**+ 添加插件**」按钮。
 3. 在弹窗里按来源**三选一**填写（同一个输入框接受三种形式，底部提示会随填写内容变化）：
-   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.1.7`——**带上精确版本号**（写法 `包名@版本号`）；
+   - **npm 包名（推荐）**：`@gehennawu/dsh-service@2.1.8`——**带上精确版本号**（写法 `包名@版本号`）；
    - **GitHub 仓库地址**：`https://github.com/gehennawu/dsh-service`（公开仓库，无需令牌；`github:gehennawu/dsh-service` 简写同样可用）；
    - **本地插件目录**：本机上的绝对路径，例如 `/path/to/dsh-service`（自研或已下载的插件）。
 4. 「**安装源**」按网络情况选择：默认「**npm 官方源**」；国内网络拉取受限时可选「**中国大陆镜像源**」（影响走包名安装时的拉取源，GitHub 地址与本地目录不受其影响）。
@@ -340,17 +340,17 @@ flowchart TB
 
 > 提示：三种形式都走官方安装链路，无需手动改 profile 文件；图形界面填 GitHub 地址与命令行 `github:` 前缀等价。
 
-> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.1.7`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
+> **npm 方式为什么建议带版本号**：pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）。**不带版本号**（含 `@latest`）时，发布时间未满观察期的版本不会被自动安装，包管理器会退到「最近的、已过观察期的那一版」——插件页因此可能提示「本次安装的是 x.y.z，而非最新版本 a.b.c」；**写精确版本号**（如 `@gehennawu/dsh-service@2.1.8`）才会安装你点名的那一版。观察期属供应链安全策略，不代表新版有问题；不着急时等满 24 小时，不带版本号安装同样会装到新版。
 
 ### 方式二：命令行
 
 | 方式 | 命令 |
 | --- | --- |
-| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.7` |
+| npm（推荐） | `dsh plugin --profile web add @gehennawu/dsh-service@2.1.8` |
 | GitHub | `dsh plugin --profile web add github:gehennawu/dsh-service` |
 | 本地开发 | `dsh plugin --profile web add link:/path/to/dsh-service` |
 
-命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.1.7`）才会装该版（原因见「方式一」的提示）。
+命令行走 npm / pnpm 的默认源；需要镜像时，请先按 npm / pnpm 的常规做法把 registry 指到镜像站，再执行上面的命令。npm 方式同样受 pnpm 发布观察期影响：不带版本号会装到最近的、已过观察期的版本，写精确版本号（`@gehennawu/dsh-service@2.1.8`）才会装该版（原因见「方式一」的提示）。
 
 安装或更新后重启 DSH Web：
 
@@ -402,7 +402,7 @@ pm2 start "dsh web --host 127.0.0.1" --name dsh-web
 
 运行要求：Node.js `>=22`（DSH `0.2.2` 起宿主自身要求 Node.js `>=24.9`，`0.2.3-alpha.2` 起收紧为 `^24.22.3 || >=26.13.1`），DSH Web 能加载 Host 与 Client 两半插件。更新检查需访问 `registry.npmjs.org`；网络失败不影响其他功能。
 
-**DSH 兼容范围**：`>=0.1.1-rc.2`（**无上界**），已验证至 `0.2.3-alpha.2`（npm 发布件已可启动：alpha.2 重发了 `cordis 4.2.0-alpha.1` / `cordis-plugin-loader 1.2.0-alpha.1` 并把依赖区间改到新版本，消除了 alpha.1 的模块链接期失败；插件 2.1.7 对 alpha.1 两处破坏的修复已在发布件真机复验——`webServer` 就绪竞态改为延迟挂载后 10 个只读 RPC 全 200、`/healthz` 未认证 401，`uiSession.sessionStatus` 改按服务名注入后状态观察者命中订阅；六主 tab 与子页、1440/390/360、备份创建/列表、诊断均通过，0 页面错误；宿主要求 Node `^24.22.3 || >=26.13.1`。rc.5 把网页搜索提供方改为跟随模型路由——基础组合不再固定 `web.searchProvider`，DeepSeek 路由用服务端搜索、其他模型用 DeepSeek Search API，`WebSearchRequest` 新增 `llmProvider`——插件对 `web.searchProvider`/`web_search` 零引用，无需代码适配；本机 profile 固定 `anysearch`，新默认未触发。rc.4 把 DeepSeek 拒答错误码从 `MALFORMED_RESPONSE` 改为 `CONTENT_REFUSED`，并在拒答前先报告已计费 usage，另修桌面版 LiveShare 隧道——插件按错误码原样聚合、子代理回退不把拒答当可重试，无需代码适配；子代理新旧启动参数、归档风险判定与后果确认、Gemini 原生协议能力门沿用 2.1.6 的 rc.2 适配。rc.3 新增的可选「DeepSeek 会话导入」bundle 默认不启用、本次部署未启用，其侧栏按钮占用态未实测；rc.3 的官方 ZIP 导出改为容忍缺失附件并写入 `attachments-missing.txt`，导出可能成功但缺失项不在包内。归档会话可能触发宿主清理符合条件的工作树，需保留目录时先在官方 worktree 配置开启 `retainOnArchive`；插件备份按设计不含 attachments，导入会话的日志可备份、图片附件不随备份恢复；未测试真实渠道写入及破坏性操作）。不设上界的理由：`0.2.1-alpha.4` 起宿主门禁改为「插件声明了 `engines.dsh` 就由它单独裁决」，一旦上界写死，每次 DSH 发新版都会把插件整包挡掉（**且插件的一键升级会被同一门禁挡死，无法自救**）；改用开区间后新版本插件照常加载，个别新功能可能尚未适配，但不阻断使用，也无需为 `engines.dsh` 单独发版。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
+**DSH 兼容范围**：`>=0.1.1-rc.2`（**无上界**），已验证至 `0.2.3-alpha.2`（npm 发布件已可启动：alpha.2 重发了 `cordis 4.2.0-alpha.1` / `cordis-plugin-loader 1.2.0-alpha.1` 并把依赖区间改到新版本，消除了 alpha.1 的模块链接期失败；本插件对 alpha.1 两处破坏的适配已在宿主发布件上复验——`webServer` 就绪竞态改为延迟挂载后 10 个只读 RPC 全 200、`/healthz` 未认证 401，`uiSession.sessionStatus` 改按服务名注入后状态观察者命中订阅；六主 tab 与子页、1440/390/360、备份创建/列表、诊断均通过，0 页面错误；宿主要求 Node `^24.22.3 || >=26.13.1`。rc.5 把网页搜索提供方改为跟随模型路由——基础组合不再固定 `web.searchProvider`，DeepSeek 路由用服务端搜索、其他模型用 DeepSeek Search API，`WebSearchRequest` 新增 `llmProvider`——插件对 `web.searchProvider`/`web_search` 零引用，无需代码适配；本机 profile 固定 `anysearch`，新默认未触发。rc.4 把 DeepSeek 拒答错误码从 `MALFORMED_RESPONSE` 改为 `CONTENT_REFUSED`，并在拒答前先报告已计费 usage，另修桌面版 LiveShare 隧道——插件按错误码原样聚合、子代理回退不把拒答当可重试，无需代码适配；子代理新旧启动参数、归档风险判定与后果确认、Gemini 原生协议能力门沿用 2.1.6 的 rc.2 适配。rc.3 新增的可选「DeepSeek 会话导入」bundle 默认不启用、本次部署未启用，其侧栏按钮占用态未实测；rc.3 的官方 ZIP 导出改为容忍缺失附件并写入 `attachments-missing.txt`，导出可能成功但缺失项不在包内。归档会话可能触发宿主清理符合条件的工作树，需保留目录时先在官方 worktree 配置开启 `retainOnArchive`；插件备份按设计不含 attachments，导入会话的日志可备份、图片附件不随备份恢复；未测试真实渠道写入及破坏性操作）。不设上界的理由：`0.2.1-alpha.4` 起宿主门禁改为「插件声明了 `engines.dsh` 就由它单独裁决」，一旦上界写死，每次 DSH 发新版都会把插件整包挡掉（**且插件的一键升级会被同一门禁挡死，无法自救**）；改用开区间后新版本插件照常加载，个别新功能可能尚未适配，但不阻断使用，也无需为 `engines.dsh` 单独发版。新版会话格式不能由旧版 DSH 读取，**备份不可跨版本降级恢复**。
 
 
 **DSH Desktop**：重启与恢复后的重启改为提示退出应用后重新打开；一键升级使用桌面应用自带的插件管理页。通知需授予系统权限，点击通知可能无法唤回隐藏窗口，请用托盘打开。其他平台尽力而为，不承诺兼容。
@@ -495,7 +495,7 @@ Step Plan 订阅没有 API-key 形态的查询接口，需要网页登录态令�
 <details>
 <summary><strong>插件管理页装了插件，版本却停在旧版？</strong></summary>
 
-pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.1.7`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
+pnpm 11 默认启用供应链发布观察期（`minimumReleaseAge`，1440 分钟）：安装时**不带版本号**（含 `@latest`）只会选「发布时间已满观察期的最新版」，刚发布的新版会被跳过，官方插件页会提示「本次安装的是 x.y.z，而非最新版本 a.b.c」。要立刻装上新版：在插件管理页卸载后按 `包名@版本号` 重装（例如 `@gehennawu/dsh-service@2.1.8`），或直接用本插件的「**服务控制 → 一键升级**」——它按精确版本安装，不受观察期影响。观察期属供应链安全策略（新发布版本可能含尚未被发现的缺陷），等满 24 小时后不带版本号安装也会自然装到新版。
 </details>
 
 <details>
