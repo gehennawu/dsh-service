@@ -28,6 +28,8 @@ const CLIENT_SOURCE_FILES = [
   'src/client/settings-nav-tabs.js',
   'src/client/settings-entry.js',
   'src/client/model-icons.js',
+  // 主模型限额回退（官方模型菜单二级面板）：同样在 apply.js 之前声明。
+  'src/client/main-model-fallback.js',
   // 特性设置门面：必须在 apply.js 之前——apply 的同步函数体在声明处立即调用它。
   'src/client/feature-settings.js',
   'src/client/models-workbench.js',

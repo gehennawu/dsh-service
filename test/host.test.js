@@ -2146,6 +2146,16 @@ test('RPC channel waits for webServer when connection activates before it (DSH 0
   assert.ok(routes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the channel is registered once webServer arrives')
 })
 
+test('main model quota fallback endpoints remain on the existing private channel', async () => {
+  const host = createHost()
+  assert.deepEqual(await host.handler('main-model-fallback', { sessionId: 'not-a-live-agent' }), {
+    ok: true, value: { available: false, enabled: false },
+  })
+  assert.deepEqual(await host.handler('main-model-fallback-save', { sessionId: '' }), {
+    ok: false, error: 'invalid-session',
+  })
+})
+
 test('RPC dispatcher records unexpected handler failures as technical errors', async () => {
   const host = createHost({
     services: {

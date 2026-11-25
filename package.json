@@ -26,6 +26,7 @@
     "session-routes.js",
     "quota-routes.js",
     "subagent-routes.js",
+    "main-model-fallback.js",
     "backup-routes.js",
     "model-workbench.js",
     "model-workbench-routes.js",

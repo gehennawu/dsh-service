@@ -20,6 +20,7 @@ import { createSkillsRoutes } from './skill-routes.js'
 import { createSessionsRoutes } from './session-routes.js'
 import { createQuotaRoutes } from './quota-routes.js'
 import { createSubagentRoutes } from './subagent-routes.js'
+import { createMainModelFallback } from './main-model-fallback.js'
 import { createBackupRoutes } from './backup-routes.js'
 import { createModelConfigRoutes } from './model-config-routes.js'
 import { createProviderAvailability, installProviderAvailability } from './provider-availability.js'
@@ -6691,8 +6692,17 @@ function apply(ctx, featureConfig) {
       }
     } },
   }
+  const mainModelFallback = createMainModelFallback({
+    ctx,
+    dir: typeof modelProfileDir === 'string' && modelProfileDir !== '' ? modelProfileDir : dshHome,
+    providerAvailability,
+    rpcTechnicalFailure,
+  })
+  ctx.effect(() => mainModelFallback.dispose)
+  ctx.inject(['agents', 'llm'], (scope) => { mainModelFallback.install(scope) })
   const rpcEndpoints = mergeRouteTables([
     coreRoutes,
+    mainModelFallback.routes,
     createSkillsRoutes({ ctx, describeJobs, dshHome, makeDescribeJobLogger, registerSkillCall, serializeSkillsIndexWrite, skillFileCache, skillsActiveControllers, skillsBatchRef, skillsIndexRef, SKILL_DESCRIPTION_MAX_CHARS, SKILL_USAGE_MAX_CHARS, bodyHashOf, describeSkillDraft, evaluateSkillFile, fixLegacySkillInvocationKeys, listSkillModels, locateSkillFrontmatter, mutateSkillEntryById, name, normalizeSkillDescribeLang, publicSkillEntry, rpcTechnicalFailure, sanitizeSkillDraftText, scanSkillEntries, selectSkillBatchCandidates, setSkillInvocationKey }),
     createSessionsRoutes({ ctx, dshHome, sessionBytesCache, sessionDeletePlans, sessionTitleCache, sessionTitlesReady, sessionViewCache, SESSIONS_BYTES_MAX_IDS, SESSIONS_DELETE_PLAN_TTL_MS, SESSIONS_VIEW_PAGE_SIZE, listSessionsForManage, loadDeletedSessions, name, resolveSessionBytesForIds, resolveSessionForDelete, rpcFailure, rpcTechnicalFailure, saveDeletedSessions, searchSessionsContent, sessionExists, sessionIsLive, viewSessionPage }),
     createQuotaRoutes({ ctx, kickQuotaRefresh, quotaThrottle, refreshQuotaConfigCache, serializeQuotaConfigWrite, MAX_QUOTA_PROVIDER_NAME, MAX_QUOTA_RESET_CARDS, MAX_QUOTA_RESET_CARDS_PER_PROVIDER, MAX_QUOTA_RESET_CARD_ACCOUNT, canonicalResetCardExpiresAt, QUOTA_ADAPTER_BY_KIND, name, quotaCredentialConfigured, quotaCredentialEndpoint, quotaCredentialHintNames, readQuotaProfiles, resolveQuotaKind, rpcTechnicalFailure }),

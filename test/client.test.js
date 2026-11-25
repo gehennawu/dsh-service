@@ -19186,3 +19186,520 @@ test('sidebar main panel: the switch shows in the plugin config card, defaults o
   assert.equal((renderer.registrations().main ?? []).length, 1, 'flipping the switch registers the main panel')
   assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 1)
 })
+
+// ── 主模型限额回退（官方模型菜单根条目 + 二级面板）─────────────────────────────
+
+/** 官方模型目录的测试替身：与 ModelDirectory 同形的 store/load/directoryFor。 */
+function fallbackModelDirectories({ groups = [], current = null } = {}) {
+  const listeners = new Set()
+  const store = {
+    snapshot: { groups, current, failures: [], status: 'ready' },
+    getSnapshot() { return this.snapshot },
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    set(next) {
+      this.snapshot = next
+      for (const fn of [...listeners]) fn()
+    },
+  }
+  return {
+    store,
+    directoryFor() { return { store, load: () => Promise.resolve(store.snapshot) } },
+  }
+}
+
+function fallbackPaneProps(extra = {}) {
+  return Object.assign({ sessionId: 'session-1', locked: false, dismiss() {}, reportFailure() {} }, extra)
+}
+
+function fallbackOptionProps(extra = {}) {
+  return Object.assign({ sessionId: 'session-1', locked: false, openPane() {} }, extra)
+}
+
+test('main model fallback row sits after agent-team, shows the saved state, and rechecks on every menu open', async () => {
+  const calls = []
+  const opened = []
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps({ openPane: (pane) => opened.push(pane) }),
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'main-model-fallback') return { ok: true, value: { available: true, enabled: false, provider: 'provA', model: 'alt' } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: fallbackModelDirectories() })
+  await renderer.load()
+  await renderer.flush()
+
+  const row = renderer.findByTestId('main-model-fallback-option')
+  assert.match(renderer.text('conversation.input.model.options'), /主模型限额回退关闭/)
+  assert.equal(row.props['data-model-menu-pane'], 'main-model-fallback')
+  assert.equal(row.props.disabled, false)
+  const registration = renderer.registrations()['conversation.input.model.options']
+    .find((entry) => entry.id === 'main-model-fallback')
+  assert.ok(registration, 'the fallback entry must register on the official options slot')
+  assert.equal(registration.order, 50, 'order:50 keeps it below agent-team (default order 0)')
+
+  row.props.onClick()
+  assert.deepEqual(opened, [{ key: 'main-model-fallback', title: '主模型限额回退' }])
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'main-model-fallback'), [{ endpoint: 'main-model-fallback', payload: { sessionId: 'session-1' } }])
+
+  // 关闭再打开菜单 = 组件重新挂载：历史会话可能刚热身，必须复查一次。
+  renderer.unmount('conversation.input.model.options')
+  renderer.mount('conversation.input.model.options')
+  await renderer.flush()
+  assert.equal(calls.filter((call) => call.endpoint === 'main-model-fallback').length, 2)
+  assert.match(renderer.text('conversation.input.model.options'), /关闭/)
+  renderer.disposeFactory()
+})
+
+test('main model fallback preserves the completed enable when the menu is reopened during save', async () => {
+  const pendingSave = Promise.withResolvers()
+  const staleRead = Promise.withResolvers()
+  let reads = 0
+  const saved = { available: true, enabled: false, provider: 'provA', model: 'alt' }
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps(),
+    'conversation.input.model.pane': fallbackPaneProps(),
+  }
+  const renderer = createRenderer(async (_, endpoint) => {
+    if (endpoint === 'main-model-fallback') return ++reads === 1 ? { ok: true, value: saved } : staleRead.promise
+    if (endpoint === 'main-model-fallback-save') return pendingSave.promise
+    throw new Error('unexpected endpoint')
+  }, { slotProps, modelDirectories: fallbackModelDirectories({ groups: [{ id: 'provA', name: 'A', models: [{ id: 'alt', name: 'Alt' }] }] }) })
+  await renderer.load()
+  await renderer.flush()
+  renderer.findByTestId('main-model-fallback-switch').props.onClick()
+  renderer.unmount('conversation.input.model.pane')
+  renderer.unmount('conversation.input.model.options')
+  renderer.mount('conversation.input.model.options')
+  await renderer.flush()
+  pendingSave.resolve({ ok: true, value: { ...saved, enabled: true } })
+  await renderer.flush()
+  staleRead.resolve({ ok: true, value: saved })
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.options'), /主模型限额回退Alt/)
+  renderer.disposeFactory()
+})
+
+test('main model fallback keeps a standalone switch, lists searchable provider groups, and saves drafts without the current model', async () => {
+  const saveCalls = []
+  let stored = { available: true, enabled: false, provider: null, model: null, reasoningEffort: null }
+  let failNextSave = null
+  const groups = [
+    { id: 'deepseek-official', name: 'DeepSeek 官方', models: [{ id: 'cur', name: 'Current' }, { id: 'alt', name: 'Alt' }, { id: 'alpha', name: 'Alpha' }] },
+    { id: 'provB', name: 'Provider B', models: [{ id: 'other', name: 'Other' }, { id: 'beta', name: 'Beta' }, { id: 'gamma', name: 'Gamma' }] },
+  ]
+  const directories = fallbackModelDirectories({ groups, current: { provider: 'deepseek-official', model: 'cur' } })
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps(),
+    'conversation.input.model.pane': fallbackPaneProps(),
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'main-model-fallback') return { ok: true, value: stored }
+    if (endpoint === 'main-model-fallback-save') {
+      saveCalls.push(payload)
+      if (failNextSave !== null) {
+        const failure = failNextSave
+        failNextSave = null
+        return { ok: false, error: failure }
+      }
+      const hasRoute = payload.provider !== undefined
+      stored = {
+        available: true,
+        enabled: payload.enabled === true,
+        provider: hasRoute ? payload.provider : stored.provider,
+        model: hasRoute ? payload.model : stored.model,
+        // 明确提交模型路由时省略 reasoningEffort = 宿主恢复模型默认思考档。
+        reasoningEffort: hasRoute ? (payload.reasoningEffort ?? null) : stored.reasoningEffort,
+      }
+      return { ok: true, value: stored }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: directories })
+  await renderer.load()
+  await renderer.flush()
+
+  const switchNode = () => renderer.findByTestId('main-model-fallback-switch')
+  const pane = renderer.findByTestId('main-model-fallback-pane')
+  assert.equal(pane.props.onKeyDown, undefined, 'keyboard events stay with the official menu')
+  assert.equal(switchNode().props.disabled, true, 'the switch cannot enable before a backup is selected')
+  assert.equal(switchNode().props['aria-checked'], 'false')
+  assert.match(renderer.text('conversation.input.model.pane'), /请先选择后备模型/)
+  assert.match(renderer.text('conversation.input.model.pane'), /关闭/)
+
+  const summary = () => renderer.findByTestId('main-model-fallback-model-summary')
+  assert.equal(renderer.hasTest('main-model-fallback-search'), false)
+  summary().props.onClick()
+  await renderer.flush()
+  assert.equal(renderer.findByTestId('main-model-fallback-pane').children[0].props.className, 'dshsvc-fallback-search')
+  assert.match(renderer.findByTestId('main-model-fallback-model-results').props.className, /scrollable/)
+  // 当前主模型不出现在可选行里。
+  const search = renderer.findByTestId('main-model-fallback-search')
+  const groupLabels = renderer.findAllByTestIdPrefix('main-model-fallback-group')
+  assert.equal(groupLabels.length, 2)
+  assert.equal(groupLabels[0].children.flat(Infinity).find((node) => node?.props?.['data-dshsvc-model-icon'])?.props['data-dshsvc-model-icon'], 'deepseek')
+  const modelRows = () => renderer.findAllByTestIdPrefix('main-model-fallback-model-option')
+  assert.equal(modelRows().length, 5)
+  assert.equal(modelRows().some((row) => row.props['data-provider-id'] === 'deepseek-official' && row.props['data-model-id'] === 'cur'), false, 'the current route is not selectable')
+  assert.equal(modelRows().some((row) => row.props['data-provider-id'] === 'deepseek-official' && row.props['data-model-id'] === 'alt'), true)
+  assert.equal(modelRows().some((row) => row.props['data-provider-id'] === 'provB' && row.props['data-model-id'] === 'other'), true)
+
+  search.props.onChange({ target: { value: 'gma' } })
+  await renderer.flush()
+  assert.deepEqual(modelRows().map((row) => row.props['data-model-id']), ['gamma'], 'search filters across provider groups')
+  renderer.findByTestId('main-model-fallback-search-clear').props.onClick()
+  await renderer.flush()
+  assert.equal(modelRows().length, 5)
+
+  modelRows().find((row) => row.props['data-model-id'] === 'alt').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[0], { sessionId: 'session-1', enabled: false, provider: 'deepseek-official', model: 'alt' }, 'selecting a model sends no reasoning effort so the model default applies')
+  assert.equal(renderer.hasTest('main-model-fallback-search'), false)
+  assert.match(summary().props.title, /Alt · DeepSeek 官方/)
+  summary().props.onClick()
+  await renderer.flush()
+  assert.equal(modelRows().find((row) => row.props['data-model-id'] === 'alt').props['aria-checked'], 'true')
+  renderer.findByTestId('main-model-fallback-picker-back').props.onClick()
+  await renderer.flush()
+  assert.equal(switchNode().props.disabled, false, 'selecting a fallback unlocks the switch')
+  assert.equal(switchNode().props['aria-checked'], 'false')
+
+  switchNode().props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[1], { sessionId: 'session-1', enabled: true, provider: 'deepseek-official', model: 'alt' }, 'enabling resubmits the saved draft without an explicit effort so the model default applies')
+  assert.equal(switchNode().props['aria-checked'], 'true')
+  assert.match(switchNode().props.style.background, /--dsw-alias-state-success-primary/)
+  assert.equal(switchNode().props.style.borderRadius, '999px')
+  assert.equal(switchNode().props.style.cornerShape, 'round')
+  assert.equal(switchNode().children[0].props.style.cornerShape, 'round')
+
+  switchNode().props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[2], { sessionId: 'session-1', enabled: false }, 'turning the switch off keeps the selected fallback')
+  assert.equal(switchNode().props['aria-checked'], 'false')
+
+  // 宿主结构化错误：本地化文案上屏，状态不被乐观翻成开启。
+  failNextSave = 'fallback-config-full'
+  switchNode().props.onClick()
+  await renderer.flush()
+  assert.equal(switchNode().props['aria-checked'], 'false')
+  assert.match(renderer.text('conversation.input.model.pane'), /回退配置已达保存上限/)
+
+  // 已保存值恰好是当前主模型：开关禁用并给出换一个的提示，不把失败留给宿主。
+  stored = { available: true, enabled: false, provider: 'deepseek-official', model: 'cur', reasoningEffort: null }
+  renderer.emitConnectionReset()
+  renderer.unmount('conversation.input.model.pane')
+  renderer.mount('conversation.input.model.pane')
+  await renderer.flush()
+  assert.equal(switchNode().props.disabled, true)
+  assert.match(renderer.text('conversation.input.model.pane'), /当前主模型不能作为后备模型/)
+  renderer.disposeFactory()
+})
+
+test('main model fallback effort follows the target model metadata, defaults on omit, and clears on model change', async () => {
+  const saveCalls = []
+  let stored = { available: true, enabled: true, provider: 'provA', model: 'alt', reasoningEffort: null }
+  let failNextSave = null
+  const groups = [
+    {
+      id: 'provA',
+      name: 'Provider A',
+      models: [
+        { id: 'cur', name: 'Current' },
+        { id: 'alt', name: 'Alt', reasoning: { efforts: [{ id: 'low', name: '低' }, { id: 'high', name: '高' }], defaultEffort: 'low' } },
+        { id: 'plain', name: 'Plain', reasoning: { efforts: [{ id: 'x', name: 'X' }] } },
+        { id: 'beta', name: 'Beta' },
+      ],
+    },
+  ]
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps(),
+    'conversation.input.model.pane': fallbackPaneProps(),
+  }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'main-model-fallback') return { ok: true, value: stored }
+    if (endpoint === 'main-model-fallback-save') {
+      saveCalls.push(payload)
+      if (failNextSave !== null) {
+        const failure = failNextSave
+        failNextSave = null
+        return { ok: false, error: failure }
+      }
+      const hasRoute = payload.provider !== undefined
+      stored = {
+        available: true,
+        enabled: payload.enabled === true,
+        provider: hasRoute ? payload.provider : stored.provider,
+        model: hasRoute ? payload.model : stored.model,
+        reasoningEffort: hasRoute ? (payload.reasoningEffort ?? null) : stored.reasoningEffort,
+      }
+      return { ok: true, value: stored }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: fallbackModelDirectories({ groups, current: { provider: 'provA', model: 'cur' } }) })
+  await renderer.load()
+  await renderer.flush()
+
+  const effortRows = () => renderer.findAllByTestIdPrefix('main-model-fallback-effort-option')
+  const rowFor = (id) => effortRows().find((row) => row.props['data-effort-id'] === id)
+  const expand = async () => {
+    renderer.findByTestId('main-model-fallback-effort-toggle').props.onClick()
+    await renderer.flush()
+  }
+  const openPicker = async () => {
+    renderer.findByTestId('main-model-fallback-model-summary').props.onClick()
+    await renderer.flush()
+    assert.ok(renderer.hasTest('main-model-fallback-search'), 'search is also shown for small catalogs')
+    assert.equal(effortRows().length, 0, 'reasoning options never change the height of the model list')
+  }
+  assert.equal(effortRows().length, 0)
+  assert.match(renderer.text('conversation.input.model.pane'), /模型默认（低）/)
+  await expand()
+  // defaultEffort = low：low 档就是模型默认，列表不再重复一行「模型默认」。
+  assert.deepEqual(effortRows().map((row) => row.props['data-effort-id']), ['low', 'high'])
+  assert.equal(rowFor('low').props['aria-checked'], 'true', 'no explicit effort follows the model default')
+  assert.equal(rowFor('high').props['aria-checked'], 'false')
+
+  rowFor('high').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[0], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'alt', reasoningEffort: 'high' })
+  assert.equal(effortRows().length, 0, 'a successful save collapses the level list')
+  renderer.unmount('conversation.input.model.pane')
+  renderer.unmount('conversation.input.model.options')
+  renderer.mount('conversation.input.model.options')
+  renderer.mount('conversation.input.model.pane')
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.pane'), /推理等级高/)
+  await expand()
+  assert.equal(rowFor('high').props['aria-checked'], 'true')
+  assert.equal(rowFor('low').props['aria-checked'], 'false')
+
+  // 关掉再开：关闭是纯开关请求（宿主保留草案），开启时把显式思考档随路由重新提交。
+  const switchNode = () => renderer.findByTestId('main-model-fallback-switch')
+  switchNode().props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[1], { sessionId: 'session-1', enabled: false })
+  switchNode().props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[2], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'alt', reasoningEffort: 'high' })
+  assert.equal(rowFor('high').props['aria-checked'], 'true')
+
+  // 点回模型默认档 = 省略 reasoningEffort，让宿主恢复模型默认而不是固化显式值。
+  rowFor('low').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[3], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'alt' })
+  assert.equal(effortRows().length, 0)
+  await expand()
+  assert.equal(rowFor('low').props['aria-checked'], 'true')
+
+  // 换模型：明确提交路由且省略 effort，旧 effort 随之清除。
+  rowFor('high').props.onClick()
+  await renderer.flush()
+  const modelRows = () => renderer.findAllByTestIdPrefix('main-model-fallback-model-option')
+  await openPicker()
+  modelRows().find((row) => row.props['data-model-id'] === 'beta').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[5], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'beta' })
+  assert.equal(effortRows().length, 0, 'a model without reasoning metadata shows no effort levels')
+  assert.match(renderer.text('conversation.input.model.pane'), /该模型不支持推理等级/)
+  assert.equal(renderer.hasTest('main-model-fallback-effort-section'), false)
+
+  // 没有 defaultEffort 的模型提供一行「模型默认」（省略字段）+ 各显式档。
+  await openPicker()
+  modelRows().find((row) => row.props['data-model-id'] === 'plain').props.onClick()
+  await renderer.flush()
+  assert.equal(effortRows().length, 0, 'switching models collapses reasoning')
+  assert.equal(renderer.findByTestId('main-model-fallback-effort-section').props['data-model-id'], 'plain')
+  assert.doesNotMatch(renderer.text('conversation.input.model.pane'), /发给该供应商|思考程度/)
+  await expand()
+  assert.deepEqual(effortRows().map((row) => row.props['data-effort-id']), ['', 'x'])
+  assert.equal(rowFor('').props['aria-checked'], 'true')
+  rowFor('x').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[7], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'plain', reasoningEffort: 'x' })
+  assert.equal(effortRows().length, 0)
+  await expand()
+  rowFor('').props.onClick()
+  await renderer.flush()
+  assert.deepEqual(saveCalls[8], { sessionId: 'session-1', enabled: true, provider: 'provA', model: 'plain' })
+  assert.equal(effortRows().length, 0)
+  await expand()
+  assert.equal(rowFor('').props['aria-checked'], 'true')
+
+  // 宿主结构化 invalid-reasoning-effort：本地化上屏，选中状态不乐观翻转。
+  failNextSave = 'invalid-reasoning-effort'
+  rowFor('x').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.pane'), /该推理等级不可用/)
+  assert.equal(rowFor('').props['aria-checked'], 'true')
+  renderer.disposeFactory()
+})
+
+test('main model fallback keeps a retryable entry on transient load failures and hides only on old hosts', async () => {
+  const callCount = new Map()
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps(),
+    'conversation.input.model.pane': fallbackPaneProps(),
+  }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    callCount.set(endpoint, (callCount.get(endpoint) || 0) + 1)
+    if (endpoint !== 'main-model-fallback') throw new Error(`unexpected endpoint ${endpoint}`)
+    const attempt = callCount.get(endpoint)
+    if (attempt === 1) return rpcError('temporary')
+    return { ok: true, value: { available: true, enabled: false, provider: 'provA', model: 'alt' } }
+  }, { slotProps, modelDirectories: fallbackModelDirectories({ groups: [{ id: 'provA', name: 'A', models: [{ id: 'alt', name: 'Alt' }] }] }) })
+  await renderer.load()
+  await renderer.flush()
+  // 暂时失败：入口仍在（“暂不可用”），点开面板有重试按钮。
+  assert.match(renderer.text('conversation.input.model.options'), /暂不可用/)
+  assert.ok(renderer.hasTest('main-model-fallback-option'))
+  assert.ok(renderer.hasTest('main-model-fallback-retry'))
+  renderer.findByTestId('main-model-fallback-retry').props.onClick()
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.pane'), /本对话启用限额回退/)
+  assert.equal(renderer.hasTest('main-model-fallback-retry'), false)
+  renderer.disposeFactory()
+
+  // 老宿主（未知端点）：整条收起，不留死入口。
+  const legacy = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'main-model-fallback') return rpcError('unknown-endpoint')
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: fallbackModelDirectories() })
+  await legacy.load()
+  await legacy.flush()
+  assert.equal(legacy.hasTest('main-model-fallback-option'), false)
+  legacy.disposeFactory()
+
+  // 宿主 available:false（冷会话未热身）：入口保留可重试，不做永久缓存。
+  let available = false
+  const cold = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'main-model-fallback') {
+      return available ? { ok: true, value: { available: true, enabled: false, provider: 'provA', model: 'alt' } } : { ok: true, value: { available: false } }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: fallbackModelDirectories() })
+  await cold.load()
+  await cold.flush()
+  assert.match(cold.text('conversation.input.model.options'), /暂不可用/)
+  available = true
+  cold.unmount('conversation.input.model.options')
+  cold.mount('conversation.input.model.options')
+  await cold.flush()
+  assert.match(cold.text('conversation.input.model.options'), /关闭/, 'reopening the menu rechecks a cold session')
+  cold.disposeFactory()
+})
+
+test('main model fallback is isolated per session and localized in English', async () => {
+  const calls = []
+  const slotProps = {
+    'conversation.input.model.options': fallbackOptionProps({ sessionId: 'session-1' }),
+    'conversation.input.model.pane': fallbackPaneProps({ sessionId: 'session-1' }),
+  }
+  const enabledBySession = { 'session-1': true, 'session-2': false }
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    calls.push({ endpoint, payload })
+    if (endpoint === 'main-model-fallback') {
+      return {
+        ok: true,
+        value: { available: true, enabled: enabledBySession[payload.sessionId] === true, provider: 'provA', model: 'alt' },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps, modelDirectories: fallbackModelDirectories({ groups: [{ id: 'provA', name: 'A', models: [{ id: 'alt', name: 'Alt' }] }] }) })
+  await renderer.load()
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.options'), /主模型限额回退Alt/)
+
+  renderer.setLocale('en')
+  assert.match(renderer.text('conversation.input.model.options'), /Main model quota fallback/)
+  assert.match(renderer.text('conversation.input.model.options'), /Main model quota fallbackAlt/)
+  assert.equal(renderer.dictionaries('dsh-service').en['mainModelFallback.label'], 'Main model quota fallback')
+
+  // 同一实例切到另一个会话：状态按 sessionId 隔离，并各自保留自己的检查结果。
+  slotProps['conversation.input.model.options'].sessionId = 'session-2'
+  slotProps['conversation.input.model.pane'].sessionId = 'session-2'
+  renderer.mount('conversation.input.model.options')
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.options'), /Off/)
+  assert.ok(calls.some((call) => call.payload?.sessionId === 'session-2'))
+
+  const before = calls.filter((call) => call.payload?.sessionId === 'session-1').length
+  slotProps['conversation.input.model.options'].sessionId = 'session-1'
+  slotProps['conversation.input.model.pane'].sessionId = 'session-1'
+  renderer.mount('conversation.input.model.options')
+  await renderer.flush()
+  assert.match(renderer.text('conversation.input.model.options'), /Main model quota fallbackAlt/)
+  assert.equal(calls.filter((call) => call.payload?.sessionId === 'session-1').length, before, 'session-1 keeps its cached state')
+  renderer.disposeFactory()
+})
+
+test('main model fallback hides for addressed and listed subagent sessions', async () => {
+  const calls = []
+  const addressedProps = {
+    'conversation.input.model.options': fallbackOptionProps({ useSession: (selector) => selector({ subagent: {} }) }),
+  }
+  const addressed = createRenderer(async (channel, endpoint) => {
+    calls.push(endpoint)
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps: addressedProps, modelDirectories: fallbackModelDirectories() })
+  await addressed.load()
+  await addressed.flush()
+  assert.equal(addressed.hasTest('main-model-fallback-option'), false)
+  assert.equal(calls.includes('main-model-fallback'), false, 'subagent sessions must not issue the host request')
+  addressed.disposeFactory()
+
+  const listedProps = {
+    'conversation.input.model.options': fallbackOptionProps({
+      useSessions: (selector) => selector({ byId: { 'session-1': { origin: 'subagent' } } }),
+    }),
+  }
+  const listed = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'main-model-fallback') return { ok: true, value: { available: true, enabled: false } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { slotProps: listedProps, modelDirectories: fallbackModelDirectories() })
+  await listed.load()
+  await listed.flush()
+  assert.equal(listed.hasTest('main-model-fallback-option'), false)
+  listed.disposeFactory()
+})
+
+test('quota ring follows directory updates across adapted providers and hides on an unadapted provider', async () => {
+  // 主模型限额回退由宿主写 durable selection；圆环只订阅同一份目录快照。
+  // 这里不改圆环代码，只验证「目录更新 -> 切 provider / 无适配隐藏」这条既有行为。
+  const listeners = new Set()
+  const store = {
+    snapshot: { current: { provider: 'provA', model: 'a-1' } },
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    getSnapshot() { return this.snapshot },
+  }
+  const modelDirectories = { directoryFor: () => ({ store, load: () => Promise.resolve(store.snapshot) }) }
+  const renderer = createRenderer(async (channel, endpoint) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'x' } }
+    if (endpoint === 'quota') {
+      return {
+        ok: true,
+        value: {
+          providers: [
+            { provider: 'provA', displayName: 'Provider A', adapted: true, kind: 'deepseek', windows: [{ id: 'w', percent: 11 }] },
+            { provider: 'provB', displayName: 'Provider B', adapted: true, kind: 'deepseek', windows: [{ id: 'w', percent: 42 }] },
+            { provider: 'provC', displayName: 'Provider C', adapted: false },
+          ],
+        },
+      }
+    }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { modelDirectories })
+  await renderer.load()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('quota-ring-trigger').props.title, /Provider A.*11%/)
+
+  store.snapshot = { current: { provider: 'provB', model: 'b-1' } }
+  for (const fn of [...listeners]) fn()
+  await renderer.flush()
+  assert.match(renderer.findByTestId('quota-ring-trigger').props.title, /Provider B.*42%/)
+
+  store.snapshot = { current: { provider: 'provC', model: 'c-1' } }
+  for (const fn of [...listeners]) fn()
+  await renderer.flush()
+  assert.equal(renderer.hasTest('quota-ring-trigger'), false)
+  renderer.disposeFactory()
+})

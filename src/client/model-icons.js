@@ -312,7 +312,7 @@
           }
           const root = findMenuRoot(state.trigger)
           if (root !== null && root !== undefined) {
-            const grouped = collect(root, MENU_GROUP_TITLE_SELECTOR)
+            const grouped = collect(root, MENU_GROUP_TITLE_SELECTOR).filter((heading) => !heading.closest?.('[data-dshsvc-main-model-fallback-pane]'))
             if (grouped.length > 0) return grouped
             const legacyInRoot = collect(root, MENU_GROUP_TITLE_LEGACY_SELECTOR)
             if (legacyInRoot.length > 0) return legacyInRoot

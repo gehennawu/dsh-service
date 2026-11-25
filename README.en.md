@@ -206,6 +206,12 @@ Under **Plugins → Plugin configuration**, fourteen host-level switches: **Heal
 - An optional composer line shows the models actually used by the session's subagents, including candidate-route hits and explicit routes. Records survive page reloads, not process restarts.
 - Configuration lives at `$DSH_HOME/dsh-service-subagent-route.json`, with one-click reset.
 
+### Main model quota fallback
+
+On supported DSH versions, open the model menu beside the composer and choose **Main model quota fallback** → **Backup model**. Use the search field above the provider groups to pick a model. After saving, the settings show the backup model and its provider; reopening the picker shows a check mark beside the saved choice. Turn on fallback for this conversation to enable it. If the backup offers reasoning levels, the settings show the current level. Expand it to change the level or follow the model default. New conversations start with fallback off. Turning it off preserves the backup model and its reasoning level. Selecting a backup does not immediately switch models or change the global default or subagent routing.
+
+After the main model reports exhausted quota and the turn ends, the plugin attempts to switch to the backup and continue once in the same conversation. It does not take over for temporary rate limits, ongoing retries, active Goals, or when it cannot safely continue. Cross-provider fallback sends the conversation context required to continue to the backup provider.
+
 ### Task notifications
 
 ![Task notifications](./screenshots/task-notifications_en.png)

@@ -408,6 +408,8 @@
       // 会话活跃态（sessions.list 快照派生，订阅推送更新）：任务通知与额度圆环的活跃供应商集合共享这一事实源。
       // 两项都关闭时彻底摘除订阅；任一重新开启时重新建立当前快照基线，不补发关闭期间的旧边沿。
       const sessionActivity = { runningSessionIds: new Set() }
+      const mainModelFallback = createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTranslation, useFeatures })
+      ctx.effect(() => mainModelFallback.start(), 'dsh-service main model quota fallback menu')
       // 会话活跃观察已抽至 src/client/session-activity.js。
 
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，
