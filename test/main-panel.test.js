@@ -34,6 +34,22 @@ test('the card-look neutralisation is scoped to the page shell, never the existi
   assert.deepEqual(bareRootRule, [], 'no bare [data-dshsvc-root] rule may be introduced by this fragment')
 })
 
+test('the narrow standalone page reserves safe areas and keeps its primary navigation swipeable', async () => {
+  const source = await read('src/client/main-panel.js')
+  const narrow = source.slice(source.indexOf("'@media (max-width:640px){'"), source.indexOf("  ].join('')"))
+  assert.ok(narrow.length > 0)
+  for (const side of ['top', 'right', 'bottom', 'left']) assert.ok(narrow.includes(`env(safe-area-inset-${side},`), side)
+  assert.match(narrow, /MAIN_PANEL_SELECTOR \+ '\{[^}]*height:auto;margin-block-start:var\(--dshsvc-panel-top-gap\);padding:0/)
+  assert.match(narrow, /'\[data-sidebar-drawer\] ' \+ MAIN_PANEL_SELECTOR.*var\(--dshsvc-panel-drawer-offset/)
+  assert.match(source, /'\[data-sidebar-drawer\] \[data-global-panel\] ' \+ MAIN_PANEL_SELECTOR.*48px - var\(--dsh-frame-top-clearance/)
+  assert.match(source, /'@media \(max-width:1023px\)\{',\s*'[^']*:has\(\[data-dshsvc-fab\]\):not\(:has\(\[data-sidebar-opener\]\)\)[^']*' \+ MAIN_PANEL_SELECTOR.* - var\(--dshsvc-panel-drawer-offset,0px\)/)
+  assert.match(narrow, /\.dshsvc-tabs\{[^}]*scrollbar-width:none/)
+  assert.match(narrow, /\.dshsvc-tabs::-webkit-scrollbar\{display:none\}/)
+  assert.match(narrow, /MAIN_PANEL_SELECTOR \+ ' \[data-dshsvc-root\] \.dshsvc-tabs\{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden/)
+  assert.match(narrow, /MAIN_PANEL_SELECTOR \+ ' \[data-dshsvc-root\] \.dshsvc-tabs > \.dshsvc-tab\{[^}]*min-height:44px/)
+  assert.match(narrow, /MAIN_PANEL_SELECTOR \+ ' \.dshsvc-page-header\{padding-left:0!important\}/)
+})
+
 test('the factory guards construction, sync and dispose instead of throwing into apply()', async () => {
   const source = await read('src/client/main-panel.js')
   assert.match(source, /const guard = \(label, run\) => \(\.\.\.args\) => \{[\s\S]*?try \{[\s\S]*?\} catch \(error\) \{/)

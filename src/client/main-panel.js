@@ -40,6 +40,25 @@ function createMainPanel({ ctx, t, ServicePanel, featureEnabled }) {
     // 根容器在设置卡里是「卡片」：底色 / 圆角 / 内边距在主面板里中和成平铺页面。
     // 选择器**限定在本页壳之内**，既有 [data-dshsvc-root] 规则一字不改。
     MAIN_PANEL_SELECTOR + ' [data-dshsvc-root]{background:transparent;border-radius:0;padding:0}',
+    '[data-sidebar-drawer] [data-global-panel] ' + MAIN_PANEL_SELECTOR + '{--dshsvc-panel-drawer-offset:max(0px,calc(48px - var(--dsh-frame-top-clearance,0px)))}',
+    '@media (max-width:640px){',
+    // 把顶部留白放在滚动口之外，滚动时内容也不会钻到固定抽屉按钮下面。
+    MAIN_PANEL_SELECTOR + '{--dshsvc-panel-top-gap:max(calc(12px + env(safe-area-inset-top,0px)),var(--dsh-frame-top-clearance,0px));flex:1 1 0%;height:auto;margin-block-start:var(--dshsvc-panel-top-gap);padding:0}',
+    // 宿主的抽屉已为全局页面留出 48px（扣除 frame 顶部让位），只补不足的部分。
+    '[data-sidebar-drawer] ' + MAIN_PANEL_SELECTOR + '{--dshsvc-panel-top-gap:max(12px,calc(12px + env(safe-area-inset-top,0px) - var(--dshsvc-panel-drawer-offset,0px)))}',
+    MAIN_PANEL_SELECTOR + ' [data-dshsvc-main-panel-inner]{padding:0 max(16px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}',
+    // 该页已在滚动口上方留位，通用移动样式不必再把每个页标题推向右侧。
+    'html[data-dshsvc-mobile] [data-dshsvc-center] ' + MAIN_PANEL_SELECTOR + ' .dshsvc-page-header{padding-left:0!important}',
+    // 比公用桌面导航样式多一个页壳限定，避免后声明的 flex-wrap/overflow 盖掉窄屏规则。
+    MAIN_PANEL_SELECTOR + ' [data-dshsvc-root] .dshsvc-tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;padding:4px}',
+    MAIN_PANEL_SELECTOR + ' [data-dshsvc-root] .dshsvc-tabs::-webkit-scrollbar{display:none}',
+    MAIN_PANEL_SELECTOR + ' [data-dshsvc-root] .dshsvc-tabs > .dshsvc-tab{flex:none;white-space:nowrap;min-height:44px}',
+    MAIN_PANEL_SELECTOR + ' [data-dshsvc-root] .dshsvc-tabs > .dshsvc-tab:focus-visible{outline:2px solid var(--dsh-svc-brand,currentColor);outline-offset:-2px}',
+    '}',
+    // 与旧版悬浮侧栏按钮的启用范围一致；宿主已经留位时扣掉对应高度。
+    '@media (max-width:1023px){',
+    'html[data-dshsvc-mobile] body:has([data-dshsvc-fab]):not(:has([data-sidebar-opener])) ' + MAIN_PANEL_SELECTOR + '{--dshsvc-panel-top-gap:max(12px,calc(max(56px + env(safe-area-inset-top,0px),var(--dsh-frame-top-clearance,0px)) - var(--dshsvc-panel-drawer-offset,0px)));flex:1 1 0%;height:auto;margin-block-start:var(--dshsvc-panel-top-gap);padding:0}',
+    '}',
   ].join('')
 
   let layout = undefined
