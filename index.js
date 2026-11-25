@@ -137,6 +137,8 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   // v2.2 新增：侧栏底部常驻设置入口。默认开；宿主自己在侧栏底部渲染设置行时
   // 自动让位（同行不重复），关闭则整条不注册。
   sidebarSettingsEntry: true,
+  // v2.3（P1）：运维面板的侧栏独立页面。默认关——升级后界面不变，需要时在插件配置里打开。
+  sidebarPanel: false,
 })
 /** 标记为「可热更新」的 Config 字段（0.1.7-alpha.1 的表单与原地热更新以此为准）。 */
 const volatileField = (schema) => (typeof schema?.extra === 'function' ? schema.extra('volatile', true) : schema)

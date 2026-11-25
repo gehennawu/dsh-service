@@ -32,6 +32,8 @@ const CLIENT_SOURCE_FILES = [
   'src/client/feature-settings.js',
   'src/client/models-workbench.js',
   'src/client/model-config.js',
+  // 侧栏主面板（P1）：同样必须在 apply.js 之前——apply 的同步函数体在声明处立即调用它。
+  'src/client/main-panel.js',
   'src/client/apply.js',
 ]
 

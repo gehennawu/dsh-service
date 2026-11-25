@@ -87,6 +87,11 @@ function createRenderer(rpcCall, options = {}) {
   // slots.inject 的返回 disposer：真实运行时它挂在下达注入的 Fiber 上，Fiber 销毁时执行。
   // 旧替身把这个 disposer 直接丢掉，于是「插件卸载后条目/订阅仍在」类缺陷测不出来。
   const slotInjectDisposers = new Set()
+  // 真实注入语义（opt-in，options.realisticInjection）：槽未声明时 slots.inject 回调不运行、
+  // 服务未就绪时 ctx.inject 回调不运行；声明/服务上线后补跑。默认仍是「立即回调」的软替身，
+  // 既有用例全部依赖那种宽松语义。declareSlot / provideService 是两个补跑入口。
+  const pendingSlotInjections = new Map()
+  const pendingServiceInjections = []
   const localeListeners = new Set()
   const localeDictionaries = new Map()
   const sessionListeners = new Set()
@@ -117,6 +122,8 @@ function createRenderer(rpcCall, options = {}) {
     modelCatalog: true,
     // v2.2：侧栏设置入口默认开（宿主自带设置行时客户端自行让位，与宿主默认表同值）。
     sidebarSettingsEntry: true,
+    // P1：侧栏运维面板默认关（与宿主 DEFAULT_FEATURE_SETTINGS 同值）。
+    sidebarPanel: false,
     ...(options.featureSettings || {}),
   }
   const featureScope = {
@@ -486,14 +493,33 @@ function createRenderer(rpcCall, options = {}) {
             // 「开关关闭后条目仍挂着」这类真实缺陷；同时把该 disposer 挂到工厂作用域，
             // 由 disposeFactory() 模拟 Fiber 销毁时统一回收（重复释放幂等）。
             let active = true
+            let invoked = false
             let disposer = null
+            const invoke = () => {
+              if (!active || invoked) return
+              invoked = true
+              disposer = callback()
+            }
             const dispose = () => {
               if (!active) return
               active = false
               slotInjectDisposers.delete(dispose)
+              const bucket = pendingSlotInjections.get(key)
+              if (bucket) {
+                bucket.delete(invoke)
+                if (bucket.size === 0) pendingSlotInjections.delete(key)
+              }
               if (typeof disposer === 'function') disposer()
             }
-            disposer = callback()
+            // realisticInjection：槽未声明时回调不运行（真实 ui-slots 语义）；声明后由
+            // declareSlot 补跑。默认立即回调，保持既有用例的宽松语义。
+            if (options.realisticInjection === true && !slotSpecs.has(key)) {
+              let bucket = pendingSlotInjections.get(key)
+              if (!bucket) { bucket = new Set(); pendingSlotInjections.set(key, bucket) }
+              bucket.add(invoke)
+            } else {
+              invoke()
+            }
             if (active) slotInjectDisposers.add(dispose)
             return dispose
           },
@@ -557,11 +583,19 @@ function createRenderer(rpcCall, options = {}) {
         // 真实 Cordis 运行时标准方法：随时可用。
         // options.services / options.modelDirectories / 动态服务均经 get / inject 读取。
         inject(deps, callback) {
-          const scope = {}
-          for (const dep of Array.isArray(deps) ? deps : [deps]) {
-            scope[dep] = this.get(dep)
+          const list = Array.isArray(deps) ? deps : [deps]
+          const run = () => {
+            const scope = {}
+            for (const dep of list) scope[dep] = this.get(dep)
+            return callback(scope)
           }
-          const disposer = callback(scope)
+          // realisticInjection：依赖未就绪时回调不运行（真实 cordis 语义），
+          // provideService 上线后补跑；默认立即回调，保持既有用例的宽松语义。
+          if (options.realisticInjection === true && !list.every((dep) => this.get(dep) !== undefined)) {
+            pendingServiceInjections.push({ deps: list, run })
+            return () => {}
+          }
+          const disposer = run()
           return () => { if (typeof disposer === 'function') disposer() }
         },
         get(service) {
@@ -774,6 +808,30 @@ function createRenderer(rpcCall, options = {}) {
       await featureScope.set(field, value)
       renderAll()
       await this.flush()
+    },
+    // realisticInjection 的补跑入口：声明一个槽（真实外壳稍后才声明 sidebar.panellist 等）。
+    declareSlot(key, spec) {
+      slotSpecs.set(key, spec !== undefined ? spec : { kind: 'list', scope: 'root' })
+      slotVersions.set(key, (slotVersions.get(key) || 0) + 1)
+      const bucket = pendingSlotInjections.get(key)
+      if (bucket) {
+        pendingSlotInjections.delete(key)
+        for (const invoke of [...bucket]) invoke()
+      }
+      renderAll()
+    },
+    // realisticInjection 的补跑入口：让一个可选服务晚于插件上线。
+    provideService(name, value) {
+      options.services = options.services || {}
+      options.services[name] = value
+      for (const pending of [...pendingServiceInjections]) {
+        if (pending.deps.every((dep) => options.services[dep] !== undefined)) {
+          const index = pendingServiceInjections.indexOf(pending)
+          if (index >= 0) pendingServiceInjections.splice(index, 1)
+          pending.run()
+        }
+      }
+      renderAll()
     },
     featureSettings() {
       return { ...featureSettings }
@@ -18927,4 +18985,204 @@ test('overview re-entry starts from the placeholder and drops the previous visit
   pending.shift()({ ok: true, value: { available: true, persisted: 333 } })
   await renderer.flush()
   assert.match(renderer.text('settings.section'), /持久化会话.*?333/)
+})
+
+// ── P1 侧栏主面板（sidebarPanel）────────────────────────────────────────────
+//
+// 规格：docs/planning/main-panel.md「P1」。三道门全过才成对注册 main 与
+// sidebar.panellist：功能开关（默认关）、layout 服务在位、sidebar.panellist 槽已声明。
+// realisticInjection 让 harness 的 slots.inject / ctx.inject 按真实 cordis 语义
+// 「未就绪即不回调」，配合 declareSlot / provideService 验证晚到与缺席两条路径。
+
+/** 官方 layout 服务替身：面板选中态与 selectPanel 调用都留痕。 */
+function mainPanelLayout() {
+  const calls = []
+  const state = { activePanelId: null }
+  return {
+    calls,
+    state,
+    layout: {
+      panelInfo: { getSnapshot: () => ({ activePanelId: state.activePanelId }) },
+      selectPanel(panelId) {
+        calls.push(panelId)
+        state.activePanelId = panelId
+      },
+    },
+  }
+}
+
+const MAIN_PANEL_SLOT_SPEC = { kind: 'list', scope: 'root' }
+
+/** 主面板渲染所需的最小只读端点集合（ServicePanel 概览挂载即拉取）。 */
+async function mainPanelRpc(_channel, endpoint) {
+  if (endpoint === 'version') return { ok: true, value: { current: '0.2.3-alpha.2', pluginVersion: '2.1.8', instanceId: 'fixture' } }
+  if (endpoint === 'check-update') return { ok: true, value: { dsh: { current: '0.2.3-alpha.2', latest: '0.2.3-alpha.2', upToDate: true }, plugin: { current: '2.1.8', latest: '2.1.8', upToDate: true } } }
+  if (endpoint === 'health') return { ok: true, value: { uptimeSeconds: 1, rssBytes: 1, liveSessions: 0, persistedSessions: 0, activeAgents: 0, activeJobs: 0 } }
+  if (endpoint === 'usage') return { ok: true, value: { updatedAt: 0, indexedSessions: 0, totals: {}, projects: [], days: {}, errors: { models: [], tools: [] } } }
+  if (endpoint === 'backup-list') return { ok: true, value: { items: [], totalBytes: 0 } }
+  if (endpoint === 'permissions-plan') return { ok: true, value: { supported: false } }
+  if (endpoint === 'diagnostics') return { ok: true, value: { status: 'ok', checkedAt: 0, checks: [] } }
+  return { ok: false, error: 'fixture' }
+}
+
+test('sidebar main panel: off by default, neither main nor sidebar.panellist is registered', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: [],
+    services: { layout: gate.layout },
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+  })
+  await renderer.load()
+  await renderer.flush()
+
+  assert.deepEqual(renderer.registrations().main, undefined, 'main must stay unregistered while the switch is off')
+  assert.deepEqual(renderer.registrations()['sidebar.panellist'], undefined, 'no sidebar row while the switch is off')
+  assert.deepEqual(gate.calls, [], 'nothing selects a panel implicitly')
+})
+
+test('sidebar main panel: enabling it pairs main and sidebar.panellist with the documented options', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: ['main', 'sidebar.panellist'],
+    services: { layout: gate.layout },
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+    slotProps: { 'sidebar.panellist': { size: 16, active: true } },
+  })
+  await renderer.load()
+  await renderer.setFeature('sidebarPanel', true)
+
+  const regs = renderer.registrations()
+  assert.deepEqual(regs.main.map((entry) => ({ name: entry.name, key: entry.key })), [{ name: 'main', key: 'dsh-service' }])
+  const row = regs['sidebar.panellist'][0]
+  assert.equal(row.name, 'sidebar.panellist')
+  assert.equal(row.id, 'dsh-service', 'the sidebar row id addresses the main panel key')
+  assert.equal(row.order, 1)
+  assert.equal(row.label(), '服务控制', 'the row title reuses the settings section label')
+  renderer.setLocale('en')
+  await renderer.flush()
+  assert.equal(regs['sidebar.panellist'][0].label(), 'Service Control')
+
+  // 主面板内容 = 页面壳 + 现有 ServicePanel。
+  const host = renderer.findNode((node) => node.props?.['data-dshsvc-main-panel'] === '')
+  assert.ok(host !== undefined, 'the page shell carries the stable data hook')
+  assert.equal(host.node.props['data-testid'], 'dsh-service-main-panel')
+  assert.equal(renderer.hasTest('service-panel-root'), true, 'the existing ServicePanel renders inside the shell')
+
+  // 侧栏行只给图标：owner.size 决定尺寸、owner.active 决定选中态，无障碍名称归侧栏。
+  const icon = renderer.findNode((node) => node.props?.['data-dshsvc-panel-icon'] === '')
+  assert.ok(icon !== undefined, 'the sidebar row renders the inline SVG icon')
+  assert.equal(icon.node.props.width, 16)
+  assert.equal(icon.node.props.height, 16)
+  assert.equal(icon.node.props['aria-hidden'], 'true')
+  assert.equal(icon.node.props.fill, 'currentColor')
+  assert.equal(icon.node.props.style.opacity, 1)
+})
+
+test('sidebar main panel: without the layout service it waits, then registers once layout arrives', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: [],
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+  })
+  await renderer.load()
+  await renderer.setFeature('sidebarPanel', true)
+  assert.equal(renderer.hasSlot('main'), false, 'a missing layout service blocks registration')
+
+  renderer.provideService('layout', gate.layout)
+  await renderer.flush()
+  assert.equal((renderer.registrations().main ?? []).length, 1, 'layout coming online registers the panel')
+  assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 1)
+})
+
+test('sidebar main panel: an undeclared sidebar.panellist slot keeps it silent, and a late declaration registers', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: [],
+    services: { layout: gate.layout },
+    // 老宿主：侧栏根不声明 panellist 槽。
+    slotSpecs: { 'settings.section': { kind: 'single', scope: 'root' } },
+  })
+  await renderer.load()
+  await renderer.setFeature('sidebarPanel', true)
+
+  assert.equal(renderer.hasSlot('main'), false, 'no main panel without the sidebar seat')
+  assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 0)
+  // 设置节照常可用（P1 验收第 4 条）：开关打开不报错、既有入口仍在。
+  assert.equal((renderer.registrations()['settings.section'] ?? []).length, 1)
+
+  // 侧栏根稍后上线（面板槽声明出现）：能力探针补跑并注册。
+  renderer.declareSlot('sidebar.panellist', MAIN_PANEL_SLOT_SPEC)
+  await renderer.flush()
+  assert.equal((renderer.registrations().main ?? []).length, 1)
+  assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 1)
+})
+
+test('sidebar main panel: turning the switch off clears the selected panel before unregistering', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: [],
+    services: { layout: gate.layout },
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+  })
+  await renderer.load()
+  await renderer.setFeature('sidebarPanel', true)
+  assert.equal((renderer.registrations().main ?? []).length, 1)
+
+  // 模拟用户点开侧栏行：官方把 activePanelId 切到本面板。
+  gate.state.activePanelId = 'dsh-service'
+  await renderer.setFeature('sidebarPanel', false)
+
+  assert.deepEqual(gate.calls, [null], 'selectPanel(null) hands the centre column back before teardown')
+  assert.equal((renderer.registrations().main ?? []).length, 0, 'the main panel is unregistered')
+  assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 0, 'the sidebar row is gone')
+})
+
+test('sidebar main panel: turning it off while unselected never calls selectPanel', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    realisticInjection: true,
+    mountOnly: [],
+    services: { layout: gate.layout },
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+  })
+  await renderer.load()
+  await renderer.setFeature('sidebarPanel', true)
+  await renderer.setFeature('sidebarPanel', false)
+  assert.deepEqual(gate.calls, [], 'an inactive panel must not touch the selection')
+})
+
+test('sidebar main panel: the switch shows in the plugin config card, defaults off and is bilingual', async () => {
+  const gate = mainPanelLayout()
+  const renderer = createRenderer(mainPanelRpc, {
+    services: { layout: gate.layout },
+    slotSpecs: { 'sidebar.panellist': MAIN_PANEL_SLOT_SPEC },
+    mountOnly: ['settings.plugin.item'],
+  })
+  await renderer.load()
+
+  // 客户端默认表与宿主默认表一致：默认 false（面板不注册）。
+  assert.equal(renderer.featureSettings().sidebarPanel, false)
+  const dictionaries = renderer.dictionaries('dsh-service')
+  assert.equal(dictionaries.zh['features.sidebarPanel'], '侧栏运维面板')
+  assert.equal(dictionaries.en['features.sidebarPanel'], 'Sidebar ops panel')
+
+  renderer.mount('settings.plugin.item')
+  renderer.findByTestId('feature-card-toggle').props.onClick()
+  await renderer.flush()
+  const row = renderer.findByTestId('feature-switch-sidebarPanel')
+  assert.equal(row.props['aria-checked'], 'false', 'the switch defaults off')
+  assert.match(renderer.text('settings.plugin.item'), /侧栏运维面板/)
+  renderer.setLocale('en')
+  assert.match(renderer.text('settings.plugin.item'), /Sidebar ops panel/)
+
+  // 从配置卡打开：三道门都在位时立即成对注册。
+  renderer.findByTestId('feature-switch-sidebarPanel').props.onClick()
+  await renderer.flush()
+  assert.equal((renderer.registrations().main ?? []).length, 1, 'flipping the switch registers the main panel')
+  assert.equal((renderer.registrations()['sidebar.panellist'] ?? []).length, 1)
 })

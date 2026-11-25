@@ -213,7 +213,7 @@
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true, sidebarSettingsEntry: true }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true, sidebarSettingsEntry: true, sidebarPanel: false }
       // 特性设置门面：静态 inject 不带任何设置服务，运行时按能力探测接入
       // （configForms → settingsScope → 内存兜底；见 src/client/feature-settings.js）。
       // 0.1.7-alpha.1 移除了 settingsScope，静态依赖它会在该版本阻断整个客户端激活；
@@ -1558,7 +1558,7 @@
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
         ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager', 'modelCatalog'], true],
-        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor', 'sidebarSettingsEntry'], true],
+        ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor', 'sidebarSettingsEntry', 'sidebarPanel'], true],
         ['features.external', ['healthz'], false],
       ]
       function FeatureGroups() {
@@ -7441,11 +7441,33 @@
         { name: 'plugins.bundle.config', key: '@gehennawu/dsh-service' },
         (props) => props?.view === 'page' ? React.createElement(FeatureSettingsCard, null) : null,
       ))
+      // ── 侧栏主面板（P1，功能开关 sidebarPanel 默认关）──────────────────
+      // 三道门（功能开关 / layout 服务 / sidebar.panellist 槽）全过才成对注册
+      // main 与 sidebar.panellist；声明、注销顺序与页面壳见 src/client/main-panel.js。
+      // 构造失败只记告警：加载期异常会让活体用户的插件客户端半整体失效。
+      let mainPanel = null
+      try {
+        mainPanel = createMainPanel({ ctx, t, ServicePanel, featureEnabled })
+      } catch (error) {
+        try { console.warn('[dsh-service] sidebar main panel unavailable', error) } catch (_) {}
+      }
+      if (mainPanel !== null) {
+        ctx.effect(() => {
+          mainPanel.sync()
+          const unsubscribePanel = featureScope.subscribe(mainPanel.sync)
+          return () => {
+            unsubscribePanel()
+            mainPanel.dispose()
+          }
+        }, 'dsh-service sidebar main panel')
+      }
       ctx.slots.inject('settings.section', () => {
         const disposePanel = ctx.slots.register(
           { name: 'settings.section', id: 'dsh-service', order: 99, label: () => t('nav.label') },
           () => React.createElement(ServicePanel, null),
         )
+        // 主面板的能力门可能与设置节的声明时序不同，在同一批时机复查一次（幂等）。
+        if (mainPanel !== null) mainPanel.sync()
         // 左列「重启」「额度查询」「模型配置」「会话管理」入口由各自页内的开关控制，默认不注册
         restartNavToggle.sync()
         quotaNavToggle.sync()

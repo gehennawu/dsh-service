@@ -2241,6 +2241,7 @@ test('legacy settings section schema resolves to plain JSON booleans, never vola
     modelProviderIcons: true,
     modelCatalog: true,
     sidebarSettingsEntry: true,
+    sidebarPanel: false,
   })
 })
 
@@ -2323,6 +2324,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     modelProviderIcons: true,
     modelCatalog: true,
     sidebarSettingsEntry: true,
+    sidebarPanel: false,
   })
   // schema 解析产物：0.1.7 语义下每个开关是 volatile 引用（get()），这里逐项解引用再比对
   // 默认值——与宿主 apply 的 readFeatureConfig 同一读法。
@@ -2345,6 +2347,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     modelProviderIcons: true,
     modelCatalog: true,
     sidebarSettingsEntry: true,
+    sidebarPanel: false,
   })
   assert.equal(routes.some((route) => route.path === '/healthz'), false)
   assert.equal(routes.some((route) => route.path === '/dsh-backup-download'), true)
