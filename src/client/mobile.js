@@ -395,7 +395,8 @@ html[data-dshsvc-mobile] [class*="uV2eYG_row"][data-model-compact] [class*="_7KE
    手机触屏打开下拉菜单时，官方 autoFocus 的搜索框会立即强制唤起软键盘，
    遮挡大半屏幕与列表项；移动端列表已按厂家分组且篇幅有限，隐藏搜索行更清爽直接。 */
 html[data-dshsvc-mobile] [class*="_7KE1Ra_searchRow"],
-html[data-dshsvc-mobile] [class*="_7KE1Ra_menu"] > div:has([role="searchbox"]) {
+/* 旧版结构回退只隐藏直接包含搜索输入的行，不隐藏整个插件子面板。 */
+html[data-dshsvc-mobile] [class*="_7KE1Ra_menu"] > div:has(> [role="searchbox"], > span > [role="searchbox"]):not(:has([data-dshsvc-main-model-fallback-pane])) {
   display: none !important;
 }
 /* 工作区侧板（fixed z25 层内的 nArs4W_panel z40）开屏后会盖住它自己的外部
