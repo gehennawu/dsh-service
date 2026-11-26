@@ -80,6 +80,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   const file = join(dir, 'dsh-service-main-model-fallback.json')
   const candidates = new WeakMap()
   const scheduled = new WeakSet()
+  const continuations = new WeakMap()
   const pendingWrites = new Map()
   const lifetime = new AbortController()
   let writeTail = Promise.resolve()
@@ -148,13 +149,21 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
         content: [{ type: 'text', text: `主模型额度耗尽，已切换到 ${selected.provider}/${selected.model}。请接着完成上一轮任务，保留已有进展，不要重复执行已经成功的操作。\nThe main model ran out of quota. Continue the unfinished task using existing progress; do not repeat successful operations.` }],
       }
       agent.model.select(selectRoute(selected))
-      if (!signal.aborted && !agent.inbox.hasPending && sameSelection(agent.model.current(), selected)) agent.followup(message)
+      if (!signal.aborted && !agent.inbox.hasPending && sameSelection(agent.model.current(), selected)) {
+        continuations.set(agent, { candidate, messageId: message.id, turn: event.data.turn + 1, admitted: false,
+          local: config.sessions.get(session.id) })
+        try { agent.followup(message) } catch (error) {
+          continuations.delete(agent)
+          throw error
+        }
+      }
     })
   }
 
   function onRequestError({ agent, turn, step, provider, failure, signal }, next) {
     if (!available(agent)) return next()
     candidates.delete(agent)
+    if (continuations.get(agent)?.turn === turn) return next()
     const { selected, enabled } = effective(config, agent.session.id)
     try {
       const selection = agent.model.current()
@@ -168,10 +177,44 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     return next()
   }
 
+  function finishContinuation(agent, event, continuation) {
+    const { session } = agent
+    const { candidate, local } = continuation
+    const valid = () => available(agent) && getAgent(session.id) === agent && !isBlockedByGoal(agent)
+      && featureGeneration() === candidate.generation && config.global === candidate.global && config.sessions.get(session.id) === local
+      && sameSelection(agent.model.current(), candidate.selected) && sameRoute(session.requestHeader()?.config, candidate.selected)
+    if (!continuation.admitted || event.data.reason?.kind !== 'completed' || !valid()) return
+    const pending = writeTail.then(async () => {
+      if (!valid() || (!local && config.sessions.size >= MAX_ENTRIES)) return
+      const value = { enabled: local?.enabled === true, ...selectRoute(candidate.selection) }
+      const next = { ...config, sessions: new Map(config.sessions).set(session.id, value) }
+      await persist(file, next)
+      config = next
+    })
+    pendingWrites.set(session.id, pending)
+    writeTail = pending.catch(() => {})
+    void pending.catch(() => ctx.logger?.warn?.('dsh-service: could not save the previous model as the session backup'))
+      .finally(() => { if (pendingWrites.get(session.id) === pending) pendingWrites.delete(session.id) })
+  }
+
   function onEvent(session, event) {
-    if (disposed || !config || event.type !== 'turn/end') return
+    if (disposed || !config || !['turn/start', 'user/message', 'turn/end'].includes(event.type)) return
     const agent = getAgent(session.id)
     if (!agent || agent.session !== session) return
+    const continuation = continuations.get(agent)
+    if (continuation) {
+      if (event.type === 'turn/start' && event.data.turn === continuation.turn) continuation.started = true
+      if (event.type === 'user/message' && continuation.started && event.data.id === continuation.messageId) continuation.admitted = true
+      if (event.type === 'turn/end' && event.data.turn >= continuation.turn) {
+        continuations.delete(agent)
+        if (event.data.turn === continuation.turn) {
+          candidates.delete(agent)
+          finishContinuation(agent, event, continuation)
+          return
+        }
+      }
+    }
+    if (event.type !== 'turn/end') return
     const candidate = candidates.get(agent)
     candidates.delete(agent)
     if (candidate === undefined || featureGeneration() !== candidate.generation || scheduled.has(agent) || event.data.turn !== candidate.turn

@@ -49,11 +49,23 @@ async function fixture(t) {
     listeners.get('session/event')(session, event)
     await setImmediate()
   }
+  function completeContinuation(agent, { code, admitted = true } = {}) {
+    const emit = (type, data) => {
+      const event = { seq: agent.events.length, type, data }
+      agent.events.push(event)
+      listeners.get('session/event')(agent.session, event)
+    }
+    emit('turn/start', { turn: 2 })
+    if (admitted) emit('user/message', agent.messages[0])
+    if (code) listeners.get('agent/request-error')({ agent, turn: 2, step: 1, provider: backup.provider,
+      failure: { code }, signal: new AbortController().signal }, () => {})
+    emit('turn/end', { turn: 2, reason: code ? { kind: 'error', error: { code } } : { kind: 'completed' } })
+  }
   const get = (id, instance = fallback) => instance.routes['main-model-fallback'].handle({ sessionId: id })
   const save = (id, args = { enabled: true, ...backup }) => fallback.routes['main-model-fallback-save'].handle({ sessionId: id, ...args })
   const getGlobal = (instance = fallback) => instance.routes['main-model-fallback-defaults'].handle({})
   const saveGlobal = (payload) => fallback.routes['main-model-fallback-defaults-save'].handle(payload)
-  return { add, create, fail, get, save, state, getGlobal, saveGlobal }
+  return { add, create, fail, completeContinuation, get, save, state, getGlobal, saveGlobal }
 }
 
 test('fallback preferences persist only for the configured conversation; disabling keeps the backup', async (t) => {
@@ -140,6 +152,45 @@ test('a conversation can opt out globally, keep its draft, and resume without ch
   await h.fail(paused)
   assert.deepEqual(paused.model.current(), local)
   assert.equal(paused.messages.length, 1)
+})
+
+test('a completed quota continuation saves the previous main model and effort for this conversation only', async (t) => {
+  const h = await fixture(t)
+  const agent = h.add('swap')
+  h.add('sibling')
+  const original = { ...primary, reasoningEffort: 'low' }
+  const target = { ...backup, reasoningEffort: 'high' }
+  agent.model.select(original)
+  await h.saveGlobal({ enabled: true, ...target })
+  await h.fail(agent)
+  assert.deepEqual(agent.model.current(), target)
+  assert.equal((await h.get('swap')).value.model, target.model)
+  h.completeContinuation(agent)
+  const saved = (await h.get('swap')).value
+  assert.deepEqual(saved, { available: true, enabled: true, ...original, globalEnabled: true, inherited: false, localEnabled: false })
+  assert.deepEqual((await h.get('swap', h.create())).value, saved)
+  assert.equal((await h.get('sibling')).value.model, target.model)
+  assert.equal((await h.getGlobal()).value.model, target.model)
+})
+
+test('a failed or unrelated continuation never swaps backups or retries again', async (t) => {
+  const h = await fixture(t)
+  for (const [id, options] of [['failed', { code: 'QUOTA' }], ['unrelated', { admitted: false }]]) {
+    const agent = h.add(id)
+    await h.save(id)
+    await h.fail(agent)
+    h.completeContinuation(agent, options)
+    await setImmediate()
+    assert.equal((await h.get(id)).value.model, backup.model)
+    assert.deepEqual(agent.model.current(), backup)
+    assert.equal(agent.messages.length, 1)
+  }
+  const agent = h.add('edited')
+  await h.save('edited')
+  await h.fail(agent)
+  await h.save('edited', { enabled: true, ...backup, model: 'three' })
+  h.completeContinuation(agent)
+  assert.equal((await h.get('edited')).value.model, 'three')
 })
 
 test('feature switch suspends fallback without clearing saved settings or resuming stale attempts', async (t) => {
