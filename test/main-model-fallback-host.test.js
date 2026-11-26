@@ -89,12 +89,57 @@ test('global fallback covers all main conversations but explicit local models an
   assert.equal(override.messages.length, 1)
   await h.saveGlobal({ enabled: false })
   assert.equal((await h.get('override')).value.enabled, false)
-  assert.equal((await h.get('override')).value.model, 'three')
+  assert.equal((await h.get('override', h.create())).value.model, 'two')
   assert.equal((await h.get('inherited')).value.enabled, false)
   assert.equal((await h.getGlobal()).value.model, 'two')
   await h.saveGlobal({ enabled: true })
-  assert.equal((await h.save('override', { inherit: true })).value.inherited, true)
+  assert.equal((await h.get('override')).value.inherited, true)
   assert.equal((await h.getGlobal()).value.model, 'two')
+})
+
+test('changing global settings replaces old conversation routes but preserves independent session switches', async (t) => {
+  const h = await fixture(t)
+  h.add('local'); h.add('paused'); h.add('new')
+  await h.saveGlobal({ enabled: true, ...backup })
+  await h.save('local', { enabled: true, ...backup, model: 'three' })
+  await h.save('paused', { paused: true })
+  const next = { ...backup, reasoningEffort: 'high' }
+  await h.saveGlobal({ enabled: true, ...next })
+  const reopened = h.create()
+  for (const id of ['local', 'paused', 'new']) {
+    const { model, reasoningEffort, inherited } = (await h.get(id, reopened)).value
+    assert.deepEqual({ model, reasoningEffort, inherited }, { model: 'two', reasoningEffort: 'high', inherited: true })
+  }
+  assert.equal((await h.get('paused', reopened)).value.enabled, false)
+  assert.equal((await h.get('local', reopened)).value.localEnabled, true)
+  await h.save('local', { enabled: true, ...backup, model: 'three' })
+  assert.equal((await h.get('local')).value.model, 'three')
+  assert.equal((await h.getGlobal()).value.model, 'two')
+})
+
+test('a conversation can opt out globally, keep its draft, and resume without changing other conversations', async (t) => {
+  const h = await fixture(t)
+  const shared = { ...backup, reasoningEffort: 'high' }
+  await h.saveGlobal({ enabled: true, ...shared })
+  const paused = h.add('paused')
+  const sibling = h.add('sibling')
+  await h.save('paused', { paused: true })
+  const reopened = h.create()
+  assert.equal((await h.get('paused', reopened)).value.paused, true)
+  assert.equal((await h.get('paused', reopened)).value.enabled, false)
+  await h.fail(paused)
+  await h.fail(sibling)
+  assert.deepEqual(paused.model.current(), primary)
+  assert.equal(paused.messages.length, 0)
+  assert.deepEqual(sibling.model.current(), shared)
+  assert.equal(sibling.messages.length, 1)
+  const local = { ...backup, model: 'three', reasoningEffort: 'low' }
+  assert.equal((await h.save('paused', { enabled: true, ...local })).value.enabled, false)
+  assert.deepEqual((await h.getGlobal()).value, { available: true, enabled: true, ...shared })
+  assert.equal((await h.save('paused', { paused: false })).value.enabled, true)
+  await h.fail(paused)
+  assert.deepEqual(paused.model.current(), local)
+  assert.equal(paused.messages.length, 1)
 })
 
 test('feature switch suspends fallback without clearing saved settings or resuming stale attempts', async (t) => {

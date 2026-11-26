@@ -116,6 +116,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       globalEnabled: value.globalEnabled === true,
       inherited: value.inherited === true,
       localEnabled: value.localEnabled === true,
+      paused: value.paused === true,
     }
   }
 
@@ -147,7 +148,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused,
           saving: false, error: null,
         })
         return entry.snapshot
@@ -179,7 +180,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       : null
     // 纯开关请求没有 route，enabled 仍按调用方意图提交；宿主自行校验草稿是否可用。
     const enabled = config?.enabled === true
-    const payload = sessionId === DEFAULTS ? { enabled } : config?.inherit ? { sessionId, inherit: true } : { sessionId, enabled }
+    const payload = sessionId === DEFAULTS ? { enabled } : config?.inherit ? { sessionId, inherit: true } : typeof config?.paused === 'boolean' ? { sessionId, paused: config.paused } : { sessionId, enabled }
     if (provider !== null && model !== null) {
       payload.provider = provider
       payload.model = model
@@ -208,7 +209,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused,
           saving: false, error: null,
         })
         if (sessionId === DEFAULTS) {
@@ -643,7 +644,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     const currentModel = current !== null && typeof current.model === 'string' ? current.model : null
     const savedIsCurrent = hasSelection && currentProvider !== null && currentModel !== null
       && snapshot.provider === currentProvider && snapshot.model === currentModel
-    const localEnabled = snapshot.globalEnabled ? snapshot.localEnabled : snapshot.enabled
+    const localEnabled = snapshot.globalEnabled || snapshot.paused ? snapshot.localEnabled : snapshot.enabled
     const enableLabel = translate(global ? 'mainModelFallback.global.enable' : 'mainModelFallback.enable.label')
     const busy = saving === true || locked === true
     const groups = catalog.groups
@@ -691,7 +692,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     }
     const handleModelSelect = async (provider, model) => {
       if (busy || storeFor(sessionId).snapshot.saving) return
-      if ((!snapshot.inherited && snapshot.provider === provider && snapshot.model === model)
+      if ((snapshot.provider === provider && snapshot.model === model)
         || await save(sessionId, { enabled: localEnabled, provider, model })) {
         setExpanded(false)
         closePicker()
@@ -787,14 +788,14 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       const describeId = global ? `${ENABLE_DESC_ID}-global` : ENABLE_DESC_ID
       const hintId = global ? `${ENABLE_HINT_ID}-global` : ENABLE_HINT_ID
       const enableDescribedBy = guidance !== null ? `${describeId} ${hintId}` : describeId
-      if (snapshot.globalEnabled && !global) {
+      if (!global && (snapshot.globalEnabled || snapshot.paused)) {
         body.push(h('div', { key: 'global-source', style: { display: 'grid', gap: '4px' } },
-          h('p', { style: hintStyle }, translate(snapshot.inherited ? 'mainModelFallback.source.inherited' : 'mainModelFallback.source.local')),
-          savedIsCurrent && h('p', { style: hintStyle }, translate('mainModelFallback.enable.hint.sameAsCurrent')),
-          !snapshot.inherited && h('button', { type: 'button', role: 'menuitem', disabled: busy,
-            'data-testid': 'main-model-fallback-use-global', style: linkButtonStyle,
-            onClick: () => { void save(sessionId, { inherit: true }).then((ok) => { if (ok) setExpanded(false) }) },
-          }, translate('mainModelFallback.source.reset'))))
+          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' } },
+            h('span', null, translate('mainModelFallback.session.pause')),
+            h(Switch, { checked: snapshot.paused, disabled: busy, label: translate('mainModelFallback.session.pause'),
+              testId: 'main-model-fallback-session-pause', onClick: () => { void save(sessionId, { paused: !snapshot.paused }) } })),
+          snapshot.paused && h('p', { style: hintStyle }, translate('mainModelFallback.session.paused')),
+          savedIsCurrent && h('p', { style: hintStyle }, translate('mainModelFallback.enable.hint.sameAsCurrent'))))
       } else body.push(React.createElement('div', {
         key: 'enable',
         style: {

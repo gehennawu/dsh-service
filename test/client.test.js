@@ -19228,10 +19228,11 @@ function fallbackOptionProps(extra = {}) {
 test('main model fallback settings edit global policy without reading or writing conversation settings', async () => {
   let defaults = { available: true, enabled: false }
   let local
+  let paused = false
   const models = [{ id: 'alt', name: 'Alt' }, { id: 'other', name: 'Other' }]
   const groups = [{ id: 'provA', models }]
-  const view = () => ({ ...defaults, ...local, enabled: defaults.enabled || local?.enabled === true,
-    globalEnabled: defaults.enabled, inherited: !local, localEnabled: local?.enabled === true })
+  const view = () => ({ ...defaults, ...local, enabled: !paused && (defaults.enabled || local?.enabled === true),
+    paused, globalEnabled: defaults.enabled, inherited: !local, localEnabled: local?.enabled === true })
   const { calls, rpc } = models3Fixture({
     'main-model-fallback-defaults': () => ({ ok: true, value: defaults }),
     'main-model-fallback-defaults-save': (payload) => { defaults = { ...defaults, ...payload }; return { ok: true, value: defaults } },
@@ -19239,7 +19240,8 @@ test('main model fallback settings edit global policy without reading or writing
     'main-model-fallback': () => ({ ok: true, value: view() }),
     'main-model-fallback-save': ({ sessionId, ...payload }) => {
       assert.equal(sessionId, 'session-1')
-      local = payload.inherit ? undefined : payload
+      if (typeof payload.paused === 'boolean') paused = payload.paused
+      else local = payload.inherit ? undefined : payload
       return { ok: true, value: view() }
     },
   })
@@ -19278,7 +19280,18 @@ test('main model fallback settings edit global policy without reading or writing
   renderer.mount('conversation.input.model.pane')
   renderer.mount('conversation.input.model.options')
   await settle(renderer)
-  assert.match(renderer.text('conversation.input.model.pane'), /正在使用全局后备模型/)
+  assert.equal(renderer.findByTestId('main-model-fallback-model-summary').props.title, 'Alt · provA')
+  const pause = () => renderer.findByTestId('main-model-fallback-session-pause')
+  assert.equal(pause().props['aria-checked'], 'false')
+  pause().props.onClick()
+  await settle(renderer)
+  assert.equal(pause().props['aria-checked'], 'true')
+  assert.match(renderer.text('conversation.input.model.options'), /关闭/)
+  assert.equal(defaults.enabled, true)
+  assert.deepEqual(calls.filter(({ endpoint }) => endpoint === 'main-model-fallback-save').at(-1).payload, { sessionId: 'session-1', paused: true })
+  pause().props.onClick()
+  await settle(renderer)
+  assert.match(renderer.text('conversation.input.model.options'), /Alt/)
   renderer.findByTestId('main-model-fallback-model-summary').props.onClick()
   await settle(renderer)
   renderer.findAllByTestIdPrefix('main-model-fallback-model-option').find((row) => row.props['data-model-id'] === 'other').props.onClick()
@@ -19286,9 +19299,8 @@ test('main model fallback settings edit global policy without reading or writing
   assert.match(renderer.text('conversation.input.model.options'), /Other/)
   assert.equal(local.enabled, false)
   assert.equal(defaults.model, 'alt')
-  renderer.findByTestId('main-model-fallback-use-global').props.onClick()
-  await settle(renderer)
-  assert.match(renderer.text('conversation.input.model.options'), /Alt/)
+  assert.equal(renderer.hasTest('main-model-fallback-use-global'), false)
+  assert.doesNotMatch(renderer.text('conversation.input.model.pane'), /优先使用本对话的后备模型/)
   renderer.disposeFactory()
 })
 

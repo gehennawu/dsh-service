@@ -18,12 +18,16 @@ function decodeConfig(text) {
   if (raw?.version !== 1 || !Array.isArray(raw.sessions) || raw.sessions.length > MAX_ENTRIES) throw new Error('invalid fallback configuration')
   const config = new Map()
   for (const entry of raw.sessions) {
-    if (!Array.isArray(entry) || !isId(entry[0]) || !isRoute(entry[1]) || typeof entry[1].enabled !== 'boolean' || config.has(entry[0])) {
+    if (!Array.isArray(entry) || !isId(entry[0]) || typeof entry[1]?.enabled !== 'boolean' || config.has(entry[0])) {
       throw new Error('invalid fallback configuration entry')
     }
     const [id, selection] = entry
     if (selection.reasoningEffort !== undefined && !isId(selection.reasoningEffort)) throw new Error('invalid fallback reasoning effort')
-    config.set(id, { enabled: selection.enabled, ...selectRoute(selection) })
+    const hasRoute = isRoute(selection)
+    if (!hasRoute && (selection.provider !== undefined
+      || selection.model !== undefined || selection.reasoningEffort !== undefined)) throw new Error('invalid fallback configuration route')
+    if (selection.paused !== undefined && typeof selection.paused !== 'boolean') throw new Error('invalid fallback pause')
+    config.set(id, { enabled: selection.enabled, ...(hasRoute ? selectRoute(selection) : {}), ...(selection.paused ? { paused: true } : {}) })
   }
   const global = raw.global ?? OFF
   if (typeof global.enabled !== 'boolean' || (global.enabled || global.provider !== undefined || global.model !== undefined) && !isRoute(global)
@@ -91,7 +95,10 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   const effective = (state, id) => {
     const local = state?.sessions.get(id)
     const global = state?.global
-    return { selected: local ?? (global?.enabled ? global : undefined), enabled: local?.enabled === true || global?.enabled === true }
+    return {
+      selected: isRoute(local) ? local : isRoute(global) ? global : undefined,
+      enabled: local?.paused !== true && (local?.enabled === true || global?.enabled === true),
+    }
   }
   const isBlockedByGoal = (agent) => ctx.get('goals')?.get?.(agent)?.phase === 'active'
   const agents = () => ctx.get('agents')
@@ -169,7 +176,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     candidates.delete(agent)
     if (candidate === undefined || featureGeneration() !== candidate.generation || scheduled.has(agent) || event.data.turn !== candidate.turn
       || event.data.reason?.kind !== 'error' || event.data.reason.error?.code !== candidate.code
-      || config.global !== candidate.global || effective(config, session.id).selected !== candidate.selected || session.seq !== event.seq + 1) return
+      || config.global !== candidate.global || !effective(config, session.id).enabled || effective(config, session.id).selected !== candidate.selected || session.seq !== event.seq + 1) return
     scheduled.add(agent)
     void resume(agent, event, candidate, candidate.selected, session.seq)
       .catch(() => ctx.logger?.warn?.('dsh-service: quota fallback could not continue the session'))
@@ -196,7 +203,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       if (global) return { available: true, ...state.global }
       const local = state.sessions.get(id)
       const { selected, enabled } = effective(state, id)
-      return { available: true, ...(selected ?? OFF), enabled, ...(state.global.enabled ? { globalEnabled: true, inherited: !local, localEnabled: local?.enabled === true } : {}) }
+      return { available: true, ...(selected ? selectRoute(selected) : OFF), enabled, ...(local?.paused ? { paused: true } : {}), ...(state.global.enabled ? { globalEnabled: true } : {}), ...(isRoute(state.global) ? { inherited: !isRoute(local) } : {}), ...(local?.paused || state.global.enabled ? { localEnabled: local?.enabled === true } : {}) }
     }
     if (!valid()) return { ok: true, value: { available: false, ...OFF } }
     if (!save) {
@@ -211,22 +218,28 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       } catch (error) { return rpcTechnicalFailure(error) }
     }
     const reset = !global && payload?.inherit === true
-    if (!reset && typeof payload?.enabled !== 'boolean') return { ok: false, error: 'invalid-fallback-state' }
+    const changePause = !global && typeof payload?.paused === 'boolean'
+    if (payload?.paused !== undefined && (!changePause || reset || payload.enabled !== undefined || payload.provider !== undefined || payload.model !== undefined || payload.reasoningEffort !== undefined)) return { ok: false, error: 'invalid-fallback-state' }
+    if (!reset && !changePause && typeof payload?.enabled !== 'boolean') return { ok: false, error: 'invalid-fallback-state' }
     if ((payload.provider !== undefined || payload.model !== undefined) && !isRoute(payload)) return { ok: false, error: 'invalid-model-route' }
     if (payload.reasoningEffort !== undefined && (!isId(payload.reasoningEffort) || !isRoute(payload))) return { ok: false, error: 'invalid-reasoning-effort' }
     const write = async () => {
       const current = config ?? await read()
       if (!valid()) return { ok: true, value: { available: false, ...OFF } }
       const old = global ? current.global : current.sessions.get(id)
-      if (reset) {
-        if (!old) return { ok: true, value: view(current) }
+      if (reset || changePause) {
+        const paused = changePause ? payload.paused : old?.paused === true
+        if (!old && !paused) return { ok: true, value: view(current) }
+        if (!old && current.sessions.size >= MAX_ENTRIES) return { ok: false, error: 'fallback-config-full' }
         const next = { ...current, sessions: new Map(current.sessions) }
-        next.sessions.delete(id)
+        if (!reset && isRoute(old)) next.sessions.set(id, { enabled: old.enabled, ...selectRoute(old), ...(paused ? { paused: true } : {}) })
+        else if (paused || (!reset && old?.enabled)) next.sessions.set(id, { enabled: !reset && old?.enabled === true, ...(paused ? { paused: true } : {}) })
+        else next.sessions.delete(id)
         await persist(file, next)
         config = next
         return { ok: true, value: view(next) }
       }
-      const selected = isRoute(payload) ? selectRoute(payload) : isRoute(old) ? old : null
+      const selected = isRoute(payload) ? selectRoute(payload) : isRoute(old) ? old : !global && isRoute(current.global) ? current.global : null
       if (payload.enabled && !selected) return { ok: false, error: 'invalid-model-route' }
       const changedRoute = selected && !sameRoute(old, selected)
       const changedSelection = selected && !sameSelection(old, selected)
@@ -240,9 +253,15 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       if (selected && (changedRoute || payload.enabled) && !global && sameRoute(agent.model.current(), selected)) return { ok: false, error: 'same-model-route' }
       if (!selected) return { ok: true, value: view(current) }
       if (!global && !old && current.sessions.size >= MAX_ENTRIES) return { ok: false, error: 'fallback-config-full' }
-      const value = { enabled: payload.enabled, ...selectRoute(selected) }
+      const keepsOverride = global || isRoute(old) || (isRoute(payload) && !sameSelection(payload, current.global))
+      const value = { enabled: payload.enabled, ...(keepsOverride ? selectRoute(selected) : {}), ...(!global && old?.paused ? { paused: true } : {}) }
       if (old?.enabled === value.enabled && !changedSelection) return { ok: true, value: view(current) }
-      const next = global ? { ...current, global: value } : { ...current, sessions: new Map(current.sessions).set(id, value) }
+      // Every committed global change establishes a new default route. Leave
+      // independent session opt-ins and pauses intact; later local picks override it.
+      const sessions = global ? new Map([...current.sessions].flatMap(([key, local]) =>
+        local.enabled || local.paused ? [[key, { enabled: local.enabled, ...(local.paused ? { paused: true } : {}) }]] : []))
+        : new Map(current.sessions).set(id, value)
+      const next = { sessions, global: global ? value : current.global }
       await persist(file, next)
       config = next
       return { ok: true, value: view(next) }
