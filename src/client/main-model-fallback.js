@@ -25,6 +25,7 @@
 
 function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTranslation, useFeatures }) {
   const { useState, useEffect, useRef } = React
+  const DEFAULTS = Symbol('fallback-defaults')
   const PANE_KEY = 'main-model-fallback'
   const OPTION_ATTR = 'data-dshsvc-main-model-fallback'
   const ROW_ATTR = 'data-dshsvc-main-model-fallback-row'
@@ -112,6 +113,9 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       provider,
       model,
       reasoningEffort,
+      globalEnabled: value.globalEnabled === true,
+      inherited: value.inherited === true,
+      localEnabled: value.localEnabled === true,
     }
   }
 
@@ -126,7 +130,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     patch(entry, { status: entry.snapshot.loaded === true ? 'refreshing' : 'loading', error: null })
     let request
     try {
-      request = rpcCall('main-model-fallback', { sessionId })
+      request = sessionId === DEFAULTS ? rpcCall('main-model-fallback-defaults', {}) : rpcCall('main-model-fallback', { sessionId })
     } catch (error) {
       request = Promise.reject(error)
     }
@@ -143,7 +147,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled,
           saving: false, error: null,
         })
         return entry.snapshot
@@ -175,7 +179,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       : null
     // 纯开关请求没有 route，enabled 仍按调用方意图提交；宿主自行校验草稿是否可用。
     const enabled = config?.enabled === true
-    const payload = { sessionId, enabled }
+    const payload = sessionId === DEFAULTS ? { enabled } : config?.inherit ? { sessionId, inherit: true } : { sessionId, enabled }
     if (provider !== null && model !== null) {
       payload.provider = provider
       payload.model = model
@@ -187,7 +191,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     patch(entry, { saving: true, error: null })
     let request
     try {
-      request = rpcCall('main-model-fallback-save', payload)
+      request = rpcCall(sessionId === DEFAULTS ? 'main-model-fallback-defaults-save' : 'main-model-fallback-save', payload)
     } catch (error) {
       request = Promise.reject(error)
     }
@@ -204,9 +208,17 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled,
           saving: false, error: null,
         })
+        if (sessionId === DEFAULTS) {
+          for (const [id, cached] of stores) {
+            if (id === DEFAULTS || cached.snapshot.saving || cached.listeners.size === 0) continue
+            cached.epoch++
+            cached.inflight = null
+            load(id, true)
+          }
+        }
         return true
       }
       if (isUnsupported(result)) {
@@ -514,7 +526,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
 
   const switchOnColor = 'var(--dsw-alias-state-success-primary,#16a34a)'
   // 胶囊开启时为绿色，关闭时为灰色，同时保留开关状态文字。
-  function Switch({ checked, disabled, label, describedBy, onClick }) {
+  function Switch({ checked, disabled, label, describedBy, onClick, testId = 'main-model-fallback-switch' }) {
     const on = checked === true
     const track = on ? switchOnColor : 'var(--dsw-alias-border-l3,#c9ccd2)'
     return React.createElement('button', {
@@ -523,7 +535,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       'aria-checked': on ? 'true' : 'false',
       'aria-label': label,
       'aria-describedby': describedBy,
-      'data-testid': 'main-model-fallback-switch',
+      'data-testid': testId,
       disabled: disabled === true,
       onClick,
       style: {
@@ -559,16 +571,34 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
 
   function MainModelFallbackPane(props) {
     const translate = useTranslation()
-    const sessionId = props !== null && typeof props === 'object' && typeof props.sessionId === 'string' ? props.sessionId : ''
+    const global = props.global === true
+    const sessionId = global ? DEFAULTS : props !== null && typeof props === 'object' && typeof props.sessionId === 'string' ? props.sessionId : ''
     const snapshot = useStoreSnapshot(sessionId)
     const subagent = useSubagentSession(props)
     const dismiss = props !== null && typeof props === 'object' && typeof props.dismiss === 'function' ? props.dismiss : null
-    const canRender = dismiss !== null && sessionId !== ''
-    const [catalog, retryCatalog] = useModelCatalog(sessionId, canRender === true && subagent !== true)
+    const canRender = (dismiss !== null || global) && sessionId !== ''
+    const [sessionCatalog, retrySession] = useModelCatalog(sessionId, !global && canRender && !subagent)
+    const [globalCatalog, setGlobalCatalog] = useState({ status: 'idle', groups: [], current: null })
+    const [catalogAttempt, setCatalogAttempt] = useState(0)
+    useEffect(() => {
+      if (!global) return undefined
+      let live = true
+      const settle = (result) => {
+        if (live) setGlobalCatalog(result?.ok === true && Array.isArray(result.value?.groups)
+          ? { status: 'ready', groups: result.value.groups, current: null }
+          : { status: 'error', groups: [], current: null })
+      }
+      setGlobalCatalog({ status: 'loading', groups: [], current: null })
+      Promise.resolve().then(() => rpcCall('main-model-fallback-catalog', {})).then(settle, () => settle(null))
+      return () => { live = false }
+    }, [global, catalogAttempt])
+    useEffect(() => { if (global) load(DEFAULTS, true) }, [global])
+    const catalog = global ? globalCatalog : sessionCatalog
+    const retryCatalog = global ? () => setCatalogAttempt((value) => value + 1) : retrySession
     const [picker, setPicker] = useState(false)
     const [expanded, setExpanded] = useState(false)
     const [query, setQuery] = useState('')
-    const iconsEnabled = useFeatures().modelProviderIcons !== false
+    const iconsEnabled = useFeatures().value.modelProviderIcons !== false
     const searchRef = useRef(null)
     const resultsRef = useRef(null)
     const modelCellRef = useRef(null)
@@ -613,6 +643,8 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     const currentModel = current !== null && typeof current.model === 'string' ? current.model : null
     const savedIsCurrent = hasSelection && currentProvider !== null && currentModel !== null
       && snapshot.provider === currentProvider && snapshot.model === currentModel
+    const localEnabled = snapshot.globalEnabled ? snapshot.localEnabled : snapshot.enabled
+    const enableLabel = translate(global ? 'mainModelFallback.global.enable' : 'mainModelFallback.enable.label')
     const busy = saving === true || locked === true
     const groups = catalog.groups
     const selectedModel = hasSelection ? findModel(groups, snapshot.provider, snapshot.model) : null
@@ -659,8 +691,8 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     }
     const handleModelSelect = async (provider, model) => {
       if (busy || storeFor(sessionId).snapshot.saving) return
-      if ((snapshot.provider === provider && snapshot.model === model)
-        || await save(sessionId, { enabled: snapshot.enabled, provider, model })) {
+      if ((!snapshot.inherited && snapshot.provider === provider && snapshot.model === model)
+        || await save(sessionId, { enabled: localEnabled, provider, model })) {
         setExpanded(false)
         closePicker()
       }
@@ -670,7 +702,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       // 省略默认档，避免把当下的默认值固化到会话配置。
       const next = effort === '' || effort === defaultEffort ? null : effort
       if (snapshot.reasoningEffort !== next && !await save(sessionId, {
-        enabled: snapshot.enabled,
+        enabled: localEnabled,
         provider: snapshot.provider,
         model: snapshot.model,
         reasoningEffort: next,
@@ -679,17 +711,18 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       setExpanded(false)
     }
 
+    let pickerView = null
     if (picker && !loading && !unavailable && !loadFailed) {
       const catalogError = catalog.status === 'error' || catalog.status === 'unavailable'
       const catalogLoading = catalog.status === 'idle' || catalog.status === 'loading'
       const showEmpty = !catalogError && !catalogLoading && filteredGroups.length === 0
-      return h('div', { [PANE_ATTR]: 'picker', 'data-testid': 'main-model-fallback-pane', className: 'dshsvc-fallback-picker' },
+      pickerView = h('div', { key: 'picker', [PANE_ATTR]: 'picker', 'data-testid': 'main-model-fallback-pane', className: 'dshsvc-fallback-picker' },
         h('div', { className: 'dshsvc-fallback-search', 'data-query': query !== '' ? '' : undefined },
           h(ui.Input || 'input', {
             ref: searchRef, type: 'text', role: 'searchbox',
             'data-testid': 'main-model-fallback-search',
             'aria-label': translate('mainModelFallback.search.placeholder'),
-            'aria-controls': 'dshsvc-fallback-model-results',
+            'aria-controls': global ? 'dshsvc-fallback-global-model-results' : 'dshsvc-fallback-model-results',
             placeholder: translate('mainModelFallback.search.placeholder'),
             value: query, readOnly: busy,
             onChange: (event) => setQuery(event.target.value),
@@ -706,7 +739,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
           h('button', { type: 'button', role: 'menuitem', style: linkButtonStyle, onClick: retryCatalog }, translate('mainModelFallback.retry'))),
         showEmpty && h('p', { role: 'status', style: hintStyle }, translate(query.trim() ? 'mainModelFallback.search.empty' : 'mainModelFallback.model.empty')),
         h('div', {
-          ref: resultsRef, id: 'dshsvc-fallback-model-results', role: 'menu', className: 'scrollable dshsvc-fallback-results',
+          ref: resultsRef, id: global ? 'dshsvc-fallback-global-model-results' : 'dshsvc-fallback-model-results', role: 'menu', className: 'scrollable dshsvc-fallback-results',
           hidden: filteredGroups.length === 0, 'aria-label': translate('mainModelFallback.model.label'),
           'aria-busy': saving, 'data-testid': 'main-model-fallback-model-results',
         }, filteredGroups.map((group) => h(MenuGroup, {
@@ -722,9 +755,10 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
           }, h('span', { style: labelStyle }, modelLabel(model)), h('span', { className: 'dshsvc-fallback-check', 'aria-hidden': true }, selected && h(Check)))
         })))),
         h('button', { type: 'button', role: 'menuitem', [ROW_ATTR]: '', style: { ...optionStyle(busy), flex: 'none' }, disabled: busy,
-          'data-testid': 'main-model-fallback-picker-back', onClick: closePicker }, translate('mainModelFallback.model.back')))
+          'data-testid': 'main-model-fallback-picker-back', onClick: closePicker }, translate(global ? 'mainModelFallback.global.closePicker' : 'mainModelFallback.model.back')))
     }
 
+    if (pickerView && !global) return pickerView
     const body = []
     if (loading === true) {
       body.push(React.createElement('p', { key: 'loading', style: hintStyle }, translate('mainModelFallback.loading')))
@@ -734,7 +768,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         key: 'retry', type: 'button', 'data-testid': 'main-model-fallback-retry', onClick: retry, style: linkButtonStyle,
       }, translate('mainModelFallback.retry')))
     } else if (unavailable === true) {
-      body.push(React.createElement('p', { key: 'unavailable', style: hintStyle }, translate('mainModelFallback.unavailable')))
+      body.push(React.createElement('p', { key: 'unavailable', style: hintStyle }, translate(global ? 'mainModelFallback.global.unavailable' : 'mainModelFallback.unavailable')))
       body.push(React.createElement('button', {
         key: 'retry', type: 'button', 'data-testid': 'main-model-fallback-retry', onClick: retry, style: linkButtonStyle,
       }, translate('mainModelFallback.retry')))
@@ -750,25 +784,35 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         : savedIsCurrent === true
           ? translate('mainModelFallback.enable.hint.sameAsCurrent')
           : null
-      const enableDescribedBy = guidance !== null
-        ? `${ENABLE_DESC_ID} ${ENABLE_HINT_ID}`
-        : ENABLE_DESC_ID
-      body.push(React.createElement('div', {
+      const describeId = global ? `${ENABLE_DESC_ID}-global` : ENABLE_DESC_ID
+      const hintId = global ? `${ENABLE_HINT_ID}-global` : ENABLE_HINT_ID
+      const enableDescribedBy = guidance !== null ? `${describeId} ${hintId}` : describeId
+      if (snapshot.globalEnabled && !global) {
+        body.push(h('div', { key: 'global-source', style: { display: 'grid', gap: '4px' } },
+          h('p', { style: hintStyle }, translate(snapshot.inherited ? 'mainModelFallback.source.inherited' : 'mainModelFallback.source.local')),
+          savedIsCurrent && h('p', { style: hintStyle }, translate('mainModelFallback.enable.hint.sameAsCurrent')),
+          !snapshot.inherited && h('button', { type: 'button', role: 'menuitem', disabled: busy,
+            'data-testid': 'main-model-fallback-use-global', style: linkButtonStyle,
+            onClick: () => { void save(sessionId, { inherit: true }).then((ok) => { if (ok) setExpanded(false) }) },
+          }, translate('mainModelFallback.source.reset'))))
+      } else body.push(React.createElement('div', {
         key: 'enable',
         style: {
           display: 'flex',
           flexDirection: 'column',
           gap: '6px',
-          padding: '8px 10px',
-          border: '1px solid var(--dsw-alias-border-l2,#d9dce1)',
-          borderRadius: 'var(--dsw-radius-md,8px)',
-          background: 'var(--dsw-alias-bg-layer-2,#ffffff)',
+          ...(global ? { padding: '8px' } : {
+            padding: '8px 10px',
+            border: '1px solid var(--dsw-alias-border-l2,#d9dce1)',
+            borderRadius: 'var(--dsw-radius-md,8px)',
+            background: 'var(--dsw-alias-bg-layer-2,#ffffff)',
+          }),
         },
       },
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
         React.createElement('span', {
           style: { minWidth: 0, fontSize: '13px', fontWeight: 650, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' },
-        }, translate('mainModelFallback.enable.label')),
+        }, enableLabel),
         React.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: '8px', flex: 'none' } },
           React.createElement('span', {
             'data-testid': 'main-model-fallback-switch-state',
@@ -782,25 +826,26 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
           React.createElement(Switch, {
             checked: snapshot.enabled === true,
             disabled: canToggle !== true,
-            label: translate('mainModelFallback.enable.label'),
+            label: enableLabel,
             describedBy: enableDescribedBy,
             onClick: handleToggle,
           }))),
-      React.createElement('p', { id: ENABLE_DESC_ID, style: hintStyle }, translate('mainModelFallback.enable.description')),
+      React.createElement('p', { id: describeId, style: hintStyle }, translate(global ? 'mainModelFallback.global.description' : 'mainModelFallback.enable.description')),
       guidance !== null
-        ? React.createElement('p', { id: ENABLE_HINT_ID, style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, guidance)
+        ? React.createElement('p', { id: hintId, style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, guidance)
         : null
       ))
 
       const selectedGroup = groups.find((group) => group.id === snapshot.provider)
       const channelName = selectedGroup ? providerName(selectedGroup) : snapshot.provider
       const selectedName = selectedModel ? modelLabel(selectedModel) : snapshot.model
-      const title = translate('mainModelFallback.model.label')
+      const title = translate(global ? 'mainModelFallback.global.model' : 'mainModelFallback.model.label')
       body.push(h('button', {
         key: 'model', ref: modelCellRef, type: 'button', role: 'menuitem', [ROW_ATTR]: '',
         'data-testid': 'main-model-fallback-model-summary', disabled: busy,
-        onClick: () => { setQuery(''); setPicker(true) },
-        style: { ...optionStyle(busy), height: 'auto', minHeight: '42px', paddingBlock: '4px' },
+        onClick: () => { setQuery(''); setPicker(!global || !picker) },
+        'aria-expanded': global ? picker : undefined,
+        style: { ...optionStyle(busy), height: 'auto', minHeight: global ? '62px' : '42px', paddingBlock: global ? '12px' : '4px' },
         title: hasSelection ? `${selectedName} · ${channelName}` : title,
       }, h('span', { style: { ...labelStyle, whiteSpace: 'normal' } },
         h('span', { style: hintStyle }, title),
@@ -809,6 +854,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
           h('span', { style: { ...labelStyle, fontWeight: 600 } }, selectedName ?? translate('mainModelFallback.model.choose'))),
         hasSelection && h('span', { style: { ...hintStyle, display: 'block' } }, channelName)),
       h(Chevron)))
+      if (global && pickerView) body.push(pickerView)
       if (hasSelection && !savedIsCurrent && selectedModel === null && catalog.status === 'ready') {
         body.push(h('p', { key: 'missing-model', style: hintStyle }, translate('mainModelFallback.model.missing')))
       }
@@ -818,10 +864,10 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
           h('button', {
             ref: effortToggleRef, type: 'button', role: 'menuitem', [ROW_ATTR]: '', disabled: locked, 'aria-disabled': saving || undefined, 'aria-expanded': expanded,
             'data-testid': 'main-model-fallback-effort-toggle', onClick: () => { if (!busy) setExpanded(!expanded) }, style: optionStyle(busy),
-          }, h('span', { style: labelStyle }, translate('mainModelFallback.effort.label')),
+          }, h('span', { style: labelStyle }, translate(global ? 'mainModelFallback.global.effort' : 'mainModelFallback.effort.label')),
           h('span', { style: { ...labelStyle, flex: '0 1 auto', color: 'var(--dsw-alias-label-secondary)' }, title: effortLabel }, effortLabel),
           h('span', { style: { display: 'flex', transform: `rotate(${expanded ? -90 : 90}deg)` } }, h(Chevron))),
-          expanded && h('div', { role: 'group', 'aria-label': translate('mainModelFallback.effort.label'), style: { paddingInlineStart: '8px' } },
+          expanded && h('div', { role: 'group', 'aria-label': translate(global ? 'mainModelFallback.global.effort' : 'mainModelFallback.effort.label'), style: { paddingInlineStart: '8px' } },
             levels.map((level) => {
               const checked = level.id === effectiveEffort || (level.id === '' && explicitEffort === null)
               const name = level.id !== '' && level.id === defaultEffort
@@ -843,8 +889,24 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       'data-testid': 'main-model-fallback-pane',
       role: 'group',
       'aria-label': translate('mainModelFallback.label'),
-      style: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0, minHeight: 0, padding: '2px 0 4px' },
+      style: { display: 'flex', flexDirection: 'column', gap: global ? '14px' : '8px', minWidth: 0, minHeight: 0, padding: '2px 0 4px' },
     }, body)
+  }
+
+  function SettingsSection() {
+    const translate = useTranslation()
+    const enabled = useFeatures().value.mainModelFallback !== false
+    return h('section', { 'data-testid': 'main-model-fallback-settings', style: { paddingBlock: '12px', minWidth: 0 } },
+      enabled ? h(MainModelFallbackPane, { global: true })
+        : h('p', { role: 'status', style: hintStyle }, translate('mainModelFallback.settings.disabled')))
+  }
+
+  function MenuOption(props) {
+    return useFeatures().value.mainModelFallback !== false ? h(MainModelFallbackOption, { ...props, key: props.sessionId }) : null
+  }
+
+  function MenuPane(props) {
+    return useFeatures().value.mainModelFallback !== false ? h(MainModelFallbackPane, { ...props, key: props.sessionId }) : null
   }
 
   const start = () => {
@@ -858,7 +920,8 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         '[' + OPTION_ATTR + ']:focus-visible{outline:none;background:var(--dsw-alias-interactive-bg-hover)}',
         '[' + ROW_ATTR + ']:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)!important}',
         '[' + ROW_ATTR + ']:focus-visible{outline:none;background:var(--dsw-alias-interactive-bg-hover)!important}',
-        `[data-model-menu]:has(.dshsvc-fallback-picker){width:min(300px,calc(100vw - 24px))}
+        `[data-testid="main-model-fallback-settings"] .dshsvc-fallback-results{max-height:min(360px,50dvh)}
+         [data-model-menu]:has(.dshsvc-fallback-picker){width:min(300px,calc(100vw - 24px))}
          [data-model-menu] > .scrollable:has(.dshsvc-fallback-picker){display:flex;flex-direction:column;overflow:hidden}
          .dshsvc-fallback-picker{display:flex;flex-direction:column;min-height:0;min-width:0}
          .dshsvc-fallback-search{position:relative;flex:none;margin:2px 0 3px}
@@ -886,12 +949,12 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       id: PANE_KEY,
       order: 50,
       label: () => t('mainModelFallback.label'),
-    }, MainModelFallbackOption)))
+    }, MenuOption)))
     disposers.push(ctx.slots.inject('conversation.input.model.pane', () => ctx.slots.register({
       name: 'conversation.input.model.pane',
       key: PANE_KEY,
       label: () => t('mainModelFallback.label'),
-    }, MainModelFallbackPane)))
+    }, MenuPane)))
     let disposeReset = null
     if (typeof ctx.on === 'function') {
       disposeReset = ctx.on('connection/reset', () => {
@@ -909,5 +972,5 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
     }
   }
 
-  return { start }
+  return { start, SettingsSection }
 }

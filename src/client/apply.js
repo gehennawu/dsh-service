@@ -213,7 +213,7 @@
         return number.toLocaleString()
       }
       // mobileAdaptation 默认关闭（v0.31 用户点名）：宿主与客户端默认值必须一致。
-      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true, sidebarSettingsEntry: true, sidebarPanel: false }
+      const DEFAULT_FEATURES = { healthDiagnostics: true, modelUsage: true, quotaLookup: true, backupMaintenance: true, taskNotifications: true, healthz: true, skillManager: true, subagentRoute: true, mainModelFallback: true, subagentModelsDock: true, mobileAdaptation: false, sessionManager: true, fileEditor: true, modelProviderIcons: true, modelCatalog: true, sidebarSettingsEntry: true, sidebarPanel: false }
       // 特性设置门面：静态 inject 不带任何设置服务，运行时按能力探测接入
       // （configForms → settingsScope → 内存兜底；见 src/client/feature-settings.js）。
       // 0.1.7-alpha.1 移除了 settingsScope，静态依赖它会在该版本阻断整个客户端激活；
@@ -262,7 +262,7 @@
       // 健康诊断不再是顶层页：收敛为维护子页（用户点名，2026-11-05），主标签收敛六页。
       const PRIMARY_TAB_ORDER = ['overview', 'usage', 'quota', 'models', 'maintenance', 'configuration']
       const PRIMARY_TAB_LABELS = { overview: 'tabs.overview', usage: 'tabs.usage', quota: 'tabs.quota', models: 'tabs.models', maintenance: 'tabs.maintenance', configuration: 'tabs.configuration' }
-      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup', models: ['modelCatalog', 'subagentRoute'] }
+      const PRIMARY_TAB_FEATURES = { usage: 'modelUsage', quota: 'quotaLookup' }
       const getVisiblePrimaryTabs = (features, warnings) => PRIMARY_TAB_ORDER
         .filter((id) => PRIMARY_TAB_FEATURES[id] === undefined || (Array.isArray(PRIMARY_TAB_FEATURES[id]) ? PRIMARY_TAB_FEATURES[id].some((key) => features[key] !== false) : features[PRIMARY_TAB_FEATURES[id]] !== false))
         .map((id) => ({ id, labelKey: PRIMARY_TAB_LABELS[id], warning: warnings !== undefined && warnings[id] === true }))
@@ -391,7 +391,7 @@
       // 技能与子代理的左列入口撤销（维护页内仍有完整功能）；存储键统一迁到 shortcut-* 命名。
       const restartNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-restart', legacyStorageKey: 'dsh-service-restart-nav', sectionId: 'dsh-service-restart', order: 499, labelKey: 'nav.restart', renderContent: () => React.createElement(RestartSection, null) })
       const quotaNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-quota', legacyStorageKey: 'dsh-service-quota-nav', sectionId: 'dsh-service-quota', order: 498, labelKey: 'tabs.quota', feature: 'quotaLookup', renderContent: () => React.createElement(QuotaSection, null) })
-      const modelsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-models', legacyStorageKey: 'dsh-service-models-nav', sectionId: 'dsh-service-models', order: 497, labelKey: 'tabs.models', feature: ['modelCatalog', 'subagentRoute'], renderContent: () => React.createElement(ModelsSection, { SubagentSection }) })
+      const modelsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-models', legacyStorageKey: 'dsh-service-models-nav', sectionId: 'dsh-service-models', order: 497, labelKey: 'tabs.models', renderContent: () => React.createElement(ModelsSection, { SubagentSection, FallbackSection: mainModelFallback.SettingsSection }) })
       const sessionsNavToggle = createNavEntryToggle({ storageKey: 'dsh-service-shortcut-sessions', legacyStorageKey: 'dsh-service-sessions-nav', sectionId: 'dsh-service-sessions', order: 495, labelKey: 'tabs.sessions', feature: 'sessionManager', renderContent: () => React.createElement(SessionsSection, null) })
       // ── 批量补全共享状态：跨标签/设置面板开关存活（宿主任务本身不随 UI 停止）──
       // ── 批量补全共享状态：正文已抽至 src/client/skills-batch-shared.js（工厂作用域分片）；
@@ -1559,7 +1559,7 @@
       // 两处共用同一分组与同一写入路径（featureScope.set，行级 saving 锁）。
       const FEATURE_GROUPS = [
         ['features.group.runtime', ['healthDiagnostics', 'modelUsage', 'quotaLookup'], true],
-        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'sessionManager', 'modelCatalog'], true],
+        ['features.group.maintenance', ['backupMaintenance', 'skillManager', 'subagentRoute', 'mainModelFallback', 'sessionManager', 'modelCatalog'], true],
         ['features.group.interaction', ['taskNotifications', 'mobileAdaptation', 'modelProviderIcons', 'fileEditor', 'sidebarSettingsEntry', 'sidebarPanel'], true],
         ['features.external', ['healthz'], false],
       ]
@@ -5215,7 +5215,7 @@
       // 分桶的边界竞态。
       const USAGE_MIDNIGHT_GRACE_MS = 1000
       // ── 模型配置页（src/client/model-config.js）─────────────────
-      // 页面内两个子标签：「供应商与模型」+「子代理路由」（复用既有 SubagentSection）。
+      // 页面内提供供应商、子代理路由与当前会话的主模型回退设置。
       // SubagentSection 是 apply 内的函数声明，晚于本处定义但早于 ServicePanel 调用，
       // 而组件只在渲染期被引用（不是立即求值），故这里传引用是安全的。
       const { ModelsSection, canLeave: canLeaveModelConfig } = createModelConfig({
@@ -7314,7 +7314,7 @@
               ? React.createElement(RemoteQuotaCard, null)
             : visiblePrimaryTab === 'models'
               // SubagentSection 是 apply 内后置的函数声明；此处只在渲染期求值，不受声明顺序影响。
-              ? React.createElement(ModelsSection, { SubagentSection })
+              ? React.createElement(ModelsSection, { SubagentSection, FallbackSection: mainModelFallback.SettingsSection })
             : visiblePrimaryTab === 'maintenance'
               ? (visibleMaintenanceTab === null
                   ? React.createElement('div', { 'data-testid': 'maintenance-empty', style: displaySurface }, translate('maintenance.empty'))

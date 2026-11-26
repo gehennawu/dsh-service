@@ -195,6 +195,7 @@ function createHost(overrides = {}) {
       healthz: true,
       skillManager: true,
       subagentRoute: true,
+      mainModelFallback: true,
       ...overrides.featureSettings,
     }
     // 已注册 schema 的解析口径（真机 SettingsProvider.resolve：base 与用户层并层后过 schema）。
@@ -2146,14 +2147,20 @@ test('RPC channel waits for webServer when connection activates before it (DSH 0
   assert.ok(routes.some((r) => r.path === '/dsh-service' && r.kind === 'prefix'), 'the channel is registered once webServer arrives')
 })
 
-test('main model quota fallback endpoints remain on the existing private channel', async () => {
-  const host = createHost()
+test('main model quota fallback endpoints remain private and follow the feature switch', async () => {
+  const host = createHost({ featureSettings: {}, settingsKind: 'forms' })
   assert.deepEqual(await host.handler('main-model-fallback', { sessionId: 'not-a-live-agent' }), {
     ok: true, value: { available: false, enabled: false },
   })
   assert.deepEqual(await host.handler('main-model-fallback-save', { sessionId: '' }), {
     ok: false, error: 'invalid-session',
   })
+  await host.pushVolatileConfig({ mainModelFallback: false })
+  for (const endpoint of ['main-model-fallback', 'main-model-fallback-save']) {
+    assert.deepEqual(await host.handler(endpoint, { sessionId: 'not-a-live-agent' }), { ok: false, error: 'feature-disabled' })
+  }
+  await host.pushVolatileConfig({ mainModelFallback: true })
+  assert.equal((await host.handler('main-model-fallback', { sessionId: 'not-a-live-agent' })).ok, true)
 })
 
 test('RPC dispatcher records unexpected handler failures as technical errors', async () => {
@@ -2244,6 +2251,7 @@ test('legacy settings section schema resolves to plain JSON booleans, never vola
     healthz: false,
     skillManager: true,
     subagentRoute: true,
+    mainModelFallback: true,
     subagentModelsDock: true,
     mobileAdaptation: true,
     sessionManager: true,
@@ -2327,6 +2335,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    mainModelFallback: true,
     subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,
@@ -2350,6 +2359,7 @@ test('feature settings namespace defaults on and disabled capabilities hot-enabl
     healthz: true,
     skillManager: true,
     subagentRoute: true,
+    mainModelFallback: true,
     subagentModelsDock: true,
     mobileAdaptation: false,
     sessionManager: true,

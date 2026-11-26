@@ -25,14 +25,17 @@ function decodeConfig(text) {
     if (selection.reasoningEffort !== undefined && !isId(selection.reasoningEffort)) throw new Error('invalid fallback reasoning effort')
     config.set(id, { enabled: selection.enabled, ...selectRoute(selection) })
   }
-  return config
+  const global = raw.global ?? OFF
+  if (typeof global.enabled !== 'boolean' || (global.enabled || global.provider !== undefined || global.model !== undefined) && !isRoute(global)
+    || (global.reasoningEffort !== undefined && (!isRoute(global) || !isId(global.reasoningEffort)))) throw new Error('invalid global fallback')
+  return { sessions: config, global: { enabled: global.enabled, ...selectRoute(global) } }
 }
 
 async function persist(file, config) {
   const temporary = `${file}.${randomUUID()}.tmp`
   const handle = await open(temporary, 'wx', 0o600)
   try {
-    try { await handle.writeFile(JSON.stringify({ version: 1, sessions: [...config] }) + '\n') }
+    try { await handle.writeFile(JSON.stringify({ version: 1, sessions: [...config.sessions], global: config.global }) + '\n') }
     finally { await handle.close() }
     await rename(temporary, file)
   } finally {
@@ -69,7 +72,7 @@ function resumableTurn(session, turn) {
   return false
 }
 
-export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTechnicalFailure }) {
+export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTechnicalFailure, listModels, featureGeneration = () => 0 }) {
   const file = join(dir, 'dsh-service-main-model-fallback.json')
   const candidates = new WeakMap()
   const scheduled = new WeakSet()
@@ -80,14 +83,21 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   let load
   let disposed = false
   const read = () => load ??= readFile(file, 'utf8').then(decodeConfig, (error) => {
-    if (error?.code === 'ENOENT') return new Map()
+    if (error?.code === 'ENOENT') return { sessions: new Map(), global: OFF }
     throw error
   }).then((loaded) => config = loaded)
+  // A local model wins independently of the local opt-in. Global opt-in
+  // applies to all main conversations but does not rewrite their saved flag.
+  const effective = (state, id) => {
+    const local = state?.sessions.get(id)
+    const global = state?.global
+    return { selected: local ?? (global?.enabled ? global : undefined), enabled: local?.enabled === true || global?.enabled === true }
+  }
   const isBlockedByGoal = (agent) => ctx.get('goals')?.get?.(agent)?.phase === 'active'
   const agents = () => ctx.get('agents')
   const getAgent = (id) => agents()?.get?.(id)
   const canList = () => typeof ctx.get('llm')?.listModels === 'function' && typeof ctx.get('llm')?.resolveModelInfo === 'function'
-  const available = (agent) => !disposed && agentSupported(agent) && canList()
+  const available = (agent) => featureGeneration() !== null && !disposed && agentSupported(agent) && canList()
 
   async function catalogModel(route, signal) {
     await providerAvailability?.loading
@@ -101,9 +111,10 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
 
   async function resume(agent, event, candidate, selected, revision) {
     const { session } = agent
-    const stillValid = () => available(agent) && !candidate.signal.aborted && agent.status === 'idle'
+    const stillValid = () => available(agent) && featureGeneration() === candidate.generation && !candidate.signal.aborted && agent.status === 'idle'
       && getAgent(session.id) === agent && session.seq === revision && !agent.inbox.hasPending
-      && config.get(session.id) === selected && !pendingWrites.has(session.id) && !isBlockedByGoal(agent)
+      && effective(config, session.id).selected === selected && effective(config, session.id).enabled
+      && config.global === candidate.global && !pendingWrites.has(session.id) && !pendingWrites.has(null) && !isBlockedByGoal(agent)
       && sameSelection(agent.model.current(), candidate.selection)
       && providerAvailability?.modelEnabled(selected.provider, selected.model) !== false
     await agent.whenIdle()
@@ -137,28 +148,28 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   function onRequestError({ agent, turn, step, provider, failure, signal }, next) {
     if (!available(agent)) return next()
     candidates.delete(agent)
-    const selected = config?.get(agent.session.id)
+    const { selected, enabled } = effective(config, agent.session.id)
     try {
       const selection = agent.model.current()
       const attempted = agent.session.requestHeader()?.config
-      if (selected?.enabled && QUOTA_CODES.has(failure?.code) && signal?.aborted === false
+      if (selected && enabled && QUOTA_CODES.has(failure?.code) && signal?.aborted === false
         && isRoute(selection) && provider === selection.provider && sameRoute(selection, attempted) && !sameRoute(selected, selection)
         && !agent.inbox.hasPending && !isBlockedByGoal(agent)) {
-        candidates.set(agent, { turn, step, code: failure.code, signal, selection: { ...selection }, selected })
+        candidates.set(agent, { turn, step, code: failure.code, signal, global: config.global, generation: featureGeneration(), selection: { ...selection }, selected })
       }
     } catch (_) { /* Keep the original host failure on unavailable session state. */ }
     return next()
   }
 
   function onEvent(session, event) {
-    if (disposed || !config?.has(session.id) || event.type !== 'turn/end') return
+    if (disposed || !config || event.type !== 'turn/end') return
     const agent = getAgent(session.id)
     if (!agent || agent.session !== session) return
     const candidate = candidates.get(agent)
     candidates.delete(agent)
-    if (candidate === undefined || scheduled.has(agent) || event.data.turn !== candidate.turn
+    if (candidate === undefined || featureGeneration() !== candidate.generation || scheduled.has(agent) || event.data.turn !== candidate.turn
       || event.data.reason?.kind !== 'error' || event.data.reason.error?.code !== candidate.code
-      || config.get(session.id) !== candidate.selected || session.seq !== event.seq + 1) return
+      || config.global !== candidate.global || effective(config, session.id).selected !== candidate.selected || session.seq !== event.seq + 1) return
     scheduled.add(agent)
     void resume(agent, event, candidate, candidate.selected, session.seq)
       .catch(() => ctx.logger?.warn?.('dsh-service: quota fallback could not continue the session'))
@@ -175,48 +186,66 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     }, 'dsh-service main model quota fallback')
   }
 
-  const route = (save) => ({ ...(save ? { audit: true } : {}), handle: async (payload) => {
-    const id = payload?.sessionId
-    if (!isId(id)) return { ok: false, error: 'invalid-session' }
-    const agent = getAgent(id)
-    if (!available(agent)) return { ok: true, value: { available: false, ...OFF } }
+  const route = (save, global = false) => ({ feature: 'mainModelFallback', ...(save ? { audit: true } : {}), handle: async (payload) => {
+    const generation = featureGeneration()
+    const id = global ? null : payload?.sessionId
+    if (!global && !isId(id)) return { ok: false, error: 'invalid-session' }
+    const agent = global ? null : getAgent(id)
+    const valid = () => !disposed && featureGeneration() !== null && featureGeneration() === generation && (global ? canList() : available(agent) && getAgent(id) === agent)
+    const view = (state) => {
+      if (global) return { available: true, ...state.global }
+      const local = state.sessions.get(id)
+      const { selected, enabled } = effective(state, id)
+      return { available: true, ...(selected ?? OFF), enabled, ...(state.global.enabled ? { globalEnabled: true, inherited: !local, localEnabled: local?.enabled === true } : {}) }
+    }
+    if (!valid()) return { ok: true, value: { available: false, ...OFF } }
     if (!save) {
       try {
         // The initial load promise keeps the original map; writes publish a new one.
         // Reopening during a save should also see its committed value (or the last
         // good value if the write failed).
-        await pendingWrites.get(id)?.catch(() => {})
+        await Promise.all([pendingWrites.get(id)?.catch(() => {}), !global && pendingWrites.get(null)?.catch(() => {})])
         const current = config ?? await read()
-        if (!available(agent) || getAgent(id) !== agent) return { ok: true, value: { available: false, ...OFF } }
-        return { ok: true, value: { available: true, ...(current.get(id) ?? OFF) } }
+        if (!valid()) return { ok: true, value: { available: false, ...OFF } }
+        return { ok: true, value: view(current) }
       } catch (error) { return rpcTechnicalFailure(error) }
     }
-    if (typeof payload.enabled !== 'boolean') return { ok: false, error: 'invalid-fallback-state' }
+    const reset = !global && payload?.inherit === true
+    if (!reset && typeof payload?.enabled !== 'boolean') return { ok: false, error: 'invalid-fallback-state' }
     if ((payload.provider !== undefined || payload.model !== undefined) && !isRoute(payload)) return { ok: false, error: 'invalid-model-route' }
     if (payload.reasoningEffort !== undefined && (!isId(payload.reasoningEffort) || !isRoute(payload))) return { ok: false, error: 'invalid-reasoning-effort' }
     const write = async () => {
       const current = config ?? await read()
-      const old = current.get(id)
-      const selected = isRoute(payload) ? selectRoute(payload) : old
+      if (!valid()) return { ok: true, value: { available: false, ...OFF } }
+      const old = global ? current.global : current.sessions.get(id)
+      if (reset) {
+        if (!old) return { ok: true, value: view(current) }
+        const next = { ...current, sessions: new Map(current.sessions) }
+        next.sessions.delete(id)
+        await persist(file, next)
+        config = next
+        return { ok: true, value: view(next) }
+      }
+      const selected = isRoute(payload) ? selectRoute(payload) : isRoute(old) ? old : null
       if (payload.enabled && !selected) return { ok: false, error: 'invalid-model-route' }
       const changedRoute = selected && !sameRoute(old, selected)
       const changedSelection = selected && !sameSelection(old, selected)
       if (selected && (changedSelection || payload.enabled)) {
-        if ((changedRoute || payload.enabled) && sameRoute(agent.model.current(), selected)) return { ok: false, error: 'same-model-route' }
+        if ((changedRoute || payload.enabled) && !global && sameRoute(agent.model.current(), selected)) return { ok: false, error: 'same-model-route' }
         const model = await catalogModel(selected)
         if (!model) return { ok: false, error: 'invalid-model-route' }
         if (!effortSupported(model, selected.reasoningEffort)) return { ok: false, error: 'invalid-reasoning-effort' }
       }
-      if (!available(agent) || getAgent(id) !== agent) return { ok: true, value: { available: false, ...OFF } }
-      if (selected && (changedRoute || payload.enabled) && sameRoute(agent.model.current(), selected)) return { ok: false, error: 'same-model-route' }
-      if (!selected) return { ok: true, value: { available: true, ...OFF } }
-      if (!old && current.size >= MAX_ENTRIES) return { ok: false, error: 'fallback-config-full' }
+      if (!valid()) return { ok: true, value: { available: false, ...OFF } }
+      if (selected && (changedRoute || payload.enabled) && !global && sameRoute(agent.model.current(), selected)) return { ok: false, error: 'same-model-route' }
+      if (!selected) return { ok: true, value: view(current) }
+      if (!global && !old && current.sessions.size >= MAX_ENTRIES) return { ok: false, error: 'fallback-config-full' }
       const value = { enabled: payload.enabled, ...selectRoute(selected) }
-      if (old?.enabled === value.enabled && !changedSelection) return { ok: true, value: { available: true, ...value } }
-      const next = new Map(current).set(id, value)
+      if (old?.enabled === value.enabled && !changedSelection) return { ok: true, value: view(current) }
+      const next = global ? { ...current, global: value } : { ...current, sessions: new Map(current.sessions).set(id, value) }
       await persist(file, next)
       config = next
-      return { ok: true, value: { available: true, ...value } }
+      return { ok: true, value: view(next) }
     }
     const pending = writeTail.then(write)
     pendingWrites.set(id, pending)
@@ -229,6 +258,24 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   return {
     install,
     dispose: () => { disposed = true; lifetime.abort() },
-    routes: { 'main-model-fallback': route(false), 'main-model-fallback-save': route(true) },
+    routes: { 'main-model-fallback': route(false),  'main-model-fallback-save': route(true),
+      'main-model-fallback-defaults': route(false, true), 'main-model-fallback-defaults-save': route(true, true),
+      'main-model-fallback-catalog': { feature: 'mainModelFallback', handle: async () => {
+        const generation = featureGeneration()
+        if (generation === null || disposed || !canList() || !listModels) return { ok: false, error: 'unsupported' }
+        try {
+          await providerAvailability?.loading
+          const { models } = await listModels(ctx.get('llm'))
+          if (generation !== featureGeneration() || disposed) return { ok: false, error: 'feature-disabled' }
+          const groups = new Map()
+          for (const { provider, providerName, id, name, reasoning } of models) {
+            if (providerAvailability?.modelEnabled(provider, id) === false) continue
+            if (!groups.has(provider)) groups.set(provider, { id: provider, name: providerName, models: [] })
+            groups.get(provider).models.push({ id, name, ...(reasoning ? { reasoning } : {}) })
+          }
+          return { ok: true, value: { groups: [...groups.values()] } }
+        } catch (error) { return rpcTechnicalFailure(error) }
+      } },
+    },
   }
 }

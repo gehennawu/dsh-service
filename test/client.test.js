@@ -168,6 +168,8 @@ function createRenderer(rpcCall, options = {}) {
   let currentSlot
   let hookCursor = 0
   const hookCounts = new Map()
+  const componentIds = new WeakMap()
+  let nextComponentId = 0
   let roots = new Map()
   let reloads = 0
   // React #31 语义（真实 react-dom 行为）：children 里出现「裸对象」——不是本替身
@@ -276,7 +278,8 @@ function createRenderer(rpcCall, options = {}) {
       const previousComponent = currentComponent
       const previousCursor = hookCursor
       const epochSuffix = currentSlot === 'conversation.input.right' && options.strictSessionSlots === true ? ':' + sessionSlot.epoch : ''
-      currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + node.type.name + epochSuffix
+      if (!componentIds.has(node.type)) componentIds.set(node.type, ++nextComponentId)
+      currentComponent = currentSlot === undefined ? node.type : currentSlot + ':' + componentIds.get(node.type) + epochSuffix
       hookCursor = 0
       // 真实 react-dom 语义：createElement 的第三参及之后会成为 props.children
       // （单子为值本身、多子为数组、无子为 undefined）。替身此前只转交 props，
@@ -599,6 +602,7 @@ function createRenderer(rpcCall, options = {}) {
           return () => { if (typeof disposer === 'function') disposer() }
         },
         get(service) {
+          if (service === 'sessions') return this.sessions
           if (service === 'modelDirectories') return activeModelDirectories
           // 设置服务：门面按能力探测读取，故这里也走 get。默认老版路径（settingsScope），
           // `settingsBackend: 'configForms'` 模拟 0.1.7-alpha.1（只有 configForms），
@@ -16320,13 +16324,14 @@ test('models page renders inside the primary tab, fetches a zero-network snapsho
   assert.equal(models3Calls(calls, 'models3-snapshot').length, 1, 'switching subpages does not refetch the snapshot')
 })
 
-test('models page sub-tabs hide when only the providers subpage applies', async () => {
+test('models page explains where to restore fallback when all model features are off', async () => {
   const { calls, rpc } = models3Fixture()
-  const renderer = createRenderer(rpc, { featureSettings: { subagentRoute: false } })
+  const renderer = createRenderer(rpc, { featureSettings: { subagentRoute: false, mainModelFallback: false } })
   await renderer.load()
   await openModelsPage(renderer)
   assert.equal(renderer.hasTest('model-providers'), true)
-  assert.equal(renderer.hasTest('models-tab-providers'), false, 'a single subpage renders without the sub-tab bar')
+  assert.equal(renderer.hasTest('models-tab-providers'), true)
+  assert.equal(renderer.hasTest('models-tab-fallback'), true)
   assert.equal(renderer.hasTest('models-tab-subagent'), false)
   assert.equal(models3Calls(calls, 'subagent-route').length, 0, 'the subagent route is never queried while its feature is off')
 })
@@ -16334,7 +16339,7 @@ test('models page sub-tabs hide when only the providers subpage applies', async 
 test('models page gates its providers and subagent subpages independently', async () => {
   // modelCatalog 关、subagentRoute 开：主标签仍在（子代理独立可达），供应商子页消失且零 models3 请求。
   const { calls, rpc } = models3Fixture()
-  const renderer = createRenderer(rpc, { featureSettings: { modelCatalog: false } })
+  const renderer = createRenderer(rpc, { featureSettings: { modelCatalog: false, mainModelFallback: false } })
   await renderer.load()
   assert.equal(renderer.hasTest('service-tab-models'), true, 'closing model editing must not hide the still-enabled subagent routing')
   await openModelsPage(renderer)
@@ -16343,11 +16348,15 @@ test('models page gates its providers and subagent subpages independently', asyn
   assert.equal(renderer.hasTest('models-tab-providers'), false, 'a single remaining subpage renders without the sub-tab bar')
   assert.equal(renderer.hasTest('subagent-section'), true, 'the subagent subpage owns the page')
   assert.equal(calls.some((call) => call.endpoint.startsWith('models3-')), false, 'a disabled providers subpage never fetches its endpoints')
-  // 两个功能都关：连主标签一起消失，且没有任何模型配置/子代理请求。
+  // 关闭供应商和子代理后，回退总开关仍可用。
   const off = models3Fixture()
-  const offRenderer = createRenderer(off.rpc, { featureSettings: { modelCatalog: false, subagentRoute: false } })
+  const offRenderer = createRenderer(off.rpc, { featureSettings: { modelCatalog: false, subagentRoute: false, mainModelFallback: false } })
   await offRenderer.load()
-  assert.equal(offRenderer.hasTest('service-tab-models'), false, 'the tab disappears when both features are off')
+  assert.equal(offRenderer.hasTest('service-tab-models'), true)
+  await openModelsPage(offRenderer)
+  assert.equal(offRenderer.hasTest('main-model-fallback-master-switch'), false)
+  assert.match(offRenderer.text('settings.section'), /可在「插件配置」中重新开启/)
+  assert.equal(offRenderer.hasTest('main-model-fallback-switch'), false)
   assert.equal(off.calls.some((call) => call.endpoint.startsWith('models3-') || call.endpoint === 'subagent-route'), false, 'a disabled page never fetches its endpoints')
 })
 
@@ -19215,6 +19224,73 @@ function fallbackPaneProps(extra = {}) {
 function fallbackOptionProps(extra = {}) {
   return Object.assign({ sessionId: 'session-1', locked: false, openPane() {} }, extra)
 }
+
+test('main model fallback settings edit global policy without reading or writing conversation settings', async () => {
+  let defaults = { available: true, enabled: false }
+  let local
+  const models = [{ id: 'alt', name: 'Alt' }, { id: 'other', name: 'Other' }]
+  const groups = [{ id: 'provA', models }]
+  const view = () => ({ ...defaults, ...local, enabled: defaults.enabled || local?.enabled === true,
+    globalEnabled: defaults.enabled, inherited: !local, localEnabled: local?.enabled === true })
+  const { calls, rpc } = models3Fixture({
+    'main-model-fallback-defaults': () => ({ ok: true, value: defaults }),
+    'main-model-fallback-defaults-save': (payload) => { defaults = { ...defaults, ...payload }; return { ok: true, value: defaults } },
+    'main-model-fallback-catalog': () => ({ ok: true, value: { groups } }),
+    'main-model-fallback': () => ({ ok: true, value: view() }),
+    'main-model-fallback-save': ({ sessionId, ...payload }) => {
+      assert.equal(sessionId, 'session-1')
+      local = payload.inherit ? undefined : payload
+      return { ok: true, value: view() }
+    },
+  })
+  const renderer = createRenderer(rpc, {
+    slotProps: { 'conversation.input.model.options': fallbackOptionProps(), 'conversation.input.model.pane': fallbackPaneProps() },
+    modelDirectories: fallbackModelDirectories({ groups }),
+  })
+  await renderer.load()
+  renderer.unmount('conversation.input.model.options')
+  renderer.unmount('conversation.input.model.pane')
+  const reads = calls.filter(({ endpoint }) => endpoint === 'main-model-fallback').length
+  await openModelsPage(renderer)
+  renderer.findByTestId('models-tab-fallback').props.onClick()
+  await settle(renderer)
+  assert.match(renderer.text('settings.section'), /为所有对话启用回退/)
+  assert.match(renderer.text('settings.section'), /关闭全局回退后，仍可在单个对话中设置后备模型并启用回退/)
+  const fallbackSettings = renderer.findByTestId('main-model-fallback-settings')
+  assert.equal(fallbackSettings.props.style.background, undefined)
+  assert.equal(fallbackSettings.props.style.border, undefined)
+  const enableGroup = fallbackSettings.children.flat(Infinity).find((node) => node?.props?.['data-dshsvc-main-model-fallback-pane'] !== undefined)
+    ?.children.flat(Infinity).find((node) => node?.children?.some((child) => child?.props?.id === 'dshsvc-main-model-fallback-enable-desc-global'))
+  assert.ok(enableGroup, 'the global switch description belongs to the enable group')
+  assert.equal(enableGroup.props.style.background, undefined)
+  assert.equal(enableGroup.props.style.border, undefined)
+  assert.equal(renderer.hasTest('main-model-fallback-master-switch'), false)
+  renderer.findByTestId('main-model-fallback-model-summary').props.onClick()
+  await settle(renderer)
+  renderer.findAllByTestIdPrefix('main-model-fallback-model-option')[0].props.onClick()
+  await settle(renderer)
+  renderer.findByTestId('main-model-fallback-switch').props.onClick()
+  await settle(renderer)
+  assert.equal(defaults.enabled, true)
+  assert.equal(defaults.model, 'alt')
+  assert.equal(calls.filter(({ endpoint }) => endpoint === 'main-model-fallback').length, reads)
+  renderer.findByTestId('models-tab-providers').props.onClick()
+  renderer.mount('conversation.input.model.pane')
+  renderer.mount('conversation.input.model.options')
+  await settle(renderer)
+  assert.match(renderer.text('conversation.input.model.pane'), /正在使用全局后备模型/)
+  renderer.findByTestId('main-model-fallback-model-summary').props.onClick()
+  await settle(renderer)
+  renderer.findAllByTestIdPrefix('main-model-fallback-model-option').find((row) => row.props['data-model-id'] === 'other').props.onClick()
+  await settle(renderer)
+  assert.match(renderer.text('conversation.input.model.options'), /Other/)
+  assert.equal(local.enabled, false)
+  assert.equal(defaults.model, 'alt')
+  renderer.findByTestId('main-model-fallback-use-global').props.onClick()
+  await settle(renderer)
+  assert.match(renderer.text('conversation.input.model.options'), /Alt/)
+  renderer.disposeFactory()
+})
 
 test('main model fallback row sits after agent-team, shows the saved state, and rechecks on every menu open', async () => {
   const calls = []

@@ -122,6 +122,7 @@ const DEFAULT_FEATURE_SETTINGS = Object.freeze({
   healthz: true,
   skillManager: true,
   subagentRoute: true,
+  mainModelFallback: true,
   // v1.2：输入框底部常驻子代理模型累计行（独立于路由功能，可在子代理页单独关闭）。
   subagentModelsDock: true,
   // v0.31 用户点名：移动端适配默认改为关闭（需要时到插件配置卡打开）。
@@ -5587,9 +5588,12 @@ function apply(ctx, featureConfig) {
   // 两方都不在时（测试替身/精简环境）保持内存默认值，绝不抛非受控异常。
   let legacyFeatureValue
   let configFeatureValue
+  let fallbackGeneration = 0
   const refreshFeatureSettings = () => {
+    const wasEnabled = featureSettings.mainModelFallback !== false
     const next = legacyFeatureValue ?? configFeatureValue
     featureSettings = next === undefined ? DEFAULT_FEATURE_SETTINGS : Object.assign({}, DEFAULT_FEATURE_SETTINGS, next)
+    if (wasEnabled !== (featureSettings.mainModelFallback !== false)) fallbackGeneration++
     publishFeatureSettings()
   }
   const readFeatureConfig = (config) => {
@@ -6697,6 +6701,8 @@ function apply(ctx, featureConfig) {
     dir: typeof modelProfileDir === 'string' && modelProfileDir !== '' ? modelProfileDir : dshHome,
     providerAvailability,
     rpcTechnicalFailure,
+    listModels: listSubagentModels,
+    featureGeneration: () => featureEnabled('mainModelFallback') ? fallbackGeneration : null,
   })
   ctx.effect(() => mainModelFallback.dispose)
   ctx.inject(['agents', 'llm'], (scope) => { mainModelFallback.install(scope) })

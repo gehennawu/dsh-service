@@ -1268,12 +1268,16 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     )
   }
 
-  function ModelsSection({ SubagentSection }) {
+  function ModelsSection({ SubagentSection, FallbackSection }) {
     const tr = useTranslation()
     const { value: features } = useFeatures()
     const [modelsNav, setModelsNav] = modelsNavToggle ? modelsNavToggle.useEnabled() : [false, () => {}]
     const [tab, setTab] = useState('providers')
-    const items = [...(features.modelCatalog !== false ? [{ id: 'providers', label: tr('tabs.providers') }] : []), ...(features.subagentRoute !== false ? [{ id: 'subagent', label: tr('tabs.subagentRoute') }] : [])]
+    const items = [
+      ...(features.modelCatalog !== false ? [{ id: 'providers', label: tr('tabs.providers') }] : []),
+      ...(features.subagentRoute !== false ? [{ id: 'subagent', label: tr('tabs.subagentRoute') }] : []),
+      ...(FallbackSection ? [{ id: 'fallback', label: tr('mainModelFallback.label') }] : []),
+    ]
     const active = items.some((x) => x.id === tab) ? tab : items[0]?.id
     const navSwitchRow = modelsNavToggle ? el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', marginBottom: '4px' } },
       el('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, tr('models.navToggleHint')),
@@ -1291,7 +1295,7 @@ function createModelConfig({ useTranslation, rpcCall, SvcTabs, useFeatures, mode
     return el('div', { 'data-testid': 'models-page', 'data-dshsvc-root': '' },
       navSwitchRow,
       items.length > 1 ? el(SvcTabs, { items, activeId: active, onChange: (id) => { if (canLeave()) setTab(id) }, testIdPrefix: 'models-tab', variant: 'sub', ariaLabel: tr('tabs.models') }) : null,
-      active === 'providers' ? el(Providers, null) : active === 'subagent' ? el(SubagentSection, null) : null
+      active === 'providers' ? el(Providers, null) : active === 'subagent' ? el(SubagentSection, null) : active === 'fallback' ? el(FallbackSection, null) : null
     )
   }
 
