@@ -14,6 +14,36 @@ const sameSelection = (left, right) => sameRoute(left, right) && left?.reasoning
 const effortSupported = (model, effort) => effort === undefined || (Array.isArray(model.reasoning?.efforts) && model.reasoning.efforts.some((level) => level.id === effort))
 const selectRoute = ({ provider, model, reasoningEffort }) => ({ provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) })
 
+const ZHIPU_WINDOW = /^已达到\s*[1-9]\d{0,2}\s*(?:小时|天|周|个月)\s*(?:的)?使用上限[。.]\s*您的限额将在\s*(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)\s*重置[。.]?$/
+const SUBSCRIPTION_WINDOW_ZH = /^(?:(?:您(?:的)?\s*)?(?:订阅|套餐)(?:的)?(?:用量|使用)?\s*(?:额度|配额|限额)(?:已)?(?:耗尽|用完|用尽)|(?:您)?已(?:达到|用完)(?:订阅|套餐)(?:的)?(?:使用上限|用量上限|额度))[。.!！]\s*(?:(?:您的)?(?:额度|配额|限额)将?在\s*)?(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)\s*(?:重置|恢复)[。.]?$/
+const SUBSCRIPTION_WINDOW_EN = /^(?:(?:you(?: have|['’]ve)? (?:hit|reached|exceeded) (?:your|the) (?:subscription|plan) (?:usage limit|quota|usage allowance))|(?:(?:your |the )?(?:subscription|plan) (?:usage limit|quota|usage allowance) (?:has been |is )?(?:reached|exhausted|used up|exceeded)))[.!]\s*(?:(?:your |the )?(?:quota|usage limit|usage allowance) (?:will reset|resets)|resets?) at\s+(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)(?:Z| UTC)?[.!]?$/i
+
+// Only interpret a 429 error body; don't search arbitrary response text for words.
+function isQuotaFailure(provider, failure) {
+  if (QUOTA_CODES.has(failure?.code)) return true
+  if (failure?.code !== 'RATE_LIMIT' || typeof failure.message !== 'string' || failure.message.length > 4096) return false
+  const body = /^429\s+([\s\S]+)$/.exec(failure.message)
+  if (!body) return false
+  let message = body[1].trim()
+  let vendorCode
+  if (message.startsWith('{')) {
+    let response
+    try { response = JSON.parse(message) } catch { return false }
+    const error = response?.error ?? response
+    vendorCode = error?.code
+    message = error?.message
+  }
+  if (typeof message !== 'string') return false
+  const reset = provider === 'zai-coding-cn'
+    ? ((vendorCode === '1308' || vendorCode === 1308) && ZHIPU_WINDOW.exec(message.trim()))
+    : SUBSCRIPTION_WINDOW_ZH.exec(message.trim()) ?? SUBSCRIPTION_WINDOW_EN.exec(message.trim())
+  if (!reset) return false
+  const timestamp = `${reset[1]}T${reset[2]}`
+  const date = new Date(`${timestamp}Z`)
+  // Check calendar validity without interpreting the provider's local timezone.
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 19) === timestamp
+}
+
 function decodeConfig(text) {
   const raw = JSON.parse(text)
   if (raw?.version !== 1 || !Array.isArray(raw.sessions) || raw.sessions.length > MAX_ENTRIES) throw new Error('invalid fallback configuration')
@@ -83,6 +113,9 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   const scheduled = new WeakSet()
   const continuations = new WeakMap()
   const contextFailures = new WeakMap()
+  const noticeEpoch = randomUUID()
+  const swapNotices = []
+  let noticeSequence = 0
   const pendingWrites = new Map()
   const lifetime = new AbortController()
   let writeTail = Promise.resolve()
@@ -171,10 +204,13 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     try {
       const selection = agent.model.current()
       const attempted = agent.session.requestHeader()?.config
-      if (selected && enabled && QUOTA_CODES.has(failure?.code) && signal?.aborted === false
+      if (selected && enabled && isQuotaFailure(provider, failure) && signal?.aborted === false
         && isRoute(selection) && provider === selection.provider && sameRoute(selection, attempted) && !sameRoute(selected, selection)
         && !agent.inbox.hasPending && !isBlockedByGoal(agent)) {
         candidates.set(agent, { turn, step, code: failure.code, signal, global: config.global, generation: featureGeneration(), selection: { ...selection }, selected })
+        // End the failed turn instead of letting the retry plugin consume this
+        // confirmed window exhaustion. The normal turn/end safety checks still apply.
+        if (provider === 'zai-coding-cn' && failure.code === 'RATE_LIMIT') return Promise.resolve(undefined)
       }
     } catch (_) { /* Keep the original host failure on unavailable session state. */ }
     return next()
@@ -193,6 +229,10 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       const next = { ...config, sessions: new Map(config.sessions).set(session.id, value) }
       await persist(file, next)
       config = next
+      if (!disposed && featureGeneration() === candidate.generation) {
+        swapNotices.push({ sequence: ++noticeSequence, primary: candidate.selected.model, backup: candidate.selection.model })
+        if (swapNotices.length > 64) swapNotices.shift()
+      }
     })
     pendingWrites.set(session.id, pending)
     writeTail = pending.catch(() => {})
@@ -228,6 +268,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     candidates.delete(agent)
     if (candidate === undefined || featureGeneration() !== candidate.generation || scheduled.has(agent) || event.data.turn !== candidate.turn
       || event.data.reason?.kind !== 'error' || event.data.reason.error?.code !== candidate.code
+      || !isQuotaFailure(candidate.selection.provider, event.data.reason.error)
       || config.global !== candidate.global || !effective(config, session.id).enabled || effective(config, session.id).selected !== candidate.selected || session.seq !== event.seq + 1) return
     scheduled.add(agent)
     void resume(agent, event, candidate, candidate.selected, session.seq)
@@ -239,7 +280,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   function install(scope) {
     void read().catch(() => ctx.logger?.warn?.('dsh-service: session quota fallback settings could not be loaded'))
     return scope.effect(() => {
-      const stopRequest = scope.on('agent/request-error', onRequestError)
+      const stopRequest = scope.on('agent/request-error', onRequestError, { prepend: true })
       const stopEvents = scope.on('session/event', onEvent)
       return () => { stopEvents(); stopRequest() }
     }, 'dsh-service main model quota fallback')
@@ -358,6 +399,13 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     dispose: () => { disposed = true; lifetime.abort() },
     routes: { 'main-model-fallback': route(false),  'main-model-fallback-save': route(true),
       'main-model-fallback-defaults': route(false, true), 'main-model-fallback-defaults-save': route(true, true),
+      'main-model-fallback-notices': { feature: 'mainModelFallback', handle: (payload) => {
+        const { epoch, after } = payload ?? {}
+        const current = !disposed && featureGeneration() !== null
+        const events = current && epoch === noticeEpoch && Number.isSafeInteger(after) && after >= 0
+          ? swapNotices.filter((notice) => notice.sequence > after) : []
+        return { ok: true, value: { epoch: noticeEpoch, sequence: noticeSequence, events } }
+      } },
       'main-model-fallback-catalog': { feature: 'mainModelFallback', handle: async () => {
         const generation = featureGeneration()
         if (generation === null || disposed || !canList() || !listModels) return { ok: false, error: 'unsupported' }

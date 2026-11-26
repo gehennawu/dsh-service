@@ -37,18 +37,20 @@ async function fixture(t) {
     agents.set(id, agent)
     return agent
   }
-  async function fail(agent, { code = 'ACCOUNT_QUOTA', tool, beforeEnd, provider = agent.model.current().provider, turn = 1 } = {}) {
+  async function fail(agent, { code = 'ACCOUNT_QUOTA', tool, beforeEnd, message, endMessage = message, provider = agent.model.current().provider, turn = 1 } = {}) {
     const { events, session } = agent
     events.push({ type: 'turn/start', data: { turn } }, { type: 'user/message', data: { source: { kind: 'user' } } })
     if (tool) events.push({ type: 'tool/call', data: { turn, callId: 'tool' } })
     if (tool === 'done') events.push({ type: 'tool/result', data: { turn, message: { toolCallId: 'tool' } } })
-    listeners.get('agent/request-error')({ agent, turn, step: 2, provider, failure: { code }, signal: new AbortController().signal }, () => {})
+    let forwarded = false
+    await listeners.get('agent/request-error')({ agent, turn, step: 2, provider, failure: { code, message }, signal: new AbortController().signal }, () => { forwarded = true })
     beforeEnd?.()
-    const event = { seq: events.length, type: 'turn/end', data: { turn, reason: { kind: 'error', error: { code } } } }
+    const event = { seq: events.length, type: 'turn/end', data: { turn, reason: { kind: 'error', error: { code, message: endMessage } } } }
     events.push(event)
     listeners.get('session/event')(session, event)
     listeners.get('session/event')(session, event)
     await setImmediate()
+    return forwarded
   }
   function completeContinuation(agent, { code, admitted = true, turn = 2 } = {}) {
     const emit = (type, data) => {
@@ -66,8 +68,58 @@ async function fixture(t) {
   const save = (id, args = { enabled: true, ...backup }) => fallback.routes['main-model-fallback-save'].handle({ sessionId: id, ...args })
   const getGlobal = (instance = fallback) => instance.routes['main-model-fallback-defaults'].handle({})
   const saveGlobal = (payload) => fallback.routes['main-model-fallback-defaults-save'].handle(payload)
-  return { add, create, fail, completeContinuation, get, save, state, getGlobal, saveGlobal }
+  const notices = (payload) => fallback.routes['main-model-fallback-notices'].handle(payload).value
+  return { add, create, fail, completeContinuation, get, save, state, getGlobal, saveGlobal, notices }
 }
+
+test('only confirmed Zhipu Coding 1308 window exhaustion falls back after the turn ends', async (t) => {
+  const h = await fixture(t)
+  const text = '已达到 5 小时的使用上限。您的限额将在 2026-11-27 00:57:36 重置。'
+  const message = (code, message) => `429 ${JSON.stringify({ error: { code, message } })}`
+  const quota = message('1308', text)
+  for (const [name, provider, error, final = error] of [
+    ['flat', 'zai-coding-cn', `429 ${JSON.stringify({ code: '1308', message: text })}`],
+    ['nested', 'zai-coding-cn', quota],
+    ['other-provider', 'primary', quota],
+    ['ordinary-rate', 'zai-coding-cn', message('1302', text)],
+    ['ordinary-text', 'zai-coding-cn', message('1308', '请求过于频繁。您的限额将在 2026-11-27 00:57:36 重置。')],
+    ['no-reset', 'zai-coding-cn', message('1308', '已达到 5 小时的使用上限。请稍后再试。')],
+    ['invalid-reset', 'zai-coding-cn', message('1308', text.replace('11-27', '02-31'))],
+    ['changed-final-error', 'zai-coding-cn', quota, '429 Too Many Requests'],
+  ]) {
+    const agent = h.add(name)
+    const route = { ...primary, provider }
+    agent.model.select(route)
+    await h.save(name)
+    const forwarded = await h.fail(agent, { code: 'RATE_LIMIT', message: error, endMessage: final })
+    const expected = name === 'flat' || name === 'nested'
+    assert.equal(forwarded, !expected && name !== 'changed-final-error', name)
+    assert.deepEqual(agent.model.current(), expected ? backup : route, name)
+    assert.equal(agent.messages.length, expected ? 1 : 0, name)
+  }
+})
+
+test('subscription keywords require explicit exhaustion and a concrete reset in the terminal 429', async (t) => {
+  const h = await fixture(t)
+  const en = "429 You’ve reached your subscription usage limit. Resets at 2026-11-27T00:57:36Z."
+  const zh = '订阅额度已耗尽。您的额度将在 2026-11-27 00:57:36 重置。'
+  const structured = (message) => `429 ${JSON.stringify({ error: { message } })}`
+  for (const [id, message, expected, endMessage = message] of [
+    ['en', en, true],
+    ['zh', structured(zh), true],
+    ['temporary', '429 Too Many Requests. Resets at 2026-11-27T00:57:36Z.', false],
+    ['generic-quota', '429 Quota exhausted. Resets at 2026-11-27T00:57:36Z.', false],
+    ['relative-delay', en.replace('at 2026-11-27T00:57:36Z', 'in 5 seconds'), false],
+    ['invalid-time', structured(zh.replace('11-27', '02-31')), false],
+    ['changed-final', en, false, '429 Too Many Requests'],
+  ]) {
+    const agent = h.add(id)
+    await h.save(id)
+    await h.fail(agent, { code: 'RATE_LIMIT', message, endMessage })
+    assert.deepEqual(agent.model.current(), expected ? backup : primary, id)
+    assert.equal(agent.messages.length, expected ? 1 : 0, id)
+  }
+})
 
 test('fallback preferences persist only for the configured conversation; disabling keeps the backup', async (t) => {
   const h = await fixture(t)
@@ -172,6 +224,25 @@ test('a completed quota continuation saves the previous main model and effort fo
   assert.deepEqual((await h.get('swap', h.create())).value, saved)
   assert.equal((await h.get('sibling')).value.model, target.model)
   assert.equal((await h.getGlobal()).value.model, target.model)
+})
+
+test('fallback notifications only report committed successful swaps and do not replay a fresh baseline', async (t) => {
+  const h = await fixture(t)
+  const success = h.add('notify-success')
+  const failure = h.add('notify-failure')
+  const { epoch, sequence } = h.notices()
+  const cursor = { epoch, after: sequence }
+  await h.save('notify-success')
+  await h.fail(success)
+  assert.deepEqual(h.notices(cursor).events, [])
+  h.completeContinuation(success)
+  await h.get('notify-success')
+  assert.deepEqual(h.notices(cursor).events, [{ sequence: sequence + 1, primary: backup.model, backup: primary.model }])
+  assert.deepEqual(h.notices().events, [])
+  await h.save('notify-failure')
+  await h.fail(failure)
+  h.completeContinuation(failure, { code: 'QUOTA' })
+  assert.deepEqual(h.notices({ epoch, after: sequence + 1 }).events, [])
 })
 
 test('a new turn may return to the former primary, but its automatic continuation never bounces back', async (t) => {

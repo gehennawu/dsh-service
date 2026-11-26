@@ -329,7 +329,7 @@
       }
       // 全局通知状态服务已抽至 src/client/notification-service.js（工厂作用域分片）；开关
       // let 改为 notifyState.current.* 箱体活读（原 let 快照语义不跨工厂边界）。
-      const { notifyState, useNotifyState, NOTIFY_KIND_KEYS, fireNotification, subscribeBellVisible } = createNotificationService()
+      const { notifyState, useNotifyState, NOTIFY_KIND_KEYS, fireNotification, subscribeBellVisible, subscribeNotify, notifyPermissionGranted } = createNotificationService()
       // 设置页左列入口开关的通用实现（重启/额度/技能三个入口共用，不再三套复制）：
       // localStorage 持久化、默认关；开启才注册 settings.section 条目、关闭即注销——
       // 导航列单元格由外壳渲染，null 内容不能隐藏导航项。feature 可选：功能关闭时同样注销。
@@ -410,6 +410,8 @@
       const sessionActivity = { runningSessionIds: new Set() }
       const mainModelFallback = createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTranslation, useFeatures })
       ctx.effect(() => mainModelFallback.start(), 'dsh-service main model quota fallback menu')
+      ctx.effect(() => observeFallbackSwapNotifications({ ctx, rpcCall, t, featureEnabled, featureScope, notifyState,
+        subscribeNotify, notifyPermissionGranted, fireNotification }), 'dsh-service quota fallback notifications')
       // 会话活跃观察已抽至 src/client/session-activity.js。
 
       // ── 版本/重启流子系统：已整段抽至 src/client/version-restart.js（工厂作用域分片，

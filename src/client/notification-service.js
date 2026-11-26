@@ -3,6 +3,52 @@
 // 开关原为 apply 作用域 let，跨段活读改用 { current } 箱体（消费方 notifyState.current.*）。
 // 零参数：React 取自工厂作用域，其余皆浏览器 API。分片不是模块——拼接见 scripts/client-source.mjs。
 
+function observeFallbackSwapNotifications({ ctx, rpcCall, t, featureEnabled, featureScope, notifyState,
+  subscribeNotify, notifyPermissionGranted, fireNotification }) {
+  let generation = 0
+  let running = false
+  let cancel
+  const enabled = () => featureEnabled('taskNotifications') && featureEnabled('mainModelFallback') && notifyState.current.enabled
+  const stop = () => { running = false; generation++; cancel?.(); cancel = undefined }
+  const sync = () => {
+    if (!enabled()) { if (running) stop(); return }
+    if (running) return
+    running = true
+    const own = ++generation
+    let cursor = {}
+    const poll = async () => {
+      if (own !== generation || !enabled()) return
+      try {
+        if (notifyPermissionGranted()) {
+          const result = await rpcCall('main-model-fallback-notices', cursor)
+          if (own !== generation || !enabled()) return
+          if (result?.ok === false && ['unknown-endpoint', 'unsupported', 'not-found'].includes(result.error)) return
+          const value = result?.ok === true ? result.value : null
+          if (typeof value?.epoch === 'string' && Number.isSafeInteger(value.sequence) && value.sequence >= 0) {
+            const previous = cursor
+            cursor = { epoch: value.epoch, after: value.sequence }
+            if (previous.epoch === cursor.epoch && Array.isArray(value.events)) {
+              for (const event of value.events) {
+                if (Number.isSafeInteger(event?.sequence) && event.sequence > previous.after && event.sequence <= cursor.after
+                  && typeof event.primary === 'string' && typeof event.backup === 'string') {
+                  previous.after = event.sequence
+                  fireNotification(t('notification.fallbackTitle'), t('notification.fallbackBody', { primary: event.primary, backup: event.backup }), `dsh-service-fallback-${cursor.epoch}-${event.sequence}`)
+                }
+              }
+            }
+          }
+        } else cursor = {}
+      } catch (_) { /* A transient disconnect must not stop the notification loop. */ }
+      if (own === generation && enabled()) cancel = ctx.timer.timeout(() => { void poll() }, 5000)
+    }
+    void poll()
+  }
+  const unsubFeatures = featureScope.subscribe(sync)
+  const unsubNotify = subscribeNotify(sync)
+  sync()
+  return () => { stop(); unsubFeatures(); unsubNotify() }
+}
+
 function createNotificationService() {
   const { useState, useEffect } = React
       // 全局通知：任务结束 + 需要授权/选择答案，两个独立子开关受总开关管辖
@@ -48,10 +94,10 @@ function createNotificationService() {
         question: 'notification.kind.question',
       }
       const notifyPermissionGranted = () => typeof Notification !== 'undefined' && Notification.permission === 'granted'
-      const fireNotification = (title, body) => {
+      const fireNotification = (title, body, tag) => {
         if (!notifyPermissionGranted()) return
         try {
-          const notification = new Notification(title, { body })
+          const notification = new Notification(title, tag === undefined ? { body } : { body, tag })
           // 点击系统通知弹窗：聚焦 DSH 页面并关闭该通知（chrome/ff 从通知点击回调
           // 视为用户手势，window.focus() 可把标签页带到前台）
           notification.onclick = () => {
@@ -60,5 +106,6 @@ function createNotificationService() {
           }
         } catch (_) {}
       }
-  return { notifyState, useNotifyState, NOTIFY_KIND_KEYS, fireNotification, subscribeBellVisible }
+  return { notifyState, useNotifyState, NOTIFY_KIND_KEYS, fireNotification, subscribeBellVisible,
+    subscribeNotify: (listener) => { notifyListeners.add(listener); return () => notifyListeners.delete(listener) }, notifyPermissionGranted }
 }

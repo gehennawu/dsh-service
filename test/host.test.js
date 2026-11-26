@@ -2156,7 +2156,7 @@ test('main model quota fallback endpoints remain private and follow the feature 
     ok: false, error: 'invalid-session',
   })
   await host.pushVolatileConfig({ mainModelFallback: false })
-  for (const endpoint of ['main-model-fallback', 'main-model-fallback-save']) {
+  for (const endpoint of ['main-model-fallback', 'main-model-fallback-save', 'main-model-fallback-notices']) {
     assert.deepEqual(await host.handler(endpoint, { sessionId: 'not-a-live-agent' }), { ok: false, error: 'feature-disabled' })
   }
   await host.pushVolatileConfig({ mainModelFallback: true })

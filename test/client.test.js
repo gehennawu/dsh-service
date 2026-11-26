@@ -4374,6 +4374,30 @@ test('clicking a browser notification focuses the dsh page and closes the popup'
   assert.equal(renderer.focusCount(), 1, 'notification click focuses the dsh page')
 })
 
+test('browser fallback notifications baseline, deliver one committed swap, and respect the master switch', async () => {
+  let sequence = 1
+  const renderer = createRenderer(async (channel, endpoint, payload) => {
+    if (endpoint === 'version') return { ok: true, value: { current: '2.1.9', instanceId: 'instance' } }
+    if (endpoint === 'main-model-fallback-notices') return { ok: true, value: { epoch: 'epoch', sequence,
+      events: payload.epoch ? [1, 2].filter((n) => n <= sequence).map((n) => ({ sequence: n, primary: 'B', backup: 'A' })) : [] } }
+    throw new Error(`unexpected endpoint ${endpoint}`)
+  }, { notificationPermission: 'granted', initialStorage: { 'dsh-service-notify': 'true' } })
+  await renderer.load()
+  assert.deepEqual(renderer.notifications(), [])
+  sequence = 2
+  await renderer.advanceTimer(5000)
+  assert.deepEqual(renderer.notifications(), [{ title: '主备模型已互换', body: '已切到 B 并完成续跑，A 已成为本对话的后备模型。' }])
+  await renderer.advanceTimer(5000)
+  assert.equal(renderer.notifications().length, 1)
+  await renderer.findButton('配置').props.onClick()
+  await renderer.flush()
+  await renderer.findButton('通知').props.onClick()
+  await renderer.flush()
+  renderer.findSwitches()[0].props.onClick()
+  assert.equal(renderer.pendingTimerDelays().includes(5000), false)
+  renderer.disposeFactory()
+})
+
 test('session edges notify for task completion and pending interaction with kind labels', async () => {
   const renderer = createRenderer(async (channel, endpoint) => {
     if (endpoint === 'version') return { ok: true, value: { current: '0.1.0-rc.7', instanceId: 'old-instance' } }
