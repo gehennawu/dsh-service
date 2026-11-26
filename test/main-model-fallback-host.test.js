@@ -18,7 +18,8 @@ async function fixture(t) {
   const services = { agents, goals: { get: () => state.goal }, llm: {
     listProviders: () => [{ id: 'primary' }, { id: 'backup' }],
     listModels: async (provider) => (provider === 'backup' ? ['two', 'three'] : ['one']).map((id) => ({ id })),
-    resolveModelInfo: async () => state.validation ?? { inputModalities: ['text'], reasoning: { efforts: state.efforts.map((id) => ({ id })) } },
+    resolveModelInfo: async (provider) => state.contextWindows ? { inputModalities: ['text'], context: { contextWindow: state.contextWindows[provider] } }
+      : state.validation ?? { inputModalities: ['text'], reasoning: { efforts: state.efforts.map((id) => ({ id })) } },
   } }
   const ctx = { get: (key) => services[key], on: (event, callback) => { listeners.set(event, callback); return () => listeners.delete(event) }, effect: (fn) => fn() }
   const create = () => createMainModelFallback({ ctx, dir, featureGeneration: () => state.generation, rpcTechnicalFailure: () => ({ ok: false, error: 'technical' }) })
@@ -36,30 +37,30 @@ async function fixture(t) {
     agents.set(id, agent)
     return agent
   }
-  async function fail(agent, { code = 'ACCOUNT_QUOTA', tool, beforeEnd, provider = primary.provider } = {}) {
+  async function fail(agent, { code = 'ACCOUNT_QUOTA', tool, beforeEnd, provider = agent.model.current().provider, turn = 1 } = {}) {
     const { events, session } = agent
-    events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: { source: { kind: 'user' } } })
-    if (tool) events.push({ type: 'tool/call', data: { turn: 1, callId: 'tool' } })
-    if (tool === 'done') events.push({ type: 'tool/result', data: { turn: 1, message: { toolCallId: 'tool' } } })
-    listeners.get('agent/request-error')({ agent, turn: 1, step: 2, provider, failure: { code }, signal: new AbortController().signal }, () => {})
+    events.push({ type: 'turn/start', data: { turn } }, { type: 'user/message', data: { source: { kind: 'user' } } })
+    if (tool) events.push({ type: 'tool/call', data: { turn, callId: 'tool' } })
+    if (tool === 'done') events.push({ type: 'tool/result', data: { turn, message: { toolCallId: 'tool' } } })
+    listeners.get('agent/request-error')({ agent, turn, step: 2, provider, failure: { code }, signal: new AbortController().signal }, () => {})
     beforeEnd?.()
-    const event = { seq: events.length, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { code } } } }
+    const event = { seq: events.length, type: 'turn/end', data: { turn, reason: { kind: 'error', error: { code } } } }
     events.push(event)
     listeners.get('session/event')(session, event)
     listeners.get('session/event')(session, event)
     await setImmediate()
   }
-  function completeContinuation(agent, { code, admitted = true } = {}) {
+  function completeContinuation(agent, { code, admitted = true, turn = 2 } = {}) {
     const emit = (type, data) => {
       const event = { seq: agent.events.length, type, data }
       agent.events.push(event)
       listeners.get('session/event')(agent.session, event)
     }
-    emit('turn/start', { turn: 2 })
-    if (admitted) emit('user/message', agent.messages[0])
-    if (code) listeners.get('agent/request-error')({ agent, turn: 2, step: 1, provider: backup.provider,
+    emit('turn/start', { turn })
+    if (admitted) emit('user/message', agent.messages.at(-1))
+    if (code) listeners.get('agent/request-error')({ agent, turn, step: 1, provider: agent.model.current().provider,
       failure: { code }, signal: new AbortController().signal }, () => {})
-    emit('turn/end', { turn: 2, reason: code ? { kind: 'error', error: { code } } : { kind: 'completed' } })
+    emit('turn/end', { turn, reason: code ? { kind: 'error', error: { code } } : { kind: 'completed' } })
   }
   const get = (id, instance = fallback) => instance.routes['main-model-fallback'].handle({ sessionId: id })
   const save = (id, args = { enabled: true, ...backup }) => fallback.routes['main-model-fallback-save'].handle({ sessionId: id, ...args })
@@ -173,6 +174,26 @@ test('a completed quota continuation saves the previous main model and effort fo
   assert.equal((await h.getGlobal()).value.model, target.model)
 })
 
+test('a new turn may return to the former primary, but its automatic continuation never bounces back', async (t) => {
+  const h = await fixture(t)
+  for (const recovered of [true, false]) {
+    const id = recovered ? 'recovered' : 'still-exhausted'
+    const agent = h.add(id)
+    await h.save(id)
+    await h.fail(agent)
+    h.completeContinuation(agent)
+    assert.equal((await h.get(id)).value.model, primary.model)
+    await h.fail(agent, { turn: 3, code: 'QUOTA' })
+    assert.deepEqual(agent.model.current(), primary)
+    assert.equal(agent.messages.length, 2)
+    h.completeContinuation(agent, { turn: 4, code: recovered ? undefined : 'ACCOUNT_QUOTA' })
+    assert.equal((await h.get(id)).value.model, recovered ? backup.model : primary.model)
+    await setImmediate()
+    assert.equal(agent.messages.length, 2)
+    assert.deepEqual(agent.model.current(), primary)
+  }
+})
+
 test('a failed or unrelated continuation never swaps backups or retries again', async (t) => {
   const h = await fixture(t)
   for (const [id, options] of [['failed', { code: 'QUOTA' }], ['unrelated', { admitted: false }]]) {
@@ -191,6 +212,22 @@ test('a failed or unrelated continuation never swaps backups or retries again', 
   await h.save('edited', { enabled: true, ...backup, model: 'three' })
   h.completeContinuation(agent)
   assert.equal((await h.get('edited')).value.model, 'three')
+})
+
+test('smaller windows are advisory and failed fallback compaction is reported without changing the backup', async (t) => {
+  const h = await fixture(t)
+  const agent = h.add('context')
+  await h.save('context')
+  h.state.contextWindows = { primary: 200000, backup: 36000 }
+  assert.deepEqual((await h.get('context')).value.smallerContext, { primary: 200000, backup: 36000 })
+  await h.fail(agent)
+  assert.equal(agent.messages.length, 1)
+  h.completeContinuation(agent, { code: 'MODEL_SWITCH_COMPACTION_FAILED', admitted: false })
+  const { model, contextFailure, smallerContext } = (await h.get('context')).value
+  assert.equal(model, backup.model)
+  assert.equal(contextFailure, 'MODEL_SWITCH_COMPACTION_FAILED')
+  assert.equal(smallerContext, undefined)
+  assert.equal(agent.messages.length, 1)
 })
 
 test('feature switch suspends fallback without clearing saved settings or resuming stale attempts', async (t) => {

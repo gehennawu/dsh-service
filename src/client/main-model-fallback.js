@@ -117,6 +117,8 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
       inherited: value.inherited === true,
       localEnabled: value.localEnabled === true,
       paused: value.paused === true,
+      smallerContext: Number.isSafeInteger(value.smallerContext?.primary) && Number.isSafeInteger(value.smallerContext?.backup) ? value.smallerContext : null,
+      contextFailure: value.contextFailure === 'MODEL_SWITCH_COMPACTION_FAILED' || value.contextFailure === 'CONTEXT_WINDOW_EXCEEDED' ? value.contextFailure : null,
     }
   }
 
@@ -148,7 +150,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused, smallerContext: next.smallerContext, contextFailure: next.contextFailure,
           saving: false, error: null,
         })
         return entry.snapshot
@@ -209,7 +211,7 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         }
         patch(entry, {
           status: 'ready', loaded: true, available: true,
-          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused,
+          enabled: next.enabled, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, globalEnabled: next.globalEnabled, inherited: next.inherited, localEnabled: next.localEnabled, paused: next.paused, smallerContext: next.smallerContext, contextFailure: next.contextFailure,
           saving: false, error: null,
         })
         if (sessionId === DEFAULTS) {
@@ -831,7 +833,9 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
             describedBy: enableDescribedBy,
             onClick: handleToggle,
           }))),
-      React.createElement('p', { id: describeId, style: hintStyle }, translate(global ? 'mainModelFallback.global.description' : 'mainModelFallback.enable.description')),
+      React.createElement('div', { id: describeId, style: { display: 'grid', gap: '4px' } },
+        React.createElement('p', { style: hintStyle }, translate(global ? 'mainModelFallback.global.description' : 'mainModelFallback.enable.description')),
+        global && React.createElement('p', { style: hintStyle }, translate('mainModelFallback.global.changeHint'))),
       guidance !== null
         ? React.createElement('p', { id: hintId, style: { ...hintStyle, color: 'var(--dsw-alias-state-warn-primary)' } }, guidance)
         : null
@@ -856,6 +860,10 @@ function createMainModelFallback({ ctx, rpcCall, getModelDirectories, t, useTran
         hasSelection && h('span', { style: { ...hintStyle, display: 'block' } }, channelName)),
       h(Chevron)))
       if (global && pickerView) body.push(pickerView)
+      if (!global && snapshot.contextFailure) body.push(h('p', { key: 'context-failure', role: 'status', style: errorStyle },
+        translate(snapshot.contextFailure === 'MODEL_SWITCH_COMPACTION_FAILED' ? 'mainModelFallback.context.compactionFailed' : 'mainModelFallback.context.overflow')))
+      if (!global && !savedIsCurrent && snapshot.smallerContext) body.push(h('p', { key: 'smaller-context', style: hintStyle },
+        translate('mainModelFallback.context.smaller', { primary: snapshot.smallerContext.primary.toLocaleString(), backup: snapshot.smallerContext.backup.toLocaleString() })))
       if (hasSelection && !savedIsCurrent && selectedModel === null && catalog.status === 'ready') {
         body.push(h('p', { key: 'missing-model', style: hintStyle }, translate('mainModelFallback.model.missing')))
       }

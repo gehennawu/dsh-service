@@ -19232,7 +19232,8 @@ test('main model fallback settings edit global policy without reading or writing
   const models = [{ id: 'alt', name: 'Alt' }, { id: 'other', name: 'Other' }]
   const groups = [{ id: 'provA', models }]
   const view = () => ({ ...defaults, ...local, enabled: !paused && (defaults.enabled || local?.enabled === true),
-    paused, globalEnabled: defaults.enabled, inherited: !local, localEnabled: local?.enabled === true })
+    paused, globalEnabled: defaults.enabled, inherited: !local, localEnabled: local?.enabled === true,
+    smallerContext: { primary: 200000, backup: 36000 }, contextFailure: 'MODEL_SWITCH_COMPACTION_FAILED' })
   const { calls, rpc } = models3Fixture({
     'main-model-fallback-defaults': () => ({ ok: true, value: defaults }),
     'main-model-fallback-defaults-save': (payload) => { defaults = { ...defaults, ...payload }; return { ok: true, value: defaults } },
@@ -19258,6 +19259,7 @@ test('main model fallback settings edit global policy without reading or writing
   await settle(renderer)
   assert.match(renderer.text('settings.section'), /为所有对话启用回退/)
   assert.match(renderer.text('settings.section'), /关闭全局回退后，仍可在单个对话中设置后备模型并启用回退/)
+  assert.match(renderer.text('settings.section'), /保存全局变更后，各对话重新使用全局后备模型；对话的启用和暂停状态不变。/)
   const fallbackSettings = renderer.findByTestId('main-model-fallback-settings')
   assert.equal(fallbackSettings.props.style.background, undefined)
   assert.equal(fallbackSettings.props.style.border, undefined)
@@ -19281,6 +19283,8 @@ test('main model fallback settings edit global policy without reading or writing
   renderer.mount('conversation.input.model.options')
   await settle(renderer)
   assert.equal(renderer.findByTestId('main-model-fallback-model-summary').props.title, 'Alt · provA')
+  assert.match(renderer.text('conversation.input.model.pane'), /后备模型的上下文窗口较小/)
+  assert.match(renderer.text('conversation.input.model.pane'), /对话上下文压缩失败/)
   const pause = () => renderer.findByTestId('main-model-fallback-session-pause')
   assert.equal(pause().props['aria-checked'], 'false')
   pause().props.onClick()

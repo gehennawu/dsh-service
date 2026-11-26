@@ -3,6 +3,7 @@ import { open, readFile, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const QUOTA_CODES = new Set(['ACCOUNT_QUOTA', 'QUOTA'])
+const CONTEXT_FAILURES = new Set(['MODEL_SWITCH_COMPACTION_FAILED', 'CONTEXT_WINDOW_EXCEEDED'])
 const OFF = Object.freeze({ enabled: false })
 const MAX_ENTRIES = 4096
 const MAX_TURN_EVENTS = 8192
@@ -81,6 +82,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
   const candidates = new WeakMap()
   const scheduled = new WeakSet()
   const continuations = new WeakMap()
+  const contextFailures = new WeakMap()
   const pendingWrites = new Map()
   const lifetime = new AbortController()
   let writeTail = Promise.resolve()
@@ -150,6 +152,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       }
       agent.model.select(selectRoute(selected))
       if (!signal.aborted && !agent.inbox.hasPending && sameSelection(agent.model.current(), selected)) {
+        contextFailures.delete(agent)
         continuations.set(agent, { candidate, messageId: message.id, turn: event.data.turn + 1, admitted: false,
           local: config.sessions.get(session.id) })
         try { agent.followup(message) } catch (error) {
@@ -208,6 +211,11 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       if (event.type === 'turn/end' && event.data.turn >= continuation.turn) {
         continuations.delete(agent)
         if (event.data.turn === continuation.turn) {
+          const code = event.data.reason?.error?.code
+          if (continuation.started && event.data.reason?.kind === 'error' && CONTEXT_FAILURES.has(code)
+            && sameSelection(agent.model.current(), continuation.candidate.selected)) {
+            contextFailures.set(agent, { code, route: continuation.candidate.selected, generation: continuation.candidate.generation })
+          }
           candidates.delete(agent)
           finishContinuation(agent, event, continuation)
           return
@@ -215,6 +223,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       }
     }
     if (event.type !== 'turn/end') return
+    if (event.data.reason?.kind === 'completed') contextFailures.delete(agent)
     const candidate = candidates.get(agent)
     candidates.delete(agent)
     if (candidate === undefined || featureGeneration() !== candidate.generation || scheduled.has(agent) || event.data.turn !== candidate.turn
@@ -236,6 +245,26 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     }, 'dsh-service main model quota fallback')
   }
 
+  async function contextDetails(agent, selected) {
+    const main = agent.model.current()
+    const last = contextFailures.get(agent)
+    const failure = last?.generation === featureGeneration() && sameRoute(main, last.route) ? { contextFailure: last.code } : {}
+    if (!isRoute(main) || !isRoute(selected) || sameRoute(main, selected)) return failure
+    const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(1_500)])
+    if (signal.aborted) return failure
+    let abort
+    const timeout = new Promise((resolve) => { abort = () => resolve(null) })
+    signal.addEventListener('abort', abort, { once: true })
+    try {
+      const llm = ctx.get('llm')
+      const models = await Promise.race([timeout, Promise.all([main, selected].map(({ provider, model }) => llm.resolveModelInfo(provider, model, signal)))])
+      const [primary, backup] = models?.map((model) => model?.context?.contextWindow) ?? []
+      return Number.isSafeInteger(primary) && Number.isSafeInteger(backup) && backup > 0 && backup < primary
+        ? { ...failure, smallerContext: { primary, backup } } : failure
+    } catch { return failure }
+    finally { signal.removeEventListener('abort', abort) }
+  }
+
   const route = (save, global = false) => ({ feature: 'mainModelFallback', ...(save ? { audit: true } : {}), handle: async (payload) => {
     const generation = featureGeneration()
     const id = global ? null : payload?.sessionId
@@ -249,6 +278,11 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
       return { available: true, ...(selected ? selectRoute(selected) : OFF), enabled, ...(local?.paused ? { paused: true } : {}), ...(state.global.enabled ? { globalEnabled: true } : {}), ...(isRoute(state.global) ? { inherited: !isRoute(local) } : {}), ...(local?.paused || state.global.enabled ? { localEnabled: local?.enabled === true } : {}) }
     }
     if (!valid()) return { ok: true, value: { available: false, ...OFF } }
+    const reply = async (value) => {
+      if (global || !value.available) return { ok: true, value }
+      const details = await contextDetails(agent, value)
+      return { ok: true, value: valid() ? { ...value, ...details } : { available: false, ...OFF } }
+    }
     if (!save) {
       try {
         // The initial load promise keeps the original map; writes publish a new one.
@@ -257,7 +291,7 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
         await Promise.all([pendingWrites.get(id)?.catch(() => {}), !global && pendingWrites.get(null)?.catch(() => {})])
         const current = config ?? await read()
         if (!valid()) return { ok: true, value: { available: false, ...OFF } }
-        return { ok: true, value: view(current) }
+        return await reply(view(current))
       } catch (error) { return rpcTechnicalFailure(error) }
     }
     const reset = !global && payload?.inherit === true
@@ -312,9 +346,11 @@ export function createMainModelFallback({ ctx, dir, providerAvailability, rpcTec
     const pending = writeTail.then(write)
     pendingWrites.set(id, pending)
     writeTail = pending.catch(() => {})
-    try { return await pending }
+    let result
+    try { result = await pending }
     catch (error) { return rpcTechnicalFailure(error) }
     finally { if (pendingWrites.get(id) === pending) pendingWrites.delete(id) }
+    return result.ok ? await reply(result.value) : result
   } })
 
   return {
